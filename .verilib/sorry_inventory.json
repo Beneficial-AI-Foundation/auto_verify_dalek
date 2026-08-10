@@ -1,5 +1,5 @@
 {
-  "comment": "Regenerated sorry inventory (declaration-level, from `lake build` warnings). Supersedes the stale sorries_summary.json (1062 = 3x backup-dir double counting). zones: math = frozen assumptions (NOT to be proven, see harness/frozen/math_assumptions.json); specs+aux = phase 2 targets; funs_external = intentional sorries in the trusted external-spec file; deps_aeneas = sorries shipped inside the pinned Aeneas dependency (implicit trust base).",
+  "comment": "Regenerated sorry inventory (declaration-level, from `lake build` warnings). Supersedes the stale sorries_summary.json (1062 = 3x backup-dir double counting). zones: math = frozen assumptions (NOT to be proven, see harness/frozen/math_assumptions.json); specs+aux = phase 1 (full recovery) targets; funs_external = intentional sorries in the trusted external-spec file; deps_aeneas = sorries shipped inside the pinned Aeneas dependency (implicit trust base).",
   "generated": "2026-08-10",
   "counts": {
     "math": 10,

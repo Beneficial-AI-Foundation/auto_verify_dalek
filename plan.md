@@ -1,6 +1,6 @@
 # 项目计划：Lean 版 dalek 验证
 
-**给实现方（Claude Code）的说明**：本文件是研究计划，不是任务清单。第 4 节（阶段 0）已完成，产物在 `harness/`；下一个开工点是优先级 1–2。第 5–10 节是设计约束，实现时必须遵守但不必一次做完。所有 Lean 代码片段是**示意**，Mathlib API 名称需要现场用 `exact?` / `loogle` / `#check` 核对，不要假定本文件里的名字正确。
+**给实现方（Claude Code）的说明**：本文件是研究计划，不是任务清单。第 4 节（阶段 0）已完成，产物在 `harness/`；下一个开工点是优先级 1–2。第 5–9 节是设计约束，实现时必须遵守但不必一次做完。所有 Lean 代码片段是**示意**，Mathlib API 名称需要现场用 `exact?` / `loogle` / `#check` 核对，不要假定本文件里的名字正确。
 
 参照论文：*An AI Approach to Verified Production Cryptographic Libraries*（CryptoProver，arXiv 2608.00965v1）。下称"原论文"。
 
@@ -10,7 +10,7 @@
 
 > 原论文把"人写的规约"这个变量按住没动。我们放开它，测量**人类规约努力**与**最终 claim 强度**之间的兑换率，并给出使削减安全的机制。
 
-不是"把 CryptoProver 移植到 Lean"。移植没有新意，而且 Rust→Lean + AI prover 这条路已经有人占了（见第 15 节）。
+不是"把 CryptoProver 移植到 Lean"。移植没有新意，而且 Rust→Lean + AI prover 这条路已经有人占了（见第 14 节）。
 
 ---
 
@@ -19,9 +19,9 @@
 实现时如果发现自己在做下面任何一件事，说明方向跑偏了：
 
 - ❌ 在 Lean 里重新实现八道闸门然后报告"我们也做到了"
-- ❌ 把**我们新写的顶层契约**写成一组 `requires`/`ensures` 风格的规定式公式（那样信任基只是换了来源，结构完全相同；仓库里现成的 WP 规约树是参照物和中间层，不是顶层 claim 的形态，见第 3、5 节）
-- ❌ 跨验证器比较"Lean 比 Verus 省 token"（无法控制变量，见第 12 节）
-- ❌ 训练或改进 prover 模型本身（这条赛道极度拥挤，见第 15 节）
+- ❌ 把**我们新写的顶层契约**写成一组 `requires`/`ensures` 风格的规定式公式（那样信任基只是换了来源，结构完全相同；仓库里现成的 WP 规约树是参照物和中间层，不是顶层 claim 的形态，见第 3 节）
+- ❌ 跨验证器比较"Lean 比 Verus 省 token"（无法控制变量，见第 11 节）
+- ❌ 训练或改进 prover 模型本身（这条赛道极度拥挤，见第 14 节）
 - ❌ 在 `Math/` 层的数学定理上花证明预算——该层整体假设成立、进信任基（第 4 节）；证密码数学不是本项目的核心
 
 我们做的是 **harness / 信任层 / 规约经济学**。
@@ -48,9 +48,9 @@
 
 这份资产表决定了整个计划的形状：
 
-1. **顶层规约已经存在**（94 条 WP spec + Math 层锚点）——所以"人写规约"这个变量可以被操作：整份删掉一部分让 agent 重新合成，与被删原文逐条对照（第 9 节），这是第 0 节那条曲线的测量装置
+1. **顶层规约已经存在**（94 条 WP spec + Math 层锚点）——所以"人写规约"这个变量可以被操作：整份删掉一部分让 agent 重新合成，与被删原文逐条对照（第 8 节），这是第 0 节那条曲线的测量装置
 2. **被假设的数学以 sorry 形态存在**，不是以公理形态——goal-hash 给每条假设一个稳定 id，信任基可机器枚举、可冻结、不可悄悄膨胀（第 4 节）；证明这些假设不是本项目的工作
-3. **陈述同一性检查有现成基底**——goal-hash id 正是"elaborate 后比对"的正确形态（第 7 节 G1）
+3. **陈述同一性检查有现成基底**——goal-hash id 正是"elaborate 后比对"的正确形态（第 6 节 G1）
 
 ---
 
@@ -58,11 +58,11 @@
 
 ```
 ┌─ 人写，冻结 ────────────────────────────────────┐
-│  Layer 1  数学模型（Math/，陈述冻结，整层假设   │  ← 第 4、5 节
-│           成立；商群/契约锚定层由阶段 1 补）    │
+│  Layer 1  数学模型（Math/，陈述冻结，          │  ← 第 4 节
+│           整层假设成立）                        │
 └─────────────────────────────────────────────────┘
 ┌─ agent 合成 ────────────────────────────────────┐
-│  Layer 2  精化塔：Specs/ 规约树 + 表示桥        │  ← 第 6 节
+│  Layer 2  精化塔：Specs/ 规约树 + 表示桥        │  ← 第 5 节
 │  Layer 3  全部证明体（当前 347 个待填声明）     │
 └─────────────────────────────────────────────────┘
 ┌─ 人写，冻结 ────────────────────────────────────┐
@@ -72,9 +72,9 @@
 
 **夹紧论证**：两端固定，中间被夹住——太弱撑不住顶，太假搭不起来。闸门的作用是**把两端摁住让这个论证成立**，不是检查中间。这是理解全部设计的关键。
 
-原论文 §2.2 有这个论证的 Verus 版本。我们的版本更强，因为顶端不是规定而是数学（见第 5 节）。注意：顶端的数学定理一部分本身是假设（第 4 节清单）——夹紧论证需要的只是**顶端由人写且冻结**，与它是否被证无关。被证与否影响最终 claim 的表述强度，不影响对 agent 的钳制。
+原论文 §2.2 有这个论证的 Verus 版本。我们的版本更强，因为顶端不是规定而是数学（Math 层的曲线群模型；更强的商群锚定层是未来工作，见 todo.md）。注意：顶端的数学定理一部分本身是假设（第 4 节清单）——夹紧论证需要的只是**顶端由人写且冻结**，与它是否被证无关。被证与否影响最终 claim 的表述强度，不影响对 agent 的钳制。
 
-Layer 2 的归属随实验而变：**基线实验**里整棵 Specs/ 树给定、agent 只填证明（第 8 节）；**预算曲线实验**里被删掉的那部分 spec 由 agent 重新合成（第 9 节），此时第 6 节的满射义务和第 10 节的四条义务生效。
+Layer 2 的归属随实验而变：**基线实验**里整棵 Specs/ 树给定、agent 只填证明（第 7 节）；**预算曲线实验**里被删掉的那部分 spec 由 agent 重新合成（第 8 节），此时第 5 节的满射义务和第 9 节的四条义务生效。
 
 ---
 
@@ -135,7 +135,7 @@ Layer 2 的归属随实验而变：**基线实验**里整棵 Specs/ 树给定、
 ✓ Math 工作已提交（19318ad），lake build 全绿（3503 jobs）
 ✓ 假设集 = 恰好 11 条，陈述哈希逐条一致
 ✓ Math 公理闭包 ⊆ 白名单；零新 axiom；零 @[externally_verified] 于 Math
-✓ 待填基线：347 条声明（Specs 318 + Aux/TypesAux 29），阶段 2 靶区
+✓ 待填基线：347 条声明（Specs 318 + Aux/TypesAux 29），阶段 1 靶区
 ✓ Math/ + 信任基文件 + 工具链全部哈希冻结
 ✓ G2 全绿；负向测试（篡改冻结文件）被抓
 ```
@@ -144,49 +144,7 @@ Layer 2 的归属随实验而变：**基线实验**里整棵 Specs/ 树给定、
 
 ---
 
-## 5. 阶段 1：Contracts 锚定层（人写，冻结）
-
-**核心原则：顶层说"实现实现了一个到 Mathlib 数学对象的群同构"，不说"实现等于这个我规定的函数"。**
-
-原论文的顶层是**规定**——没人证明过那组公式真的刻画了 Ristretto，所以它必须把 contract adequacy 排除在保证之外（§5.3），曲线和域的代数性质只能放进 48 条公理里假设掉。在 Verus 里这是**被迫的**：Verus 生态没有已证的椭圆曲线理论、没有商群、没有群同构库。在 Lean+Mathlib 里，它是一个**可以选的变量**。
-
-仓库的 `Specs/` 树同样是逐函数的 WP 规定式，`Math/` 层则已经把它锚到一个真实的曲线群模型上——这比原论文强，但还差三样东西。本阶段在现有 `Math/` 层之上补一个薄的 `Contracts/` 模块：
-
-1. **Ristretto 作为商群类型**：`Ristretto := Ed25519 ⧸ torsion8`（EightTorsion 已有，商没取）
-2. **非空洞性证书**：`Fintype.card Ristretto = ℓ`、`IsCyclic Ristretto`
-3. **同构/双射/模作用形态的顶层契约**，并证明它们**蕴含** `Specs/` 树里对应的 WP spec——这一步让新锚不悬空，也让 94 条 WP spec 获得数学背书
-
-### 骨架（示意，API 名需核对；`Point Ed25519` 复用 Math/ 层现有定义）
-
-```lean
-abbrev ℓ : ℕ := 2^252 + 27742317777372353535851937790883648493
-
--- ── 商结构（架在 Math/Edwards 已有的 Point Ed25519 与 EightTorsion 上）──
-def torsion8 : AddSubgroup (Point Ed25519) := ...
-def Ristretto := Point Ed25519 ⧸ torsion8
-
--- ── 非空洞性证书（关键！）────────────────────────────
-theorem card_ristretto  : Fintype.card Ristretto = ℓ
-theorem ristretto_cyclic : IsCyclic Ristretto
-```
-
-### 三条契约写法原则
-
-每条都在堵一个具体的空洞路径：
-
-| 原则 | 写法 | 堵住什么 |
-|---|---|---|
-| **用同态/模作用，不用逐点** | `⟦impl_scalar_mul k P⟧ = k • P` （`k : ZMod ℓ`） | 逐点的 `∀ k P, f k P = g k P` 允许 `f` 和 `g` 一起退化；模作用一次约束联合行为，不允许 |
-| **编码用双射，不用往返** | `Function.Bijective (compress : Ristretto → CanonicalBytes)` | `decompress (compress P) = some P` 这种单向往返退化映射也能满足 |
-| **给模型本身发基数证书** | `Fintype.card Ristretto = ℓ` | `def Ristretto := Unit` 会让所有定理平凡成立。这是**顶层自己的非空洞性义务**，Verus 里没有对应物（那边"模型"就是几个 spec fn，没有基数可谈） |
-
-原论文最离谱的那条伪造公理（`lemma_ristretto_compress_correct`，连 `requires` 都没有，声称任意字节等于任意点的压缩）在双射陈述下**连写都写不出来**。
-
-**证明预算说明**：锚定层的价值在**陈述的形态**——商群类型、双射、模作用、基数证书都是人写且冻结的，夹紧与闸门只需要这一点。锚点定理本身与 Math 层同等待遇：陈述冻结、以假设入信任基（假设清单相应扩充并同样 goal-hash 冻结），证明是可选加强、不占本项目预算。假设 vs 证明影响最终 claim 的表述强度，不影响对 agent 合成层的钳制（第 3 节）。
-
----
-
-## 6. 精化塔与满射义务
+## 5. 精化塔与满射义务
 
 ### 塔的形状（仓库中的实际对应物）
 
@@ -198,11 +156,11 @@ FieldElement51                Types.lean（5 肢 × 51 位，未归约，带松�
 ZMod p                        Math/Basic
   ↓  坐标表示                 Specs/Backend/**/CurveModels（扩展/射影，表示不唯一）
 Point Ed25519                 Math/Edwards/Curve
-  ↓  商掉 8-挠                Contracts/（第 5 节）
+  ↓  商掉 8-挠                （未来工作：Contracts 商群锚定层，todo.md）
 Ristretto
 ```
 
-基线实验里整座塔的陈述给定、agent 填证明。预算曲线实验里（第 9 节）被删的层由 agent 重建——**此时以下义务生效，由闸门机械强制**：
+基线实验里整座塔的陈述给定、agent 填证明。预算曲线实验里（第 8 节）被删的层由 agent 重建——**此时以下义务生效，由闸门机械强制**：
 
 ```lean
 -- agent 合成
@@ -228,11 +186,11 @@ theorem mul_refines (a b : FieldElement51) (ha : Bounded a) (hb : Bounded b) :
 
 ### 中间锚点
 
-顶层锚到商群之后塔比 Verus 版更高，agent 重建整段塔时会在中间迷路（对应原论文的 `NEEDS_DECOMP` 路径）。预算曲线实验删层时预先固定 1–2 个中间锚点（例如射影坐标层单独钉下来），锚点本身也是预算的一部分、要记账。
+塔比 Verus 版更高（顶端是数学模型而非规定式公式），agent 重建整段塔时会在中间迷路（对应原论文的 `NEEDS_DECOMP` 路径）。预算曲线实验删层时预先固定 1–2 个中间锚点（例如射影坐标层单独钉下来），锚点本身也是预算的一部分、要记账。
 
 ---
 
-## 7. 闸门套件：8 → 3 + 3
+## 6. 闸门套件：8 → 3 + 3
 
 Verus 需要八道闸门，根本原因是它的信任基**弥散且语法性**：规约在 `spec fn`、契约在 requires/ensures、公理是带 `admit()` 的 `axiom_*`、旁路有 `assume()` 和 `external_body`。只能靠 grep。
 
@@ -250,8 +208,8 @@ Lean 里 `collectAxioms` **穷举**依赖闭包。黑名单变白名单，白名
 
 | 闸门 | 目标 | 备注 |
 |---|---|---|
-| **N1 非空洞性** | 第 10 节四条义务 | **kernel 完全看不见这一类**。已有模式清单：Lean-GAP（arXiv 2606.02588）的 C1–C11，其中 C6 最阴险——`def ... : Prop := True`，每条提到它的定理平凡满足，失败藏在定理下面一层 |
-| **N2 满射义务** | 第 6 节 | 塔的每一层，agent 合成时生效 |
+| **N1 非空洞性** | 第 9 节四条义务 | **kernel 完全看不见这一类**。已有模式清单：Lean-GAP（arXiv 2606.02588）的 C1–C11，其中 C6 最阴险——`def ... : Prop := True`，每条提到它的定理平凡满足，失败藏在定理下面一层 |
+| **N2 满射义务** | 第 5 节 | 塔的每一层，agent 合成时生效 |
 | **N3 kernel 代价预算** | `decide` 爆炸；elaborate 通过但 kernel 检查跑 40 分钟 | Verus 有 `rlimit`，Lean 这块是新的 |
 
 ### 降级/失效的
@@ -262,7 +220,7 @@ Lean 里 `collectAxioms` **穷举**依赖闭包。黑名单变白名单，白名
 
 ---
 
-## 8. 阶段 2：全量证明恢复
+## 7. 阶段 1：全量证明恢复
 
 全部待填的 **347 个含-sorry 声明**（Specs/ 树 318 + Aux/TypesAux 29，声明级实测；Math/FunsExternal/依赖的假设不在内），同一套 agent + 闸门跑完，得到**除冻结假设外全树闭合、`collectAxioms` 落在白名单内的参照树**。
 
@@ -270,11 +228,11 @@ Lean 里 `collectAxioms` **穷举**依赖闭包。黑名单变白名单，白名
 
 1. 本身即成果：Lean 侧的"附录 C proof-only 实验"，与原论文 1,430/1,433、$748、中位 1.1 分钟/条 做描述性对照（同一 crate、不同验证器、不同信任结构）
 2. **预算曲线的前提**：删除-重合成实验需要一棵已知可全部证通的树做对照，否则"合成失败"无法归因（是 spec 合成不出来，还是证明本来就证不动？）
-3. token 分桶记账（第 12 节）在这一步积累第一批分布数据
+3. token 分桶记账（第 11 节）在这一步积累第一批分布数据
 
 ---
 
-## 9. 阶段 3：规约预算曲线 ← **核心 AI 实验**
+## 8. 阶段 2：规约预算曲线 ← **核心 AI 实验**
 
 原论文把"人写多少规约"固定在**"全部顶层契约"**这一个点上。没人扫过这条曲线。
 
@@ -290,8 +248,8 @@ Lean 里 `collectAxioms` **穷举**依赖闭包。黑名单变白名单，白名
 每个点测三件事：
 
 1. 还能不能通过全 crate 验证（`collectAxioms` 干净）
-2. 被合成的顶层契约里，空洞率 / 过弱率（第 10 节四条义务 + 第 11 节强度指标量化；被删原文即逐条 ground truth）
-3. token 和成本（第 12 节分桶）
+2. 被合成的顶层契约里，空洞率 / 过弱率（第 9 节四条义务 + 第 10 节强度指标量化；被删原文即逐条 ground truth）
+3. token 和成本（第 11 节分桶）
 
 ### 可测的方向性假设
 
@@ -309,7 +267,7 @@ Lean 里 `collectAxioms` **穷举**依赖闭包。黑名单变白名单，白名
 
 ---
 
-## 10. 合成顶层契约的四条义务
+## 9. 合成顶层契约的四条义务
 
 一旦顶层的一部分（记为 `B`）交给 agent 合成，**`B` 就是顶，它上面没有任何东西在拉它**。第 3 节的夹紧论证在 `B` 这一层完全失效。
 
@@ -361,7 +319,9 @@ B x y := (y = <把整个压缩算法用域运算逐步写出来>)
 - `C` 只有"字节"和"域元素" → 抄算法是最自然的写法
 - `C` 里有 `Ristretto` 商群和 Mathlib 的 `≃*` → **没法用群同构的语言把肢运算抄一遍**
 
-⟹ **想省人写的规约，前提是留下的那部分足够数学。** 这个约束是自己掉出来的——也是第 5 节 Contracts 层必须先于预算曲线存在的原因。
+⟹ **想省人写的规约，前提是留下的那部分足够数学。** 这个约束是自己掉出来的。
+
+**测量阶段这个洞不致命**：被删原文是逐条 ground truth，抄写规约与原文一比对（`synth_eq_human`，第 10 节）立刻现形。注意变异测试抓不到它——转写抓住全部变异，反而显得最强，只能靠比对。**部署阶段**（无参考原文可比）要机械封死它，需要商群/同构词汇的 Contracts 锚定层——已移出本计划，见 todo.md。
 
 ### 更划算的替代：压缩 B，而不是删掉 B
 
@@ -377,7 +337,7 @@ strength 不损失，节省更大：**写 `A` + 一行关系 `R`**，让 agent �
 
 ---
 
-## 11. 强度测量（不用 LLM-as-judge）
+## 10. 强度测量（不用 LLM-as-judge）
 
 ### ⚠ PBT 在顶层几乎无用（方向翻转了）
 
@@ -411,7 +371,7 @@ strength 不损失，节省更大：**写 `A` + 一行关系 `R`**，让 agent �
 
 **关键好处：不需要任何人给 `B` 背书。** 不问"`B` 说得对不对"，只问"`B` 有没有约束力"，后者纯机械。
 
-> 💡 PBT 和变异测试打**同一套可执行基础设施**（可计算镜像 + 连接引理）。见第 13 节 noncomputable 那条。
+> 💡 PBT 和变异测试打**同一套可执行基础设施**（可计算镜像 + 连接引理）。见第 12 节 noncomputable 那条。
 
 ### 替代 2：证等价（把"判断"升级成"定理"）
 
@@ -460,7 +420,7 @@ theorem synth_eq_human : B_synth ↔ B_human
 
 ---
 
-## 12. Token 账本与 ablation
+## 11. Token 账本与 ablation
 
 ### ⚠ 方法论红线
 
@@ -492,7 +452,7 @@ theorem synth_eq_human : B_synth ↔ B_human
 节省 = P(陈述为假) × ( E[在假陈述上的证明尝试成本] − E[证伪成本] )
 ```
 
-`E[证伪成本] ≈ 0`（毫秒级，零 token）。baseline 见第 14 节 `repair_002_axioms` 和 `corefloor_006`。
+`E[证伪成本] ≈ 0`（毫秒级，零 token）。baseline 见第 13 节 `repair_002_axioms` 和 `corefloor_006`。
 
 ⚠ **差异化**：arXiv 2606.04883 已做"Lean 里别把算力浪费在不可行/误形式化陈述上"，但用的是**轻量 router 预测**。我们的差异：
 - router 是猜，**PBT 是证**（单向可靠）
@@ -537,15 +497,15 @@ Lean 的 kernel 检查确定性，这一整类非产出轮次消失。
 
 ---
 
-## 13. 已知坑
+## 12. 已知坑
 
 | 坑 | 说明 |
 |---|---|
 | **抽取进信任基（相对 Verus 的真实退步）** | 原论文验的是**真正 ship 的那份 Rust**；我们验的是它的 Aeneas 翻译，翻译的忠实性**没被证**，另有 21 条外部 `axiom` 兜底 opaque 函数。ref [25] 自己就把 Lean 工具链漂移和抽取限制列为主要工程缺口。**明写在 threats to validity 里，不要掩盖。** 缓解手段：差分测试（AWS Cedar 的做法） |
-| **Mathlib 的 EC 支持是 Weierstrass 中心的** | 任意特征下的群律有形式化；Edwards 群律那条初等路线是 Hales–Raya 在 **Isabelle/HOL** 里做的，Lean 侧没有现成物——本项目不走这条路，结合律留在假设清单里（第 4 节）；**Ristretto 商群 + 基数证书同样没有现成物**——阶段 1 只写陈述、以假设入信任基，真要证按人月算 |
+| **Mathlib 的 EC 支持是 Weierstrass 中心的** | 任意特征下的群律有形式化；Edwards 群律那条初等路线是 Hales–Raya 在 **Isabelle/HOL** 里做的，Lean 侧没有现成物——本项目不走这条路，结合律留在假设清单里（第 4 节）；**Ristretto 商群 + 基数证书同样没有现成物**——属于移出本计划的 Contracts 锚定层（todo.md），真要证按人月算 |
 | **noncomputable 挡住塔顶的 PBT** | 商群、`Fintype.card` 不可 `#eval`。**但这个张力自己解开了**：需要 gate 的不是塔顶（人写的、冻结的），是 agent 合成的中间层，而中间层（`FieldElement51 → ZMod p`）恰好全可计算。⟹ 需要"可计算镜像 + 连接引理"的强制分层（见下） |
 | **git-recovery 失效** | Mathlib 是答案库，Hales–Raya 证明公开发表，且本仓库的上游 repo 里就有全部原始证明。隔离论证要重新设计：网络封印 + 上游 repo 不进容器，并如实报告这层边界 |
-| **PBT 抓不到"弱"** | 见第 11 节。顶层用变异测试，不要指望 PBT |
+| **PBT 抓不到"弱"** | 见第 10 节。顶层用变异测试，不要指望 PBT |
 | **陈旧元数据** | `sorries_summary.json` / README 的 1062 是三倍重复计数（备份目录已删）。所有报告数字以 `.verilib/sorry_inventory.json`（声明级，由 build warning 重新生成）为准 |
 | **依赖包自带 sorry** | Aeneas 的 Lean 支持库有 17 条含 sorry 的声明（`Aeneas/Std`），随 lake-manifest 钉死、随白名单入信任基。上游修掉之前，这层要写进 threats to validity |
 
@@ -566,7 +526,7 @@ Lean 的 kernel 检查确定性，这一整类非产出轮次消失。
 
 ---
 
-## 14. 基线数字（校准与对照用）
+## 13. 基线数字（校准与对照用）
 
 全部来自原论文，用于成本模型校准和描述性对照。**不要当因果对比。**
 
@@ -582,7 +542,7 @@ Lean 的 kernel 检查确定性，这一整类非产出轮次消失。
 - baseline（Claude Code 裸跑）：7.42 h，**$1,117.17**，声称完成但残留 5 编译错误 + 2 验证错误；日志记录 5 次抓取 + **38 次 history probe**（全被网络封印挡下）
 - agent 196 proof fn vs 人类 235；证明行数 48.5%；108 个无人类对应物，147 个人类的缺席
 
-### 全 crate proof-only（附录 C）—— 阶段 2 的直接参照
+### 全 crate proof-only（附录 C）—— 阶段 1 的直接参照
 
 - no-hints：opus-4-8，1,433 条义务关掉 **1,430**，**$748.02**；残留 3 条在 deep Ristretto/Lizard curve-algebra core（**人类参考也没关**，留 8 条开放含这 3 条）
 - with-hints：3 次跑 $730 / 154 轮，同样 3 条残留
@@ -601,7 +561,7 @@ Lean 的 kernel 检查确定性，这一整类非产出轮次消失。
 - 反例（⚠ PDF 上标丢失，实际值）：`carry8 = 2^53 + 13`；前提 `l4 < 2^52` → 换成调用点事实 `l4 = 2^44`；Ristretto 那条是 `x = 0, y = p + 1`
 - 11 条伪造公理分布：**4 条 Montgomery ladder**（差分加倍、转 Edwards、基点在曲线上、Elligator）、1 条 27 步标量求逆链、**6 条 Ristretto**（compress / decode / Elligator / batch）
 
-### 💡 那个分布不是随机的 —— 这是第 9 节假设的 pilot 证据
+### 💡 那个分布不是随机的 —— 这是第 8 节假设的 pilot 证据
 
 那些位置**恰好是 dalek 里唯一需要商结构才能说清楚的地方**：Ristretto 是对 8-挠子群取商；Montgomery 的 x-only 差分加法活在 Kummer line 上（对 ±1 取商）。
 
@@ -620,12 +580,12 @@ opus-4.8，**一轮**（15 分钟，$4.14），13 verified items，无错误。�
 
 ---
 
-## 15. 相关工作与差异化
+## 14. 相关工作与差异化
 
 | 工作 | 是什么 | 我们的差异 |
 |---|---|---|
 | **ref [25]** arXiv 2605.30106（Runtime Verification）| Charon/Aeneas 或 hax → Lean 4；ArkLib/CompPoly 提供**人写**规约；Aristotle/Aleph 关证明；Plonky3 FRI + RISC Zero Merkle。CAV 2026 AIMACS 接收 | **他们的规约是人写的**，所以摘要那句 *"Every proof is checked by the Lean kernel, so AI output cannot compromise soundness"* 在他们设定下成立。一旦 agent 也写规约，这句话不成立——**kernel 保证证明，不保证命题**。这就是我们的题眼 |
-| **arXiv 2606.04883** | Optimizing the Cost-Quality Tradeoff of Agentic Theorem Provers in Lean。router 避免在不可行/**误形式化**陈述上浪费算力 | 见第 12 节 ①：router 是猜 vs PBT 是证；benchmark 陈述 vs agent 自写陈述；纯省钱 vs 同时是信任闸门 |
+| **arXiv 2606.04883** | Optimizing the Cost-Quality Tradeoff of Agentic Theorem Provers in Lean。router 避免在不可行/**误形式化**陈述上浪费算力 | 见第 11 节 ①：router 是猜 vs PBT 是证；benchmark 陈述 vs agent 自写陈述；纯省钱 vs 同时是信任闸门 |
 | **Lean-GAP** arXiv 2606.02588 | LLM 生成 Lean 陈述的 C1–C11 病态模式清单（含 C6 `def ... : Prop := True`） | 他们做的是数学 benchmark 上的**语法模式匹配 / LLM 判官**；我们做**生产密码库上的机械闸门**（原论文已证伪"用提示词层检查"这条路） |
 | **Verus-SpecGym** arXiv 2605.26457 | 扩展 Verus `exec_spec` 把规约编译成可执行 Rust 检查（原生只支持原始类型 + 单变量具体区间量化；他们扩到 Seq/Set/Multiset/Map） | 证明 Verus 侧 PBT **也可行**——所以别声称"只有 Lean 能做 PBT"。差的是工程量不是能力 |
 | **LemmaNet** arXiv 2603.22114 | agentic program verification 的引理发现（Rocq），报告 per-VC 成本 | 成本报告方法可借鉴 |
@@ -636,7 +596,7 @@ AlphaProof / Seed-Prover / AxiomProver / Aristotle / Leanstral 等在竞赛级�
 
 ---
 
-## 16. 仓库结构
+## 15. 仓库结构
 
 冻结区（G1/G2/G3 保护）与工作区：
 
@@ -654,15 +614,13 @@ auto_verify_dalek/
 │   │   ├── Edwards/    (Curve · EightTorsion · Basepoint · Representation)
 │   │   ├── Montgomery/ (Curve · Representation)
 │   │   └── Ristretto/  (Representation)
-│   ├── Contracts/                   # Layer 1 锚定层（阶段 1 新写）：商群 + card/cyclic 证书
-│   │                                #   + 双射/模作用契约 + 蕴含 Specs/ 树的证明
-│   ├── Mirrors/                     # 可计算镜像 + 连接引理（强制义务，第 13 节）
+│   ├── Mirrors/                     # 可计算镜像 + 连接引理（强制义务，第 12 节）
 │   ├── Specs/                       # Layer 2：263 条 spec（94 顶层），陈述冻结，sorry 待填
 │   └── Aux.lean / TypesAux.lean     # 辅助引理，sorry 待填
 ├── Utils/                           # 上游状态工具（listfuns, syncstatus）
 ├── .verilib/
 │   ├── probes/                      # 263 条 spec 的机器可读清单
-│   └── top_level_specs.{md,json}    # 94 条顶层 spec 编目 = 第 9 节的删除清单
+│   └── top_level_specs.{md,json}    # 94 条顶层 spec 编目 = 第 8 节的删除清单
 ├── harness/                         # G3 冻结
 │   ├── phase0_audit.lean            #   环境审计（已建）：包内公理枚举 · Math 全声明
 │   │                                #   collectAxioms · 假设集识别 · 标签检查
@@ -674,8 +632,8 @@ auto_verify_dalek/
 │   ├── context/                     #   typed hole → 算出的最小上下文
 │   ├── falsify/  mutate/  ledger/   #   PBT · 变异测试 · token 分桶记账
 └── experiments/
-    ├── phase2_full_recovery/        #   阶段 2：347 条待填声明
-    ├── spec_budget_curve/           #   阶段 3：删 N 份顶层 spec 重合成
+    ├── phase1_full_recovery/        #   阶段 1：347 条待填声明
+    ├── spec_budget_curve/           #   阶段 2：删 N 份顶层 spec 重合成
     └── ablations/                   #   闸门 on/off × 重复试验
 ```
 
@@ -684,9 +642,8 @@ auto_verify_dalek/
 ## 附：优先级
 
 0. **阶段 0（信任基固化）—— 已完成（2026-08-10）**：Math 工作已提交（`19318ad`）、`lake build` 全绿（3503 jobs）、清单重生成（`.verilib/sorry_inventory.json`）、假设/公理/native_decide/文件哈希全部冻结（`harness/frozen/`）、G2 闸门已建且全绿
-1. **token 分桶记账 + G2 接进驱动循环** —— 阶段 2 开跑前必须就位
+1. **token 分桶记账 + G2 接进驱动循环** —— 阶段 1 开跑前必须就位
 2. **算出的最小上下文** —— 最强的 AI 侧贡献
-3. **阶段 2（全量证明恢复，347 条声明）** —— 产出预算曲线所需的参照树
-4. **阶段 1（Contracts 锚定层，只写陈述，假设入信任基）** —— 与 3 并行推进
-5. **阶段 3（规约预算曲线）** —— 需要 3 的参照树；Contracts 层就位后加测"数学锚定"刻度
-6. **抽取忠实性（Aeneas 差分测试）** —— 最后做，工程最重且信任故事最弱
+3. **阶段 1（全量证明恢复，347 条声明）** —— 产出预算曲线所需的参照树
+4. **阶段 2（规约预算曲线）** —— 需要 3 的参照树；被删原文即逐条 ground truth
+5. **抽取忠实性（Aeneas 差分测试）** —— 最后做，工程最重且信任故事最弱

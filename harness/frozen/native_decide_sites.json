@@ -1,0 +1,15 @@
+{
+  "comment": "Frozen native_decide sites in Math (compiler-trusted computations: basepoint order, 8-torsion). These pull Lean.ofReduceBool and Lean.trustCompiler into the trust base. Frozen, not to be extended.",
+  "trusted_axioms": [
+    "Lean.ofReduceBool",
+    "Lean.trustCompiler"
+  ],
+  "declarations": [
+    "Edwards.basepoint_order_L",
+    "Edwards.eightTorsion_eq_nsmul",
+    "Edwards.eight_nsmul_gen_eq_zero",
+    "Edwards.four_nsmul_basepoint_ne_zero",
+    "Edwards.four_nsmul_gen_ne_zero",
+    "Edwards.nsmul_eightTorsionGen_eq"
+  ]
+}

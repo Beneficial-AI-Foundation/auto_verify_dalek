@@ -1,0 +1,27 @@
+{
+  "comment": "Frozen external axioms (Aeneas opaque Rust functions). G2 whitelist component. Enumerated from the environment: axiom declarations in Curve25519Dalek.FunsExternal / TypesExternal.",
+  "count": 21,
+  "axioms": [
+    "curve25519_dalek.Array.Insts.ZeroizeZeroize.zeroize",
+    "curve25519_dalek.Slice.Insts.SubtleConstantTimeEq.ct_eq",
+    "curve25519_dalek.Slice.Insts.SubtleConstantTimeEq.ct_eq_spec",
+    "curve25519_dalek.alloc.vec.Vec.Insts.ZeroizeZeroize.zeroize",
+    "curve25519_dalek.backend.serial.curve_models.AffineNielsPoint.Insts.CoreCmpPartialEqAffineNielsPoint.ne",
+    "curve25519_dalek.backend.serial.u64.field.FieldElement51.Insts.CoreCmpEq.assert_receiver_is_total_eq",
+    "curve25519_dalek.backend.serial.u64.field.FieldElement51.Insts.CoreCmpPartialEqFieldElement51.ne",
+    "curve25519_dalek.core.fmt.Arguments",
+    "curve25519_dalek.core.ops.range.RangeFull.Insts.CoreSliceIndexSliceIndexSliceSlice.get_unchecked",
+    "curve25519_dalek.core.ops.range.RangeFull.Insts.CoreSliceIndexSliceIndexSliceSlice.get_unchecked_mut",
+    "curve25519_dalek.edwards.CompressedEdwardsY.Insts.CoreCmpPartialEqCompressedEdwardsY.ne",
+    "curve25519_dalek.edwards.EdwardsPoint.Insts.CoreCmpEq.assert_receiver_is_total_eq",
+    "curve25519_dalek.edwards.EdwardsPoint.Insts.CoreCmpPartialEqEdwardsPoint.ne",
+    "curve25519_dalek.edwards.affine.AffinePoint.Insts.CoreCmpEq.assert_receiver_is_total_eq",
+    "curve25519_dalek.edwards.affine.AffinePoint.Insts.CoreCmpPartialEqAffinePoint.ne",
+    "curve25519_dalek.montgomery.MontgomeryPoint.Insts.CoreCmpPartialEqMontgomeryPoint.ne",
+    "curve25519_dalek.ristretto.CompressedRistretto.Insts.CoreCmpPartialEqCompressedRistretto.ne",
+    "curve25519_dalek.ristretto.RistrettoPoint.Insts.CoreCmpEq.assert_receiver_is_total_eq",
+    "curve25519_dalek.ristretto.RistrettoPoint.Insts.CoreCmpPartialEqRistrettoPoint.ne",
+    "curve25519_dalek.scalar.Scalar.Insts.CoreCmpEq.assert_receiver_is_total_eq",
+    "curve25519_dalek.scalar.Scalar.Insts.CoreCmpPartialEqScalar.ne"
+  ]
+}

@@ -1,0 +1,84 @@
+{
+  "comment": "Frozen mathematical assumptions (plan.md §4). Math layer is assumed, not proven. 11 kernel-level declarations = 10 source sorries (elligator def yields two proof obligations). G2 requires: the set of Math declarations whose own body mentions sorryAx equals exactly this list, with identical statement hashes.",
+  "generated": "2026-08-10",
+  "count": 11,
+  "assumptions": [
+    {
+      "name": "curve25519_dalek.math.inv_sqrt_checked_snd",
+      "module": "Curve25519Dalek.Math.Basic",
+      "source": "Curve25519Dalek/Math/Basic.lean:543",
+      "statement": "∀ (u : ZMod p), u ≠ 0 → (curve25519_dalek.math.inv_sqrt_checked u).2 = (curve25519_dalek.math.sqrt_checked u).2",
+      "statement_sha256": "5d5daa9184ea2eb490ff33423e42579ce5d6e56ebfa3f2abcf10a9a1050cb4df"
+    },
+    {
+      "name": "curve25519_dalek.math.inv_sqrt_checked_spec",
+      "module": "Curve25519Dalek.Math.Basic",
+      "source": "Curve25519Dalek/Math/Basic.lean:521",
+      "statement": "∀ (arg : ZMod p) {I : ZMod p} {was_square : Bool},  curve25519_dalek.math.inv_sqrt_checked arg = (I, was_square) → was_square = true → arg ≠ 0 → I ^ 2 * arg = 1",
+      "statement_sha256": "3bf0f339a0c81ce57f63f4e0455b8f777e932413572181779659b885b56f9372"
+    },
+    {
+      "name": "curve25519_dalek.math.inv_sqrt_checked_sq_mul",
+      "module": "Curve25519Dalek.Math.Basic",
+      "source": "Curve25519Dalek/Math/Basic.lean:534",
+      "statement": "∀ (u : ZMod p), IsSquare u → u ≠ 0 → (curve25519_dalek.math.inv_sqrt_checked u).1 ^ 2 * u = 1",
+      "statement_sha256": "20c54766ced862f584352083fcc69b3506a3169b763f1bebf41c755a205041df"
+    },
+    {
+      "name": "curve25519_dalek.math.sqrt_checked_iff_isSquare",
+      "module": "Curve25519Dalek.Math.Basic",
+      "source": "Curve25519Dalek/Math/Basic.lean:501",
+      "statement": "∀ (u : ZMod p) {r : ZMod p} {b : Bool}, curve25519_dalek.math.sqrt_checked u = (r, b) → (b = true ↔ IsSquare u)",
+      "statement_sha256": "0a5e29b6a6e31c4682d9fa395a32e7c40f8d78715f0a5af4576980ea3b0f459a"
+    },
+    {
+      "name": "curve25519_dalek.math.sqrt_checked_spec",
+      "module": "Curve25519Dalek.Math.Basic",
+      "source": "Curve25519Dalek/Math/Basic.lean:495",
+      "statement": "∀ (u : ZMod p) {r : ZMod p} {b : Bool}, curve25519_dalek.math.sqrt_checked u = (r, b) → b = true → r ^ 2 = u",
+      "statement_sha256": "8b6e09edae4ec084720c0864cbd5fa8a46212f9db318620fea77d4013dc6d2fe"
+    },
+    {
+      "name": "Edwards.add_assoc_Ed25519",
+      "module": "Curve25519Dalek.Math.Edwards.Curve",
+      "source": "Curve25519Dalek/Math/Edwards/Curve.lean:288",
+      "statement": "∀ (p q r : Edwards.Point Edwards.Ed25519), p + q + r = p + (q + r)",
+      "statement_sha256": "a7f4bfaad84a0b7a9f9e0b8f319bb92f7dd817f217ff4dc40d6efa6235be40c8"
+    },
+    {
+      "name": "Edwards.complete_addition_denominators_ne_zero",
+      "module": "Curve25519Dalek.Math.Edwards.Curve",
+      "source": "Curve25519Dalek/Math/Edwards/Curve.lean:96",
+      "statement": "∀ {F : Type} [inst : Field F] [NeZero 2] (C : Edwards.EdwardsCurve F),  IsSquare C.a →   ¬IsSquare C.d →    ∀ (p1 p2 : Edwards.Point C),     have lam := C.d * p1.x * p2.x * p1.y * p2.y;     1 + lam ≠ 0 ∧ 1 - lam ≠ 0",
+      "statement_sha256": "442e3554ab1442f9401b1ca48adb68fb211f99948ae77d1ede27f9be4277d0c0"
+    },
+    {
+      "name": "curve25519_dalek.math.decompress_edwards_pure._proof_6",
+      "module": "Curve25519Dalek.Math.Edwards.Representation",
+      "source": "Curve25519Dalek/Math/Edwards/Representation.lean:48",
+      "statement": "∀ (bytes : Aeneas.Std.Array Aeneas.Std.U8 32#usize)  (h : IsSquare ((↑(U8x32_as_Nat bytes % 2 ^ 255) ^ 2 - 1) * (↑d * ↑(U8x32_as_Nat bytes % 2 ^ 255) ^ 2 + 1)⁻¹)),  Edwards.Ed25519.a *     (if        (curve25519_dalek.math.is_negative (curve25519_dalek.math.abs_edwards (Classical.choose h)) !=          (U8x32_as_Nat bytes / 2 ^ 255 == 1)) =         true then       -curve25519_dalek.math.abs_edwards (Classical.choose h)      else curve25519_dalek.math.abs_edwards (Classical.choose h)) ^      2 +    ↑(U8x32_as_Nat bytes % 2 ^ 255) ^ 2 =   1 +    Edwards.Ed25519.d *      (if         (curve25519_dalek.math.is_negative (curve25519_dalek.math.abs_edwards (Classical.choose h)) !=           (U8x32_as_Nat bytes / 2 ^ 255 == 1)) =          true then        -curve25519_dalek.math.abs_edwards (Classical.choose h)       else curve25519_dalek.math.abs_edwards (Classical.choose h)) ^       2 *     ↑(U8x32_as_Nat bytes % 2 ^ 255) ^ 2",
+      "statement_sha256": "eb5a2d2510835e8821b9d820d85bb3796800535e2bb9aa3761e3c620c1eeeb2b"
+    },
+    {
+      "name": "curve25519_dalek.math.elligator_ristretto_flavor_pure._proof_1",
+      "module": "Curve25519Dalek.Math.Ristretto.Representation",
+      "source": "Curve25519Dalek/Math/Ristretto/Representation.lean:1150",
+      "statement": "∀ (r0 : ZMod p),  Edwards.Ed25519.a * curve25519_dalek.math.elligator_ristretto_flavor_x r0 ^ 2 +    curve25519_dalek.math.elligator_ristretto_flavor_y r0 ^ 2 =   1 +    Edwards.Ed25519.d * curve25519_dalek.math.elligator_ristretto_flavor_x r0 ^ 2 *     curve25519_dalek.math.elligator_ristretto_flavor_y r0 ^ 2",
+      "statement_sha256": "939ffe0ba8628e541023f21f445fbeee964647b2175e735ed3832920493fbd54"
+    },
+    {
+      "name": "curve25519_dalek.math.elligator_ristretto_flavor_pure._proof_2",
+      "module": "Curve25519Dalek.Math.Ristretto.Representation",
+      "source": "Curve25519Dalek/Math/Ristretto/Representation.lean:1150",
+      "statement": "∀ (r0 : ZMod p),  curve25519_dalek.ristretto.IsEven   { x := curve25519_dalek.math.elligator_ristretto_flavor_x r0,    y := curve25519_dalek.math.elligator_ristretto_flavor_y r0, on_curve := ⋯ }",
+      "statement_sha256": "f3f225d6190e6152003c35a089f9096a7c45b2378919ad06b6d3239db676984d"
+    },
+    {
+      "name": "curve25519_dalek.ristretto.IsEven_iff_in_doubling_image_right",
+      "module": "Curve25519Dalek.Math.Ristretto.Representation",
+      "source": "Curve25519Dalek/Math/Ristretto/Representation.lean:416",
+      "statement": "∀ (P : Edwards.Point Edwards.Ed25519), curve25519_dalek.ristretto.IsEven P → ∃ Q, P = Q + Q",
+      "statement_sha256": "c9fe4c6cc2777dbcc23ee3622719e1e6a866ffb33d09920adfc06f303bbf5738"
+    }
+  ]
+}

@@ -45,7 +45,11 @@ set_option exponentiation.threshold 260 in
 /-- Cancel `R` from both sides of a congruence mod `L`.
     Used in Montgomery-form scalar specs (Scalar.reduce, Scalar52.mul). -/
 lemma cancelR {a b : ℕ} (h : a * R ≡ b * R [MOD L]) : a ≡ b [MOD L] := by
-  sorry
+  have hcoprime : Nat.Coprime R L := by
+    unfold R L
+    exact Nat.Coprime.pow_left 260 (by norm_num [Nat.Coprime])
+  exact Nat.ModEq.cancel_right_of_coprime hcoprime.symm h
+
 /-! ## Auxiliary definitions for interpreting arrays as natural numbers -/
 
 /-- Interpret a Field51 (five u64 limbs used to represent 51 bits each) as a natural number -/
@@ -79,7 +83,8 @@ def U8x64_as_Nat (bytes : Array U8 64#usize) : Nat :=
 /-! ## Basic properties of the defined quantities -/
 
 theorem L_lt : L < 2 ^ 260 := by
-  sorry
+  unfold L; grind
+
 /-! ### Scalar52_as_Nat lemmas -/
 
 attribute [-simp] Int.reducePow Nat.reducePow
@@ -87,11 +92,17 @@ attribute [-simp] Int.reducePow Nat.reducePow
 /-- If all limbs are < 2^52, then Scalar52_as_Nat < 2^260 -/
 theorem Scalar52_as_Nat_bounded (s : Aeneas.Std.Array U64 5#usize) (hs : ∀ i < 5, s[i]!.val < 2 ^ 52) :
     Scalar52_as_Nat s < 2 ^ 260 := by
-  sorry
+  simp only [Scalar52_as_Nat, Finset.sum_range_succ, Finset.range_zero, Finset.sum_empty, zero_add]
+  have h0 := hs 0 (by omega); have h1 := hs 1 (by omega); have h2 := hs 2 (by omega)
+  have h3 := hs 3 (by omega); have h4 := hs 4 (by omega)
+  omega
+
 /-- A single limb's weighted contribution is at most Scalar52_as_Nat -/
 theorem Scalar52_limb_le_nat (s : Aeneas.Std.Array U64 5#usize) (i : Nat) (hi : i < 5) :
     2 ^ (52 * i) * s[i]!.val ≤ Scalar52_as_Nat s := by
-  sorry
+  simp only [Scalar52_as_Nat, Finset.sum_range_succ]
+  interval_cases i <;> omega
+
 /-! ## Primality and CurveField -/
 
 instance : Fact (Nat.Prime p) := ⟨PrimeCert.prime_25519''⟩
@@ -103,7 +114,9 @@ namespace Edwards
 abbrev CurveField : Type := ZMod p
 
 /-- Helper lemma for modular arithmetic lifting -/
-theorem lift_mod_eq (a b : ℕ) (h : a % p = b % p) : (a : CurveField) = (b : CurveField) := sorry
+theorem lift_mod_eq (a b : ℕ) (h : a % p = b % p) : (a : CurveField) = (b : CurveField) :=
+  (ZMod.natCast_eq_natCast_iff a b p).mpr h
+
 end Edwards
 
 /-! ## Field Element Conversions -/
@@ -155,57 +168,131 @@ open Edwards ZMod
 
 /-- Nat.ModEq against zero as a remainder equality. -/
 theorem modEq_zero_iff (a n : ℕ) : a ≡ 0 [MOD n] ↔ a % n = 0 := by
-  sorry
+  simp [Nat.ModEq]
+
 /-- Nat.ModEq against one modulo the field prime `p`. -/
 theorem modEq_one_iff (a : ℕ) : a ≡ 1 [MOD p] ↔ a % p = 1 := by
-  sorry
+  simp only [Nat.ModEq]
+  have : 1 % p = 1 := by
+    unfold p
+    decide
+  rw [this]
+
 /-- Rewrite `a^n * a` into the more convenient successor exponent form. -/
 theorem pow_add_one (a n : ℕ) : a ^ n * a = a ^ (n + 1) := by
-  sorry
+  grind
+
 /-- Squaring preserves equality modulo `p` after moving one term across zero. -/
 theorem nat_sq_of_add_modeq_zero {a b p : ℕ}
     (h : a + b ≡ 0 [MOD p]) :
     a ^ 2 ≡ b ^ 2 [MOD p] := by
-  sorry
+  have h1 := h.mul_left a
+  have h2 := h.mul_right b
+  simp only [zero_mul] at h2
+  have h1' : a * a + a * b ≡ 0 [MOD p] := by
+    simpa only [Nat.mul_add, mul_zero] using h1
+  have h2' : a * b + b * b ≡ 0 [MOD p] := by
+    simpa only [Nat.add_mul] using h2
+  have hsum : a * b + a * a ≡ a * b + b * b [MOD p] := by
+    rw [add_comm]
+    apply Nat.ModEq.symm at h2'
+    exact Nat.ModEq.trans h1' h2'
+  apply Nat.ModEq.add_left_cancel' at hsum
+  simpa only [pow_two] using hsum
+
 /-- Squaring after reduction modulo `p` agrees with squaring first modulo `p`. -/
 theorem mod_sq_mod (a p : ℕ) : (a % p) ^ 2 ≡ a ^ 2 [MOD p] := by
-  sorry
+  exact (Nat.mod_modEq a p).pow 2
+
 /-- Multiplication after reduction modulo `p` agrees with multiplication first modulo `p`. -/
 theorem mod_mul_mod (a b : ℕ) : (a % p) * (b % p) ≡ a * b [MOD p] := by
-  sorry
+  exact ((Nat.mod_modEq a p).mul_right (b % p)).trans ((Nat.mod_modEq b p).mul_left a)
+
 /-- Square-then-multiply form of `mod_sq_mod`. -/
 theorem mod_sq_mod_mul (a b p : ℕ) : (a % p) ^ 2 * b ≡ a ^ 2 * b [MOD p] := by
-  sorry
+  exact (Nat.ModEq.mul_right b (mod_sq_mod a p))
+
 /-- Equality form of `mod_sq_mod_mul`. -/
 theorem mod_sq_mod_mul_eq (a b p : ℕ) : ((a % p) ^ 2 * b) % p = (a ^ 2 * b) % p := by
-  sorry
+  rw [← Nat.ModEq]
+  exact mod_sq_mod_mul a b p
+
 /-- Equality form of `mod_sq_mod`. -/
 theorem mod_sq_mod_eq (a p : ℕ) : ((a % p) ^ 2) % p = (a ^ 2) % p := by
-  sorry
+  exact (Nat.mod_modEq a p).pow 2
+
 /-- Alias for `mod_sq_mod_eq`. -/
-theorem sq_mod_eq_mod_sq (a p : ℕ) : ((a % p) ^ 2) % p = (a ^ 2) % p := sorry
+theorem sq_mod_eq_mod_sq (a p : ℕ) : ((a % p) ^ 2) % p = (a ^ 2) % p :=
+  mod_sq_mod_eq a p
+
 /-- Zero divisors do not exist modulo a prime. -/
 theorem mul_zero_eq_or {a b p : ℕ} {hp : p.Prime}
     (hab : a * b ≡ 0 [MOD p]) :
     a ≡ 0 [MOD p] ∨ b ≡ 0 [MOD p] := by
-  sorry
+  rw [Nat.ModEq] at hab
+  have h_dvd : p ∣ a * b := Nat.dvd_of_mod_eq_zero hab
+  obtain ha | hb := hp.dvd_mul.mp h_dvd
+  · left
+    exact Nat.mod_eq_zero_of_dvd ha
+  · right
+    exact Nat.mod_eq_zero_of_dvd hb
+
 /-- SQRT_M1: The square root of -1 in the field (used for Elligator inverse sqrt).
     Value: 19681161...84752 -/
 def sqrt_m1 : ZMod p :=
   19681161376707505956807079304988542015446066515923890162744021073123829784752
 
 lemma p_sub_one_cast : (↑(p - 1) : ZMod p) = -1 := by
-  sorry
+  rw [Nat.cast_sub (by decide : 1 ≤ p), ZMod.natCast_self, zero_sub, Nat.cast_one]
+
 private lemma sqrt_m1_sq_nat :
     19681161376707505956807079304988542015446066515923890162744021073123829784752 ^ 2 % p = p - 1 := by
   decide
 
 /-- `sqrt_m1` really is a square root of `-1` in `ZMod p`. -/
 lemma sqrt_m1_sq : (sqrt_m1 : ZMod p) ^ 2 = -1 := by
-  sorry
+  unfold sqrt_m1
+  have h : (((19681161376707505956807079304988542015446066515923890162744021073123829784752 ^ 2 : ℕ)) : ZMod p) =
+      ((p - 1 : ℕ) : ZMod p) := by
+    exact (ZMod.natCast_eq_natCast_iff _ _ _).2 (by simpa [Nat.ModEq] using sqrt_m1_sq_nat)
+  push_cast at h
+  rwa [p_sub_one_cast] at h
+
 /-- `sqrt_m1` is not itself a square; otherwise there would be an element of order `8` in `F_pˣ`. -/
 lemma sqrt_m1_not_square : ¬ IsSquare sqrt_m1 := by
-  sorry
+  rintro ⟨y, hy⟩
+  rw [← pow_two] at hy
+  have y4 : y ^ 4 = -1 := by
+    rw [show 4 = 2 * 2 by norm_num, pow_mul, ← hy, sqrt_m1_sq]
+  have hy_ne_zero : y ≠ 0 := by
+    intro hy0
+    rw [hy0, zero_pow (by norm_num)] at y4
+    norm_num at y4
+  have y8 : y ^ 8 = 1 := by
+    rw [show 8 = 4 * 2 by norm_num, pow_mul, y4]
+    norm_num
+  have h_order : orderOf y = 8 := by
+    refine orderOf_eq_of_pow_and_pow_div_prime (by norm_num) y8 ?_
+    intro q hprime hdvd
+    have hq : q = 2 := by
+      rw [show 8 = 2 ^ 3 by norm_num] at hdvd
+      exact (Nat.prime_dvd_prime_iff_eq hprime Nat.prime_two).mp (hprime.dvd_of_dvd_pow hdvd)
+    rw [hq, show 8 / 2 = 4 by norm_num, y4]
+    intro h_eq
+    have h_two : (2 : ZMod p) = 0 := by
+      have := congrArg (fun z : ZMod p => z + 1) h_eq
+      have h_zero : (0 : ZMod p) = 2 := by simpa using this
+      exact h_zero.symm
+    have h_dvd : p ∣ 2 := (ZMod.natCast_eq_zero_iff 2 p).mp h_two
+    norm_num [p] at h_dvd
+  have order_div : 8 ∣ (p - 1) := by
+    simpa [ZMod.card, h_order] using ZMod.orderOf_dvd_card_sub_one hy_ne_zero
+  have not_dvd : ¬ 8 ∣ (p - 1) := by
+    intro h8
+    have mod_zero : (p - 1) % 8 = 0 := Nat.mod_eq_zero_of_dvd h8
+    norm_num [p] at mod_zero
+  exact not_dvd order_div
+
 /-! ## Isogeny Constants
     We use `@[irreducible]` to prevent the simplifier from unfolding
     these massive literals, which crashes the server.
@@ -224,15 +311,24 @@ Since a = -1, this is sqrt(-d - 1).
 def sqrt_ad_minus_one : ZMod p := sqrt_ad_minus_one_val
 
 /-- Unfold `sqrt_ad_minus_one` to the raw Nat cast. Proved before `@[irreducible]` takes effect. -/
-lemma sqrt_ad_minus_one_eq_val : sqrt_ad_minus_one = (sqrt_ad_minus_one_val : ZMod p) := sorry
+lemma sqrt_ad_minus_one_eq_val : sqrt_ad_minus_one = (sqrt_ad_minus_one_val : ZMod p) := rfl
+
 /-- Key Property: `sqrt_ad_minus_one` is actually the square root of `-d - 1`. -/
-lemma sqrt_ad_minus_one_sq : sqrt_ad_minus_one^2 = -d - 1 := by
-  sorry
+lemma sqrt_ad_minus_one_sq : sqrt_ad_minus_one^2 = -d - 1 := by decide
+
+attribute [irreducible] sqrt_ad_minus_one
+
 /--
 Helper: The constant is non-zero.
 -/
 lemma sqrt_ad_minus_one_ne_zero : sqrt_ad_minus_one ≠ 0 := by
-  sorry
+  intro h
+  have h_sq : sqrt_ad_minus_one^2 = 0 := by rw [h]; ring
+  rw [sqrt_ad_minus_one_sq] at h_sq
+  dsimp [d] at h_sq
+  norm_num at h_sq
+  contradiction
+
 /--
 Mathematical square root for ZMod p.
 Returns a root if one exists, otherwise 0.
@@ -245,7 +341,12 @@ Correctness Lemma:
 If x is a square, then (math_sqrt x)^2 = x.
 -/
 lemma sqrt_sq {x : ZMod p} (h : IsSquare x) : (sqrt x)^2 = x := by
-  sorry
+  dsimp [sqrt]
+  rw [dif_pos h]
+  rw [pow_two]
+  symm
+  exact Classical.choose_spec h
+
 /-- Helper: "Is Negative" (LSB is 1).
     Used for sign checks in Ristretto encoding. -/
 def is_negative (x : ZMod p) : Bool :=
@@ -260,32 +361,92 @@ Square property of the absolute value function.
 Since `abs_edwards x` is either `x` or `-x`, its square is always `x^2`.
 -/
 lemma abs_edwards_sq (x : ZMod p) : (abs_edwards x)^2 = x^2 := by
-  sorry
+  unfold abs_edwards
+  split_ifs <;> ring
+
 /-- `abs_edwards` always produces a non-negative (even parity) value. -/
 lemma is_negative_abs_edwards (x : ZMod p) : is_negative (abs_edwards x) = false := by
-  sorry
+  unfold abs_edwards
+  split_ifs with h
+  · -- x is negative (odd parity): result is -x
+    unfold is_negative at h ⊢
+    by_cases hx : x = 0
+    · simp [hx] at h
+    · have h_neg_val : (-x : ZMod p).val = p - x.val := by
+        rw [ZMod.neg_val]; exact if_neg hx
+      rw [h_neg_val]
+      have hxlt : x.val < p := x.val_lt
+      have hxpos : 0 < x.val := Nat.pos_of_ne_zero (by rwa [ne_eq, ZMod.val_eq_zero])
+      have hp_odd : p % 2 = 1 := by decide
+      simp only [beq_iff_eq] at h
+      rw [beq_eq_false_iff_ne]
+      omega
+  · -- x is non-negative: result is x, already non-negative
+    exact Bool.eq_false_iff.mpr h
+
 /-- `abs_edwards x` has even parity: `(abs_edwards x).val % 2 = 0`. -/
 lemma abs_edwards_val_even' (x : ZMod p) : (abs_edwards x).val % 2 = 0 := by
-  sorry
+  have h := is_negative_abs_edwards x
+  unfold is_negative at h
+  rw [beq_eq_false_iff_ne] at h
+  omega
+
 /-- abs_edwards always produces a non-negative (even val) result. -/
 lemma abs_edwards_val_even (_ : p % 2 = 1) (b : ZMod p) :
-    (abs_edwards b).val % 2 = 0 := sorry
+    (abs_edwards b).val % 2 = 0 :=
+  abs_edwards_val_even' b
+
 /-- If a² = b² and a has even val, then a = abs_edwards b.
     In ZMod p for odd p, the non-negative square root is unique. -/
 lemma eq_abs_edwards_of_sq_eq (hp_odd : p % 2 = 1) {a b : ZMod p}
     (h_sq : a ^ 2 = b ^ 2) (ha : a.val % 2 = 0) :
     a = abs_edwards b := by
-  sorry
+  have h_sq' : a ^ 2 = (abs_edwards b) ^ 2 := by rw [h_sq, abs_edwards_sq]
+  have hab : (abs_edwards b).val % 2 = 0 := abs_edwards_val_even hp_odd b
+  have h_factor : (a - abs_edwards b) * (a + abs_edwards b) = 0 := by
+    linear_combination h_sq'
+  rcases mul_eq_zero.mp h_factor with h | h
+  · exact sub_eq_zero.mp h
+  · have heq : a = -(abs_edwards b) := by linear_combination h
+    by_cases h0 : abs_edwards b = 0
+    · rw [h0, neg_zero] at heq; rw [heq, h0]
+    · exfalso
+      rw [heq, ZMod.neg_val, if_neg h0] at ha
+      have := Nat.add_sub_cancel' (le_of_lt (ZMod.val_lt (abs_edwards b)))
+      omega
+
 /-- abs_edwards is invariant under sign: if a² = b² then abs_edwards a = abs_edwards b. -/
 lemma abs_edwards_eq_of_sq_eq_sq (hp_odd : p % 2 = 1) {a b : ZMod p}
-    (h : a ^ 2 = b ^ 2) : abs_edwards a = abs_edwards b := sorry
+    (h : a ^ 2 = b ^ 2) : abs_edwards a = abs_edwards b :=
+  eq_abs_edwards_of_sq_eq hp_odd (by rw [abs_edwards_sq, h]) (abs_edwards_val_even hp_odd a)
+
 /-- `abs_edwards` is invariant under negation: `abs_edwards (-x) = abs_edwards x`. -/
 lemma abs_edwards_neg (x : ZMod p) : abs_edwards (-x) = abs_edwards x := by
-  sorry
+  by_cases hx : x = 0
+  · simp [hx]
+  · unfold abs_edwards is_negative
+    have h_neg_val : (-x : ZMod p).val = p - x.val := by
+      rw [ZMod.neg_val]; exact if_neg hx
+    rw [h_neg_val]
+    have hxlt : x.val < p := x.val_lt
+    have hxv : x.val ≠ 0 := by rwa [ne_eq, ZMod.val_eq_zero]
+    have hxpos : 0 < x.val := Nat.pos_of_ne_zero hxv
+    have hp_odd : p % 2 = 1 := by decide
+    have h_par : (p - x.val) % 2 ≠ x.val % 2 := by omega
+    by_cases hpx : x.val % 2 = 1
+    · have : (p - x.val) % 2 = 0 := by omega
+      simp only [beq_iff_eq] at *; simp [hpx, this]
+    · have hpx0 : x.val % 2 = 0 := by omega
+      have : (p - x.val) % 2 = 1 := by omega
+      simp only [beq_iff_eq] at *; simp [hpx0, this]
+
 /-- If `x^2 = y^2` then `abs_edwards x = abs_edwards y`. -/
 lemma abs_edwards_eq_of_sq_eq {x y : ZMod p} (h : x ^ 2 = y ^ 2) :
     abs_edwards x = abs_edwards y := by
-  sorry
+  rcases sq_eq_sq_iff_eq_or_eq_neg.mp h with h_eq | h_neg
+  · rw [h_eq]
+  · rw [h_neg, abs_edwards_neg]
+
 /-- Square root with quadratic residue check, matching Rust's sqrt_ratio_i(x, 1).
     Returns (sqrt(x), true) when x is a square, (sqrt(i*x), false) otherwise.
     Note: sqrt_checked 0 = (0, true) since 0 is a square (0² = 0). -/
@@ -333,11 +494,15 @@ noncomputable def sqrt_checked (x : ZMod p) : (ZMod p × Bool) :=
 /-- Spec: If `sqrt_checked` returns true, the result is a valid square root. -/
 theorem sqrt_checked_spec (u : ZMod p) {r : ZMod p} {b : Bool} :
   sqrt_checked u = (r, b) → b = true → r^2 = u := by
-  sorry
+  intro h_call h_true
+  sorry -- Proof deferred
+
 /-- Spec: `sqrt_checked` returns true iff the input is a square. -/
 theorem sqrt_checked_iff_isSquare (u : ZMod p) {r : ZMod p} {b : Bool} :
   sqrt_checked u = (r, b) → (b = true ↔ IsSquare u) := by
-  sorry
+  intro h_call
+  sorry -- Proof deferred
+
 /--
 Inverse Square Root, matching Rust's sqrt_ratio_i(1, u).
 Computes 1/sqrt(u) or 1/sqrt(i*u) depending on whether u is a square.
@@ -358,7 +523,10 @@ theorem inv_sqrt_checked_spec (arg : ZMod p) {I : ZMod p} {was_square : Bool} :
   was_square = true →
   arg ≠ 0 →
   I^2 * arg = 1 := by
+  -- We treat this as an axiom/specification for now to avoid
+  -- analyzing the massive bit-level recursion of the implementation.
   sorry
+
 /--
 When `u` is a square, `(inv_sqrt_checked u).1` is its inverse square root.
 Combined lemma avoids maxRecDepth from pair-destructuring `inv_sqrt_checked`.
@@ -369,7 +537,8 @@ theorem inv_sqrt_checked_sq_mul (u : ZMod p) (h : IsSquare u) (h_ne : u ≠ 0) :
 
 /-- Reduction: inv_sqrt_checked 0 = (0, false) via the zero guard. -/
 lemma inv_sqrt_checked_zero : inv_sqrt_checked (0 : ZMod p) = ((0 : ZMod p), false) := by
-  sorry
+  delta inv_sqrt_checked; rw [if_pos rfl]
+
 /-- Reduction: the boolean component of inv_sqrt_checked matches sqrt_checked when u ≠ 0. -/
 lemma inv_sqrt_checked_snd (u : ZMod p) (hu : u ≠ 0) :
     (inv_sqrt_checked u).2 = (sqrt_checked u).2 := by

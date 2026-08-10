@@ -213,7 +213,11 @@ def EdwardsPoint.toPoint (e : EdwardsPoint) : Point Ed25519 :=
 theorem EdwardsPoint.toPoint_of_isValid {e : EdwardsPoint} (h : e.IsValid) :
     (e.toPoint).x = e.X.toField / e.Z.toField ∧
     (e.toPoint).y = e.Y.toField / e.Z.toField := by
-  sorry
+  unfold toPoint
+  rw [dif_pos h]
+  simp only [toPoint']
+  trivial
+
 end curve25519_dalek.edwards
 
 /-!
@@ -295,7 +299,8 @@ noncomputable def ProjectivePoint.toPoint (pp : ProjectivePoint) : Point Ed25519
 theorem ProjectivePoint.toPoint_of_isValid {pp : ProjectivePoint} (h : pp.IsValid) :
     (pp.toPoint).x = pp.X.toField / pp.Z.toField ∧
     (pp.toPoint).y = pp.Y.toField / pp.Z.toField := by
-  sorry
+  unfold toPoint; rw [dif_pos h]; constructor <;> rfl
+
 /-! ## CompletedPoint Validity and Casting -/
 
 open curve25519_dalek.backend.serial.u64.field in
@@ -352,7 +357,8 @@ noncomputable def CompletedPoint.toPoint (cp : CompletedPoint) : Point Ed25519 :
 theorem CompletedPoint.toPoint_of_isValid {cp : CompletedPoint} (h : cp.IsValid) :
     (cp.toPoint).x = cp.X.toField / cp.Z.toField ∧
     (cp.toPoint).y = cp.Y.toField / cp.T.toField := by
-  sorry
+  unfold toPoint; rw [dif_pos h]; constructor <;> rfl
+
 /-! ## ProjectiveNielsPoint Validity and Casting -/
 
 /-- Validity predicate for ProjectiveNielsPoint.
@@ -480,7 +486,11 @@ noncomputable def ProjectiveNielsPoint.toPoint (pn : ProjectiveNielsPoint) : Poi
 theorem ProjectiveNielsPoint.toPoint_of_isValid {pn : ProjectiveNielsPoint} (h : pn.IsValid) :
     (pn.toPoint).x = (pn.Y_plus_X.toField - pn.Y_minus_X.toField) / (2 * pn.Z.toField) ∧
     (pn.toPoint).y = (pn.Y_plus_X.toField + pn.Y_minus_X.toField) / (2 * pn.Z.toField) := by
-  sorry
+  unfold toPoint
+  rw [dif_pos h]
+  simp only [toPoint']
+  trivial
+
 /- Unfolding lemma for ProjectiveNielsPoint.toPoint. -/
 /-
 theorem ProjectiveNielsPoint.toPoint_of_isValid' {pn : ProjectiveNielsPoint} (h : pn.IsValid') :
@@ -504,8 +514,10 @@ noncomputable instance : Coe CompletedPoint (Point Ed25519) where
 
 @[simp]
 theorem ProjectivePoint.toPoint_eq_coe (p : ProjectivePoint) :
-  p.toPoint = ↑p := sorry
+  p.toPoint = ↑p := rfl
+
 @[simp]
 theorem CompletedPoint.toPoint_eq_coe (p : CompletedPoint) :
-  p.toPoint = ↑p := sorry
+  p.toPoint = ↑p := rfl
+
 end curve25519_dalek.backend.serial.curve_models

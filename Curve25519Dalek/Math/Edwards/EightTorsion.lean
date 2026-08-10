@@ -21,10 +21,10 @@ def eightTorsionGen : Point Ed25519 where
   y := 55188659117513257062467267217118295137698188065244968500265048394206261417927
   on_curve := by decide
 
-theorem eight_nsmul_gen_eq_zero : 8 • eightTorsionGen = 0 := by
-  sorry
-theorem four_nsmul_gen_ne_zero : 4 • eightTorsionGen ≠ 0 := by
-  sorry
+theorem eight_nsmul_gen_eq_zero : 8 • eightTorsionGen = 0 := by native_decide
+
+theorem four_nsmul_gen_ne_zero : 4 • eightTorsionGen ≠ 0 := by native_decide
+
 /-- The i-th point of the eight-torsion subgroup, i.e., the precomputed value of i • eightTorsionGen. -/
 def eightTorsionPoints : Fin 8 → Point Ed25519
   | 0 => { x := 0, y := 1, on_curve := by decide }
@@ -55,11 +55,13 @@ def eightTorsionPoints : Fin 8 → Point Ed25519
 @[simp]
 theorem nsmul_eightTorsionGen_eq (i : Fin 8) :
     (i : ℕ) • eightTorsionGen = eightTorsionPoints i := by
-  sorry
+  fin_cases i <;> native_decide
+
 /-- Helper for spec proofs: if `gen_pt` is the generator and `pt_i` is the i-th torsion point
     (both verified by cheap `toPoint` comparisons), then `pt_i = i • gen_pt`. -/
 theorem eightTorsion_eq_nsmul (gen_pt pt_i : Point Ed25519) (i : Fin 8)
     (h_gen : gen_pt = eightTorsionGen) (h_i : pt_i = eightTorsionPoints i) :
     pt_i = (i : ℕ) • gen_pt := by
-  sorry
+  rw [h_gen, h_i, ← nsmul_eightTorsionGen_eq]
+
 end Edwards

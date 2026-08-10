@@ -28,9 +28,11 @@ def basepoint : Point Ed25519 where
 
 This is verified computationally using double-and-add scalar multiplication via `native_decide`. -/
 theorem basepoint_order_L : L • basepoint = 0 := by
-  sorry
-theorem basepoint_ne_zero : basepoint ≠ 0 := by
-  sorry
-theorem four_nsmul_basepoint_ne_zero : 4 • basepoint ≠ 0 := by
-  sorry
+  rw [← binary_nsmul_Ed25519_eq L basepoint]
+  native_decide
+
+theorem basepoint_ne_zero : basepoint ≠ 0 := by decide
+
+theorem four_nsmul_basepoint_ne_zero : 4 • basepoint ≠ 0 := by native_decide
+
 end Edwards

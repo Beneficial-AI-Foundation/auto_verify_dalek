@@ -8,8 +8,11 @@ Checks, against the frozen artifacts in harness/frozen/:
   2. axiom closure of every Math declaration is inside the whitelist
        {propext, Classical.choice, Quot.sound} ∪ sorryAx
        ∪ 21 external axioms ∪ {Lean.ofReduceBool, Lean.trustCompiler}
-     and the ofReduceBool/trustCompiler users trace back only to the frozen
-     native_decide declarations
+     (native_decide is allowed by policy; sites are ledgered against
+     native_decide_sites.json — new roots are reported, not failed.
+     The forbidden path is new @[implemented_by]/@[extern] attributes,
+     which can hijack native_decide; phase-2 gate must scan agent files
+     for those)
   3. no axiom declaration anywhere in Curve25519Dalek.* outside
      FunsExternal/TypesExternal; no @[externally_verified] tag in Math
   4. the assumption set (Math decls whose own body mentions sorryAx) equals

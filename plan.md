@@ -107,13 +107,15 @@ Layer 2 的归属随实验而变：**基线实验**里整棵 Specs/ 树给定、
 {propext, Classical.choice, Quot.sound}
 ∪ 21 条外部 axiom（Aeneas opaque 函数；FunsExternal 20 + TypesExternal 1）
 ∪ 11 条命名数学假设（Math 层 sorry，陈述哈希冻结）
-∪ {Lean.ofReduceBool, Lean.trustCompiler}（6 处 native_decide 站点：基点阶 L、
-   8-挠计算——冻结，不许新增站点）
+∪ {Lean.ofReduceBool, Lean.trustCompiler}（native_decide：允许全程使用，
+   站点由 collectAxioms 记账，当前基线 6 处：基点阶 L、8-挠计算）
 ∪ FunsExternal 内 36 条有意 sorry 的规约定理（opaque 函数的规约，文件哈希冻结）
 ∪ Aeneas 依赖包内 17 条 sorry 声明（lake-manifest 钉死）
 ```
 
-审计发现（比计划纸面上多出来的三类，全部如实冻结而非掩盖）：`native_decide` 把编译器拉进信任基；FunsExternal 的规约定理本身就是 sorry；依赖包自带 sorry。想收窄各有路径（PrimeCert/`decide` 换 native_decide；差分测试兜 FunsExternal；上游修 Aeneas），全部不占本项目预算。
+审计发现（比计划纸面上多出来的三类，全部如实记账而非掩盖）：`native_decide` 把编译器拉进信任基；FunsExternal 的规约定理本身就是 sorry；依赖包自带 sorry。想收窄各有路径（PrimeCert/`decide` 换 native_decide；差分测试兜 FunsExternal；上游修 Aeneas），全部不占本项目预算。
+
+**native_decide 政策**：证明中**允许使用**——它是真计算不是伪造，`collectAxioms` 会把每条依赖它的定理如实标出，最终报告"N 条定理依赖编译器"即可，禁它只会把 agent 逼去写更贵的证明。唯一要机械封死的口子：`@[implemented_by]` / `@[extern]` 属性能替换函数的编译版本，挂假实现即可让 native_decide 通过假命题——**agent 产出零新增这两个属性**（G2 检查项）。
 
 ### 产物
 
@@ -121,7 +123,7 @@ Layer 2 的归属随实验而变：**基线实验**里整棵 Specs/ 树给定、
 |---|---|
 | `harness/frozen/math_assumptions.json` | 11 条假设：kernel 名 + 源位置 + 陈述 + sha256 |
 | `harness/frozen/external_axioms.json` | 21 条外部 axiom（从环境枚举，非 grep） |
-| `harness/frozen/native_decide_sites.json` | 6 处站点 + 2 条编译器公理 |
+| `harness/frozen/native_decide_sites.json` | 当前 6 处站点 + 2 条编译器公理（记账基线，非禁令） |
 | `harness/frozen/frozen_files.sha256` | 19 个冻结文件哈希：`Math/` 全部 + Funs/Types(+External) + Tactics + ExternallyVerified + lakefile/toolchain/manifest |
 | `harness/phase0_audit.lean` | 环境审计：包内公理枚举、Math 全声明 `collectAxioms`、假设集识别、标签检查（G2 的 Lean 侧） |
 | `harness/gates/g2_trust_base.py` | G2 闸门：文件哈希 + 公理闭包 ⊆ 白名单 + 假设集/陈述哈希精确相等 + build warning 与清单一致。负向测试通过（改一字节即抓） |
@@ -241,7 +243,7 @@ Lean 里 `collectAxioms` **穷举**依赖闭包。黑名单变白名单，白名
 | 闸门 | 实现 | 说明 |
 |---|---|---|
 | **G1 陈述同一性** | 两级。**v1（证明恢复实验）**：`sorries.jsonl` 已按 elaborated goal state 的 sha256 给每个 sorry 发 id，逐条比对即可。**v2（合成实验）**：新契约的 `Expr`，**消解实例后**、δ-展开到冻结定义为止，与参考逐项相同 | ⚠ v2 **不能做字节比对**。agent 可以塞 `local instance` / `local notation` 换掉 `CommRing` 或 `Fintype` 实例，pretty-print 一模一样、elaborate 出来是别的命题。这是 Verus 里不存在的攻击面 |
-| **G2 信任基闭包** | 已实现：`harness/gates/g2_trust_base.py` + `harness/phase0_audit.lean`。检查：冻结文件哈希；Math 公理闭包 ⊆ {propext, Classical.choice, Quot.sound} ∪ 21 条外部 axiom ∪ `sorryAx` ∪ {`Lean.ofReduceBool`, `Lean.trustCompiler`}（仅 6 处冻结 native_decide 站点）；包内零新 axiom；假设集（Math 里自带 sorryAx 的声明）与冻结清单**精确相等**、陈述哈希逐条一致；build warning 与清单一致 | 吸收了 Verus 的 admit-count + axiom-drift + forbidden-construct 三道。`sorryAx` 单独处理——kernel 只有一个 `sorryAx`，区分不了是哪条 sorry，所以按"自带 sorry 的声明集合"比对，agent 在 Specs/Aux 留下的任何 sorry 都落网。**比较类型不比较名字**——原论文的 axiom-drift 只检测新公理**名**，原地改公理陈述要靠 frozen-edit 恰好被配置上才拦得住，这是设计脆弱性 |
+| **G2 信任基闭包** | 已实现：`harness/gates/g2_trust_base.py` + `harness/phase0_audit.lean`。检查：冻结文件哈希；Math 公理闭包 ⊆ {propext, Classical.choice, Quot.sound} ∪ 21 条外部 axiom ∪ `sorryAx` ∪ {`Lean.ofReduceBool`, `Lean.trustCompiler`}（native_decide 允许，站点记账）；包内零新 axiom；agent 产出零新增 `@[implemented_by]` / `@[extern]`（防 native_decide 劫持）；假设集（Math 里自带 sorryAx 的声明）与冻结清单**精确相等**、陈述哈希逐条一致；build warning 与清单一致 | 吸收了 Verus 的 admit-count + axiom-drift + forbidden-construct 三道。`sorryAx` 单独处理——kernel 只有一个 `sorryAx`，区分不了是哪条 sorry，所以按"自带 sorry 的声明集合"比对，agent 在 Specs/Aux 留下的任何 sorry 都落网。**比较类型不比较名字**——原论文的 axiom-drift 只检测新公理**名**，原地改公理陈述要靠 frozen-edit 恰好被配置上才拦得住，这是设计脆弱性 |
 | **G3 工具链完整性** | `lakefile.toml` / `lean-toolchain` / `lake-manifest.json` / `Tactics.lean` 未被改动 | 比 Verus 里**更重要**：Lean 允许元编程，agent 能改 elaborator；仓库里就有自定义战术文件 |
 
 ### 新增的三道（Lean 特有）

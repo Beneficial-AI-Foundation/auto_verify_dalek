@@ -1,5 +1,5 @@
 {
-  "comment": "Frozen native_decide sites in Math (compiler-trusted computations: basepoint order, 8-torsion). These pull Lean.ofReduceBool and Lean.trustCompiler into the trust base. Frozen, not to be extended.",
+  "comment": "native_decide sites in Math as of 2026-08-10 (compiler-trusted computations: basepoint order, 8-torsion). These pull Lean.ofReduceBool and Lean.trustCompiler into the trust base. POLICY: native_decide is ALLOWED in proofs; this list is a ledger baseline, not a prohibition. Every theorem depending on the compiler is enumerable via collectAxioms. The one mechanically forbidden path: new @[implemented_by]/@[extern] attributes in agent output (they can swap the compiled code native_decide runs, proving false propositions).",
   "trusted_axioms": [
     "Lean.ofReduceBool",
     "Lean.trustCompiler"

@@ -1,0 +1,42 @@
+/-
+Copyright (c) 2025 Beneficial AI Foundation. All rights reserved.
+Released under Apache 2.0 license as described in the file LICENSE.
+Authors: Oliver Butterley, Markus Dablander
+-/
+import Curve25519Dalek.Funs
+import Curve25519Dalek.Math.Basic
+import Curve25519Dalek.Specs.Backend.Serial.U64.Scalar.Scalar52.FromBytesWide
+import Curve25519Dalek.Specs.Backend.Serial.U64.Scalar.Scalar52.Pack
+
+/-! # Spec Theorem for `Scalar::from_bytes_mod_order_wide`
+
+This function constructs a scalar from a wide byte array, reducing modulo the group order.
+
+Source: curve25519-dalek/src/scalar.rs
+-/
+
+open Aeneas Aeneas.Std Result Aeneas.Std.WP
+namespace curve25519_dalek.scalar.Scalar
+
+/-
+natural language description:
+
+    • Converts a [u8;64] array a into a reduced Scalar (mod \ell) named s.
+      (The modulus operation is taken within the from_bytes_wide command.)
+
+natural language specs:
+
+    • scalar_to_nat(s) = (u8x64_to_nat(a) mod \ell)
+    • scalar_to_nat(s) < \ell
+-/
+
+/-- **Spec theorem for `scalar.Scalar.from_bytes_mod_order_wide`**:
+- The result scalar s, when converted to nat, equals the input bytes converted to nat modulo L
+- The result scalar s is less than L (the group order) -/
+@[progress]
+theorem from_bytes_mod_order_wide_spec (input : Array U8 64#usize) :
+    from_bytes_mod_order_wide input ⦃ (result : Scalar) =>
+      U8x32_as_Nat result.bytes ≡ U8x64_as_Nat input [MOD L] ∧
+      U8x32_as_Nat result.bytes < L ⦄ := by
+  sorry
+end curve25519_dalek.scalar.Scalar

@@ -1,0 +1,1697 @@
+{
+  "slice": "scalar",
+  "prefix": "Curve25519Dalek/Specs/Scalar/Scalar/",
+  "state": "intact",
+  "files": {
+    "Curve25519Dalek/Specs/Scalar/Scalar/Mul.lean": {
+      "sha": "348dc1c5784bfcc18ef12a2d8a559d13d5327a5b07796756d8c308975c41dbd3"
+    },
+    "Curve25519Dalek/Specs/Scalar/Scalar/Eq.lean": {
+      "sha": "1f5ce565fcdd85c397762de1b9182e2186b223356882e3fea3a780e0428d880b"
+    },
+    "Curve25519Dalek/Specs/Scalar/Scalar/FromU128.lean": {
+      "sha": "f4664f61ce687c3039d1f185cd122e2d1abf5851d55a6adcf2b01aab77cb369d"
+    },
+    "Curve25519Dalek/Specs/Scalar/Scalar/FromU16.lean": {
+      "sha": "9de26c477be0f729ef592308070ac5b7507e67bbb26cdd2f494dbdce114ab920"
+    },
+    "Curve25519Dalek/Specs/Scalar/Scalar/FromU32.lean": {
+      "sha": "c3f6480c44b2754bdf2e47c69525163ba5cd5cc4df4dec318bf1640c8e2dba6c"
+    },
+    "Curve25519Dalek/Specs/Scalar/Scalar/FromU64.lean": {
+      "sha": "62d9bc0ad6f3fe82a0091f2e19c943a7898f61bf8697621e0c3e57fdd6472300"
+    },
+    "Curve25519Dalek/Specs/Scalar/Scalar/FromU8.lean": {
+      "sha": "6752cab9958136f9b3f4a171fc45eb34253689db3ce064574dd07fc7445d0c6e"
+    },
+    "Curve25519Dalek/Specs/Scalar/Scalar/Add.lean": {
+      "sha": "4cc0a442affdb9bac90b1f98a4d58616dc1deef62c0187f2e2cfa47dc497e56e"
+    },
+    "Curve25519Dalek/Specs/Scalar/Scalar/MulAssign.lean": {
+      "sha": "7f21c6e657020b251c29de5ce8062ddb514a6b4845ee747d2860af752ba2c4a6"
+    },
+    "Curve25519Dalek/Specs/Scalar/Scalar/Neg.lean": {
+      "sha": "def515cfda5e8c169bc12ac76a904217fc0e3dac997b741a741cb5decb627a2c"
+    },
+    "Curve25519Dalek/Specs/Scalar/Scalar/Sub.lean": {
+      "sha": "68933ce1ddb228b75a02907a9be735e41c43b2ae5e159be7d463d10f57eb71ac"
+    },
+    "Curve25519Dalek/Specs/Scalar/Scalar/One.lean": {
+      "sha": "1f7327ef8954b6463404c6ea0f58d417e9cf80ec472c605e485bd3d48055812f"
+    },
+    "Curve25519Dalek/Specs/Scalar/Scalar/Zero.lean": {
+      "sha": "ac4f684f3128ea7560699a8343697ace0b333f2d308a08b9eb41c3a01c6a4390"
+    },
+    "Curve25519Dalek/Specs/Scalar/Scalar/FromBytesModOrder.lean": {
+      "sha": "d8a481cfdb5b4a0a1bfb4e6055a234c5f98d213b65dcedbe338bd69952272a32"
+    },
+    "Curve25519Dalek/Specs/Scalar/Scalar/FromBytesModOrderWide.lean": {
+      "sha": "69ad0e6ee7a7b86cf859893bb10f70d0c44cf198a368ddfaf170505bdf965932"
+    },
+    "Curve25519Dalek/Specs/Scalar/Scalar/FromCanonicalBytes.lean": {
+      "sha": "e22f18dfd3b69de9bdefcc8e8f8f15bce546b22d3d796e2d30dd9ead564a8a38"
+    },
+    "Curve25519Dalek/Specs/Scalar/Scalar/Invert.lean": {
+      "sha": "69cf37f3383cbebf872aca86fc231b841bb6ecca65ea2634ef82ca0abd3ba02a"
+    },
+    "Curve25519Dalek/Specs/Scalar/Scalar/ToBytes.lean": {
+      "sha": "3e610780dcf4c98070262d2c6e2cd6d1c5176e660764518c508a3d7dce682781"
+    }
+  },
+  "specs": [
+    {
+      "spec": "curve25519_dalek.SharedAScalar.Insts.CoreOpsArithMulScalarScalar.mul_spec",
+      "function": "curve25519_dalek.SharedAScalar.Insts.CoreOpsArithMulScalarScalar.mul",
+      "short": "mul_spec",
+      "file": "Curve25519Dalek/Specs/Scalar/Scalar/Mul.lean",
+      "lines": [
+        133,
+        142
+      ],
+      "nl_block": [
+        120,
+        131
+      ],
+      "status": "unverified",
+      "canon_sha": "acb47a4b665ffeca5b8d652bd09167b9f4879a2f59612f06bfde4e5fed418b95",
+      "pp": "∀ (self rhs : curve25519_dalek.scalar.Scalar),\n  Aeneas.Std.WP.spec (curve25519_dalek.SharedAScalar.Insts.CoreOpsArithMulScalarScalar.mul self rhs) fun result =>\n    And (L.ModEq (U8x32_as_Nat result.bytes) (instHMul.hMul (U8x32_as_Nat self.bytes) (U8x32_as_Nat rhs.bytes)))\n      (instLTNat.lt (U8x32_as_Nat result.bytes) L)",
+      "consts": [
+        {
+          "module": "Curve25519Dalek.Types",
+          "name": "curve25519_dalek.scalar.Scalar"
+        },
+        {
+          "module": "Aeneas.Std.WP",
+          "name": "Aeneas.Std.WP.spec"
+        },
+        {
+          "module": "Curve25519Dalek.Funs",
+          "name": "curve25519_dalek.SharedAScalar.Insts.CoreOpsArithMulScalarScalar.mul"
+        },
+        {
+          "module": "Init.Prelude",
+          "name": "And"
+        },
+        {
+          "module": "Mathlib.Data.Nat.ModEq",
+          "name": "Nat.ModEq"
+        },
+        {
+          "module": "Curve25519Dalek.Math.Basic",
+          "name": "L"
+        },
+        {
+          "module": "Curve25519Dalek.Math.Basic",
+          "name": "U8x32_as_Nat"
+        },
+        {
+          "module": "Curve25519Dalek.Types",
+          "name": "curve25519_dalek.scalar.Scalar.bytes"
+        },
+        {
+          "module": "Init.Prelude",
+          "name": "HMul.hMul"
+        },
+        {
+          "module": "Init.Prelude",
+          "name": "Nat"
+        },
+        {
+          "module": "Init.Prelude",
+          "name": "instHMul"
+        },
+        {
+          "module": "Init.Prelude",
+          "name": "instMulNat"
+        },
+        {
+          "module": "Init.Prelude",
+          "name": "LT.lt"
+        },
+        {
+          "module": "Init.Prelude",
+          "name": "instLTNat"
+        }
+      ]
+    },
+    {
+      "spec": "curve25519_dalek.scalar.Scalar.Insts.CoreCmpPartialEqScalar.eq_spec",
+      "function": "curve25519_dalek.scalar.Scalar.Insts.CoreCmpPartialEqScalar.eq",
+      "short": "eq_spec",
+      "file": "Curve25519Dalek/Specs/Scalar/Scalar/Eq.lean",
+      "lines": [
+        37,
+        45
+      ],
+      "nl_block": [
+        23,
+        35
+      ],
+      "status": "unverified",
+      "canon_sha": "13e9ac13378e6bd30230040ff4871c91a7089865c9e7026587744c7669a3afa7",
+      "pp": "∀ (self other : curve25519_dalek.scalar.Scalar),\n  Aeneas.Std.WP.spec (curve25519_dalek.scalar.Scalar.Insts.CoreCmpPartialEqScalar.eq self other) fun result =>\n    Iff (Eq result Bool.true) (Eq self.bytes other.bytes)",
+      "consts": [
+        {
+          "module": "Curve25519Dalek.Types",
+          "name": "curve25519_dalek.scalar.Scalar"
+        },
+        {
+          "module": "Aeneas.Std.WP",
+          "name": "Aeneas.Std.WP.spec"
+        },
+        {
+          "module": "Init.Prelude",
+          "name": "Bool"
+        },
+        {
+          "module": "Curve25519Dalek.Funs",
+          "name": "curve25519_dalek.scalar.Scalar.Insts.CoreCmpPartialEqScalar.eq"
+        },
+        {
+          "module": "Init.Core",
+          "name": "Iff"
+        },
+        {
+          "module": "Init.Prelude",
+          "name": "Eq"
+        },
+        {
+          "module": "Init.Prelude",
+          "name": "Bool.true"
+        },
+        {
+          "module": "Aeneas.Std.Array.Array",
+          "name": "Aeneas.Std.Array"
+        },
+        {
+          "module": "Aeneas.Std.Scalar.Core",
+          "name": "Aeneas.Std.U8"
+        },
+        {
+          "module": "Aeneas.Std.Scalar.Core",
+          "name": "Aeneas.Std.Usize.ofNat"
+        },
+        {
+          "module": "Init.Prelude",
+          "name": "OfNat.ofNat"
+        },
+        {
+          "module": "Init.Prelude",
+          "name": "Nat"
+        },
+        {
+          "module": "Init.Prelude",
+          "name": "instOfNatNat"
+        },
+        {
+          "module": "Init.Prelude",
+          "name": "of_decide_eq_true"
+        },
+        {
+          "module": "Init.Prelude",
+          "name": "LE.le"
+        },
+        {
+          "module": "Init.Prelude",
+          "name": "instLENat"
+        },
+        {
+          "module": "Aeneas.Std.Scalar.Core",
+          "name": "Aeneas.Std.UScalar.cMax"
+        },
+        {
+          "module": "Aeneas.Std.Scalar.Core",
+          "name": "Aeneas.Std.UScalarTy.Usize"
+        },
+        {
+          "module": "Init.Prelude",
+          "name": "Nat.decLe"
+        },
+        {
+          "module": "Init.Prelude",
+          "name": "id"
+        },
+        {
+          "module": "Init.Prelude",
+          "name": "Decidable.decide"
+        },
+        {
+          "module": "Init.Prelude",
+          "name": "Eq.refl"
+        },
+        {
+          "module": "Curve25519Dalek.Types",
+          "name": "curve25519_dalek.scalar.Scalar.bytes"
+        }
+      ]
+    },
+    {
+      "spec": "curve25519_dalek.scalar.Scalar.Insts.CoreConvertFromU128.from_spec",
+      "function": "curve25519_dalek.scalar.Scalar.Insts.CoreConvertFromU128.from",
+      "short": "from_spec",
+      "file": "Curve25519Dalek/Specs/Scalar/Scalar/FromU128.lean",
+      "lines": [
+        151,
+        161
+      ],
+      "nl_block": null,
+      "status": "unverified",
+      "canon_sha": "5000f7bdf657d460cc03da1dc4f0673ce9a5c93dfd48ac3c95a53cc5cc958a4b",
+      "pp": "∀ (x : Aeneas.Std.U128),\n  Aeneas.Std.WP.spec (curve25519_dalek.scalar.Scalar.Insts.CoreConvertFromU128.from x) fun result =>\n    Eq (U8x32_as_Nat result.bytes) (Aeneas.Std.UScalar.val x)",
+      "consts": [
+        {
+          "module": "Aeneas.Std.Scalar.Core",
+          "name": "Aeneas.Std.U128"
+        },
+        {
+          "module": "Aeneas.Std.WP",
+          "name": "Aeneas.Std.WP.spec"
+        },
+        {
+          "module": "Curve25519Dalek.Types",
+          "name": "curve25519_dalek.scalar.Scalar"
+        },
+        {
+          "module": "Curve25519Dalek.Funs",
+          "name": "curve25519_dalek.scalar.Scalar.Insts.CoreConvertFromU128.from"
+        },
+        {
+          "module": "Init.Prelude",
+          "name": "Eq"
+        },
+        {
+          "module": "Init.Prelude",
+          "name": "Nat"
+        },
+        {
+          "module": "Curve25519Dalek.Math.Basic",
+          "name": "U8x32_as_Nat"
+        },
+        {
+          "module": "Curve25519Dalek.Types",
+          "name": "curve25519_dalek.scalar.Scalar.bytes"
+        },
+        {
+          "module": "Aeneas.Std.Scalar.Core",
+          "name": "Aeneas.Std.UScalar.val"
+        },
+        {
+          "module": "Aeneas.Std.Scalar.Core",
+          "name": "Aeneas.Std.UScalarTy.U128"
+        }
+      ]
+    },
+    {
+      "spec": "curve25519_dalek.scalar.Scalar.Insts.CoreConvertFromU16.from_spec",
+      "function": "curve25519_dalek.scalar.Scalar.Insts.CoreConvertFromU16.from",
+      "short": "from_spec",
+      "file": "Curve25519Dalek/Specs/Scalar/Scalar/FromU16.lean",
+      "lines": [
+        88,
+        98
+      ],
+      "nl_block": null,
+      "status": "unverified",
+      "canon_sha": "08adec3b5621b6046d50bf92266523c2d312e3b7b39bc53b0a7049a40ed864ff",
+      "pp": "∀ (x : Aeneas.Std.U16),\n  Aeneas.Std.WP.spec (curve25519_dalek.scalar.Scalar.Insts.CoreConvertFromU16.from x) fun result =>\n    Eq (U8x32_as_Nat result.bytes) (Aeneas.Std.UScalar.val x)",
+      "consts": [
+        {
+          "module": "Aeneas.Std.Scalar.Core",
+          "name": "Aeneas.Std.U16"
+        },
+        {
+          "module": "Aeneas.Std.WP",
+          "name": "Aeneas.Std.WP.spec"
+        },
+        {
+          "module": "Curve25519Dalek.Types",
+          "name": "curve25519_dalek.scalar.Scalar"
+        },
+        {
+          "module": "Curve25519Dalek.Funs",
+          "name": "curve25519_dalek.scalar.Scalar.Insts.CoreConvertFromU16.from"
+        },
+        {
+          "module": "Init.Prelude",
+          "name": "Eq"
+        },
+        {
+          "module": "Init.Prelude",
+          "name": "Nat"
+        },
+        {
+          "module": "Curve25519Dalek.Math.Basic",
+          "name": "U8x32_as_Nat"
+        },
+        {
+          "module": "Curve25519Dalek.Types",
+          "name": "curve25519_dalek.scalar.Scalar.bytes"
+        },
+        {
+          "module": "Aeneas.Std.Scalar.Core",
+          "name": "Aeneas.Std.UScalar.val"
+        },
+        {
+          "module": "Aeneas.Std.Scalar.Core",
+          "name": "Aeneas.Std.UScalarTy.U16"
+        }
+      ]
+    },
+    {
+      "spec": "curve25519_dalek.scalar.Scalar.Insts.CoreConvertFromU32.from_spec",
+      "function": "curve25519_dalek.scalar.Scalar.Insts.CoreConvertFromU32.from",
+      "short": "from_spec",
+      "file": "Curve25519Dalek/Specs/Scalar/Scalar/FromU32.lean",
+      "lines": [
+        87,
+        97
+      ],
+      "nl_block": null,
+      "status": "unverified",
+      "canon_sha": "39bbbf5830ece6370fd25511f2032801b76d9bafc5bf83ad26937046ef2ef2a9",
+      "pp": "∀ (x : Aeneas.Std.U32),\n  Aeneas.Std.WP.spec (curve25519_dalek.scalar.Scalar.Insts.CoreConvertFromU32.from x) fun result =>\n    Eq (U8x32_as_Nat result.bytes) (Aeneas.Std.UScalar.val x)",
+      "consts": [
+        {
+          "module": "Aeneas.Std.Scalar.Core",
+          "name": "Aeneas.Std.U32"
+        },
+        {
+          "module": "Aeneas.Std.WP",
+          "name": "Aeneas.Std.WP.spec"
+        },
+        {
+          "module": "Curve25519Dalek.Types",
+          "name": "curve25519_dalek.scalar.Scalar"
+        },
+        {
+          "module": "Curve25519Dalek.Funs",
+          "name": "curve25519_dalek.scalar.Scalar.Insts.CoreConvertFromU32.from"
+        },
+        {
+          "module": "Init.Prelude",
+          "name": "Eq"
+        },
+        {
+          "module": "Init.Prelude",
+          "name": "Nat"
+        },
+        {
+          "module": "Curve25519Dalek.Math.Basic",
+          "name": "U8x32_as_Nat"
+        },
+        {
+          "module": "Curve25519Dalek.Types",
+          "name": "curve25519_dalek.scalar.Scalar.bytes"
+        },
+        {
+          "module": "Aeneas.Std.Scalar.Core",
+          "name": "Aeneas.Std.UScalar.val"
+        },
+        {
+          "module": "Aeneas.Std.Scalar.Core",
+          "name": "Aeneas.Std.UScalarTy.U32"
+        }
+      ]
+    },
+    {
+      "spec": "curve25519_dalek.scalar.Scalar.Insts.CoreConvertFromU64.from_spec",
+      "function": "curve25519_dalek.scalar.Scalar.Insts.CoreConvertFromU64.from",
+      "short": "from_spec",
+      "file": "Curve25519Dalek/Specs/Scalar/Scalar/FromU64.lean",
+      "lines": [
+        90,
+        100
+      ],
+      "nl_block": null,
+      "status": "unverified",
+      "canon_sha": "bb1a865af3531eae7fb19c99cbf9dcc271db446b125062fae72f4ee3bc63aa27",
+      "pp": "∀ (x : Aeneas.Std.U64),\n  Aeneas.Std.WP.spec (curve25519_dalek.scalar.Scalar.Insts.CoreConvertFromU64.from x) fun result =>\n    Eq (U8x32_as_Nat result.bytes) (Aeneas.Std.UScalar.val x)",
+      "consts": [
+        {
+          "module": "Aeneas.Std.Scalar.Core",
+          "name": "Aeneas.Std.U64"
+        },
+        {
+          "module": "Aeneas.Std.WP",
+          "name": "Aeneas.Std.WP.spec"
+        },
+        {
+          "module": "Curve25519Dalek.Types",
+          "name": "curve25519_dalek.scalar.Scalar"
+        },
+        {
+          "module": "Curve25519Dalek.Funs",
+          "name": "curve25519_dalek.scalar.Scalar.Insts.CoreConvertFromU64.from"
+        },
+        {
+          "module": "Init.Prelude",
+          "name": "Eq"
+        },
+        {
+          "module": "Init.Prelude",
+          "name": "Nat"
+        },
+        {
+          "module": "Curve25519Dalek.Math.Basic",
+          "name": "U8x32_as_Nat"
+        },
+        {
+          "module": "Curve25519Dalek.Types",
+          "name": "curve25519_dalek.scalar.Scalar.bytes"
+        },
+        {
+          "module": "Aeneas.Std.Scalar.Core",
+          "name": "Aeneas.Std.UScalar.val"
+        },
+        {
+          "module": "Aeneas.Std.Scalar.Core",
+          "name": "Aeneas.Std.UScalarTy.U64"
+        }
+      ]
+    },
+    {
+      "spec": "curve25519_dalek.scalar.Scalar.Insts.CoreConvertFromU8.from_spec",
+      "function": "curve25519_dalek.scalar.Scalar.Insts.CoreConvertFromU8.from",
+      "short": "from_spec",
+      "file": "Curve25519Dalek/Specs/Scalar/Scalar/FromU8.lean",
+      "lines": [
+        42,
+        52
+      ],
+      "nl_block": [
+        26,
+        40
+      ],
+      "status": "unverified",
+      "canon_sha": "5fef1f273e452ab4f6d0755093f01ea01a973c2e5c5b5606fe8a2ab172479f20",
+      "pp": "∀ (x : Aeneas.Std.U8),\n  Aeneas.Std.WP.spec (curve25519_dalek.scalar.Scalar.Insts.CoreConvertFromU8.from x) fun result =>\n    Eq (U8x32_as_Nat result.bytes) (Aeneas.Std.UScalar.val x)",
+      "consts": [
+        {
+          "module": "Aeneas.Std.Scalar.Core",
+          "name": "Aeneas.Std.U8"
+        },
+        {
+          "module": "Aeneas.Std.WP",
+          "name": "Aeneas.Std.WP.spec"
+        },
+        {
+          "module": "Curve25519Dalek.Types",
+          "name": "curve25519_dalek.scalar.Scalar"
+        },
+        {
+          "module": "Curve25519Dalek.Funs",
+          "name": "curve25519_dalek.scalar.Scalar.Insts.CoreConvertFromU8.from"
+        },
+        {
+          "module": "Init.Prelude",
+          "name": "Eq"
+        },
+        {
+          "module": "Init.Prelude",
+          "name": "Nat"
+        },
+        {
+          "module": "Curve25519Dalek.Math.Basic",
+          "name": "U8x32_as_Nat"
+        },
+        {
+          "module": "Curve25519Dalek.Types",
+          "name": "curve25519_dalek.scalar.Scalar.bytes"
+        },
+        {
+          "module": "Aeneas.Std.Scalar.Core",
+          "name": "Aeneas.Std.UScalar.val"
+        },
+        {
+          "module": "Aeneas.Std.Scalar.Core",
+          "name": "Aeneas.Std.UScalarTy.U8"
+        }
+      ]
+    },
+    {
+      "spec": "curve25519_dalek.scalar.Scalar.Insts.CoreOpsArithAddSharedBScalarScalar.add_spec",
+      "function": "curve25519_dalek.scalar.Scalar.Insts.CoreOpsArithAddSharedBScalarScalar.add",
+      "short": "add_spec",
+      "file": "Curve25519Dalek/Specs/Scalar/Scalar/Add.lean",
+      "lines": [
+        96,
+        107
+      ],
+      "nl_block": [
+        83,
+        94
+      ],
+      "status": "unverified",
+      "canon_sha": "baf4dbaa51061bf0ca388abf7f648e46a888dbd5cd890f999ec39e04934842a5",
+      "pp": "∀ (self rhs : curve25519_dalek.scalar.Scalar),\n  instLTNat.lt (U8x32_as_Nat self.bytes) L →\n    instLTNat.lt (U8x32_as_Nat rhs.bytes) L →\n      Aeneas.Std.WP.spec (curve25519_dalek.scalar.Scalar.Insts.CoreOpsArithAddSharedBScalarScalar.add self rhs)\n        fun result =>\n        And (L.ModEq (U8x32_as_Nat result.bytes) (instHAdd.hAdd (U8x32_as_Nat self.bytes) (U8x32_as_Nat rhs.bytes)))\n          (instLTNat.lt (U8x32_as_Nat result.bytes) L)",
+      "consts": [
+        {
+          "module": "Curve25519Dalek.Types",
+          "name": "curve25519_dalek.scalar.Scalar"
+        },
+        {
+          "module": "Init.Prelude",
+          "name": "LT.lt"
+        },
+        {
+          "module": "Init.Prelude",
+          "name": "Nat"
+        },
+        {
+          "module": "Init.Prelude",
+          "name": "instLTNat"
+        },
+        {
+          "module": "Curve25519Dalek.Math.Basic",
+          "name": "U8x32_as_Nat"
+        },
+        {
+          "module": "Curve25519Dalek.Types",
+          "name": "curve25519_dalek.scalar.Scalar.bytes"
+        },
+        {
+          "module": "Curve25519Dalek.Math.Basic",
+          "name": "L"
+        },
+        {
+          "module": "Aeneas.Std.WP",
+          "name": "Aeneas.Std.WP.spec"
+        },
+        {
+          "module": "Curve25519Dalek.Funs",
+          "name": "curve25519_dalek.scalar.Scalar.Insts.CoreOpsArithAddSharedBScalarScalar.add"
+        },
+        {
+          "module": "Init.Prelude",
+          "name": "And"
+        },
+        {
+          "module": "Mathlib.Data.Nat.ModEq",
+          "name": "Nat.ModEq"
+        },
+        {
+          "module": "Init.Prelude",
+          "name": "HAdd.hAdd"
+        },
+        {
+          "module": "Init.Prelude",
+          "name": "instHAdd"
+        },
+        {
+          "module": "Init.Prelude",
+          "name": "instAddNat"
+        }
+      ]
+    },
+    {
+      "spec": "curve25519_dalek.scalar.Scalar.Insts.CoreOpsArithMulAssignScalar.mul_assign_spec",
+      "function": "curve25519_dalek.scalar.Scalar.Insts.CoreOpsArithMulAssignScalar.mul_assign",
+      "short": "mul_assign_spec",
+      "file": "Curve25519Dalek/Specs/Scalar/Scalar/MulAssign.lean",
+      "lines": [
+        97,
+        104
+      ],
+      "nl_block": [
+        84,
+        95
+      ],
+      "status": "unverified",
+      "canon_sha": "540fbfef1366d607dae4ddd563effe3947e5b9b952c64fadb6f2013789c028d0",
+      "pp": "∀ (self rhs : curve25519_dalek.scalar.Scalar),\n  Aeneas.Std.WP.spec (curve25519_dalek.scalar.Scalar.Insts.CoreOpsArithMulAssignScalar.mul_assign self rhs)\n    fun result =>\n    And (L.ModEq (U8x32_as_Nat result.bytes) (instHMul.hMul (U8x32_as_Nat self.bytes) (U8x32_as_Nat rhs.bytes)))\n      (instLTNat.lt (U8x32_as_Nat result.bytes) L)",
+      "consts": [
+        {
+          "module": "Curve25519Dalek.Types",
+          "name": "curve25519_dalek.scalar.Scalar"
+        },
+        {
+          "module": "Aeneas.Std.WP",
+          "name": "Aeneas.Std.WP.spec"
+        },
+        {
+          "module": "Curve25519Dalek.Funs",
+          "name": "curve25519_dalek.scalar.Scalar.Insts.CoreOpsArithMulAssignScalar.mul_assign"
+        },
+        {
+          "module": "Init.Prelude",
+          "name": "And"
+        },
+        {
+          "module": "Mathlib.Data.Nat.ModEq",
+          "name": "Nat.ModEq"
+        },
+        {
+          "module": "Curve25519Dalek.Math.Basic",
+          "name": "L"
+        },
+        {
+          "module": "Curve25519Dalek.Math.Basic",
+          "name": "U8x32_as_Nat"
+        },
+        {
+          "module": "Curve25519Dalek.Types",
+          "name": "curve25519_dalek.scalar.Scalar.bytes"
+        },
+        {
+          "module": "Init.Prelude",
+          "name": "HMul.hMul"
+        },
+        {
+          "module": "Init.Prelude",
+          "name": "Nat"
+        },
+        {
+          "module": "Init.Prelude",
+          "name": "instHMul"
+        },
+        {
+          "module": "Init.Prelude",
+          "name": "instMulNat"
+        },
+        {
+          "module": "Init.Prelude",
+          "name": "LT.lt"
+        },
+        {
+          "module": "Init.Prelude",
+          "name": "instLTNat"
+        }
+      ]
+    },
+    {
+      "spec": "curve25519_dalek.scalar.Scalar.Insts.CoreOpsArithMulScalarScalar.mul_spec",
+      "function": "curve25519_dalek.scalar.Scalar.Insts.CoreOpsArithMulScalarScalar.mul",
+      "short": "mul_spec",
+      "file": "Curve25519Dalek/Specs/Scalar/Scalar/Mul.lean",
+      "lines": [
+        167,
+        176
+      ],
+      "nl_block": [
+        154,
+        165
+      ],
+      "status": "unverified",
+      "canon_sha": "535bf9bdfe108e4e8e98fb6d33b5a8932109998e49ff0a14048a17681494151b",
+      "pp": "∀ (self rhs : curve25519_dalek.scalar.Scalar),\n  Aeneas.Std.WP.spec (curve25519_dalek.scalar.Scalar.Insts.CoreOpsArithMulScalarScalar.mul self rhs) fun result =>\n    And (L.ModEq (U8x32_as_Nat result.bytes) (instHMul.hMul (U8x32_as_Nat self.bytes) (U8x32_as_Nat rhs.bytes)))\n      (instLTNat.lt (U8x32_as_Nat result.bytes) L)",
+      "consts": [
+        {
+          "module": "Curve25519Dalek.Types",
+          "name": "curve25519_dalek.scalar.Scalar"
+        },
+        {
+          "module": "Aeneas.Std.WP",
+          "name": "Aeneas.Std.WP.spec"
+        },
+        {
+          "module": "Curve25519Dalek.Funs",
+          "name": "curve25519_dalek.scalar.Scalar.Insts.CoreOpsArithMulScalarScalar.mul"
+        },
+        {
+          "module": "Init.Prelude",
+          "name": "And"
+        },
+        {
+          "module": "Mathlib.Data.Nat.ModEq",
+          "name": "Nat.ModEq"
+        },
+        {
+          "module": "Curve25519Dalek.Math.Basic",
+          "name": "L"
+        },
+        {
+          "module": "Curve25519Dalek.Math.Basic",
+          "name": "U8x32_as_Nat"
+        },
+        {
+          "module": "Curve25519Dalek.Types",
+          "name": "curve25519_dalek.scalar.Scalar.bytes"
+        },
+        {
+          "module": "Init.Prelude",
+          "name": "HMul.hMul"
+        },
+        {
+          "module": "Init.Prelude",
+          "name": "Nat"
+        },
+        {
+          "module": "Init.Prelude",
+          "name": "instHMul"
+        },
+        {
+          "module": "Init.Prelude",
+          "name": "instMulNat"
+        },
+        {
+          "module": "Init.Prelude",
+          "name": "LT.lt"
+        },
+        {
+          "module": "Init.Prelude",
+          "name": "instLTNat"
+        }
+      ]
+    },
+    {
+      "spec": "curve25519_dalek.scalar.Scalar.Insts.CoreOpsArithMulSharedBScalarScalar.mul_spec",
+      "function": "curve25519_dalek.scalar.Scalar.Insts.CoreOpsArithMulSharedBScalarScalar.mul",
+      "short": "mul_spec",
+      "file": "Curve25519Dalek/Specs/Scalar/Scalar/Mul.lean",
+      "lines": [
+        99,
+        108
+      ],
+      "nl_block": [
+        86,
+        97
+      ],
+      "status": "unverified",
+      "canon_sha": "2d285417523d9d7ab0a7394c0f3781a2e3004a420b0fade5fe20713c0cbdade2",
+      "pp": "∀ (self rhs : curve25519_dalek.scalar.Scalar),\n  Aeneas.Std.WP.spec (curve25519_dalek.scalar.Scalar.Insts.CoreOpsArithMulSharedBScalarScalar.mul self rhs)\n    fun result =>\n    And (L.ModEq (U8x32_as_Nat result.bytes) (instHMul.hMul (U8x32_as_Nat self.bytes) (U8x32_as_Nat rhs.bytes)))\n      (instLTNat.lt (U8x32_as_Nat result.bytes) L)",
+      "consts": [
+        {
+          "module": "Curve25519Dalek.Types",
+          "name": "curve25519_dalek.scalar.Scalar"
+        },
+        {
+          "module": "Aeneas.Std.WP",
+          "name": "Aeneas.Std.WP.spec"
+        },
+        {
+          "module": "Curve25519Dalek.Funs",
+          "name": "curve25519_dalek.scalar.Scalar.Insts.CoreOpsArithMulSharedBScalarScalar.mul"
+        },
+        {
+          "module": "Init.Prelude",
+          "name": "And"
+        },
+        {
+          "module": "Mathlib.Data.Nat.ModEq",
+          "name": "Nat.ModEq"
+        },
+        {
+          "module": "Curve25519Dalek.Math.Basic",
+          "name": "L"
+        },
+        {
+          "module": "Curve25519Dalek.Math.Basic",
+          "name": "U8x32_as_Nat"
+        },
+        {
+          "module": "Curve25519Dalek.Types",
+          "name": "curve25519_dalek.scalar.Scalar.bytes"
+        },
+        {
+          "module": "Init.Prelude",
+          "name": "HMul.hMul"
+        },
+        {
+          "module": "Init.Prelude",
+          "name": "Nat"
+        },
+        {
+          "module": "Init.Prelude",
+          "name": "instHMul"
+        },
+        {
+          "module": "Init.Prelude",
+          "name": "instMulNat"
+        },
+        {
+          "module": "Init.Prelude",
+          "name": "LT.lt"
+        },
+        {
+          "module": "Init.Prelude",
+          "name": "instLTNat"
+        }
+      ]
+    },
+    {
+      "spec": "curve25519_dalek.scalar.Scalar.Insts.CoreOpsArithNegScalar.neg_spec",
+      "function": "curve25519_dalek.scalar.Scalar.Insts.CoreOpsArithNegScalar.neg",
+      "short": "neg_spec",
+      "file": "Curve25519Dalek/Specs/Scalar/Scalar/Neg.lean",
+      "lines": [
+        123,
+        132
+      ],
+      "nl_block": [
+        111,
+        121
+      ],
+      "status": "unverified",
+      "canon_sha": "9826892ecbf7bc41fb68ef6cfdefa53ab432ba4901e9e9ed91ba4114c2c292c0",
+      "pp": "∀ (self : curve25519_dalek.scalar.Scalar),\n  instLTNat.lt (U8x32_as_Nat self.bytes) L →\n    Aeneas.Std.WP.spec (curve25519_dalek.scalar.Scalar.Insts.CoreOpsArithNegScalar.neg self) fun result =>\n      And (L.ModEq (instHAdd.hAdd (U8x32_as_Nat result.bytes) (U8x32_as_Nat self.bytes)) 0)\n        (instLTNat.lt (U8x32_as_Nat result.bytes) L)",
+      "consts": [
+        {
+          "module": "Curve25519Dalek.Types",
+          "name": "curve25519_dalek.scalar.Scalar"
+        },
+        {
+          "module": "Init.Prelude",
+          "name": "LT.lt"
+        },
+        {
+          "module": "Init.Prelude",
+          "name": "Nat"
+        },
+        {
+          "module": "Init.Prelude",
+          "name": "instLTNat"
+        },
+        {
+          "module": "Curve25519Dalek.Math.Basic",
+          "name": "U8x32_as_Nat"
+        },
+        {
+          "module": "Curve25519Dalek.Types",
+          "name": "curve25519_dalek.scalar.Scalar.bytes"
+        },
+        {
+          "module": "Curve25519Dalek.Math.Basic",
+          "name": "L"
+        },
+        {
+          "module": "Aeneas.Std.WP",
+          "name": "Aeneas.Std.WP.spec"
+        },
+        {
+          "module": "Curve25519Dalek.Funs",
+          "name": "curve25519_dalek.scalar.Scalar.Insts.CoreOpsArithNegScalar.neg"
+        },
+        {
+          "module": "Init.Prelude",
+          "name": "And"
+        },
+        {
+          "module": "Mathlib.Data.Nat.ModEq",
+          "name": "Nat.ModEq"
+        },
+        {
+          "module": "Init.Prelude",
+          "name": "HAdd.hAdd"
+        },
+        {
+          "module": "Init.Prelude",
+          "name": "instHAdd"
+        },
+        {
+          "module": "Init.Prelude",
+          "name": "instAddNat"
+        },
+        {
+          "module": "Init.Prelude",
+          "name": "OfNat.ofNat"
+        },
+        {
+          "module": "Init.Prelude",
+          "name": "instOfNatNat"
+        }
+      ]
+    },
+    {
+      "spec": "curve25519_dalek.scalar.Scalar.Insts.CoreOpsArithSubSharedBScalarScalar.sub_spec",
+      "function": "curve25519_dalek.scalar.Scalar.Insts.CoreOpsArithSubSharedBScalarScalar.sub",
+      "short": "sub_spec",
+      "file": "Curve25519Dalek/Specs/Scalar/Scalar/Sub.lean",
+      "lines": [
+        100,
+        111
+      ],
+      "nl_block": [
+        87,
+        98
+      ],
+      "status": "unverified",
+      "canon_sha": "034f7d579b623303d4af96967c0ca6d6e639d7f1378ea8b7e1e9fc82b8e9fc73",
+      "pp": "∀ (self rhs : curve25519_dalek.scalar.Scalar),\n  instLTNat.lt (U8x32_as_Nat self.bytes) L →\n    instLTNat.lt (U8x32_as_Nat rhs.bytes) L →\n      Aeneas.Std.WP.spec (curve25519_dalek.scalar.Scalar.Insts.CoreOpsArithSubSharedBScalarScalar.sub self rhs)\n        fun result =>\n        And (L.ModEq (instHAdd.hAdd (U8x32_as_Nat result.bytes) (U8x32_as_Nat rhs.bytes)) (U8x32_as_Nat self.bytes))\n          (instLTNat.lt (U8x32_as_Nat result.bytes) L)",
+      "consts": [
+        {
+          "module": "Curve25519Dalek.Types",
+          "name": "curve25519_dalek.scalar.Scalar"
+        },
+        {
+          "module": "Init.Prelude",
+          "name": "LT.lt"
+        },
+        {
+          "module": "Init.Prelude",
+          "name": "Nat"
+        },
+        {
+          "module": "Init.Prelude",
+          "name": "instLTNat"
+        },
+        {
+          "module": "Curve25519Dalek.Math.Basic",
+          "name": "U8x32_as_Nat"
+        },
+        {
+          "module": "Curve25519Dalek.Types",
+          "name": "curve25519_dalek.scalar.Scalar.bytes"
+        },
+        {
+          "module": "Curve25519Dalek.Math.Basic",
+          "name": "L"
+        },
+        {
+          "module": "Aeneas.Std.WP",
+          "name": "Aeneas.Std.WP.spec"
+        },
+        {
+          "module": "Curve25519Dalek.Funs",
+          "name": "curve25519_dalek.scalar.Scalar.Insts.CoreOpsArithSubSharedBScalarScalar.sub"
+        },
+        {
+          "module": "Init.Prelude",
+          "name": "And"
+        },
+        {
+          "module": "Mathlib.Data.Nat.ModEq",
+          "name": "Nat.ModEq"
+        },
+        {
+          "module": "Init.Prelude",
+          "name": "HAdd.hAdd"
+        },
+        {
+          "module": "Init.Prelude",
+          "name": "instHAdd"
+        },
+        {
+          "module": "Init.Prelude",
+          "name": "instAddNat"
+        }
+      ]
+    },
+    {
+      "spec": "curve25519_dalek.scalar.Scalar.ONE_spec",
+      "function": "curve25519_dalek.scalar.Scalar.ONE",
+      "short": "ONE_spec",
+      "file": "Curve25519Dalek/Specs/Scalar/Scalar/One.lean",
+      "lines": [
+        24,
+        30
+      ],
+      "nl_block": null,
+      "status": "unverified",
+      "canon_sha": "a9f52515bf01e9114dfa7c97723fe31bbf95a09f5c8243bfb641d7a99116d431",
+      "pp": "Eq (U8x32_as_Nat curve25519_dalek.scalar.Scalar.ONE.bytes) 1",
+      "consts": [
+        {
+          "module": "Init.Prelude",
+          "name": "Eq"
+        },
+        {
+          "module": "Init.Prelude",
+          "name": "Nat"
+        },
+        {
+          "module": "Curve25519Dalek.Math.Basic",
+          "name": "U8x32_as_Nat"
+        },
+        {
+          "module": "Curve25519Dalek.Types",
+          "name": "curve25519_dalek.scalar.Scalar.bytes"
+        },
+        {
+          "module": "Curve25519Dalek.Funs",
+          "name": "curve25519_dalek.scalar.Scalar.ONE"
+        },
+        {
+          "module": "Init.Prelude",
+          "name": "OfNat.ofNat"
+        },
+        {
+          "module": "Init.Prelude",
+          "name": "instOfNatNat"
+        }
+      ]
+    },
+    {
+      "spec": "curve25519_dalek.scalar.Scalar.ZERO_spec",
+      "function": "curve25519_dalek.scalar.Scalar.ZERO",
+      "short": "ZERO_spec",
+      "file": "Curve25519Dalek/Specs/Scalar/Scalar/Zero.lean",
+      "lines": [
+        24,
+        30
+      ],
+      "nl_block": null,
+      "status": "unverified",
+      "canon_sha": "297061c5fd7dec5aa5f01545619e99259e59eb6794b2e9a48eccfd75c31c5f9d",
+      "pp": "Eq (U8x32_as_Nat curve25519_dalek.scalar.Scalar.ZERO.bytes) 0",
+      "consts": [
+        {
+          "module": "Init.Prelude",
+          "name": "Eq"
+        },
+        {
+          "module": "Init.Prelude",
+          "name": "Nat"
+        },
+        {
+          "module": "Curve25519Dalek.Math.Basic",
+          "name": "U8x32_as_Nat"
+        },
+        {
+          "module": "Curve25519Dalek.Types",
+          "name": "curve25519_dalek.scalar.Scalar.bytes"
+        },
+        {
+          "module": "Curve25519Dalek.Funs",
+          "name": "curve25519_dalek.scalar.Scalar.ZERO"
+        },
+        {
+          "module": "Init.Prelude",
+          "name": "OfNat.ofNat"
+        },
+        {
+          "module": "Init.Prelude",
+          "name": "instOfNatNat"
+        }
+      ]
+    },
+    {
+      "spec": "curve25519_dalek.scalar.Scalar.from_bytes_mod_order_spec",
+      "function": "curve25519_dalek.scalar.Scalar.from_bytes_mod_order",
+      "short": "from_bytes_mod_order_spec",
+      "file": "Curve25519Dalek/Specs/Scalar/Scalar/FromBytesModOrder.lean",
+      "lines": [
+        35,
+        43
+      ],
+      "nl_block": [
+        22,
+        33
+      ],
+      "status": "unverified",
+      "canon_sha": "caa279e8d810e8e1f5c1138fa9bf4263567fa8e98bd1ab54ff6ddda445f6292d",
+      "pp": "∀ (b : Aeneas.Std.Array Aeneas.Std.U8 (Aeneas.Std.Usize.ofNat 32 ⋯)),\n  Aeneas.Std.WP.spec (curve25519_dalek.scalar.Scalar.from_bytes_mod_order b) fun s =>\n    And (L.ModEq (U8x32_as_Nat s.bytes) (U8x32_as_Nat b)) (instLTNat.lt (U8x32_as_Nat s.bytes) L)",
+      "consts": [
+        {
+          "module": "Aeneas.Std.Array.Array",
+          "name": "Aeneas.Std.Array"
+        },
+        {
+          "module": "Aeneas.Std.Scalar.Core",
+          "name": "Aeneas.Std.U8"
+        },
+        {
+          "module": "Aeneas.Std.Scalar.Core",
+          "name": "Aeneas.Std.Usize.ofNat"
+        },
+        {
+          "module": "Init.Prelude",
+          "name": "OfNat.ofNat"
+        },
+        {
+          "module": "Init.Prelude",
+          "name": "Nat"
+        },
+        {
+          "module": "Init.Prelude",
+          "name": "instOfNatNat"
+        },
+        {
+          "module": "Init.Prelude",
+          "name": "of_decide_eq_true"
+        },
+        {
+          "module": "Init.Prelude",
+          "name": "LE.le"
+        },
+        {
+          "module": "Init.Prelude",
+          "name": "instLENat"
+        },
+        {
+          "module": "Aeneas.Std.Scalar.Core",
+          "name": "Aeneas.Std.UScalar.cMax"
+        },
+        {
+          "module": "Aeneas.Std.Scalar.Core",
+          "name": "Aeneas.Std.UScalarTy.Usize"
+        },
+        {
+          "module": "Init.Prelude",
+          "name": "Nat.decLe"
+        },
+        {
+          "module": "Init.Prelude",
+          "name": "id"
+        },
+        {
+          "module": "Init.Prelude",
+          "name": "Eq"
+        },
+        {
+          "module": "Init.Prelude",
+          "name": "Bool"
+        },
+        {
+          "module": "Init.Prelude",
+          "name": "Decidable.decide"
+        },
+        {
+          "module": "Init.Prelude",
+          "name": "Bool.true"
+        },
+        {
+          "module": "Init.Prelude",
+          "name": "Eq.refl"
+        },
+        {
+          "module": "Aeneas.Std.WP",
+          "name": "Aeneas.Std.WP.spec"
+        },
+        {
+          "module": "Curve25519Dalek.Types",
+          "name": "curve25519_dalek.scalar.Scalar"
+        },
+        {
+          "module": "Curve25519Dalek.Funs",
+          "name": "curve25519_dalek.scalar.Scalar.from_bytes_mod_order"
+        },
+        {
+          "module": "Init.Prelude",
+          "name": "And"
+        },
+        {
+          "module": "Mathlib.Data.Nat.ModEq",
+          "name": "Nat.ModEq"
+        },
+        {
+          "module": "Curve25519Dalek.Math.Basic",
+          "name": "L"
+        },
+        {
+          "module": "Curve25519Dalek.Math.Basic",
+          "name": "U8x32_as_Nat"
+        },
+        {
+          "module": "Curve25519Dalek.Types",
+          "name": "curve25519_dalek.scalar.Scalar.bytes"
+        },
+        {
+          "module": "Init.Prelude",
+          "name": "LT.lt"
+        },
+        {
+          "module": "Init.Prelude",
+          "name": "instLTNat"
+        }
+      ]
+    },
+    {
+      "spec": "curve25519_dalek.scalar.Scalar.from_bytes_mod_order_wide_spec",
+      "function": "curve25519_dalek.scalar.Scalar.from_bytes_mod_order_wide",
+      "short": "from_bytes_mod_order_wide_spec",
+      "file": "Curve25519Dalek/Specs/Scalar/Scalar/FromBytesModOrderWide.lean",
+      "lines": [
+        33,
+        41
+      ],
+      "nl_block": [
+        21,
+        31
+      ],
+      "status": "unverified",
+      "canon_sha": "ecb8e1a65bc4931f033c1dd040866a0bf5bf6db83813b0d24e1e1b167a52ac7a",
+      "pp": "∀ (input : Aeneas.Std.Array Aeneas.Std.U8 (Aeneas.Std.Usize.ofNat 64 ⋯)),\n  Aeneas.Std.WP.spec (curve25519_dalek.scalar.Scalar.from_bytes_mod_order_wide input) fun result =>\n    And (L.ModEq (U8x32_as_Nat result.bytes) (U8x64_as_Nat input)) (instLTNat.lt (U8x32_as_Nat result.bytes) L)",
+      "consts": [
+        {
+          "module": "Aeneas.Std.Array.Array",
+          "name": "Aeneas.Std.Array"
+        },
+        {
+          "module": "Aeneas.Std.Scalar.Core",
+          "name": "Aeneas.Std.U8"
+        },
+        {
+          "module": "Aeneas.Std.Scalar.Core",
+          "name": "Aeneas.Std.Usize.ofNat"
+        },
+        {
+          "module": "Init.Prelude",
+          "name": "OfNat.ofNat"
+        },
+        {
+          "module": "Init.Prelude",
+          "name": "Nat"
+        },
+        {
+          "module": "Init.Prelude",
+          "name": "instOfNatNat"
+        },
+        {
+          "module": "Init.Prelude",
+          "name": "of_decide_eq_true"
+        },
+        {
+          "module": "Init.Prelude",
+          "name": "LE.le"
+        },
+        {
+          "module": "Init.Prelude",
+          "name": "instLENat"
+        },
+        {
+          "module": "Aeneas.Std.Scalar.Core",
+          "name": "Aeneas.Std.UScalar.cMax"
+        },
+        {
+          "module": "Aeneas.Std.Scalar.Core",
+          "name": "Aeneas.Std.UScalarTy.Usize"
+        },
+        {
+          "module": "Init.Prelude",
+          "name": "Nat.decLe"
+        },
+        {
+          "module": "Init.Prelude",
+          "name": "id"
+        },
+        {
+          "module": "Init.Prelude",
+          "name": "Eq"
+        },
+        {
+          "module": "Init.Prelude",
+          "name": "Bool"
+        },
+        {
+          "module": "Init.Prelude",
+          "name": "Decidable.decide"
+        },
+        {
+          "module": "Init.Prelude",
+          "name": "Bool.true"
+        },
+        {
+          "module": "Init.Prelude",
+          "name": "Eq.refl"
+        },
+        {
+          "module": "Aeneas.Std.WP",
+          "name": "Aeneas.Std.WP.spec"
+        },
+        {
+          "module": "Curve25519Dalek.Types",
+          "name": "curve25519_dalek.scalar.Scalar"
+        },
+        {
+          "module": "Curve25519Dalek.Funs",
+          "name": "curve25519_dalek.scalar.Scalar.from_bytes_mod_order_wide"
+        },
+        {
+          "module": "Init.Prelude",
+          "name": "And"
+        },
+        {
+          "module": "Mathlib.Data.Nat.ModEq",
+          "name": "Nat.ModEq"
+        },
+        {
+          "module": "Curve25519Dalek.Math.Basic",
+          "name": "L"
+        },
+        {
+          "module": "Curve25519Dalek.Math.Basic",
+          "name": "U8x32_as_Nat"
+        },
+        {
+          "module": "Curve25519Dalek.Types",
+          "name": "curve25519_dalek.scalar.Scalar.bytes"
+        },
+        {
+          "module": "Curve25519Dalek.Math.Basic",
+          "name": "U8x64_as_Nat"
+        },
+        {
+          "module": "Init.Prelude",
+          "name": "LT.lt"
+        },
+        {
+          "module": "Init.Prelude",
+          "name": "instLTNat"
+        }
+      ]
+    },
+    {
+      "spec": "curve25519_dalek.scalar.Scalar.from_canonical_bytes_spec",
+      "function": "curve25519_dalek.scalar.Scalar.from_canonical_bytes",
+      "short": "from_canonical_bytes_spec",
+      "file": "Curve25519Dalek/Specs/Scalar/Scalar/FromCanonicalBytes.lean",
+      "lines": [
+        41,
+        53
+      ],
+      "nl_block": [
+        25,
+        39
+      ],
+      "status": "unverified",
+      "canon_sha": "ed1ea99afa39a8b88ca7b4fc3ff539625e9273d9fa1ddef9472d42c7f025f6ed",
+      "pp": "∀ (b : Aeneas.Std.Array Aeneas.Std.U8 (Aeneas.Std.Usize.ofNat 32 ⋯)),\n  Aeneas.Std.WP.spec (curve25519_dalek.scalar.Scalar.from_canonical_bytes b) fun s =>\n    And (instLTNat.lt (U8x32_as_Nat b) L → And (Eq s.is_some curve25519_dalek.Choice.one) (Eq s.value.bytes b))\n      (instLENat.le L (U8x32_as_Nat b) → Eq s.is_some curve25519_dalek.Choice.zero)",
+      "consts": [
+        {
+          "module": "Aeneas.Std.Array.Array",
+          "name": "Aeneas.Std.Array"
+        },
+        {
+          "module": "Aeneas.Std.Scalar.Core",
+          "name": "Aeneas.Std.U8"
+        },
+        {
+          "module": "Aeneas.Std.Scalar.Core",
+          "name": "Aeneas.Std.Usize.ofNat"
+        },
+        {
+          "module": "Init.Prelude",
+          "name": "OfNat.ofNat"
+        },
+        {
+          "module": "Init.Prelude",
+          "name": "Nat"
+        },
+        {
+          "module": "Init.Prelude",
+          "name": "instOfNatNat"
+        },
+        {
+          "module": "Init.Prelude",
+          "name": "of_decide_eq_true"
+        },
+        {
+          "module": "Init.Prelude",
+          "name": "LE.le"
+        },
+        {
+          "module": "Init.Prelude",
+          "name": "instLENat"
+        },
+        {
+          "module": "Aeneas.Std.Scalar.Core",
+          "name": "Aeneas.Std.UScalar.cMax"
+        },
+        {
+          "module": "Aeneas.Std.Scalar.Core",
+          "name": "Aeneas.Std.UScalarTy.Usize"
+        },
+        {
+          "module": "Init.Prelude",
+          "name": "Nat.decLe"
+        },
+        {
+          "module": "Init.Prelude",
+          "name": "id"
+        },
+        {
+          "module": "Init.Prelude",
+          "name": "Eq"
+        },
+        {
+          "module": "Init.Prelude",
+          "name": "Bool"
+        },
+        {
+          "module": "Init.Prelude",
+          "name": "Decidable.decide"
+        },
+        {
+          "module": "Init.Prelude",
+          "name": "Bool.true"
+        },
+        {
+          "module": "Init.Prelude",
+          "name": "Eq.refl"
+        },
+        {
+          "module": "Aeneas.Std.WP",
+          "name": "Aeneas.Std.WP.spec"
+        },
+        {
+          "module": "Curve25519Dalek.TypesExternal",
+          "name": "curve25519_dalek.subtle.CtOption"
+        },
+        {
+          "module": "Curve25519Dalek.Types",
+          "name": "curve25519_dalek.scalar.Scalar"
+        },
+        {
+          "module": "Curve25519Dalek.Funs",
+          "name": "curve25519_dalek.scalar.Scalar.from_canonical_bytes"
+        },
+        {
+          "module": "Init.Prelude",
+          "name": "And"
+        },
+        {
+          "module": "Init.Prelude",
+          "name": "LT.lt"
+        },
+        {
+          "module": "Init.Prelude",
+          "name": "instLTNat"
+        },
+        {
+          "module": "Curve25519Dalek.Math.Basic",
+          "name": "U8x32_as_Nat"
+        },
+        {
+          "module": "Curve25519Dalek.Math.Basic",
+          "name": "L"
+        },
+        {
+          "module": "Curve25519Dalek.TypesExternal",
+          "name": "curve25519_dalek.subtle.Choice"
+        },
+        {
+          "module": "Curve25519Dalek.TypesExternal",
+          "name": "curve25519_dalek.subtle.CtOption.is_some"
+        },
+        {
+          "module": "Curve25519Dalek.FunsExternal",
+          "name": "curve25519_dalek.Choice.one"
+        },
+        {
+          "module": "Curve25519Dalek.Types",
+          "name": "curve25519_dalek.scalar.Scalar.bytes"
+        },
+        {
+          "module": "Curve25519Dalek.TypesExternal",
+          "name": "curve25519_dalek.subtle.CtOption.value"
+        },
+        {
+          "module": "Curve25519Dalek.FunsExternal",
+          "name": "curve25519_dalek.Choice.zero"
+        }
+      ]
+    },
+    {
+      "spec": "curve25519_dalek.scalar.Scalar.invert_spec",
+      "function": "curve25519_dalek.scalar.Scalar.invert",
+      "short": "invert_spec",
+      "file": "Curve25519Dalek/Specs/Scalar/Scalar/Invert.lean",
+      "lines": [
+        38,
+        47
+      ],
+      "nl_block": [
+        26,
+        36
+      ],
+      "status": "unverified",
+      "canon_sha": "d92a90838d1ea1b44e9a0a1ba776fb3475f0e581bf8eeddddc0d72a3a7efe578",
+      "pp": "∀ (self : curve25519_dalek.scalar.Scalar),\n  Ne (instHMod.hMod (U8x32_as_Nat self.bytes) L) 0 →\n    Aeneas.Std.WP.spec self.invert fun result =>\n      L.ModEq (instHMul.hMul (U8x32_as_Nat self.bytes) (U8x32_as_Nat result.bytes)) 1",
+      "consts": [
+        {
+          "module": "Curve25519Dalek.Types",
+          "name": "curve25519_dalek.scalar.Scalar"
+        },
+        {
+          "module": "Init.Core",
+          "name": "Ne"
+        },
+        {
+          "module": "Init.Prelude",
+          "name": "Nat"
+        },
+        {
+          "module": "Init.Prelude",
+          "name": "HMod.hMod"
+        },
+        {
+          "module": "Init.Prelude",
+          "name": "instHMod"
+        },
+        {
+          "module": "Init.Prelude",
+          "name": "Nat.instMod"
+        },
+        {
+          "module": "Curve25519Dalek.Math.Basic",
+          "name": "U8x32_as_Nat"
+        },
+        {
+          "module": "Curve25519Dalek.Types",
+          "name": "curve25519_dalek.scalar.Scalar.bytes"
+        },
+        {
+          "module": "Curve25519Dalek.Math.Basic",
+          "name": "L"
+        },
+        {
+          "module": "Init.Prelude",
+          "name": "OfNat.ofNat"
+        },
+        {
+          "module": "Init.Prelude",
+          "name": "instOfNatNat"
+        },
+        {
+          "module": "Aeneas.Std.WP",
+          "name": "Aeneas.Std.WP.spec"
+        },
+        {
+          "module": "Curve25519Dalek.Funs",
+          "name": "curve25519_dalek.scalar.Scalar.invert"
+        },
+        {
+          "module": "Mathlib.Data.Nat.ModEq",
+          "name": "Nat.ModEq"
+        },
+        {
+          "module": "Init.Prelude",
+          "name": "HMul.hMul"
+        },
+        {
+          "module": "Init.Prelude",
+          "name": "instHMul"
+        },
+        {
+          "module": "Init.Prelude",
+          "name": "instMulNat"
+        }
+      ]
+    },
+    {
+      "spec": "curve25519_dalek.scalar.Scalar.to_bytes_spec",
+      "function": "curve25519_dalek.scalar.Scalar.to_bytes",
+      "short": "to_bytes_spec",
+      "file": "Curve25519Dalek/Specs/Scalar/Scalar/ToBytes.lean",
+      "lines": [
+        35,
+        44
+      ],
+      "nl_block": [
+        23,
+        33
+      ],
+      "status": "unverified",
+      "canon_sha": "874d2a293be8e4e8e398fc91562dfe013c30db3dc51b7c61905b2fbf079192d1",
+      "pp": "∀ (s : curve25519_dalek.scalar.Scalar), Aeneas.Std.WP.spec s.to_bytes fun a => And (Eq a s.bytes) (Eq { bytes := a } s)",
+      "consts": [
+        {
+          "module": "Curve25519Dalek.Types",
+          "name": "curve25519_dalek.scalar.Scalar"
+        },
+        {
+          "module": "Aeneas.Std.WP",
+          "name": "Aeneas.Std.WP.spec"
+        },
+        {
+          "module": "Aeneas.Std.Array.Array",
+          "name": "Aeneas.Std.Array"
+        },
+        {
+          "module": "Aeneas.Std.Scalar.Core",
+          "name": "Aeneas.Std.U8"
+        },
+        {
+          "module": "Aeneas.Std.Scalar.Core",
+          "name": "Aeneas.Std.Usize.ofNat"
+        },
+        {
+          "module": "Init.Prelude",
+          "name": "OfNat.ofNat"
+        },
+        {
+          "module": "Init.Prelude",
+          "name": "Nat"
+        },
+        {
+          "module": "Init.Prelude",
+          "name": "instOfNatNat"
+        },
+        {
+          "module": "Init.Prelude",
+          "name": "of_decide_eq_true"
+        },
+        {
+          "module": "Init.Prelude",
+          "name": "LE.le"
+        },
+        {
+          "module": "Init.Prelude",
+          "name": "instLENat"
+        },
+        {
+          "module": "Aeneas.Std.Scalar.Core",
+          "name": "Aeneas.Std.UScalar.cMax"
+        },
+        {
+          "module": "Aeneas.Std.Scalar.Core",
+          "name": "Aeneas.Std.UScalarTy.Usize"
+        },
+        {
+          "module": "Init.Prelude",
+          "name": "Nat.decLe"
+        },
+        {
+          "module": "Init.Prelude",
+          "name": "id"
+        },
+        {
+          "module": "Init.Prelude",
+          "name": "Eq"
+        },
+        {
+          "module": "Init.Prelude",
+          "name": "Bool"
+        },
+        {
+          "module": "Init.Prelude",
+          "name": "Decidable.decide"
+        },
+        {
+          "module": "Init.Prelude",
+          "name": "Bool.true"
+        },
+        {
+          "module": "Init.Prelude",
+          "name": "Eq.refl"
+        },
+        {
+          "module": "Curve25519Dalek.Funs",
+          "name": "curve25519_dalek.scalar.Scalar.to_bytes"
+        },
+        {
+          "module": "Init.Prelude",
+          "name": "And"
+        },
+        {
+          "module": "Curve25519Dalek.Types",
+          "name": "curve25519_dalek.scalar.Scalar.bytes"
+        },
+        {
+          "module": "Curve25519Dalek.Types",
+          "name": "curve25519_dalek.scalar.Scalar.mk"
+        }
+      ]
+    }
+  ]
+}

@@ -1,15 +1,7 @@
-<!-- generated-by: gsd-doc-writer -->
 # Architecture and experiment decision register
 
-This register is the PR discussion surface for the proposed automated Lean
-formalisation experiments around `curve25519-dalek`.  It records choices that
-would otherwise be hidden in scripts, prompts, environment setup, or a single
-successful run.
-
-Nothing below is adopted merely by appearing here.  Every item is either
-**OPEN** (a decision is required) or **PROPOSED** (a starting position for
-review).  Review comments can refer to an ID such as `DEC-07` and should say
-whether they support, amend, or reject the proposed wording.
+Every item is either **OPEN** (a decision is required) or **PROPOSED** (a starting position for
+review).  
 
 ## Status and review conventions
 
@@ -45,23 +37,14 @@ experiment-results archive, an agent implementation, or all three?
 
 **Provisional recommendation.** Choose option 2.  It makes the experimental
 condition and acceptance authority reviewable without turning Git history into
-an uncontrolled store of model output or potential solution leakage.
-
-**Consequences/evidence required.** Define versioned manifest and verdict
-schemas, ownership of harness code, and a stable pointer format for external
-artifacts.  Keep agent-writable workspace paths separate from control-plane
-and verifier paths.
-
-**PR question.** Should a first milestone implement the control plane around
-the existing `harness/` prototype, or should it remain deliberately a research
-specification until the scoring rules are agreed?
+an uncontrolled store of model output or potential solution leakage. The question is then: where to run experiments and how to record results? CryptoProver might have partial answers to this.
 
 ### DEC-02 — Where large runs and raw artifacts live
 
 **Status:** PROPOSED
 
 **Decision needed.** Where do patches, transcripts, build logs, sealed
-bundles, egress receipts, and replay outputs live once they exceed a small PR
+bundles, and replay outputs live once they exceed a small PR
 artifact?
 
 **Options.**
@@ -81,32 +64,9 @@ encryption/backup responsibility, immutable object/versioning mechanism, and
 redaction process.  A run without the agreed minimum evidence is *unscored*,
 not silently represented by a success row.
 
-**PR question.** Which BAIF-managed artifact service can offer content hashes,
+**question.** Which BAIF-managed artifact service can offer content hashes,
 access control, and retention suitable for raw model transcripts?
 
-### DEC-03 — Execution location, funding, and credentials
-
-**Status:** OPEN
-
-**Decision needed.** Who runs and pays for experiments, and where do model and
-compute credentials reside?
-
-**Options.** Institutional or project API account; a funded self-hosted/cluster
-runner; a CI-backed worker with a controlled budget; a contributor's personal
-subscription; or a provider-sponsored evaluation account.
-
-**Provisional recommendation.** Use a project-owned account and budget owner,
-with credentials held by the orchestration/broker service rather than in an
-agent workspace or personal shell environment.  A personal subscription can
-be a development convenience but should not be a prerequisite for a scored
-campaign.
-
-**Consequences/evidence required.** Publish per-run and campaign ceilings,
-approval/escalation rules, cost-accounting fields, account access roles, secret
-rotation/revocation procedure, and an incident contact.
-
-**PR question.** What funded execution path lets colleagues reproduce a run
-without consuming an individual's subscription or exposing their credentials?
 
 ### DEC-04 — Runtime sandbox and egress boundary
 
@@ -132,7 +92,7 @@ network policy, process/file-access and egress receipts, clean Git-object-store
 audit, negative connectivity test, and fresh replay log.  Prompt instructions
 or command-trace inspection alone do not constitute a sandbox.
 
-**PR question.** Is container-plus-host enforcement sufficient for the first
+**question.** Is container-plus-host enforcement sufficient for the first
 scoreable arm, or must the baseline be microVM/remote-worker isolation from the
 start?
 
@@ -155,13 +115,9 @@ credible model/vendor evidence and an appropriate holdout.
 
 **Consequences/evidence required.** Record model identifier/release date,
 target-publication timeline, public solution repositories considered, and any
-similarity/plagiarism or negative-control analysis.  Do not make allegations
-about the paper or its authors: the [CryptoProver paper](https://arxiv.org/abs/2608.00965v1)
-describes removal of original proof bodies, sealed networking, fresh sessions,
-and mechanical gates; this project asks for a reproducible evidence package for
-its own claims.
+similarity/plagiarism or negative-control analysis.
 
-**PR question.** Which label set should appear in result tables: `runtime-isolated`,
+**question.** Which label set should appear in result tables: `runtime-isolated`,
 `reference-assisted`, `training-contamination-unknown`, and `held-out`?
 
 ### DEC-06 — Aeneas extraction boundary
@@ -186,7 +142,7 @@ agent runner.
 commands, generated-output hash, and transformation logs.  Report whether a
 run begins from Rust, generated Lean, or both.
 
-**PR question.** Is extraction itself part of the research claim, or a fixed
+**question.** Is extraction itself part of the research claim, or a fixed
 preprocessing step that every scored proof/spec agent receives?
 
 ### DEC-07 — Deterministic top-level target selection
@@ -196,7 +152,7 @@ preprocessing step that every scored proof/spec agent receives?
 **Decision needed.** What exactly counts as a top-level specification, and how
 is the answer produced reproducibly rather than selected by taste?
 
-**Options.** Hand-curated APIs; call-graph roots/sinks; public Rust API
+**Options.** Hand-curated APIs; call-graph extrema; public Rust API
 closures; graph candidates followed by a reviewed classification; or one
 module-specific target list per arm.
 
@@ -205,14 +161,19 @@ pinned tool versions and a checked-in deterministic selection algorithm.
 Classify public API declarations, trait-instance operations, generated helpers,
 external primitives, and manual exceptions separately.  The existing
 `.verilib/top_level_specs.{json,md}` candidate list is useful evidence but not
-yet sufficient as the authoritative pipeline.
+yet sufficient as the authoritative pipeline. Fix the convention `A → B`
+when `A` calls or depends on `B`. The current 94-of-263 inventory contains
+specified functions with no incoming call path from another specified
+function, traversing helpers without specs; these are graph sources under that
+convention (38 `api`, 56 `trait-instance`). This decision defines the universe
+`T`, not which subset is supplied to a run.
 
 **Consequences/evidence required.** Archive graph facts, tool/config hashes,
 algorithm version, selection output, exception rationale, and validation that
 probe target configuration did not silently omit modules.  Name whether
 "top-level" means public entry point, graph extremum, or benchmark boundary.
 
-**PR question.** Should the first target list be public API only, or include
+**question.** Should the first target list be public API only, or include
 trait specifications and graph-derived candidates as distinct strata?
 
 ### DEC-08 — Mathematical infrastructure, axioms, and input-budget arms
@@ -235,12 +196,19 @@ budgets.
 | M2 | M1 plus a fixed, declared set of Math lemma/assumption statements, with proof bodies and strategy comments hidden | Recovery relative to a stated trusted Math interface. |
 | M3 | M2 plus the full allowed project Math layer and explicitly listed guidance | Reference-assisted productivity baseline, not clean specification discovery. |
 
-**Consequences/evidence required.** Hash every visible file and separately
+The builder must separately account for mandatory elaboration support and
+optional semantic assistance. Imports, types, structures, definitions, and
+notation needed to compile a chosen seed are a **support closure**; including
+them must not silently include project lemmas, theorem statements, proof
+bodies, comments, or hidden top-level reference contracts.
+
+**Consequences/evidence required.** Hash every visible file/declaration and separately
 count declarations, assumptions, comments, statement text, and proof bodies
 available in each arm.  The current frozen Math/external manifests are a useful
-starting inventory, not permission to hide a large trusted base.
+starting inventory, not permission to hide a large trusted base. Report the
+support closure and semantic Math budget as different manifest fields.
 
-**PR question.** What is the smallest M1 vocabulary that still lets Lean state
+**question.** What is the smallest M1 vocabulary that still lets Lean state
 meaningful Curve25519/Ristretto properties without making the experiment
 artificially impossible?
 
@@ -250,7 +218,8 @@ artificially impossible?
 
 **Decision needed.** Should the system use a role-separated workflow inspired
 by the existing Formal Verification Skill (FVS) material, and who decides when
-a specification is frozen?
+a specification is frozen? In a seeded run, only the supplied set `S` is
+frozen initially; contracts for `W = T \ S` must be generated.
 
 **Options.** One general agent; spec writer plus prover; spec writer →
 independent spec reviewer → rewrite loop → prover; or a broader multi-agent
@@ -262,15 +231,16 @@ and independent reviewer; permit at most three writer/reviewer cycles per
 target; then record `freeze`, `reject`, or `defer` automatically under a
 published rule.  A prover gets the frozen contract and a separate fresh
 context.  The harness/verifier, outside all agents' write authority, accepts
-or rejects the outcome.
+or rejects the outcome. An accepted generated contract in `W` is
+canonicalised and frozen before it reaches a prover; supplied contracts in
+`S` are immutable for the entire run.
 
 **Consequences/evidence required.** Version/hash role prompts, tool permissions,
 handoff summaries, review rubric, loop count, and termination decision.  The
 reviewer must not see a hidden human reference or have a feedback channel that
 lets the synthesis agent query it.
 
-**PR question.** Which FVS role prompts are admissible in the initial arm, and
-should review cycles be charged against the same cost/token budget as proving?
+**question.** Which FVS role prompts are admissible in the initial arm?
 
 ### DEC-10 — Acceptance and headline definition of success
 
@@ -278,9 +248,9 @@ should review cycles be charged against the same cost/token budget as proving?
 
 **Decision needed.** What gates must pass before a run is called successful?
 
-**Options.** A build passing; zero `sorry` in a target file; zero task-scope
+**Options.** A build passing; zero `sorry`; zero task-scope
 obligations plus fixed trust base; or a ladder separating compilation,
-obligation closure, integrity, specification adequacy, and reproduction.
+obligation closure, integrity (no axioms or weird meta-programming patterns), specification adequacy, and reproduction.
 
 **Provisional recommendation.** Adopt the ladder in `docs/EVALUATION.md` as
 the vocabulary for discussion.  A headline “automatically formalised” result
@@ -288,12 +258,16 @@ requires clean whole-project replay, zero declared task obligations, immutable
 inputs/contract identities, no trust-base expansion, scope and forbidden-code
 checks, and fresh verification (L3).  Claims of adequate generated
 specifications additionally require the semantic checks described there (L4).
+A seeded run succeeds only if every target in `T`, including the withheld
+`W`, has an accepted fully proved contract **and** the declared whole-project
+task denominator closes. Because it generates `W`, a “formalised from seed
+`S`” headline requires L4.
 
 **Consequences/evidence required.** Every table states denominator, target set,
 input arm, trust report, prompt/model version, attempts, failures, cost, and
 whether it was proof-only or specification synthesis.
 
-**PR question.** Should L3 be the minimum scoreable result, with L1/L2 kept as
+**question.** Should L3 be the minimum scoreable result, with L1/L2 kept as
 progress-only outcomes, or do colleagues need a smaller initial acceptance
 unit for engineering iteration?
 
@@ -322,7 +296,7 @@ declaration, hash, owner, rationale, arm scope, and trust effect.  Fresh replay
 must use source closure only, not runner-produced `.olean` caches.  The policy
 must cover indirect metaprogramming and imports, not just word searches.
 
-**PR question.** For the first scored experiment, should *all* new
+**question.** For the first scored experiment, should *all* new
 `native_decide` be rejected, or allowed only when the compiled code and trust
 roots are independently pinned and reported?
 
@@ -349,7 +323,7 @@ available, retries/resets, number of attempts, and model drift events.  A
 provider model alias such as “latest” is not reproducible without a dated
 identifier.
 
-**PR question.** What is the minimum trial count and provider diversity needed
+**question.** What is the minimum trial count and provider diversity needed
 before presenting a comparative claim rather than a single-case demonstration?
 
 ### DEC-13 — Source revision, backend, and target scope
@@ -363,19 +337,16 @@ scope for the first campaign?
 `curve25519-dalek` revision re-extracted from Rust; one portable backend/slice;
 or the full crate including all generated and platform-specific paths.
 
-**Provisional recommendation.** Start with a pinned source/extraction
-snapshot, one named functional slice, and an explicit declaration of excluded
-backends/platform conditions.  Expand only through new manifests, not by
-quietly changing the denominator mid-campaign.
+**Provisional recommendation.** We could aim for full-crate verification after
+establishing the `S = T` all-top-level-spec baseline, then test smaller seed
+sets without changing the full-crate success denominator.
 
 **Consequences/evidence required.** Record Rust commit, Aeneas output hash,
 Rust feature flags, target architecture/OS, compiler and toolchain versions,
 and inclusion/exclusion rationale for scalar, Edwards, Montgomery, Ristretto,
 traits, FFI, and architecture-specific code.
 
-**PR question.** Is a scalar-only vertical slice the right first benchmark, or
-does it underrepresent the API/specification challenges that motivate the
-project?
+**question.** Is the full crate too much for the initial experiment? 
 
 ### DEC-14 — Artifact privacy, retention, and reviewer access
 
@@ -411,19 +382,15 @@ reference?
 bundle sealing; separate engineering and scored modes; or automated checks
 only.
 
-**Provisional recommendation.** Distinguish a free-form development mode from
-a scored mode with no human changes to prompts, target selection, code, or
-acceptance policy after sealing.  For synthesis claims, use a written blinded
-review rubric and independent reviewers who do not disclose hidden reference
-content to agents.  Record every intervention and classify it as a new arm if
-it changes an input.
+**Provisional recommendation.** The ultimate scored goal is no human
+intervention after bundle sealing. That applies both when all top-level specs
+are supplied and when agents generate `W`; agent review and mechanical or
+blinded post-run assessment are part of the registered workflow, not ad-hoc
+human feedback.
 
-**Consequences/evidence required.** Name reviewer roles, conflict-of-interest
-policy, blinding boundary, adjudication rule, intervention log, and the
-separation between benchmark author, runner operator, and result acceptor.
-
-**PR question.** Who can serve as independent spec reviewers, and is a hidden
-human reference practical/legal for the initial selected targets?
+**question.** Is “no `sorry` in top-level proofs” useful only as a progress
+gate, with semantic adequacy and whole-project closure still required for
+success?
 
 ### DEC-16 — Failure reporting and stopping rules
 
@@ -447,7 +414,7 @@ leak or credential incident, artifact quarantine, notification/owner, and
 whether affected results are invalidated or rerun.  Preserve enough evidence to
 diagnose failures without exposing secrets.
 
-**PR question.** What stopping rule prevents endless prompt tuning while still
+**question.** What stopping rule prevents endless prompt tuning while still
 allowing legitimate harness repairs to be distinguished from benchmark
 adaptation?
 
@@ -473,32 +440,8 @@ reviewers.
 PR summary states this boundary and names any property that is deliberately
 out-of-scope.
 
-**PR question.** Should an explicit non-goal statement be mandatory in every
-experiment manifest and published result page?
-
-### DEC-18 — Licensing, provenance, and publication rights
-
-**Status:** OPEN
-
-**Decision needed.** Which source, generated code, prompts, model outputs, and
-artifacts may be redistributed, and how is provenance recorded?
-
-**Options.** Assume repository licensing covers all outputs; maintain a
-component-level provenance/SBOM record; or keep non-redistributable artifacts
-restricted and publish only derived metrics.
-
-**Provisional recommendation.** Maintain component-level provenance: source
-revision/licence notices, Aeneas output provenance, copied tool licences,
-prompt/template ownership, provider terms relevant to output retention, and
-artifact access classification.  Do not publish a transcript or reference
-proof merely because it was technically available to a runner.
-
-**Consequences/evidence required.** Obtain maintainer/legal guidance where
-needed, keep a licence/SBOM manifest with each bundle, and define takedown and
-redaction procedures.
-
-**PR question.** Are there BAIF or upstream licensing restrictions that rule
-out publishing sealed benchmark bundles, raw prompts, or generated proofs?
+**question.** Should an explicit non-goal statement be mandatory in every
+experiment manifest and published result page to avoid the agents getting drifted trying tasks like constant-time behavior etc?
 
 ### DEC-19 — Hardware, determinism, and model drift
 
@@ -512,7 +455,7 @@ and resource limits; or freeze all hardware and provider versions where
 possible.
 
 **Provisional recommendation.** Pin software/image/toolchain and report CPU
-architecture, OS/kernel class, resource limits, and whether any GPU is used.
+architecture, OS/kernel class, resource limits.
 Treat provider/model drift as a new condition; where a model cannot be pinned,
 record the date and label reproducibility as limited rather than pretending it
 is exact.
@@ -522,30 +465,49 @@ limits, build/replay timing, cache policy, deterministic-seed support, and
 model availability changes to receipts.
 
 **PR question.** What minimum hardware/OS record is useful without making the
-first manifests unmanageably platform-specific?
+first manifests platform-specific?
 
-### DEC-20 — Ownership, review, and incident authority
+### DEC-21 — Parametric top-level seed sets and support closure
 
-**Status:** OPEN
+**Status:** PROPOSED
 
-**Decision needed.** Who owns each trust boundary and has authority to accept,
-invalidate, rerun, or publish a result?
+**Decision needed.** How does a run declare which top-level specifications are
+supplied, what information identifies the missing targets, and which related
+Math material is included merely to make the starting bundle elaborate?
 
-**Options.** One maintainer owns everything; separate benchmark, runtime,
-verifier, artifact, and publication owners; or rotate ownership per campaign.
+**Options.** Always supply all of `T`; accept a JSON seed `S ⊆ T`
+with only its minimal elaboration closure; accept the same parametric seed but
+also expose definition-only vocabulary sufficient to state all of `T`; or
+hand-build each bundle without a reproducible closure rule.
 
-**Provisional recommendation.** Separate at least benchmark/bundle author,
-runner operator, verifier/gate maintainer, artifact custodian, and publication
-reviewer.  No single agent run or operator should be able to alter both a
-candidate and the acceptance rule without review.
+**Provisional recommendation.** Make the seed a versioned, schema-validated
+experiment input. The builder fixes `T`, reads `allowed_spec_ids` for `S`,
+derives `W = T \ S`, and emits a sealed agent bundle plus a separate
+verifier-only reference manifest. Contracts in `S` and their required
+definition/structure closure are supplied; reference statements and proofs for
+`W` are not. Every withheld target exposes its stable Rust function identity.
+Whether its extracted Lean declaration/body from
+`Curve25519Dalek/Funs.lean` is also visible is an explicit treatment field.
 
-**Consequences/evidence required.** Maintain an ownership matrix, escalation
-contacts, key/secret-access boundaries, review quorum for gate changes, and a
-process for invalidating already published runs after a sandbox or provenance
-incident.
+Begin with `S = T` to validate the harness. Then evaluate deterministic
+ablations under both named closure policies if resources allow:
+`seed-elaboration-only` for the strongest reconstruction claim and
+`universe-vocabulary` as a more guided diagnostic condition. Direct
+model/workflow comparisons use identical seeds and closure hashes; results
+across seeds form a spec-budget curve.
 
-**PR question.** Which colleagues can own the independent verifier and result
-acceptance role for a pilot without creating an impractical review bottleneck?
+**Consequences/evidence required.** Record the ordered `T`, `S`, derived
+`W`, target-identity/body visibility, support-closure algorithm and resolved
+declarations, Math budget, generator/configuration hashes, and final bundle
+hash. Scan agent inputs for reference statements or proofs for `W`. For every
+run, report top-level completion separately from whole-project closure. A seed
+set is “validated” only under a pre-registered repetition/pass threshold; the
+search may claim the smallest validated seed found, not a global minimum it did
+not exhaustively establish.
+
+**question.** For the first `S2` campaign, should withheld targets expose their
+transpiled Lean bodies, and should support be `seed-elaboration-only` or
+`universe-vocabulary`?
 
 ## AOB / questions we may have missed
 
@@ -565,6 +527,10 @@ accepted.
       creating termination or dependency-cycle failures?
 - [ ] Should mutations, hidden-reference comparisons, and semantic review be
       mandatory per target or sampled by module?
+- [ ] What independent-run count and pass threshold make a seed sufficient,
+      and how do we report stochastic non-monotonicity between subsets?
+- [ ] Which deterministic seed-search strategy and total compute budget are
+      credible when exhaustive search over `2^|T|` subsets is impossible?
 - [ ] What public result format makes failed, timed-out, and rejected runs as
       visible as accepted runs?
 - [ ] Who is allowed to change the target selector, input budget, FVS prompts,

@@ -1,4 +1,3 @@
-<!-- generated-by: gsd-doc-writer -->
 # Experiment protocol
 
 This document proposes a pre-registered protocol for measuring how far an agent can formalise `curve25519-dalek` in Lean from deliberately limited inputs. It is a design for discussion, not a claim that the repository already enforces every control described below. The objective is repeatable evidence about reconstruction under a declared input budget, rather than an undifferentiated demonstration that happens to compile.
@@ -23,10 +22,15 @@ Every result must name one arm. Results from different arms are not pooled into 
 | Arm | Agent receives | Primary question | Excluded claim |
 | --- | --- | --- | --- |
 | `P0-proof-recovery` | Frozen Lean code and already-fixed statements for a selected set of holes | Can agents recover proofs under the declared trust policy? | It does not measure specification synthesis. |
-| `S1-top-level-to-internal-spec` | Executable/extracted code, selected top-level contracts, and the declared Math budget | Can agents propose, review, freeze, and prove sufficient internal contracts? | A compiling result alone does not establish that a generated contract is adequate. |
-| `R2-rust-to-lean` (optional) | Pinned Rust source plus the explicitly permitted translation/extraction artifacts | Can the pipeline reach the Lean target with less supplied Lean code? | It must not be compared directly with `P0` or `S1` without accounting for the extra translation task. |
+| `S1-top-level-to-internal-spec` | Executable/extracted code, all contracts in the fixed top-level universe `T`, and the declared Math budget | Can agents propose, review, freeze, and prove sufficient internal contracts? | It does not measure recovery of missing top-level contracts. |
+| `S2-top-level-seed-recovery` | Executable/extracted code, a manifest-selected seed `S ⊆ T`, registered identity/body visibility for `T \ S`, and the declared support/Math budgets | Can agents recover the withheld top-level contracts, then complete the formalisation? | Compilation or proof of supplied seeds alone does not establish recovery. |
+| `R2-rust-to-lean` (optional) | Pinned Rust source plus the explicitly permitted translation/extraction artifacts | Can the pipeline reach the Lean target with less supplied Lean code? | It must not be compared directly with another arm without accounting for the extra translation task. |
 
-Start with a small, published target slice before a whole-crate campaign. An arm must state whether it covers only selected specifications, all task holes in a module, or the entire crate.
+Start with a small, published target slice while validating the harness. An arm
+must state whether it covers only selected specifications, all task holes in a
+module, or the entire crate. A sliced `S2` pilot is progress evidence only; the
+project’s requested seeded-run success condition uses the declared whole-project
+task denominator.
 
 ## Frozen source, extraction, and target selection
 
@@ -47,7 +51,7 @@ The preflight bundle must pin and hash:
 
 ### Define “top-level” mechanically
 
-“Top-level” is ambiguous: a graph sink, a public API entry point, a trait method, and a function not called by another specified function are different concepts. The repository currently has 94 graph-derived candidates among 263 specifications in `.verilib/top_level_specs.json`; its current convention is graph sinks among specified functions, and the command that generated the selection is not checked in. That is useful exploratory data, but not yet a reproducible protocol.
+“Top-level” is ambiguous: a graph source or sink, a public API entry point, a trait method, and a function not called by another specified function are different concepts. Fix the edge convention `A → B` when `A` calls or depends on `B`. The repository currently has 94 graph-derived candidates among 263 specifications in `.verilib/top_level_specs.json`: functions with specifications that are not called directly, or transitively through helpers without specifications, by another function with a specification. Under the stated edge convention these are graph **sources**, not sinks. The inventory labels 38 as `api` and 56 as `trait-instance`, so the current boundary is 35.7% of the specification inventory. The command that generated the selection is not checked in. This is useful exploratory data, but not yet a reproducible protocol.
 
 Before scoring, add a checked-in selection pipeline that consumes the pinned probe facts and emits a versioned target-set JSON artifact plus a human-readable report. Its algorithm must specify:
 
@@ -67,9 +71,79 @@ The report must classify every candidate as one of:
 
 Manual inclusions, exclusions, and category corrections are permitted only through a reviewed exceptions file. Each exception needs an identifier, rationale, author/reviewer, date, and the target-selection output hash it modifies. The publication must show both raw output and post-exception output.
 
+### Parametric top-level seed manifest
+
+For `S2`, target selection and input selection are separate deterministic
+steps:
+
+1. Target selection fixes a versioned top-level universe `T`.
+2. The experiment manifest names the allowed seed set `S ⊆ T`.
+3. The builder derives the withheld set `W = T \ S`; it is not an
+   independently editable list.
+4. Exact contracts in `S` are placed in the agent bundle and frozen.
+5. For each member of `W`, the builder exposes only the pre-registered target
+   identity and implementation material. Its stable Rust function identity is
+   always visible. Visibility of the pinned extracted Lean declaration/body
+   from `Curve25519Dalek/Funs.lean`, source location, expected theorem name,
+   and destination remains a declared treatment choice.
+6. The builder computes and records the chosen support closure, then checks
+   that the result elaborates before sealing the bundle.
+
+An illustrative experiment input has this logical shape:
+
+```json
+{
+  "schema_version": 1,
+  "top_level_universe_id": "sha256:<target-set-hash>",
+  "allowed_spec_ids": ["<stable-spec-id>"],
+  "withheld_spec_policy": "complement-of-allowed",
+  "target_function_visibility": "lean-body-and-rust-identity",
+  "support_closure": {
+    "policy": "seed-elaboration-only",
+    "reviewed_extra_root_ids": []
+  },
+  "math_budget": "M0-minimal",
+  "generator": {
+    "revision": "<runner-revision>",
+    "config_sha256": "<builder-config-hash>"
+  }
+}
+```
+
+The checked-in schema may use different field names, but it must preserve
+these distinctions. The sealed output records the resolved `T`, `S`, `W`,
+every visible declaration and file hash, and a final bundle hash.
+
+The agent-visible manifest must not contain the reference statements or proofs
+for `W`. A separate verifier-side reference manifest may retain them for
+post-run semantic comparison, but it is built, stored, and mounted outside the
+agent trust boundary. Existing exploratory synthesis manifests that archive an
+original statement are therefore verifier artifacts, not safe agent inputs.
+
+### Support closure is not semantic assistance
+
+The builder needs enough material for the implementation and supplied specs to
+elaborate, but file-level copying can leak unrelated theorems, comments, or
+withheld contracts. Prefer declaration-level slicing and define one of these
+policies before a campaign:
+
+- `seed-elaboration-only`: include only imports, types, structures, notation,
+  and definitions needed to elaborate the visible implementation and `S`.
+  This is the stronger recovery test, but agents may also need to reconstruct
+  vocabulary required by `W`.
+- `universe-vocabulary`: additionally include definition-only vocabulary needed
+  to state every target in `T`, while still excluding theorem statements,
+  proof bodies, strategy comments, and the reference statements for `W`.
+  This makes the missing-spec task more consistently well-posed but supplies
+  more guidance.
+
+Whichever policy is selected is an experimental input. A closure algorithm may
+not silently promote a helpful Math lemma or hidden contract merely because it
+shares a source file with a required structure.
+
 ## Declared input budgets
 
-The supplied mathematical layer is a treatment variable, not incidental setup. Do not mix different levels of prior formalisation into one headline result.
+The supplied mathematical layer is a treatment variable, not incidental setup. Do not mix different levels of prior formalisation into one headline result. First compute the mandatory syntactic support closure under the declared policy; then apply the semantic Math budget below. Both layers and their hashes must be reported separately.
 
 | Budget | Permitted mathematical input | Intended interpretation |
 | --- | --- | --- |
@@ -84,11 +158,11 @@ For each budget, record every visible file, declaration, line count, byte count,
 
 Use FVS as a source of role separation and prompt ideas, not as the authority that decides correctness. The current FVS prompts in the companion Lean verification project are interactive; both their text and their role design are experimental inputs and must be revision-pinned, hashed, and disclosed.
 
-For `S1`, use this bounded workflow for each target or coherent target batch:
+For `S1` and `S2`, use this bounded workflow for each target or coherent target batch. In `S2`, the writer first proposes contracts for `W`; supplied contracts in `S` remain frozen throughout:
 
 1. A **fresh spec writer** proposes an internal statement and records its rationale and dependencies.
-2. A **fresh, independent spec reviewer** examines the proposal against only the permitted bundle and reports accept/revise/reject. It does not see hidden human reference statements.
-3. At most three writer/reviewer revise-review cycles are allowed. On acceptance, canonicalise and freeze the statement. On exhaustion, apply the pre-registered outcome (`reject` or `defer`); a prover may receive a statement only if the last recorded reviewer verdict accepted that exact canonical statement.
+2. A **fresh, independent spec reviewer** examines via adversarial review the proposal against only the permitted bundle and reports accept/revise/reject.
+3. At most three writer/reviewer revise-review cycles are allowed (one could structure the 'run' pipeline to be parametric on the loop threshold, where by default the loops stops at 3 but users can decrease or increase the upper bound for the loop and check for improvements of the results). On acceptance, canonicalise and freeze a generated statement in `W`. On exhaustion, apply the pre-registered outcome (`reject` or `defer`); a prover may receive a generated statement only if the last recorded reviewer verdict accepted that exact canonical statement.
 4. **Fresh prover workers** receive frozen statements only. They may not relax, replace, or accept the statements they are asked to prove.
 5. A **mechanical verifier** outside every agent's write scope performs the final decision.
 
@@ -108,6 +182,34 @@ The pre-registration for an experiment family must declare:
 
 Use at least three independent runs for any comparative conclusion when resources permit. A single demonstration run may be published as a case study, but must not be described as a success rate or robust capability estimate. Report all attempted runs within the declared budget, including aborts, integrity-gate failures, and runs with no proof progress.
 
+Direct comparisons between models, prompts, or agent workflows require the
+same `T`, `S`, support-closure output, Math budget, target visibility,
+toolchain, and acceptance gates. Runs with different seed sets belong to a
+spec-budget or input-ablation curve; their raw success rates must not be pooled
+as though they had identical tasks.
+
+### Searching for the smallest validated seed
+
+With 94 current candidates there are `2^94` possible seed sets, so an
+exhaustive global-minimum claim is not realistic. Pre-register a bounded search
+such as:
+
+1. establish the full-contract baseline `S = T`;
+2. perform leave-one-out or coherent module/category ablations;
+3. evaluate nested seed fractions or graph-informed subsets;
+4. use a fixed greedy or delta-debugging strategy to shrink successful seeds;
+   and
+5. confirm each candidate seed with independent repetitions under the same
+   harness and a pre-registered success threshold.
+
+Agent performance is stochastic and need not be monotone: an extra contract
+may help, or its context cost may distract. A success for `S` therefore does
+not establish every superset as successful, and a one-off failure does not
+establish insufficiency. Report the **smallest validated seed set found**, its
+search procedure, repetition count, pass threshold, confidence interval where
+meaningful, and total search budget. The exact repetition/pass threshold is an
+open decision that must be fixed before scoring.
+
 Compute is governed rather than assumed. The run manifest must identify the authorised execution environment and budget owner (for example, a funded API project, institutional runner, or approved CI/self-hosted capacity), the maximum approved spend, and the mechanism that records provider usage. No personal subscription, credential, or unmetered local account is an implicit requirement of the protocol.
 
 ## Preflight checklist
@@ -116,8 +218,13 @@ Preflight produces an immutable experiment bundle and refuses to start if any re
 
 - Pin source/tool/model/prompt revisions and build the bundle from a clean checkout.
 - Run and archive deterministic extraction and target selection.
-- Validate target categories, exception file, and selected target hashes.
-- Materialise the chosen Math budget and an explicit allow-list of agent-writable paths.
+- Validate target categories, exception file, target-universe hash, seed set
+  `S`, and the derived complement `W`.
+- Materialise the chosen support closure and Math budget, then verify the
+  complete readable inventory and explicit allow-list of agent-writable paths.
+- Scan the agent bundle for reference statements, proofs, strategy comments,
+  reference-only theorem identifiers, or verifier metadata associated with
+  `W`; the Rust identities declared visible by policy are expected.
 - Exclude `.git`, host caches, sibling solution repositories, reference proof bodies, credentials, and network-capable helper tools from the agent environment.
 - Freeze verifier code, toolchain, gate configuration, and the baseline trust inventory.
 - Build a dry-run bundle and independently verify that it has only the declared readable inputs.
@@ -131,10 +238,17 @@ During a run, collect transcripts, commands, edits, provider-usage records, and 
 Verification runs from a fresh copy of the sealed bundle plus the candidate patch. At minimum it must:
 
 1. rebuild the selected Lean project and required whole-crate target from scratch;
-2. check that task `sorry` obligations decreased or vanished according to the arm's declared target set;
-3. compare frozen source, statements, prompts, toolchain, and allowed-input hashes to the manifest;
-4. compare the trust closure to the baseline and reject undeclared axioms or trust-expanding mechanisms; and
-5. apply the declared forbidden-construct and sandbox-integrity policies.
+2. check that the declared task `sorry` obligations vanish for every arm; for
+   `S2`, this denominator is the whole designated project rather than only `S`
+   or `W`;
+3. for `S2`, additionally check that every member of `T` has a present,
+   accepted top-level contract and full proof, including synthesized contracts
+   for `W`;
+4. compare frozen source, supplied statements in `S`, accepted generated
+   statements in `W`, prompts, toolchain, and allowed-input hashes to the
+   manifest;
+5. compare the trust closure to the baseline and reject undeclared axioms or trust-expanding mechanisms; and
+6. apply the declared forbidden-construct and sandbox-integrity policies.
 
 The verifier produces a pass/fail verdict per target and per run plus a reason code. It must be runnable by reviewers without provider credentials.
 
@@ -144,8 +258,10 @@ Store a signed or content-addressed JSON manifest with every run. It should incl
 
 - experiment, arm, run, target-batch, and repetition identifiers;
 - source revisions and hashes; extraction, target-selection, exception, and bundle hashes;
-- target categories and canonical statement hashes;
-- Math budget and complete allowed-input inventory with visibility flags and size/token measures;
+- top-level-universe identifier, ordered `T`, supplied `S`, derived `W`,
+  target-function visibility, target categories, and canonical statement hashes;
+- support-closure policy/output and Math budget, with a complete allowed-input
+  inventory, visibility flags, and size/token measures;
 - agent roles, prompt/template hashes, model/configuration, seeds, session-reset events, and worker topology;
 - compute authorisation, budget caps, measured spend/tokens/time, and provider-usage receipt references;
 - sandbox/image/toolchain/verifier/gate hashes and read/write mount inventory;
@@ -163,7 +279,13 @@ Any human intervention, new lemma, altered target list, changed model, changed p
 
 ## Open protocol decisions
 
-- Which exact graph convention should define the first public target set, and is the present graph-sink set useful as an exploratory comparison arm?
+- Should the first public universe keep the present graph-source convention
+  (`A → B` means `A` depends on `B`), and should `api` and `trait-instance`
+  targets be reported as separate strata?
+- Should seeded runs use `seed-elaboration-only` or `universe-vocabulary`
+  support closure, and which identity/body metadata should be visible for `W`?
+- What repetition count and pass threshold make a seed set “validated” for the
+  seed-minimisation search?
 - What is the minimum viable `M0` domain/type definition set for a non-vacuous Curve25519 task?
 - Which whole-crate build target is practical and sufficiently strong for the first slice?
 - Which funded compute environment can provide isolated, metered, auditable runs without relying on personal subscriptions?

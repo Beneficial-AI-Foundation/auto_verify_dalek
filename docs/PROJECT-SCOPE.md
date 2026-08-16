@@ -22,43 +22,74 @@ zones, a specification inventory, and a prototype graph-derived set of
 top-level-spec candidates.  Those facts are a starting point, not a commitment
 to use every existing artifact in every experiment.
 
-## Three distinct research tracks
+## Four distinct research tracks
 
 Results from these tracks answer different questions and must not be merged
 into a single success headline.
 
-### A. Proof recovery
+### A. Proof recovery (trivial)
 
 The formal theorem and specification statements are supplied and the agent
-fills proof bodies.  This measures proof search, Lean engineering, and the
-effect of an explicit trusted theorem environment.  It does **not** show that
-the agent discovered an adequate specification.
+fills proof bodies.  It's well known that proofs are nowadays cheap. It could happen tho that a proof is quite involved and to do it properly it requires several helping lemmas, and the agent has to understand how to properly decompose the big task into smaller manageable ones.
 
-The initial benchmark snapshot contains 347 task declarations with `sorry`
-according to its current inventory.  A proof-recovery run must report exactly
-which statements, Math facts, external assumptions, tactics, and dependencies
-were made available.
+### B. Internal-spec synthesis from all top-level contracts
 
-### B. Internal-spec synthesis from top-level contracts
+The agent receives a pinned Aeneas translation and every contract in a fixed,
+graph-derived top-level target universe `T`. It must recover sufficient
+internal specifications and prove the resulting obligations. This is the
+closest all-contract baseline for measuring the value of the proposed agent
+workflow without also asking it to discover the outer specification boundary.
 
-The agent receives a pinned translated implementation and a selected set of
-high-level contracts.  It may propose intermediate specifications and prove
-implementation obligations, subject to separate specification-quality and
-trust checks.  This is the central track for testing whether a dependency
-graph plus a small contract boundary can support decomposition.
+Here and throughout these documents, fix the edge convention `A → B` when
+`A` calls or depends on `B`. A top-level target is a specified function that
+no other specified function calls, directly or transitively through helper
+definitions without specifications. Under this convention the targets have no
+incoming dependency path and are graph **sources**; they would be sinks if the
+edge direction were reversed. For example, if `A` uses `B`, and nothing uses
+`A`, then `A`, not `B`, is top-level for this experiment.
 
-The present prototype identifies 94 candidates from 263 specifications using
-a call-graph rule.  That number is not a semantic ground truth: the selection
-algorithm, public-API classification, trait/external handling, tool versions,
-and any manual exceptions must be frozen in the experiment manifest.
+The current exploratory inventory identifies 94 candidates from 263
+specifications: 38 labelled `api` and 56 labelled `trait-instance`. That is
+35.7%, rather than almost half. The count and classification still need to be
+reproduced by a checked-in deterministic selection script before they become
+an experimental boundary.
 
-### C. Rust-to-Lean end-to-end formalisation
+### C. Parametric top-level-spec recovery
 
-In the most demanding arm, the starting source is pinned Rust and the Lean
-translation is produced by a pinned Aeneas pipeline.  The experiment must say
-whether the agent sees the extracted Lean, operates the extractor, or receives
-both.  This arm includes translation and interface choices that are absent
-from tracks A and B, so it should be reported independently.
+This is the main proposed experiment. Fix the deterministic top-level universe
+`T`, then choose a per-run supplied seed set `S ⊆ T`. The withheld targets are
+determined, not hand-picked separately: `W = T \ S`. Contracts in `S` are
+visible and immutable. For each target in `W`, the agent receives at least its
+stable Rust function identity. Whether it also receives the corresponding
+pinned extracted Lean declaration/body from `Curve25519Dalek/Funs.lean`, its
+source location, expected theorem name, or destination is a manifest-level
+choice.
+
+A deterministic builder must also materialise the declarations required for
+the seed to elaborate. This **support closure** is distinct from the semantic
+Math budget: imports, types, structures, definitions, and notation needed to
+compile the supplied inputs do not automatically justify exposing helpful
+lemmas, theorem statements, proof bodies, comments, or the withheld reference
+contracts. The closure policy must therefore be declared and hashed.
+
+A successful run must synthesize semantically adequate contracts for every
+target in `W`, retain the exact supplied contracts in `S`, and produce full
+proofs for every target in `T`, as well as close the declared whole-project
+task obligations. Merely filling the `sorry`s attached to `S` is not success.
+The research objective is to find the smallest seed set that repeatedly meets
+those gates under a fixed harness and budget. Since exhaustive search over 94
+targets is infeasible and model outcomes are stochastic, any practical result
+must be called the **smallest validated seed set found**, not a proven global
+minimum. The all-spec case `S = T` remains the fallback baseline.
+
+### D. Rust-to-Lean end-to-end formalisation
+
+Whether the agent must produce the Lean translation is a separate experimental
+axis from which contracts it receives. In this optional, more demanding track,
+the starting source is pinned Rust and a pinned Aeneas pipeline produces—or the
+agent is asked to help produce—the Lean target. Results must state both the
+translation treatment and the seed set `S`; a small seed set must not be
+silently conflated with Rust-to-Lean translation work.
 
 ## Research questions and hypotheses
 
@@ -67,53 +98,20 @@ scoreable campaign begins.
 
 | ID | Research question | Testable working hypothesis |
 | --- | --- | --- |
-| RQ1 | How much proof recovery is possible when statements are fixed? | Isolated agents can close a measurable subset, but progress, cost, and trust preservation vary substantially by module. |
 | RQ2 | Can high-level contracts support safe internal-spec synthesis? | A deterministic graph-derived boundary plus a constrained Math budget yields useful intermediate specs; compilation alone is insufficient evidence of adequacy. |
 | RQ3 | How much does supplied mathematical infrastructure contribute? | Larger supplied Math/theorem budgets improve completion but also weaken the claim about autonomous formalisation; results need a budget curve, not one number. |
 | RQ4 | Does role separation improve reliability? | Fresh-context spec author, independent reviewer, and prover roles reduce obvious bad specs and context degradation compared with a single long-lived agent. |
 | RQ5 | What isolation evidence is enough for a credible runtime claim? | A sealed input bundle, no solution-bearing mounts/history/network, and independently replayable receipts can support a runtime-isolation claim, while not proving freedom from model pretraining contamination. |
 | RQ6 | Are results reproducible across runs? | Repeated runs with fixed manifests can estimate variance; a one-off completion is an existence result, not a capability estimate. |
+| RQ7 | What is the smallest useful top-level seed set? | A deterministic seed manifest and support-closure policy permit a controlled input-ablation curve; repeated success, rather than a single lucky run, is required before calling a seed sufficient. |
 
-These are hypotheses, not success criteria.  A negative or inconclusive result
-is a useful result if its input bundle, run record, and failure mode are
-available for review.
+Possible answers:
+RQ3: I'd only supply math infrastructure needed to compile the top-level specs; this means just provide with definitions structures that allows us to define the top-level spec. the lemmas and props about math objects that we need to complete the top-level proofs should be derived by the agents if we want to fully test the auto-formalisation feasibility.
 
-## Scientific contribution and claim boundaries
+RQ4: the answer is basically already known and it's yes, if we avoid context rot then we gain in quality
+RQ5: pretraining contamination is out of reach for us, we cannot have any idea about this and we should be transparent about it. But what ew could do is to try to gatekeep agents from internet access or network. but this will worsen their lean coding capabilities since they will have no access to mathlib or useful Lean api's. Is there a better approach? how was this solved in the cryptoprover?
 
-The intended contribution is an auditable methodology and dataset of runs,
-not a claim that an agent has independently established all security properties
-of Curve25519.
-
-Permitted claims should be phrased at the level actually supported by the
-accepted run:
-
-- A candidate patch checks against a pinned Lean toolchain and declared trusted
-  base.
-- A run reconstructed proofs or generated internal contracts under its
-  declared input and isolation conditions.
-- A collection of repeated runs achieved a stated acceptance rate, cost,
-  elapsed time, and coverage for a defined target set.
-
-The project must not silently upgrade those claims to any of the following:
-
-- functional correctness beyond the supplied top-level contracts;
-- adequacy, completeness, or non-vacuity of a generated contract without a
-  separate evaluation;
-- constant-time behaviour, side-channel resistance, memory safety, protocol
-  security, or production security of the Rust crate;
-- absence of all copying from public solutions, especially through model
-  pretraining; or
-- a general capability claim from a single model, seed, target ordering, or
-  experiment run.
-
-A provisional starting scope is one vertical slice of the portable serial
-`u64` backend, not an implicit promise to cover the full crate.  The exact
-first slice remains open under `DEC-13`; scalar-only may be tractable but may
-underrepresent the API and specification challenges.  Expanding to other
-backends, features, or platform-specific code is a new manifest and a new
-result set.  Likewise, Aeneas extraction is an explicit experimental input:
-it may be treated as a pinned preprocessing step, but it must never disappear
-into an unreported trusted assumption.
+RQ6: I guess that repeated experiments with low variance should strenghten our findings, we might need to impose some thresholds to be happy with tho.
 
 ## Experimental unit
 
@@ -121,7 +119,10 @@ A **scored run** is one immutable experiment manifest executed from a fresh
 sealed workspace.  It identifies at least:
 
 - source, extracted-code, dependency, and toolchain revisions/hashes;
-- the target declarations and target ordering;
+- the top-level-universe identifier, supplied seed `S`, derived withheld set
+  `W`, target-function visibility policy, and target ordering;
+- the deterministic elaboration/support-closure policy and its materialised
+  declaration inventory;
 - the input budget and trusted-base inventory;
 - agent roles, prompts, model identifiers, decoding settings, stop/budget
   limits, and permitted tools;
@@ -158,18 +159,9 @@ evidence.
 
 ## Compute, funding, and governance
 
-Scored experiments should run against a governed API/project budget,
-institutional runner, or another explicitly approved shared funding mechanism.
-They must not presume that a contributor will spend a personal subscription or
-personal credits to make the experiment work.  Provider, model, API access,
-budget ceilings, storage, and retention are open governance decisions; each
-run must record the decision actually used and disclose incomplete usage
-receipts.
-
-Credentials belong outside the sealed benchmark input and outside Git.  The
-runner should receive the minimum scoped credential through an approved
-mechanism, and the resulting accounting record should be available to the
-reviewer without exposing the secret.
+Scored experiments should run using API keys, not personal subscription accounts so that we can also record the total spent and the actual time spent.
+Provider, model, API access, budget ceilings, storage, and retention are things to be tracked. Each
+run must record at least the provider, the model, the budget spent and the time.
 
 ## Reproducibility and open scope choices
 
@@ -180,13 +172,16 @@ elements such as model serving and scheduling.
 
 The following choices remain deliberately open for PR discussion:
 
-- whether the first scored target is only the portable serial `u64` slice or
-  a broader full-crate target;
 - whether Aeneas extraction happens offline before scoring, inside a controlled
-  build stage, or is part of the agent task;
+  build stage, or is part of the agent task (probably not: we have deterministic scripts we can run in our environments so tht the agents can start working afterwards without introducing randomness in the extraction phase too. This of course means that we are assuming that the extraction will go smoothly, but we already have this assumption for curve dalek);
 - which Math definitions, axioms, theorems, comments, and prior specs each
   input-budget arm may see;
-- which model provider and funding route meet the governance requirements;
+- whether a seeded run receives only the closure required to elaborate `S`,
+  or a definition-only vocabulary sufficient to state all targets in `T`;
+- whether withheld targets expose only their required Rust identity or also
+  an extracted Lean body, source location, expected theorem name, and
+  destination;
+- which model provider and funding route meet the governance requirements (I'd go for Fable and GPT Sol, and maybe have smaller models for specific subagents with low level tasks);
 - how many repeated seeds/runs are needed before publishing a comparison; and
 - whether a later, explicitly separate security track addresses constant-time
   and cryptographic/protocol properties.
@@ -197,6 +192,19 @@ The following choices remain deliberately open for PR discussion:
 : The complete, hashed set of information and tools available to an agent:
   source, extracted code, contracts, Math facts, prompts, dependencies, and
   allowed commands.  It is an experimental variable, not background context.
+
+**Top-level target universe `T`**
+: The deterministically selected, versioned set of top-level functions whose
+  contracts and proofs must exist at the end of a seeded run.
+
+**Seed set `S`**
+: The subset of `T` whose exact contracts are supplied to the agent at the
+  start of a run. The withheld set `W = T \ S` must be reconstructed.
+
+**Support closure**
+: The minimal, deterministically generated declarations and imports needed for
+  the chosen visible implementation and seed specifications to elaborate. It
+  is recorded separately from optional semantic lemmas and Math guidance.
 
 **Trusted base**
 : Declarations, axioms, toolchain components, extraction assumptions, and

@@ -1,4 +1,3 @@
-<!-- generated-by: gsd-doc-writer -->
 # Architecture proposal
 
 This repository is intended to become the control plane for reproducible experiments that attempt to formalise selected parts of `curve25519-dalek` in Lean from an explicitly declared input budget.  It must distinguish three things that are easily conflated: preparing a benchmark, letting an agent modify a working copy, and independently deciding whether a run is acceptable.
@@ -33,8 +32,8 @@ The proposed design uses one-way hand-offs.  The component that accepts a result
 │ pinned Rust source + Aeneas/probe tools + selection policy + Lean pins   │
 │                 Deterministic input builder                              │
 │              ┌───────────────────────────────────────┐                   │
-│              │ graph facts, target set, input manifest│                   │
-│              │ source/tool/config hashes, policy hash │                   │
+│              │ target T, seed S, withheld W          │                   │
+│              │ support closure + input/policy hashes │                   │
 │              └───────────────────┬───────────────────┘                   │
 └──────────────────────────────────┼───────────────────────────────────────┘
                                    │ immutable, content-addressed bundle
@@ -62,9 +61,12 @@ The builder runs before scoring, ideally in a controlled preparation environment
 
 1. Check out pinned bytes of the Rust source, the Lean project, Aeneas/probe tooling, and all toolchain inputs.
 2. Run the selected extraction and graph-analysis commands with recorded versions and configuration.  `probe-rust` and `probe-aeneas` are natural candidates for emitting Rust and cross-language call-graph facts; neither should silently determine the benchmark by an undocumented default.
-3. Apply a versioned, deterministic target-selection algorithm to those facts.  The generated list must identify public APIs, trait-instance operations, trusted/external declarations, and manual exceptions separately.
-4. Assemble only the inputs allowed for that experimental condition: for example Aeneas-generated Lean code, selected top-level contracts, an allowed Math vocabulary, or a deliberately broader reference-assisted treatment.
-5. Produce a manifest with cryptographic hashes for every input file, generator version, command configuration, selection-policy version, and declared trusted base.
+3. Apply a versioned, deterministic target-selection algorithm to those facts.  The generated top-level universe `T` must identify public APIs, trait-instance operations, trusted/external declarations, and manual exceptions separately.
+4. Read a versioned experiment input that selects the supplied seed `S ⊆ T`, and derive the withheld targets `W = T \ S`. The complement must not be maintained as a second hand-edited list.
+5. Materialise the registered target visibility policy. Supplied contracts in `S` are visible and immutable; targets in `W` always receive their stable Rust function identities and only the additional implementation material explicitly permitted by the manifest, such as pinned extracted declarations/bodies in `Curve25519Dalek/Funs.lean`.
+6. Compute the declared support closure. Keep syntactic elaboration support—imports, types, structures, definitions, and notation—separate from optional semantic Math lemmas, theorem statements, proof bodies, comments, and reference contracts.
+7. Produce two non-overlapping outputs: an agent bundle with no reference statements or proofs for `W`, and a verifier-side reference manifest used only for post-run semantic assessment.
+8. Produce a manifest with cryptographic hashes for every input file and declaration, the resolved `T`, `S`, and `W`, generator version, command configuration, selection/closure-policy versions, and declared trusted base.
 
 Extraction is best treated as preparation rather than agent work: it makes the agent's contribution legible and avoids measuring incidental tool installation or network access.  An alternative arm in which the agent receives Rust rather than pre-extracted Lean can still be useful, but it must be named as a different condition and have its own bundle.
 
@@ -75,12 +77,14 @@ An experiment bundle is the complete, immutable description of a single runnable
 - source and dependency bytes permitted to the agent;
 - Lean toolchain and build configuration;
 - graph facts, target list, and selection rationale;
+- the top-level-universe identifier, supplied seed `S`, derived withheld set
+  `W`, target-function visibility, and support-closure policy/output;
 - agent prompts/role definitions, model configuration, budgets, and stopping rules;
 - frozen files, allowlists, forbidden constructs, and the verifier version;
 - the input-budget declaration, including whether existing Math statements, lemmas, comments, and proofs are visible;
 - a reference-free policy for external data, solution repositories, caches, and network egress.
 
-The bundle manifest is part of the scientific result.  It must make it possible to tell the difference between “proved existing statements” and “reconstructed specifications and proved them.”
+The bundle manifest is part of the scientific result.  It must make it possible to tell the difference between “proved existing statements” and “reconstructed specifications and proved them.” Existing manifests emitted by the exploratory `harness/resynth.py` workflow archive original statements for later comparison. Those are useful verifier records, but they must not be copied into an `S2` agent bundle without a new split-manifest builder.
 
 ### 3. Isolated untrusted agent runner
 
@@ -94,8 +98,11 @@ The current `harness/driver.py` is deliberately more modest: it invokes a headle
 
 The agent may propose a patch; it must not change the criterion for accepting its own patch.  The gates and their configuration should be mounted read-only or supplied from a separate verifier image.  Candidate gates include:
 
-- target statement identity/canonicalisation and frozen-input hashes;
-- full clean Lean rebuild, with no task `sorry` left in scope;
+- identity/canonicalisation and frozen hashes for supplied statements in `S`;
+- designated writable slots for generated contracts in `W`, followed by
+  canonicalisation and freezing after independent review accepts them;
+- full clean Lean rebuild, with a contract and proof for every target in `T`
+  and no declared task `sorry` left in scope;
 - fixed or reduced axiom/trust closure and no new `axiom`, `@[implemented_by]`, `@[extern]`, unsafe compiler hook, or unapproved metaprogramming route;
 - source-scope limits and checks that work is not migrated to another file or declaration;
 - toolchain/dependency-image integrity;
@@ -107,7 +114,7 @@ The agent may propose a patch; it must not change the criterion for accepting it
 
 Verification should replay the candidate patch in a fresh environment assembled only from the bundle plus the patch.  It should not reuse the runner's build products, Git metadata, model context, or write permissions to the bundle.  A verifier returns a machine-readable verdict and reasons for rejection; it does not give the runner an opportunity to mutate the gate configuration.
 
-For specification-synthesis experiments, successful elaboration is necessary but insufficient.  The verifier should also run the selected adequacy checks (for example, vocabulary restrictions, totality/determinism obligations, executable-mirror checks, mutation tests, or hidden-reference comparison where permitted by the protocol).
+For specification-synthesis experiments, successful elaboration is necessary but insufficient.  The verifier should also run the selected adequacy checks (for example, vocabulary restrictions, totality/determinism obligations, executable-mirror checks, mutation tests, or hidden-reference comparison where permitted by the protocol). For a seeded run, hidden references for `W` are mounted only in this verifier environment, after the candidate patch and transcript are sealed.
 
 ### 6. Artifact collector and run index
 
@@ -119,7 +126,7 @@ Large or sensitive artifacts should live outside the Git repository in an access
 
 | Boundary | What crosses it | Failure that must not cross back |
 | --- | --- | --- |
-| Preparation → bundle | Declared, hashed inputs only | Unpinned sources, accidental reference proofs, or hidden generation state. |
+| Preparation → bundle | Declared, hashed implementation, seed contracts, and support closure only | Unpinned sources, accidental reference statements/proofs for `W`, closure overreach, or hidden generation state. |
 | Bundle → runner | Read-only benchmark and policy | Runner edits to inputs, gates, dependencies, or target definition. |
 | Runner → provider broker | Approved prompts and model calls | General web access, credential disclosure, unrecorded provider use, or unbounded cost. |
 | Runner → verifier | Patch and auditable outputs | Runner build cache, Git history, private mounts, or self-authored acceptance policy. |
@@ -152,10 +159,10 @@ The existing `harness/` and `.verilib/` material, together with the driver's run
 
 1. **Isolation technology:** OCI/container, microVM, remote ephemeral worker, or a combination; what evidence makes its network and filesystem controls reviewable?
 2. **Execution placement and funding:** institutional cluster, dedicated API/project account, self-hosted CI runners, or another governed service.  The protocol needs a named budget owner and a cost ceiling; it should not presume a contributor's personal subscription.
-3. **Bundle granularity:** one bundle per target, module, or campaign; and which caches, if any, may be shared without contaminating a trial?
+3. **Bundle granularity:** one bundle per seed set, target, module, or campaign; and which caches, if any, may be shared without contaminating a trial?
 4. **Aeneas boundary:** should agents receive already extracted Lean, Rust plus a deterministic extraction command, or both as separate benchmark arms?
-5. **Top-level policy:** which graph roots/sinks qualify, and how are public APIs, traits, generated helpers, and external primitives classified?
-6. **Math and reference budget:** which definitions, theorems, comments, axioms, or existing specifications are legitimate trusted inputs for each named condition?
+5. **Top-level and seed policy:** which graph extrema qualify for `T`, which `S ⊆ T` is supplied per run, and how are public APIs, traits, generated helpers, and external primitives classified?
+6. **Support, Math, and reference budget:** should closure be `seed-elaboration-only` or `universe-vocabulary`, and which definitions, theorems, comments, axioms, or existing specifications are legitimate trusted inputs for each named condition?
 7. **Provider interface:** what model APIs, logging, retention, redaction, and reproducibility guarantees are required of the egress broker?
 8. **Artifact governance:** where are raw transcripts stored, who can read them, how long are they retained, and which hashes/signatures are sufficient for a PR reviewer to audit a run?
 

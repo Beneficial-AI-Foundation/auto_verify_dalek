@@ -1,4 +1,3 @@
-<!-- generated-by: gsd-doc-writer -->
 # Isolation and integrity
 
 This document defines the evidence threshold for a curve25519-dalek Lean
@@ -13,55 +12,7 @@ The motivating [CryptoProver paper](https://arxiv.org/abs/2608.00965v1) reports
 that its proof-and-specification run removed original proof bodies from the
 machine, used a network-sealed container and fresh sessions, rejected history
 recovery and fetch attempts, and applied mechanical integrity gates. Those are
-useful design precedents. They are not, by themselves, an independently
-reproducible sterility certificate for this project.
-
-### Why the public-solution chronology matters
-
-The concern is concrete, not hypothetical. The paper's reference [7] points to
-[BAIF's `dalek-lite` PR #774](https://github.com/Beneficial-AI-Foundation/dalek-lite/pull/774),
-which GitHub records as public and merged on 26 March 2026. The paper artifact's
-[canonical record of the headline 11.4-hour run](https://github.com/ChuyueSun/CryptoProver/blob/e9f29b6b6fb98ace8bfedeab249fb2f23bc59c04/docs/run_stats/stage3_certificate_record.md)
-dates its two attempts to 2–3 July 2026. The cited BAIF solution tree was
-therefore public before the recorded run. That chronology makes runtime
-isolation and honest contamination language mandatory; it does not establish
-that the model or authors actually accessed the solution.
-
-The paper gives a substantive runtime answer: it says the original proof
-bodies were absent from the machine, describes a network seal, uses fresh
-sessions, and adds a history-recovery gate; its baseline trace reports five
-fetch attempts and 38 history probes blocked by the seal. Those controls address
-channels available *during* a run if the stated boundary and logs are complete.
-They do not answer whether a hosted model had incorporated public material
-before execution, and a command-pattern gate alone would not substitute for an
-isolated filesystem and object store.
-
-| Question | Evidence reported by the paper | Evidence required here |
-| --- | --- | --- |
-| Were reference proof bodies readable locally? | The paper says they were absent from the machine for the proof-and-specification run. | An allowlisted bundle manifest, mount inventory, isolated Git-object audit, and independent inspection. |
-| Could the agent fetch a solution during the run? | The paper reports a network seal and blocked fetch/history attempts. | Provider-only egress enforcement, allow/deny logs, negative connectivity tests, and complete launcher receipts. |
-| Could Git recover deleted proof objects? | The paper says the bodies were absent and also used a `git-recovery` command gate. | A fresh isolated object store with no remotes, reflogs, unexpected refs, or unreachable solution objects. |
-| Could the model already know a public solution? | Runtime gates cannot establish this. | Label training contamination unknown, disclose the public timeline/model identity, and use held-out controls where possible. |
-
-The public `dalek-lite` Verus formalisation and
-`curve25519-dalek-lean-verify` Lean formalisation are therefore treated as
-known contamination threats. Their existence is not evidence that the paper or
-any future run cheated. A serious evaluation must publish enough machine-
-readable evidence for another reviewer to test the stated isolation boundary.
-
-The current, later `CryptoProver` checkout is also informative but must not be
-silently substituted for the paper experiment. Its
-[`docker/README.md`](https://github.com/ChuyueSun/CryptoProver/blob/e9f29b6b6fb98ace8bfedeab249fb2f23bc59c04/docker/README.md) explicitly labels the
-container profile as **not** `scoreable:true`: general network egress remains
-open and usage auditing is not sealed on every launcher exit path. That is an
-honest limitation of a post-paper implementation snapshot, not a retroactive
-claim about the paper's execution environment.
-
-The strongest honest result wording is: **the run reconstructed an accepted
-Lean development under the declared runtime-isolation boundary and trusted
-base**. It must not be described as proving that the model had no pretraining
-knowledge of public solutions, nor as establishing cryptographic security
-beyond the checked functional statements.
+useful design precedents.
 
 ## Threat model
 
@@ -70,6 +21,7 @@ beyond the checked functional statements.
 | Runtime retrieval | Browser, `git fetch`, package download, public code search, or an undeclared model-tool call | Deny all egress except an authenticated inference broker; record allow/deny logs and a negative reachability test. |
 | Git and filesystem leakage | A worktree points to an object store containing removed proofs; reflogs, remotes, caches, or sibling mounts reveal them | Build a new repository from copied working-tree bytes, without `.git`, `target`, credential files, or sibling directories; audit refs, remotes, reflogs, and unreachable objects. |
 | Reference-material leakage | The container includes `dalek-lite`, the full Lean verification repository, old run output, or generated proof caches | Use an explicit allowlist of input paths and hashes; mount only the sealed task bundle, private scratch space, and an append-only result channel. |
+| Support-closure leakage | Copying a required Math file also exposes helpful lemmas, comments, or a withheld top-level reference statement | Compute a declaration-level closure where possible; distinguish elaboration support from the semantic Math budget; scan the sealed agent bundle against the verifier-only reference inventory. |
 | Harness tampering | The agent changes a checker, frozen baseline, model wrapper, or result classification | Keep harness, gate configuration, toolchain, and frozen inputs read-only and outside agent write authority; independently replay the candidate. |
 | Specification laundering | A proof succeeds only because contracts were weakened, definitions were hollowed out, or an implication became vacuous | Canonicalise and hash frozen statements and specification bodies; enforce approved target changes only and run adequacy checks for generated specifications. |
 | Lean escape hatches | `sorry`, a new axiom, `unsafe`, `implemented_by`, `extern`, untrusted evaluator shortcuts, or an unreviewed macro/plugin | Parse and compare declarations plus source text against an explicit baseline and allowlist; rebuild cleanly with a pinned toolchain. |
@@ -92,8 +44,12 @@ source + tool pins ──> sealed task image ──> agent scratch ──> candi
 
 The trusted builder resolves dependencies, runs the declared extraction and
 target-selection tools, and produces a content-addressed task bundle. It must
-record the source revision, Aeneas/probe outputs, allowed Lean files, task
-manifest, toolchain, package locks, and hashes for every input. The builder is
+record the source revision, Aeneas/probe outputs, top-level universe `T`,
+supplied seed `S`, derived withheld set `W = T \ S`, target-visibility and
+support-closure policies, allowed Lean declarations/files, task manifest,
+toolchain, package locks, and hashes for every input. It emits an agent bundle
+that contains no reference statement or proof for `W`, plus a separately
+stored verifier-only reference manifest for post-run assessment. The builder is
 where network access, if any, is allowed; the scored agent runner is not a
 general development environment.
 
@@ -103,6 +59,9 @@ object store, including deleted or unreferenced proofs. Instead:
 
 1. Copy only allowlisted task bytes into a new directory, excluding `.git`,
    `target`, result directories, credentials, editor state, and sibling clones.
+   When a whole source file contains both required support and hidden reference
+   material, slice declarations or fail the build rather than copying the file
+   opportunistically.
 2. Run `git init` in that directory and create one sealed baseline commit.
 3. Remove remotes and non-baseline refs; ensure detached or single-branch
    history has no parent containing reference material.
@@ -161,6 +120,11 @@ contains:
   "schema_version": 1,
   "run_id": "content-addressed identifier",
   "input_manifest_sha256": "...",
+  "top_level_universe_sha256": "...",
+  "allowed_spec_ids_sha256": "...",
+  "withheld_spec_ids_sha256": "...",
+  "support_closure_sha256": "...",
+  "reference_manifest_mounted_in_agent": false,
   "source_revision": "...",
   "image_digest": "...",
   "lean_toolchain": "...",
@@ -193,7 +157,7 @@ all files in the declared scope, not only the target file.
 | Completion | Any task-scope `sorry`, `admit`, placeholder proof, or unresolved error remains | Count declarations after elaboration where possible; text scans are a supplementary check. |
 | Trust-base | A new axiom/theorem-as-axiom, unsafe declaration, or trusted-kernel assumption is introduced | Compare exact declarations and transitive trust closure to the baseline. Existing, disclosed assumptions are not silently reclassified. |
 | Foreign implementation | `implemented_by`, `extern`, code generation, native linkage, or an unapproved opaque implementation bypasses the intended proof | Use a declaration and source allowlist. Exceptions need a reviewed identifier, rationale, and baseline hash. |
-| Frozen statement | A frozen theorem/specification signature, proposition, definition body, or namespace binding changes | Canonicalise elaborated statements when feasible and hash source-level definitions as a second check. |
+| Contract state | A supplied contract in `S` changes, or a generated contract in `W` changes after reviewer acceptance and canonical freezing | Canonicalise elaborated statements when feasible, record the supplied/generated status, and hash source-level definitions as a second check. |
 | Tooling | Lean/Lake/mathlib versions, manifest/lock files, tactics, macros, plugins, checker scripts, or gate configuration change | The agent has no write access; the verifier nevertheless checks image and file hashes. |
 | Scope | A candidate edits a non-editable file, changes generated extraction output, or adds a helper outside its declared allowance | Enforce at patch import and compare the whole tree. |
 | Environment | Unapproved process, mount, environment variable, network request, package download, or cache write is observed | Record container policy and command/egress audit; do not rely only on an agent prompt. |
@@ -261,3 +225,6 @@ clean-room property that it cannot evidence.
    we label all other results?
 5. Who owns the offline bundle builder and the independent verifier, so that an
    agent run cannot modify the authority that accepts it?
+6. How will the builder prove that its support closure contains everything
+   needed to elaborate the seed but no hidden reference statement or semantic
+   lemma outside the declared Math budget?

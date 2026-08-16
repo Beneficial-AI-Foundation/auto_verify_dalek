@@ -1,7 +1,6 @@
-<!-- generated-by: gsd-doc-writer -->
 # Evaluation and Acceptance Protocol
 
-This document defines what an automated Lean formalisation run is allowed to claim.  It is deliberately stricter than “the edited checkout builds”: a result must preserve the frozen experiment inputs and trusted base, close the intended obligations, and be replayable independently.  It is intended for experiments that start from selected high-level contracts and try to recover specifications and/or proofs for the `curve25519-dalek` Lean translation.
+This document defines what an automated Lean formalisation run is allowed to claim.  A result must preserve the frozen experiment inputs and trusted base, close the intended obligations, and be replayable independently.  It covers both experiments supplied with all high-level contracts and parametric runs supplied with only a seed set that must recover the missing top-level specifications and proofs for the `curve25519-dalek` Lean translation.
 
 The protocol measures functional correctness relative to the declared contracts and trusted base.  It does **not** establish constant-time behavior, side-channel resistance, cryptographic security, or adequacy of a contract unless those properties are separately stated and checked.
 
@@ -19,7 +18,7 @@ The baseline trusted material is a named input, not an invisible convenience:
 | Pinned Aeneas dependency | 17 inventoried declarations with `sorry` | Treat as an explicit dependency trust component, not work completed by the run. |
 | Compiler-trusted computation | `Lean.ofReduceBool` and `Lean.trustCompiler` reachable through `native_decide` | Allowed only when enumerated in the run’s trust report; do not call such results kernel-only. |
 
-An experiment manifest must name the source revision, Lean/toolchain and dependency locks, selected target set, input/spec budget, baseline manifests, model and prompt versions, gate versions, resource limits, and hashes of all frozen inputs.  A different manifest defines a different condition; results must not be pooled without saying so.
+An experiment manifest must name the source revision, Lean/toolchain and dependency locks, top-level-universe identifier `T`, supplied seed `S`, derived withheld set `W = T \ S`, target visibility and support-closure policies, input/Math budget, baseline manifests, model and prompt versions, gate versions, resource limits, and hashes of all frozen inputs.  A different manifest defines a different condition; results must not be pooled without saying so.
 
 ## Success ladder
 
@@ -29,22 +28,22 @@ The ladder makes partial progress visible while preventing partial evidence from
 | --- | --- | --- |
 | L0 | Valid run | Complete manifest, immutable input hashes, raw event/transcript ledger, explicit termination reason, and a verifier-produced result record. |
 | L1 | Compiling candidate | The prescribed clean whole-project build exits successfully with no Lean errors. This is necessary but never a headline success on its own. |
-| L2 | Obligation closure | The chosen task denominator reaches zero: each designated task declaration is closed, with no `sorry` left in the task zone and none moved to another task declaration or file. |
-| L3 | Integrity-preserving formalisation | L2 plus all acceptance gates below: frozen contracts/toolchain unchanged, trust closure within baseline, forbidden-construct scan clean, and a fresh replay passes. |
+| L2 | Obligation closure | The chosen task denominator reaches zero: each designated task declaration is closed, with no `sorry` left in the task zone and none moved to another task declaration or file. In a seeded run, every target in `T` also has a present contract and full proof, including the recovered targets in `W`. |
+| L3 | Integrity-preserving formalisation | L2 plus all acceptance gates below: supplied contracts in `S` and other frozen inputs unchanged, accepted generated contracts in `W` canonicalised, trust closure within baseline, forbidden-construct scan clean, and a fresh replay passes. |
 | L4 | Semantically assessed specification | L3 plus the specification-quality evidence required for generated contracts: reference comparison where available, non-vacuity and mutation checks, and reviewed strength reporting. |
 | L5 | Independently reproduced result | A separately initiated run in a fresh sealed environment reproduces L3 (and L4 where specification synthesis is claimed) under the same published manifest, or the variance is reported. |
 
 ### Headline rule
 
-“Automatically formalised” requires at least L3.  “Automatically synthesised adequate specifications” requires L4.  A result described as reproducible requires L5.  Any headline must state its task denominator, exact trusted-base baseline, input budget, model/version, number of attempted runs, and whether the target was proof-only or included specification synthesis.
+“Automatically formalised” requires at least L3.  “Automatically synthesised adequate specifications” requires L4. Because a seeded run necessarily synthesises `W`, a headline of “formalised from seed `S`” requires L4, not merely L3. A result described as reproducible requires L5.  Any headline must state its task denominator, `T`, `S`, support/Math budgets, exact trusted-base baseline, model/version, number of attempted runs, and whether the target was proof-only or included specification synthesis.
 
 ## Mandatory acceptance gates
 
 The verifier, not the agent, owns these gates.  Agents must not be able to edit the verifier, frozen inputs, toolchain, or acceptance record.
 
 1. **Clean whole-project build.** Build from a clean checkout/cache policy using the pinned toolchain.  The build must exit zero and contain no Lean errors; module-local success is not enough.
-2. **Exact task-inventory closure.** Compare declaration-level build warnings with the baseline inventory.  Every designated task `sorry` must be gone.  The count may not be reduced by deleting, renaming, weakening, hiding, or moving an obligation; unchanged non-task baseline zones are reported separately.
-3. **Frozen-input and contract preservation.** Hash the source snapshot, selected top-level contracts, permitted mathematical vocabulary, toolchain/dependency files, and gate implementation before and after the run.  A drift is a failed run, not an agent improvement.
+2. **Exact task and top-level-universe closure.** Compare declaration-level build warnings with the baseline inventory. Every designated task `sorry` must be gone. In `S2`, every member of `T` must have a contract and proof, including `W`, and the run must also close the declared whole-project task denominator. The counts may not be reduced by deleting, renaming, weakening, hiding, or moving an obligation; unchanged non-task baseline zones are reported separately.
+3. **Frozen-input and contract-state preservation.** Hash the source snapshot, supplied top-level contracts in `S`, permitted support/Math vocabulary, toolchain/dependency files, and gate implementation before and after the run. A supplied-contract drift is a failed run, not an agent improvement. Contracts for `W` begin in designated writable slots; after the independent reviewer accepts an exact canonical statement, that statement is frozen before proving and must remain unchanged.
 4. **Trust-closure equality or narrowing.** Collect axioms/assumptions reachable from the accepted declarations and compare them with the manifest’s baseline.  No new axiom, `sorryAx` root, externally verified declaration, or external boundary is allowed.  Removing a baseline dependency is allowed but must be reported.
 5. **Forbidden-construct and scope scan.** Reject new `axiom`, `@[implemented_by]`, `@[extern]`, `@[externally_verified]`, unsanctioned `sorry`/`admit`, declaration-body replacement, generated binary/object injection, or modifications outside the permitted target/output paths.  The exact allowlist and scanner version belong in the manifest.  Scan source and generated build inputs, then rebuild from clean artifacts so cached `.olean` files cannot carry a proof.
 6. **`native_decide` accounting.** A run may use `native_decide` only under a written policy.  Record every newly reachable compiler-trusted root and include `Lean.ofReduceBool`/`Lean.trustCompiler` in the trust report.  New `@[implemented_by]` or `@[extern]` attributes are rejected because they can change the compiled program on which a computation relies.
@@ -79,8 +78,8 @@ Each attempted run emits one machine-readable record.  The schema below is inten
 
 | Group | Minimum fields |
 | --- | --- |
-| Identity and condition | `run_id`, manifest/input hashes, source/toolchain/dependency hashes, target-set ID and denominator, experiment arm, model/provider/version, prompt and gate versions, random seed where applicable. |
-| Progress | targets attempted/accepted/rejected/skipped; task `sorry` count before/after; remaining declarations by zone; build attempts; closed declarations; dependency order/parallelism. |
+| Identity and condition | `run_id`, manifest/input hashes, source/toolchain/dependency hashes, top-level-universe ID, ordered `T`, `S`, and `W`, seed fraction, support-closure policy/hash/size, target visibility, task denominator, experiment arm, model/provider/version, prompt and gate versions, random seed where applicable. |
+| Progress | supplied/recovered top-level contracts and proofs accepted/rejected/skipped; task `sorry` count before/after; remaining declarations by zone; build attempts; closed declarations; dependency order/parallelism. |
 | Integrity | outcome of every gate; frozen-file/spec/toolchain diffs; axiom and `sorryAx` closure before/after; external and Math assumption deltas; `native_decide` roots; forbidden-scan findings; replay result. |
 | Specification quality | per-contract relation class, non-vacuity/mirror/mutation/counterexample outcomes, reviewer ratings and disagreement, and missing-evidence reasons. |
 | Resources | wall-clock elapsed time, active agent time, CPU/GPU allocation if controlled, input/output/cache tokens, provider-reported cost and currency, retry/reset counts, context-compaction or fresh-session count, and verifier time. |
@@ -96,6 +95,32 @@ Report all attempted runs, including failures and integrity rejections.  The den
 Run enough independent trials to estimate variance for any comparative claim.  “Independent” means fresh agent state, fresh sealed workspace, fixed manifest, and no carry-over of unreported solutions; it does not erase possible model-training contamination.  State model sampling settings and any adaptive changes between trials.
 
 Before running, publish a stopping rule: maximum cost, wall time, tokens, failed attempts, resets, and target coverage; plus the conditions for early success or safety termination.  A budget exhaust, timeout, or verifier crash is an outcome, not silently omitted data.  Any change to prompts, target selection, input budget, model, gates, or human intervention creates a new experimental arm and should restart the relevant denominator.
+
+## Seed-set and minimal-input claims
+
+Runs may be compared head-to-head only when `T`, `S`, target visibility,
+support closure, Math budget, harness, model configuration, and resource limits
+are identical. Different seed sets form an input-ablation curve; they answer a
+different question and should be reported as such.
+
+Searching all `2^94` subsets is impractical for the current 94-candidate
+inventory. A campaign may use pre-registered leave-one-out, module/category,
+nested-fraction, graph-informed, greedy, or delta-debugging searches, but it
+must publish every evaluated seed and the search path. Because model behavior
+is stochastic and can be non-monotone in context size, neither one success nor
+one failure establishes set sufficiency. A seed is **validated** only after it
+meets a pre-registered pass threshold over independent repetitions with fixed
+conditions. Report the smallest validated seed set found; do not call it the
+global minimum unless the search actually justifies that claim.
+
+For each seed, report both completion layers:
+
+- **top-level completion:** all supplied and recovered contracts in `T` are
+  present, semantically assessed, and fully proved; and
+- **whole-project formalisation:** the complete declared task denominator is
+  also closed under the unchanged trusted base.
+
+The project’s requested success condition requires both layers.
 
 ## Interpretation boundaries
 

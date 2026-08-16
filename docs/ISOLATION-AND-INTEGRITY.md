@@ -1,230 +1,107 @@
 # Isolation and integrity
 
-This document defines the evidence threshold for a curve25519-dalek Lean
-formalisation experiment. Its purpose is not to accuse a model, an author, or a
-repository of misconduct. It is to make the experiment's claim legible: an
-accepted result should be reproducible from a declared input bundle, rather
-than relying on trust that an agent could not obtain an existing solution.
+Known BAIF solutions are public. A scored agent must not be able to read them
+during a run.
 
-## Claim boundary
+The [CryptoProver paper](https://arxiv.org/abs/2608.00965v1) and repository
+describe stripped proof bodies, fresh agent sessions, Git-history checks,
+containers, and mechanical checks. We still need to trace which controls
+applied to the reported run and what evidence was saved. This matters because
+related BAIF solutions were already public.
 
-The motivating [CryptoProver paper](https://arxiv.org/abs/2608.00965v1) reports
-that its proof-and-specification run removed original proof bodies from the
-machine, used a network-sealed container and fresh sessions, rejected history
-recovery and fetch attempts, and applied mechanical integrity gates. Those are
-useful design precedents.
+## What we can claim
 
-## Threat model
+With a good sandbox, we may say:
 
-| Threat | Example | Required control and evidence |
+> The agent could read only the declared input bundle during the run, and the
+> result passed a fresh independent check.
+
+We cannot prove that a hosted model never saw public solutions during training.
+That remains unknown and must be stated in every result.
+
+## Main risks
+
+| Risk | Example | Basic defence |
 | --- | --- | --- |
-| Runtime retrieval | Browser, `git fetch`, package download, public code search, or an undeclared model-tool call | Deny all egress except an authenticated inference broker; record allow/deny logs and a negative reachability test. |
-| Git and filesystem leakage | A worktree points to an object store containing removed proofs; reflogs, remotes, caches, or sibling mounts reveal them | Build a new repository from copied working-tree bytes, without `.git`, `target`, credential files, or sibling directories; audit refs, remotes, reflogs, and unreachable objects. |
-| Reference-material leakage | The container includes `dalek-lite`, the full Lean verification repository, old run output, or generated proof caches | Use an explicit allowlist of input paths and hashes; mount only the sealed task bundle, private scratch space, and an append-only result channel. |
-| Support-closure leakage | Copying a required Math file also exposes helpful lemmas, comments, or a withheld top-level reference statement | Compute a declaration-level closure where possible; distinguish elaboration support from the semantic Math budget; scan the sealed agent bundle against the verifier-only reference inventory. |
-| Harness tampering | The agent changes a checker, frozen baseline, model wrapper, or result classification | Keep harness, gate configuration, toolchain, and frozen inputs read-only and outside agent write authority; independently replay the candidate. |
-| Specification laundering | A proof succeeds only because contracts were weakened, definitions were hollowed out, or an implication became vacuous | Canonicalise and hash frozen statements and specification bodies; enforce approved target changes only and run adequacy checks for generated specifications. |
-| Lean escape hatches | `sorry`, a new axiom, `unsafe`, `implemented_by`, `extern`, untrusted evaluator shortcuts, or an unreviewed macro/plugin | Parse and compare declarations plus source text against an explicit baseline and allowlist; rebuild cleanly with a pinned toolchain. |
-| Cache or build poisoning | A precompiled artifact, altered lake cache, environment variable, or plugin changes what is checked | Start verification from a fresh image with controlled caches; record hashes of source, lock files, toolchain, compiler output, and verifier command. |
-| Training-data contamination | A hosted model memorised a public proof before the run | Cannot be ruled out by a runtime sandbox. Disclose it, use post-cutoff/private holdouts where possible, and avoid claims of clean-room novelty. |
+| Network access | Web search, `git fetch`, package download | Block general network access; allow only the model broker. |
+| Git history | Deleted proofs remain in Git objects or reflogs | Copy allowed files into a new repository with no old `.git`. |
+| Local files | Sibling BAIF clones, old runs, host caches | Mount only the sealed bundle and a new work directory. |
+| Input leakage | A required Math file also contains hidden lemmas or specs | Prefer declaration-level copies and scan the final bundle. |
+| Checker changes | The agent edits the rules that judge its result | Keep the checker and inputs read-only and verify elsewhere. |
+| Weak specifications | The agent proves something empty or much weaker | Review generated specs and compare with hidden references. |
+| Lean shortcuts | New axioms, `unsafe`, plugins, native code tricks | Use an allowlist, inspect declarations, and rebuild cleanly. |
+| Training data | The model memorised a public solution | Cannot be removed by the sandbox; disclose it. |
 
-## Required sealed execution boundary
+## Building a clean bundle
 
-The proposed architecture has three separately owned stages:
+The bundle builder should:
 
-```text
-offline bundle builder        inference broker             independent verifier
----------------------         ----------------             --------------------
-source + tool pins ──> sealed task image ──> agent scratch ──> candidate patch
-       │                         │                                 │
-       └── sterility manifest    └── usage/egress receipt          └── fresh replay
-```
+1. copy only allowed source and tool files;
+2. exclude `.git`, credentials, build caches, previous results, and sibling
+   repositories;
+3. create a new repository with one baseline commit;
+4. record `T`, `S`, `W`, all visible declarations, and all hashes;
+5. keep hidden statements and proofs for `W` in separate verifier data; and
+6. scan the agent bundle for known solution text before sealing it.
 
-### 1. Build the task bundle offline
+Do not use a shared Git worktree. Its `.git` file can still reach the parent
+object store.
 
-The trusted builder resolves dependencies, runs the declared extraction and
-target-selection tools, and produces a content-addressed task bundle. It must
-record the source revision, Aeneas/probe outputs, top-level universe `T`,
-supplied seed `S`, derived withheld set `W = T \ S`, target-visibility and
-support-closure policies, allowed Lean declarations/files, task manifest,
-toolchain, package locks, and hashes for every input. It emits an agent bundle
-that contains no reference statement or proof for `W`, plus a separately
-stored verifier-only reference manifest for post-run assessment. The builder is
-where network access, if any, is allowed; the scored agent runner is not a
-general development environment.
+## Running the agents
 
-The bundle must be made from copied working-tree bytes. Do **not** provide a
-shared `git worktree`: its `.git` pointer can reach the parent repository's
-object store, including deleted or unreferenced proofs. Instead:
+The sandbox receives only:
 
-1. Copy only allowlisted task bytes into a new directory, excluding `.git`,
-   `target`, result directories, credentials, editor state, and sibling clones.
-   When a whole source file contains both required support and hidden reference
-   material, slice declarations or fail the build rather than copying the file
-   opportunistically.
-2. Run `git init` in that directory and create one sealed baseline commit.
-3. Remove remotes and non-baseline refs; ensure detached or single-branch
-   history has no parent containing reference material.
-4. Run `git fsck --no-reflogs --unreachable` and record that no unexpected
-   objects remain. Check `git remote -v`, `git reflog`, and `git show-ref` as
-   part of the receipt.
+- a read-only input bundle;
+- a new writable work directory;
+- a result output channel; and
+- access to the model through a restricted broker.
 
-This is stronger than merely stripping visible history, and mirrors the
-isolated-object-store reasoning documented in CryptoProver's container design.
+It should not receive the host home directory, SSH agent, Docker socket, cloud
+keys, package caches, or unrestricted DNS/network access. Parallel agents
+should not share writable caches or work directories.
 
-### 2. Run the agent with minimal authority
+The broker holds the model key, allows only the chosen provider, and records
+usage. The agent should never receive a reusable API key.
 
-The agent container should receive only:
+## Final verification
 
-- a read-only sealed bundle, including the exact editable-target policy;
-- a writable per-run scratch/work directory;
-- a write-only or append-only result export; and
-- an inference endpoint reachable through a dedicated broker.
+The final verifier runs in a different fresh environment. It receives only the
+sealed bundle, the candidate patch, and its own hidden reference data. It does
+not reuse the agents' build output.
 
-The container must not mount the host checkout, home directory, SSH agent,
-cloud credentials, Docker socket, shared package caches, sibling repositories,
-or a writable harness. Run it as an unprivileged user with a read-only root
-filesystem where practical, no host networking, no privileged capabilities,
-and resource/time limits. Per-agent work and compiler caches must be isolated:
-sharing a writable `target` or package cache creates both cross-run leakage and
-nondeterministic interference.
+It checks the Lean build, remaining holes, statement hashes, trusted
+assumptions, forbidden features, file scope, and bundle hashes. A result that
+passes only inside the agent workspace is rejected.
 
-The inference broker is the only permitted network route. It should accept
-requests only to declared provider endpoints, attach a run ID, reject arbitrary
-URLs and DNS, and emit an append-only request/response-metadata and usage log.
-Provider credentials stay at the broker; the agent receives no reusable API key.
-If the chosen model client cannot be constrained to that route, the resulting
-run is exploratory rather than scoreable.
+## Lean rules
 
-### 3. Verify outside the agent boundary
+By default, reject new uses of:
 
-A separate verifier rebuilds the submitted candidate in a new container from
-the sealed input and the exported patch, not from the agent's filesystem. It
-has no model credentials and does not accept a precompiled target directory.
-It recomputes all hashes, executes the full agreed Lean check, runs gates, and
-writes the final status. Acceptance is an outcome of this verifier, never an
-agent self-report or a green terminal excerpt.
+- `sorry`, `admit`, and `axiom`;
+- `unsafe`, `implemented_by`, `extern`, and external verification attributes;
+- new macros, elaborators, tactics, plugins, or generated binaries used to
+  avoid a proof; and
+- edits to the toolchain, dependency lock files, generated functions, frozen
+  inputs, or checker code.
 
-At least one replay should be performed on an independently created fresh
-bundle/image. A replay failure makes the original result non-reproducible,
-even if the original agent environment reported success.
+Some existing assumptions may be allowed, but each one needs an exact name,
+hash, reason, and owner. The run may use the listed baseline but may not expand
+it.
 
-## Sterility receipt
+## Evidence kept for each run
 
-Each run must emit a signed or otherwise tamper-evident JSON receipt. A PR may
-show a human summary, but the JSON is the authoritative evidence. At minimum it
-contains:
+Keep a small machine-readable receipt containing:
 
-```json
-{
-  "schema_version": 1,
-  "run_id": "content-addressed identifier",
-  "input_manifest_sha256": "...",
-  "top_level_universe_sha256": "...",
-  "allowed_spec_ids_sha256": "...",
-  "withheld_spec_ids_sha256": "...",
-  "support_closure_sha256": "...",
-  "reference_manifest_mounted_in_agent": false,
-  "source_revision": "...",
-  "image_digest": "...",
-  "lean_toolchain": "...",
-  "allowed_mounts": ["/task:ro", "/scratch:rw", "/results:append-only"],
-  "network_policy": "provider-broker-only",
-  "egress_audit": {"allowed": [], "denied": [], "negative_test": "pass"},
-  "git_audit": {"remotes": [], "unexpected_refs": [], "unreachable_objects": []},
-  "frozen_file_hashes": {"...": "..."},
-  "baseline_trust_hash": "...",
-  "candidate_patch_sha256": "...",
-  "verification": {"fresh_replay": "pass", "full_build": "pass"},
-  "usage_receipt": {"complete": true, "provider": "declared separately"}
-}
-```
+- input, image, toolchain, and checker hashes;
+- `T`, `S`, `W`, and compile-support hashes;
+- mount and network policy;
+- Git-history and bundle scans;
+- model and usage record;
+- candidate patch hash; and
+- clean-build and fresh-replay results.
 
-The actual schema should include timestamps, command hashes, exit codes,
-resource limits, model identifier, prompt/template hashes, and explicit
-failure labels. Sensitive prompt content or provider responses may be stored
-under access controls, but the public receipt must say what is withheld and
-why. Missing evidence is a failed or unscored run, not a detail filled in by
-narrative.
+Missing evidence makes the run unscored. It should not be filled in later from
+memory.
 
-## Integrity gates
-
-Gates compare a candidate to the frozen baseline and fail closed. They apply to
-all files in the declared scope, not only the target file.
-
-| Gate | Reject when | Notes |
-| --- | --- | --- |
-| Completion | Any task-scope `sorry`, `admit`, placeholder proof, or unresolved error remains | Count declarations after elaboration where possible; text scans are a supplementary check. |
-| Trust-base | A new axiom/theorem-as-axiom, unsafe declaration, or trusted-kernel assumption is introduced | Compare exact declarations and transitive trust closure to the baseline. Existing, disclosed assumptions are not silently reclassified. |
-| Foreign implementation | `implemented_by`, `extern`, code generation, native linkage, or an unapproved opaque implementation bypasses the intended proof | Use a declaration and source allowlist. Exceptions need a reviewed identifier, rationale, and baseline hash. |
-| Contract state | A supplied contract in `S` changes, or a generated contract in `W` changes after reviewer acceptance and canonical freezing | Canonicalise elaborated statements when feasible, record the supplied/generated status, and hash source-level definitions as a second check. |
-| Tooling | Lean/Lake/mathlib versions, manifest/lock files, tactics, macros, plugins, checker scripts, or gate configuration change | The agent has no write access; the verifier nevertheless checks image and file hashes. |
-| Scope | A candidate edits a non-editable file, changes generated extraction output, or adds a helper outside its declared allowance | Enforce at patch import and compare the whole tree. |
-| Environment | Unapproved process, mount, environment variable, network request, package download, or cache write is observed | Record container policy and command/egress audit; do not rely only on an agent prompt. |
-| Fresh rebuild | The candidate only succeeds with agent-produced cache artifacts or in the original process | Rebuild from source in a newly created verifier environment. |
-
-### Explicit Lean policy
-
-The default policy forbids new occurrences of `sorry`, `admit`, `axiom`,
-`unsafe`, `implemented_by`, `extern`, `opaque` declarations used as proof
-escapes, unapproved `native_decide`, and new elaborator/tactic/macro/plugin
-code. It also forbids edits to Lake configuration, toolchain files, generated
-extraction inputs, gate code, and trusted Math files unless the experiment arm
-expressly declares them editable.
-
-Some constructs are legitimate in a pinned baseline. For example, a project
-may intentionally retain a finite, reviewed mathematical assumption set, and a
-computational tactic may be acceptable under a known Lean version. Such cases
-require an **allowlist** containing the exact declaration/file, justification,
-owner, baseline hash, and whether it contributes to the reported trusted base.
-The gate then rejects additions, removals, or changes; it must not use a vague
-"no suspicious code" rule.
-
-Metaprogramming deserves extra care. A lexical ban alone is insufficient:
-macros, elaborators, generated source, command quotations, environment
-extensions, compiled plugins, and imported bytecode can alter what Lean sees.
-The scoreable baseline should allow only pre-pinned, read-only packages and
-disallow newly added imports, plugins, and generated modules. The fresh replay
-must use only the declared toolchain and source closure.
-
-## What sandboxing cannot establish
-
-Runtime controls can provide evidence that a run did not fetch or read a local
-reference during execution. They cannot show that a proprietary model was not
-trained on, memorised, or otherwise influenced by the public `dalek-lite`,
-CryptoProver, or Lean verification material. They also cannot make a weak or
-inadequate top-level specification into a meaningful correctness claim.
-
-Mitigations are still useful: disclose model and release dates; use private or
-post-training-cutoff held-out targets when available; run multiple models;
-compare outputs for suspicious overlap with known references; and publish
-negative controls. A similarity check may find copying but cannot prove its
-absence. None of these measures converts the result into a proof of
-decontamination.
-Reports should distinguish:
-
-- **runtime-isolated reconstruction** — supported by a complete sterility
-  receipt and fresh replay;
-- **reference-aware or reference-assisted experiment** — inputs intentionally
-  include prior specifications, mathematical infrastructure, or proof clues;
-- **training-contamination unknown** — the normal status for public targets and
-  closed-weight hosted models.
-
-This distinction lets the project measure useful automation without promising a
-clean-room property that it cannot evidence.
-
-## Review questions
-
-1. What is the minimal evidence package that makes a run scoreable for this
-   repository: container recipe, receipt, logs, replay, or all of them?
-2. Which Lean features belong in the first baseline allowlist, particularly
-   `native_decide` and existing Math assumptions?
-3. Can the selected inference provider be brokered and usage-audited without
-   exposing credentials to the agent?
-4. Which targets can plausibly be held out from model training, and how should
-   we label all other results?
-5. Who owns the offline bundle builder and the independent verifier, so that an
-   agent run cannot modify the authority that accepts it?
-6. How will the builder prove that its support closure contains everything
-   needed to elaborate the seed but no hidden reference statement or semantic
-   lemma outside the declared Math budget?
+The PR should ask directly: what stopped the paper's agents from finding the
+public BAIF solution, and which logs or sandbox records support that answer?

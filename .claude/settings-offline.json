@@ -1,0 +1,21 @@
+{
+  "permissions": {
+    "deny": [
+      "WebFetch",
+      "WebSearch",
+      "Bash(curl *)",
+      "Bash(wget *)",
+      "Bash(git fetch*)",
+      "Bash(git pull*)",
+      "Bash(git clone*)",
+      "Bash(git remote*)",
+      "Bash(lake env *)",
+      "Bash(lake update*)",
+      "Bash(ssh *)",
+      "Bash(scp *)",
+      "Bash(nc *)",
+      "Bash(pip install*)",
+      "Bash(npm install*)"
+    ]
+  }
+}

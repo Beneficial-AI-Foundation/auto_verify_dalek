@@ -120,13 +120,22 @@ also need quality checks.
 
 ### DEC-11 — Which Lean features are allowed?
 
-**Status:** OPEN
+**Status:** ACCEPTED (2026-08-22, Zhang-Liao; policy in `log/plan.md` §4)
 
 **Question:** Should features such as `native_decide`, custom tactics, macros,
 plugins, and native code be banned or allowed under a list?
 
-**Suggested start:** Reject features that add new trusted assumptions. Decide a
-narrow rule for `native_decide` and record which compiler assumptions it uses.
+**Decision:** `native_decide` is allowed in proofs. It is real computation, and
+`collectAxioms` faithfully marks every theorem depending on it; the final
+report states "N theorems depend on the compiler." Sites are ledgered in
+`harness/frozen/native_decide_sites.json` (baseline: 6 sites plus the two
+compiler axioms `Lean.ofReduceBool` and `Lean.trustCompiler`). The only
+mechanically closed hole: agent output must contain zero new
+`@[implemented_by]` or `@[extern]` attributes, since these can swap a
+function's compiled version and let `native_decide` prove a false proposition.
+This is a G2 gate check (`harness/gates/g2_trust_base.py`). All other trusted
+assumptions are governed by the frozen axiom whitelist, enumerated by
+`collectAxioms` over the dependency closure rather than by grep.
 
 ### DEC-12 — Can humans help during a scored run?
 
@@ -152,13 +161,18 @@ small model matrix. Compare models only on identical inputs and budgets.
 
 ### DEC-14 — What is the first project scope?
 
-**Status:** OPEN
+**Status:** ACCEPTED (2026-08-22, Zhang-Liao; experiment design in `log/plan.md` §7)
 
 **Question:** One module, one portable backend, or the full crate?
 
-**Suggested start:** Use small slices only to debug the harness. Establish the
-full-project `S = T` baseline before claiming end-to-end success with smaller
-seeds.
+**Decision:** As the suggested start. Small slices are for debugging the
+harness only: the `Scalar/Scalar` vertical slice (33 proofs, 20 top-level
+specs; `log/plan.md` §7.1) shakes out the driver batch mode and the Phase-2
+measurement instruments. The full-project `S = T` baseline — all 347
+sorry-bearing declarations proved with `collectAxioms` inside the frozen
+whitelist (Phase 1, §7.2) — must exist before any end-to-end claim with a
+smaller seed, because without a tree known to close, a synthesis failure
+cannot be attributed (spec not synthesizable vs. proof not provable).
 
 ### DEC-15 — Who can read raw run data?
 

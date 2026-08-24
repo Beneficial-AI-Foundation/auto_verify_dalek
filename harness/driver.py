@@ -4,6 +4,19 @@
 Per target:  pick sorry → resolve declaration in the CURRENT file → run Claude
 Code headless (stream-json transcript saved) → gate → accept/rollback → ledger.
 
+Agent invocation lives in harness/agentproc.py (session UUID + --resume rounds,
+process-group kill, wall-clock deadline, signal handling, optional wire
+proxy — ported from CryptoProver run.py). Multi-round policy here:
+  * round 1 starts a fresh session pinned to an explicit UUID; rounds 2..N
+    `--resume` it with the gate verdict as feedback, so the agent keeps its
+    exploration context (failed tactics, half-built lemmas).
+  * only "not done yet" rejections continue (rejected_build,
+    rejected_sorry_remains). Policy violations (scope / forbidden attr /
+    sorry migration / g2) abort the target immediately: they require a
+    rollback, and resuming after a rollback would desync the agent's view
+    of the tree.
+  * rollback still happens exactly once, after the final round's verdict.
+
 Gate stack per attempt (all must pass to accept):
   a. scope: `git status --porcelain` shows changes ONLY in the target file
   b. no new `axiom`, `@[implemented_by]`, `@[extern]` in the changed file
@@ -34,11 +47,12 @@ import re
 import shutil
 import subprocess
 import sys
-import time
+
 
 REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from buckets import classify, load_events  # noqa: E402
+import agentproc  # noqa: E402  (harness/agentproc.py — subprocess layer)
 
 LEDGER_DIR = os.path.join(REPO, "ledger")
 TRANSCRIPTS = os.path.join(LEDGER_DIR, "transcripts")
@@ -149,20 +163,70 @@ def rollback(mod, new):
             shutil.rmtree(p)
 
 
-# ── agent invocation ─────────────────────────────────────────────────────
-def run_agent(prompt, transcript_path, args):
-    cmd = ["claude", "-p", prompt,
-           "--output-format", "stream-json", "--verbose",
-           "--max-turns", str(args.max_turns),
-           "--allowedTools",
-           "Read,Grep,Glob,Edit,Write,Bash(lake build*),Bash(lake env*),Bash(grep*)"]
-    if args.model:
-        cmd += ["--model", args.model]
-    t0 = time.time()
-    with open(transcript_path, "w") as fh:
-        p = subprocess.run(cmd, cwd=REPO, stdout=fh, stderr=subprocess.PIPE,
-                           text=True, timeout=args.timeout)
-    return p.returncode, time.time() - t0, p.stderr[-2000:]
+# ── agent invocation (multi-round; subprocess mechanics in agentproc.py) ─────
+ALLOWED_TOOLS = ("Read,Grep,Glob,Edit,Write,"
+                 "Bash(lake build*),Bash(lake env*),Bash(grep*)")
+
+# Gate rejections that mean "not done yet" — the same session is resumed
+# with this feedback. Everything else is a policy violation: abort.
+FEEDBACK = {
+    "rejected_build": (
+        "The harness gate rejected this round: `lake build` fails after "
+        "your edit. Fix the build; the target file must compile. "
+        "All original rules still apply."),
+    "rejected_sorry_remains": (
+        "The harness gate rejected this round: the target file's `sorry` "
+        "warning count did not decrease — the target is still unproven. "
+        "Keep working on the same declaration. All original rules still "
+        "apply."),
+}
+
+
+def run_rounds(prompt, tid, path, before_counts, args, env):
+    """Round 1 fresh session, rounds 2..N --resume with gate feedback.
+
+    Returns (outcome, detail, rounds, session_id). No rollback here: the
+    caller rolls back once, on any non-accepted final outcome. Each round's
+    transcript is ledger/transcripts/{tid}.r{n}.jsonl.
+    """
+    session_id = agentproc.new_session_id()
+    rounds = []
+    outcome, detail = "agent_error", {"error": "no rounds ran"}
+    for rnd in range(1, args.rounds + 1):
+        tpath = os.path.join(TRANSCRIPTS, f"{tid}.r{rnd}.jsonl")
+        status, rc, wall, _result, prov = agentproc.run_round(
+            prompt, tpath, cwd=REPO, session_id=session_id,
+            resume=(rnd > 1), model=args.model, max_turns=args.max_turns,
+            allowed_tools=ALLOWED_TOOLS, deadline_seconds=args.timeout,
+            continue_message=FEEDBACK.get(outcome), env=env)
+
+        if status != "ok":
+            outcome, detail = "agent_error", {"error": status}
+        elif rc != 0:
+            outcome, detail = "agent_error", {"error": f"exit {rc}"}
+        else:
+            outcome, detail = gate(path, before_counts)
+
+        try:
+            analysis = classify(load_events(tpath),
+                                rejected=(outcome != "accepted"))
+        except Exception as e:
+            analysis = {"error": f"transcript parse failed: {e}"}
+        rounds.append({
+            "round": rnd, "outcome": outcome,
+            "wall_seconds": round(wall, 1), "status": status,
+            "transcript": os.path.relpath(tpath, REPO),
+            "provenance": prov,
+            **({"usage_totals": analysis.get("usage_totals"),
+                "assistant_turns": analysis.get("assistant_turns"),
+                "buckets": analysis.get("buckets")}
+               if "error" not in analysis
+               else {"analysis_error": analysis["error"]}),
+        })
+        if outcome == "accepted" or outcome not in FEEDBACK \
+                or agentproc.RECEIVED_SIGNAL is not None:
+            break
+    return outcome, detail, rounds, session_id
 
 
 # ── gates ────────────────────────────────────────────────────────────────
@@ -202,8 +266,16 @@ def main():
     ap.add_argument("--limit", type=int, default=0, help="0 = all")
     ap.add_argument("--match", default="", help="substring filter on location")
     ap.add_argument("--model", default="")
-    ap.add_argument("--max-turns", type=int, default=30)
-    ap.add_argument("--timeout", type=int, default=1800, help="seconds per attempt")
+    ap.add_argument("--max-turns", type=int, default=30, help="per round")
+    ap.add_argument("--timeout", type=int, default=1800,
+                    help="seconds per ROUND (wall clock, process-group kill)")
+    ap.add_argument("--rounds", type=int, default=1,
+                    help="max claude rounds per target; rounds >1 resume the "
+                         "same session with gate feedback (default 1 = old "
+                         "single-shot behavior)")
+    ap.add_argument("--wire-log", action="store_true",
+                    help="record raw API requests via a localhost proxy "
+                         "(ledger/wire/wire_requests.jsonl); best-effort")
     ap.add_argument("--commit", action="store_true",
                     help="git commit each accepted fill")
     ap.add_argument("--dry-run", action="store_true",
@@ -211,6 +283,10 @@ def main():
     args = ap.parse_args()
 
     os.makedirs(TRANSCRIPTS, exist_ok=True)
+    agentproc.install_signal_handler()
+    env = os.environ.copy()
+    if args.wire_log and not args.dry_run:
+        agentproc.start_wire_proxy(os.path.join(LEDGER_DIR, "wire"), env)
     inv = json.load(open(INVENTORY))
     targets = [loc for z in args.zones.split(",")
                for loc in inv["locations"][z.strip()]]
@@ -248,55 +324,42 @@ def main():
             continue
 
         tid = re.sub(r"[^A-Za-z0-9_.]+", "_", loc)
-        tpath = os.path.join(TRANSCRIPTS, f"{tid}.jsonl")
-        try:
-            rc, wall, err_tail = run_agent(prompt, tpath, args)
-            agent_error = None if rc == 0 else f"exit {rc}: {err_tail}"
-        except subprocess.TimeoutExpired:
-            agent_error, wall = "timeout", args.timeout
+        outcome, detail, rounds, session_id = run_rounds(
+            prompt, tid, path, before_counts, args, env)
 
-        if agent_error:
-            outcome, detail = "agent_error", {"error": agent_error}
+        if outcome == "accepted":
+            before_counts = detail.pop("counts_after")
+            accepted += 1
+            if args.commit:
+                sh(["git", "add", path])
+                sh(["git", "commit", "-m",
+                    f"phase1: fill {decl} ({loc})\n\n"
+                    f"Co-Authored-By: Claude Fable 5 <noreply@anthropic.com>"])
+        else:
             mod, new = changed_files()
             rollback(mod, new)
-        else:
-            outcome, detail = gate(path, before_counts)
-            if outcome == "accepted":
-                before_counts = detail.pop("counts_after")
-                accepted += 1
-                if args.commit:
-                    sh(["git", "add", path])
-                    sh(["git", "commit", "-m",
-                        f"phase1: fill {decl} ({loc})\n\n"
-                        f"Co-Authored-By: Claude Fable 5 <noreply@anthropic.com>"])
-            else:
-                mod, new = changed_files()
-                rollback(mod, new)
 
-        try:
-            events = load_events(tpath)
-            analysis = classify(events, rejected=(outcome != "accepted"))
-        except Exception as e:
-            analysis = {"error": f"transcript parse failed: {e}"}
-
+        out_tokens = sum((r.get("usage_totals") or {}).get("output_tokens")
+                         or 0 for r in rounds)
         record = {
             "ts": now_iso(), "target": loc, "decl": decl, "path": path,
             "outcome": outcome, "detail": detail,
-            "wall_seconds": round(wall, 1),
+            "session_id": session_id,
+            "rounds_run": len(rounds), "max_rounds": args.rounds,
+            "wall_seconds": round(sum(r["wall_seconds"] for r in rounds), 1),
+            "output_tokens_total": out_tokens,
             "model": args.model or "default", "max_turns": args.max_turns,
-            "transcript": os.path.relpath(tpath, REPO),
-            **({"buckets": analysis.get("buckets"),
-                "usage_totals": analysis.get("usage_totals"),
-                "assistant_turns": analysis.get("assistant_turns"),
-                "result": analysis.get("result")}
-               if "error" not in analysis else {"analysis_error": analysis["error"]}),
+            "rounds": rounds,
         }
         with open(os.path.join(LEDGER_DIR, "rounds.jsonl"), "a") as fh:
             fh.write(json.dumps(record, ensure_ascii=False) + "\n")
-        usage = record.get("usage_totals") or {}
-        print(f"    {outcome}"
-              + (f" | out={usage.get('output_tokens')}"
-                 f" turns={record.get('assistant_turns')}" if usage else ""))
+        print(f"    {outcome} | rounds={len(rounds)}"
+              + (f" out={out_tokens}" if out_tokens else ""))
+
+        if agentproc.RECEIVED_SIGNAL is not None:
+            print("[driver] interrupted — rollback + ledger persisted; "
+                  "exiting")
+            sys.exit(128 + agentproc.RECEIVED_SIGNAL)
 
     if not args.dry_run:
         print(f"\ndone: {accepted}/{len(targets)} accepted; "

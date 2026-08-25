@@ -21,7 +21,8 @@ Gate stack per attempt (all must pass to accept):
   a. scope: `git status --porcelain` shows changes ONLY in the target file
   b. no new `axiom`, `@[implemented_by]`, `@[extern]` in the changed file
      (the native_decide hijack path — plan.md §4 policy)
-  c. `lake build` exits 0
+  c. `lake build` exits 0 within --build-timeout (default 1200s; a
+     timeout is rejected_kernel_budget — N3 minimal, plan.md §6)
   d. sorry accounting vs pre-attempt snapshot: target file's sorry-warning
      count strictly decreases; every other file's count unchanged
   e. G2 trust-base gate (harness/gates/g2_trust_base.py --skip-build;
@@ -45,8 +46,10 @@ import json
 import os
 import re
 import shutil
+import signal
 import subprocess
 import sys
+import time
 
 
 REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -86,17 +89,41 @@ def now_iso():
 
 
 # ── sorry accounting ─────────────────────────────────────────────────────
-def build_sorry_counts():
-    """lake build → (exit_code, {file: sorry_warning_count})."""
-    p = sh(["lake", "build"])
+BUILD_TIMEOUT = 1200  # seconds; fixed so runs on different machines are comparable
+
+
+def build_sorry_counts(timeout=BUILD_TIMEOUT):
+    """lake build → (exit_code | "timeout", {file: sorry_warning_count}, wall_s).
+
+    N3 minimal version (plan.md §6): a `decide`-style kernel blow-up passes
+    elaboration but can run for hours; Lean's maxHeartbeats does not bound
+    the kernel, so only a wall clock does. lake is spawned in its own
+    process group and the whole group is SIGKILLed on timeout — plain
+    `subprocess.run(timeout=)` would kill `lake` and orphan the `lean`
+    workers, which keep burning cores.
+    """
+    t0 = time.time()
+    proc = subprocess.Popen(["lake", "build"], cwd=REPO,
+                            stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                            text=True, start_new_session=True)
+    try:
+        out, _ = proc.communicate(timeout=timeout)
+        rc = proc.returncode
+    except subprocess.TimeoutExpired:
+        try:
+            os.killpg(proc.pid, signal.SIGKILL)
+        except ProcessLookupError:
+            pass
+        proc.wait()
+        return "timeout", {}, round(time.time() - t0, 1)
     counts = {}
-    for ln in (p.stdout + p.stderr).splitlines():
+    for ln in out.splitlines():
         if "declaration uses `sorry`" in ln or "declaration uses 'sorry'" in ln:
             loc = ln.split(" declaration")[0]
             loc = loc.removeprefix("warning: ").lstrip("./")
             f = loc.split(":")[0]
             counts[f] = counts.get(f, 0) + 1
-    return p.returncode, counts
+    return rc, counts, round(time.time() - t0, 1)
 
 
 # ── target resolution (robust to line drift from earlier accepts) ───────
@@ -209,7 +236,7 @@ def run_rounds(prompt, tid, path, before_counts, args, env, settings_path):
         elif rc != 0:
             outcome, detail = "agent_error", {"error": f"exit {rc}"}
         else:
-            outcome, detail = gate(path, before_counts)
+            outcome, detail = gate(path, before_counts, args.build_timeout)
 
         try:
             analysis = classify(load_events(tpath),
@@ -239,7 +266,7 @@ def run_rounds(prompt, tid, path, before_counts, args, env, settings_path):
 
 
 # ── gates ────────────────────────────────────────────────────────────────
-def gate(target_path, before_counts):
+def gate(target_path, before_counts, build_timeout=BUILD_TIMEOUT):
     mod, new = changed_files()
     if new or set(mod) - {target_path}:
         return "rejected_scope", {"modified": mod, "new": new}
@@ -249,23 +276,29 @@ def gate(target_path, before_counts):
                           if l.startswith("+") and not l.startswith("+++"))
         if FORBIDDEN_RE.search(added):
             return "rejected_forbidden_attr", {}
-    rc, after = build_sorry_counts()
+    rc, after, build_s = build_sorry_counts(build_timeout)
+    b = {"gate_build_seconds": build_s}
+    if rc == "timeout":
+        # policy violation, not "not done yet": resuming would just make
+        # the agent try another blow-up. Rolled back like any rejection.
+        return "rejected_kernel_budget", {**b, "build_timeout": build_timeout}
     if rc != 0:
-        return "rejected_build", {}
+        return "rejected_build", b
     if after.get(target_path, 0) >= before_counts.get(target_path, 0):
-        return "rejected_sorry_remains", {"before": before_counts.get(target_path, 0),
+        return "rejected_sorry_remains", {**b,
+                                          "before": before_counts.get(target_path, 0),
                                           "after": after.get(target_path, 0)}
     others_before = {f: c for f, c in before_counts.items() if f != target_path}
     others_after = {f: c for f, c in after.items() if f != target_path}
     if others_before != others_after:
-        return "rejected_sorry_migration", {
+        return "rejected_sorry_migration", {**b,
             "delta": {f: (others_before.get(f, 0), others_after.get(f, 0))
                       for f in set(others_before) ^ set(others_after)
                       | {f for f in others_before if others_before.get(f) != others_after.get(f)}}}
     g2 = sh(["python3", "harness/gates/g2_trust_base.py", "--skip-build"])
     if g2.returncode != 0:
-        return "rejected_g2", {"g2_tail": g2.stdout[-1500:]}
-    return "accepted", {"counts_after": after}
+        return "rejected_g2", {**b, "g2_tail": g2.stdout[-1500:]}
+    return "accepted", {**b, "counts_after": after}
 
 
 # ── main loop ────────────────────────────────────────────────────────────
@@ -278,6 +311,10 @@ def main():
     ap.add_argument("--max-turns", type=int, default=30, help="per round")
     ap.add_argument("--timeout", type=int, default=1800,
                     help="seconds per ROUND (wall clock, process-group kill)")
+    ap.add_argument("--build-timeout", type=int, default=BUILD_TIMEOUT,
+                    help="seconds for each harness-side `lake build` (baseline "
+                         "and gate); exceeding it in the gate is "
+                         "rejected_kernel_budget (N3 minimal)")
     ap.add_argument("--rounds", type=int, default=1,
                     help="max claude rounds per target; rounds >1 resume the "
                          "same session with gate feedback (default 1 = old "
@@ -339,7 +376,7 @@ def main():
         targets = targets[:args.limit]
     print(f"{len(targets)} target(s), zones={args.zones}")
 
-    before_counts = {}
+    before_counts, baseline_s = {}, None
     if not args.dry_run:
         mod, _ = changed_files()
         if mod:
@@ -347,11 +384,18 @@ def main():
                      f"commit or restore first")
         snapshot_untracked()  # pre-existing untracked files are not the agent's
         print("baseline build …", flush=True)
-        rc, before_counts = build_sorry_counts()
+        rc, before_counts, baseline_s = build_sorry_counts(args.build_timeout)
+        if rc == "timeout":
+            sys.exit(f"baseline lake build exceeded --build-timeout "
+                     f"{args.build_timeout}s; raise it explicitly")
         if rc != 0:
             sys.exit("baseline lake build failed — fix before running driver")
         print(f"baseline: {sum(before_counts.values())} sorry decls "
-              f"in {len(before_counts)} files")
+              f"in {len(before_counts)} files, {baseline_s}s build")
+        if baseline_s > args.build_timeout / 3:
+            print(f"[driver] WARNING: baseline build {baseline_s}s is over a "
+                  f"third of --build-timeout {args.build_timeout}s; accepted "
+                  f"proofs only make it slower", flush=True)
 
     accepted = 0
     for i, loc in enumerate(targets):
@@ -393,6 +437,8 @@ def main():
             "wall_seconds": round(sum(r["wall_seconds"] for r in rounds), 1),
             "output_tokens_total": out_tokens,
             "model": args.model or "default", "max_turns": args.max_turns,
+            "build_timeout": args.build_timeout,
+            "baseline_build_seconds": baseline_s,
             "rounds": rounds,
         }
         with open(os.path.join(LEDGER_DIR, "rounds.jsonl"), "a") as fh:

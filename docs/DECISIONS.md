@@ -186,13 +186,44 @@ audit. Publish hashes, costs, outcomes, and redacted summaries.
 
 ### DEC-16 — When does a run stop?
 
-**Status:** PROPOSED
+**Status:** ACCEPTED (2026-08-25, Zhang-Liao; implemented in `harness/driver.py`
+`run_rounds`, ported from CryptoProver `run.py` and adapted to one-sorry targets)
 
 **Question:** What are the fixed limits for cost, time, tokens, retries, review
 rounds, and stalled progress?
 
-**Suggested start:** Put all limits in the run JSON. Report timeout, budget
-exhaustion, checker failure, and sandbox failure instead of discarding them.
+**Decision:** All limits live in a run JSON (`harness/limits.default.json`,
+passed with `--run-config`; CLI flags override) and every ledger record
+carries the effective values under `limits`.
+
+*Rounds.* Work on a single theorem is divided into **rounds**, where each round is
+one headless `claude -p` process. Even when Claude believes the proof is complete,
+we still need to run tools such as `lake build` to confirm that the `sorry` has
+actually been discharged — hence this parameter.
+
+*Turns.* The number of operations (read, edit, etc.) performed by Claude Code
+within a single round.
+
+| Limit | Default | Outcome when hit |
+| --- | --- | --- |
+| agent rounds | 5 | last gate verdict (`rejected_*`) |
+| turns per round (the round's work budget; model- and machine-independent, so runs stay comparable across models) | 30 | round ends normally, transcript and cost complete, gate runs |
+| wall clock per round (safety net, not a budget: one `claude -p` process, process-group SIGKILL, transcript truncated and cost unreported) | 15 min; the per-target bound is rounds × timeout = 75 min | `agent_error{deadline}` for that round; later rounds may still run. Frequent deadlines mean the timeout or the build is wrong, not that the agent ran out of work |
+| reported cost | off (`max_cost_usd = 0`) | `budget_exhausted{cost_usd}` |
+| harness-side `lake build` | 20 min | `rejected_kernel_budget` |
+| agent `END_REASON:LIMIT` | — | `agent_limit` (honest give-up; recorded, not retried) |
+| stall: target file byte-identical after 2 consecutive rounds | reset session | `stalled` after 3 resets |
+| context bloat: session cache-creation tokens > 200k | reset session | `stalled` after 3 resets |
+
+A session reset starts a fresh context with the original prompt plus a compact
+round history (edits stay in the file). Policy violations (scope, forbidden
+attribute, sorry migration, trust-base, kernel budget) abort at once. No
+outcome is discarded: timeouts, budget exhaustion and checker failures are
+ledger records like any other. Unlike CryptoProver there is no separate
+whole-target clock: a round is one agent process with a fixed slice, and the
+target bound is simply rounds × timeout. CryptoProver's plateau guard is not ported —
+with one sorry per target the progress metric is binary and collapses into
+the round cap.
 
 ### DEC-17 — What environment details are recorded?
 

@@ -15,6 +15,12 @@ proxy — ported from CryptoProver run.py). Multi-round policy here:
     sorry migration / g2) abort the target immediately: they require a
     rollback, and resuming after a rollback would desync the agent's view
     of the tree.
+  * stop rules (DEC-16): --rounds × --timeout (per-target wall bound),
+    --max-cost-usd, agent END_REASON:LIMIT, stall (target file unchanged
+    for --stall-rounds rounds) and context bloat → session reset with a
+    compact round history, at most --max-auto-resets times, then stop.
+    All limits can come from --run-config JSON and are recorded per ledger
+    record under `limits`.
   * rollback still happens exactly once, after the final round's verdict.
 
 Gate stack per attempt (all must pass to accept):
@@ -77,7 +83,12 @@ Rules — violations are auto-rejected by the harness:
 
 Verify with `lake build` (module: {module}). Finish when it compiles with one
 fewer sorry warning for {path}, or state clearly that you are stuck and why.
+
+End your final message with exactly one line:
+  END_REASON:COMPLETE   — the proof is in place and `lake build` passes
+  END_REASON:LIMIT      — you cannot finish this target; say why in one line
 """
+END_REASON_RE = re.compile(r"(?m)^\s*END_REASON:(COMPLETE|LIMIT)\s*$", re.I)
 
 
 def sh(cmd, **kw):
@@ -212,24 +223,74 @@ FEEDBACK = {
 }
 
 
-def run_rounds(prompt, tid, path, before_counts, args, env, settings_path):
-    """Round 1 fresh session, rounds 2..N --resume with gate feedback.
+def _file_sha(path):
+    try:
+        return agentproc.sha256_file(os.path.join(REPO, path))
+    except OSError:
+        return None
 
-    Returns (outcome, detail, rounds, session_id). No rollback here: the
-    caller rolls back once, on any non-accepted final outcome. Each round's
-    transcript is ledger/transcripts/{tid}.r{n}.jsonl.
+
+def _history_block(rounds):
+    lines = [f"round {r['round']}: {r['outcome']}"
+             + (f" ({json.dumps(r['detail'], ensure_ascii=False)[:200]})"
+                if r.get('detail') else "")
+             for r in rounds]
+    return ("Round history so far (a previous session worked on this target; "
+            "its edits were kept in the file, its context was not):\n  "
+            + "\n  ".join(lines))
+
+
+def run_rounds(prompt, tid, path, before_counts, args, env, settings_path):
+    """Multi-round attempt on one target. Stop rules (DEC-16), ported from
+    CryptoProver run.py and adapted to one-sorry targets:
+
+      * --rounds            hard cap on agent rounds
+      * --timeout           wall clock per round (process-group kill); the
+                            per-target bound is rounds × timeout
+      * --max-cost-usd      cumulative reported cost cap per target (0 = off)
+      * END_REASON:LIMIT    agent's honest give-up ends the attempt
+      * stall               --stall-rounds consecutive rounds that leave the
+                            target file byte-identical → session reset
+                            (fresh context + compact round history); after
+                            --max-auto-resets, stop
+      * bloat               a session whose cumulative cache-creation tokens
+                            exceed --bloat-threshold-tokens is reset (context
+                            degradation is the dominant failure mode in the
+                            CryptoProver runs)
+      Policy violations (scope / forbidden attr / migration / g2 / kernel
+      budget) abort immediately, as before. CryptoProver's plateau guard is
+      not ported: with a single sorry per target the progress metric is
+      binary, so "no new low for N rounds" collapses into --rounds.
+
+    Returns (outcome, detail, rounds, session_ids). Each round's transcript
+    is ledger/transcripts/{tid}.r{n}.jsonl.
     """
     session_id = agentproc.new_session_id()
+    session_ids = [session_id]
     rounds = []
     outcome, detail = "agent_error", {"error": "no rounds ran"}
+    cost_total = 0.0
+    session_cc_tokens = 0
+    stall_run = 0
+    resets = 0
+    fresh = True
+    continue_message = None
     for rnd in range(1, args.rounds + 1):
+        if fresh and rounds:  # session reset: fresh context + history
+            round_prompt = prompt + "\n\n" + _history_block(rounds)
+        else:
+            round_prompt = prompt
+        sha_before = _file_sha(path)
         tpath = os.path.join(TRANSCRIPTS, f"{tid}.r{rnd}.jsonl")
         status, rc, wall, result, prov = agentproc.run_round(
-            prompt, tpath, cwd=REPO, session_id=session_id,
-            resume=(rnd > 1), model=args.model, max_turns=args.max_turns,
-            allowed_tools=ALLOWED_TOOLS, deadline_seconds=args.timeout,
-            continue_message=FEEDBACK.get(outcome), env=env,
+            round_prompt, tpath, cwd=REPO, session_id=session_id,
+            resume=not fresh, model=args.model, max_turns=args.max_turns,
+            allowed_tools=ALLOWED_TOOLS,
+            deadline_seconds=args.timeout,
+            continue_message=continue_message, env=env,
             settings_path=settings_path)
+        was_fresh, fresh = fresh, False
+        result = result or {}
 
         if status != "ok":
             outcome, detail = "agent_error", {"error": status}
@@ -238,31 +299,81 @@ def run_rounds(prompt, tid, path, before_counts, args, env, settings_path):
         else:
             outcome, detail = gate(path, before_counts, args.build_timeout)
 
+        m = END_REASON_RE.search(result.get("result") or "")
+        end_reason = m.group(1).upper() if m else None
         try:
             analysis = classify(load_events(tpath),
                                 rejected=(outcome != "accepted"))
         except Exception as e:
             analysis = {"error": f"transcript parse failed: {e}"}
+        usage = analysis.get("usage_totals") or {}
+        cost = result.get("total_cost_usd")
+        cost_total += float(cost or 0)
+        session_cc_tokens += usage.get("cache_creation_input_tokens", 0) or 0
+        sha_after = _file_sha(path)
+        edited = sha_after != sha_before
+        stall_run = 0 if edited else stall_run + 1
+
         rounds.append({
-            "round": rnd, "outcome": outcome,
+            "round": rnd, "outcome": outcome, "detail": detail,
             "wall_seconds": round(wall, 1), "status": status,
+            "session_id": session_id, "fresh_session": was_fresh,
             "transcript": os.path.relpath(tpath, REPO),
             "provenance": prov,
+            "end_reason": end_reason,
+            "target_file_edited": edited,
             # actual models billed (the isolated config dir has no user
             # `model` setting, so "default" here means claude's default)
-            "models_used": sorted((result or {}).get("modelUsage") or {}),
-            "cost_usd": (result or {}).get("total_cost_usd"),
-            "num_turns": (result or {}).get("num_turns"),
-            **({"usage_totals": analysis.get("usage_totals"),
+            "models_used": sorted(result.get("modelUsage") or {}),
+            "cost_usd": cost,
+            "num_turns": result.get("num_turns"),
+            "session_cache_creation_tokens": session_cc_tokens,
+            **({"usage_totals": usage,
                 "assistant_turns": analysis.get("assistant_turns"),
                 "buckets": analysis.get("buckets")}
                if "error" not in analysis
                else {"analysis_error": analysis["error"]}),
         })
+
+        # ── stop rules ──
         if outcome == "accepted" or outcome not in FEEDBACK \
                 or agentproc.RECEIVED_SIGNAL is not None:
             break
-    return outcome, detail, rounds, session_id
+        if end_reason == "LIMIT":
+            outcome, detail = "agent_limit", {
+                "gate_outcome": outcome, "gate_detail": detail}
+            break
+        if args.max_cost_usd and cost_total >= args.max_cost_usd:
+            outcome, detail = "budget_exhausted", {
+                "kind": "cost_usd", "cost_total": round(cost_total, 4),
+                "max_cost_usd": args.max_cost_usd}
+            break
+        stall = args.stall_rounds and stall_run >= args.stall_rounds
+        bloat = session_cc_tokens > args.bloat_threshold_tokens
+        if stall or bloat:
+            if not args.auto_reset or resets >= args.max_auto_resets:
+                outcome, detail = "stalled", {
+                    "gate_outcome": outcome, "stall_rounds": stall_run,
+                    "bloat": bloat, "resets": resets}
+                break
+            resets += 1
+            session_id = agentproc.new_session_id()
+            session_ids.append(session_id)
+            session_cc_tokens = 0
+            stall_run = 0
+            fresh = True
+            rounds[-1]["reset_after"] = {
+                "cause": ["stall"] * stall + ["bloat"] * bloat,
+                "reset_no": resets}
+            print(f"    reset→fresh session ({rounds[-1]['reset_after']})",
+                  flush=True)
+            continue_message = None
+        else:
+            continue_message = FEEDBACK[outcome]
+            if end_reason == "COMPLETE":
+                continue_message = ("You declared END_REASON:COMPLETE but "
+                                    + continue_message)
+    return outcome, detail, rounds, session_ids
 
 
 # ── gates ────────────────────────────────────────────────────────────────
@@ -309,16 +420,34 @@ def main():
     ap.add_argument("--match", default="", help="substring filter on location")
     ap.add_argument("--model", default="")
     ap.add_argument("--max-turns", type=int, default=30, help="per round")
-    ap.add_argument("--timeout", type=int, default=1800,
-                    help="seconds per ROUND (wall clock, process-group kill)")
+    ap.add_argument("--timeout", type=int, default=900,
+                    help="seconds per ROUND (wall clock, process-group kill); "
+                         "per-target bound = --rounds × --timeout")
     ap.add_argument("--build-timeout", type=int, default=BUILD_TIMEOUT,
                     help="seconds for each harness-side `lake build` (baseline "
                          "and gate); exceeding it in the gate is "
                          "rejected_kernel_budget (N3 minimal)")
-    ap.add_argument("--rounds", type=int, default=1,
+    ap.add_argument("--run-config", default="",
+                    help="JSON file of limit defaults (keys = long flag names "
+                         "with underscores); CLI flags override; recorded in "
+                         "the ledger `limits` block (DEC-16)")
+    ap.add_argument("--max-cost-usd", type=float, default=0.0,
+                    help="cumulative reported cost cap per target; 0 = off")
+    ap.add_argument("--stall-rounds", type=int, default=2,
+                    help="consecutive rounds leaving the target file "
+                         "byte-identical before a session reset; 0 disables")
+    ap.add_argument("--bloat-threshold-tokens", type=int, default=200_000,
+                    help="session cumulative cache-creation tokens that "
+                         "trigger a preemptive session reset")
+    ap.add_argument("--auto-reset", dest="auto_reset", action="store_true",
+                    default=True)
+    ap.add_argument("--no-auto-reset", dest="auto_reset", action="store_false",
+                    help="on stall/bloat stop instead of resetting the session")
+    ap.add_argument("--max-auto-resets", type=int, default=3)
+    ap.add_argument("--rounds", type=int, default=5,
                     help="max claude rounds per target; rounds >1 resume the "
-                         "same session with gate feedback (default 1 = old "
-                         "single-shot behavior)")
+                         "same session with gate feedback (CryptoProver "
+                         "default 5; 1 = single-shot)")
     ap.add_argument("--wire-log", action="store_true",
                     help="record raw API requests via a localhost proxy "
                          "(ledger/wire/wire_requests.jsonl); best-effort")
@@ -336,7 +465,17 @@ def main():
                     help="git commit each accepted fill")
     ap.add_argument("--dry-run", action="store_true",
                     help="resolve targets + print prompts, no agent, no build")
+    if "--run-config" in sys.argv:
+        cfg_path = sys.argv[sys.argv.index("--run-config") + 1]
+        ap.set_defaults(**json.load(open(cfg_path)))
     args = ap.parse_args()
+    LIMIT_KEYS = ("rounds", "max_turns", "timeout",
+                  "max_cost_usd", "build_timeout", "stall_rounds",
+                  "bloat_threshold_tokens", "auto_reset", "max_auto_resets")
+    limits = {k: getattr(args, k) for k in LIMIT_KEYS}
+    if args.run_config:
+        limits["run_config"] = os.path.relpath(os.path.abspath(args.run_config), REPO)
+        limits["run_config_sha256"] = agentproc.sha256_file(args.run_config)
 
     os.makedirs(TRANSCRIPTS, exist_ok=True)
     agentproc.install_signal_handler()
@@ -411,7 +550,7 @@ def main():
             continue
 
         tid = re.sub(r"[^A-Za-z0-9_.]+", "_", loc)
-        outcome, detail, rounds, session_id = run_rounds(
+        outcome, detail, rounds, session_ids = run_rounds(
             prompt, tid, path, before_counts, args, env, settings_path)
 
         if outcome == "accepted":
@@ -431,19 +570,20 @@ def main():
         record = {
             "ts": now_iso(), "target": loc, "decl": decl, "path": path,
             "outcome": outcome, "detail": detail,
-            "session_id": session_id,
+            "session_ids": session_ids,
             "isolation": isolation,
+            "limits": limits,
             "rounds_run": len(rounds), "max_rounds": args.rounds,
             "wall_seconds": round(sum(r["wall_seconds"] for r in rounds), 1),
             "output_tokens_total": out_tokens,
-            "model": args.model or "default", "max_turns": args.max_turns,
-            "build_timeout": args.build_timeout,
+            "model": args.model or "default",
             "baseline_build_seconds": baseline_s,
             "rounds": rounds,
         }
         with open(os.path.join(LEDGER_DIR, "rounds.jsonl"), "a") as fh:
             fh.write(json.dumps(record, ensure_ascii=False) + "\n")
-        print(f"    {outcome} | rounds={len(rounds)}"
+        print(f"    {outcome} | rounds={len(rounds)} "
+              f"sessions={len(session_ids)}"
               + (f" out={out_tokens}" if out_tokens else ""))
 
         if agentproc.RECEIVED_SIGNAL is not None:

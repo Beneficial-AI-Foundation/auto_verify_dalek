@@ -1,0 +1,189 @@
+[package]
+name = "curve25519-dalek"
+# Before incrementing:
+# - update CHANGELOG
+# - update README if required by semver
+# - if README was updated, also update module documentation in src/lib.rs
+version = "4.2.0"
+edition = "2021"
+rust-version = "1.60.0"
+authors = ["Isis Lovecruft <isis@patternsinthevoid.net>",
+           "Henry de Valence <hdevalence@hdevalence.ca>"]
+readme = "README.md"
+license = "BSD-3-Clause"
+repository = "https://github.com/dalek-cryptography/curve25519-dalek/tree/main/curve25519-dalek"
+homepage = "https://github.com/dalek-cryptography/curve25519-dalek"
+documentation = "https://docs.rs/curve25519-dalek"
+categories = ["cryptography", "no-std"]
+keywords = ["cryptography", "crypto", "ristretto", "curve25519", "ristretto255"]
+description = "A pure-Rust implementation of group operations on ristretto255 and Curve25519"
+exclude = [
+    "**/.gitignore",
+    ".gitignore",
+]
+
+[package.metadata.docs.rs]
+rustdoc-args = [
+    "--html-in-header", "docs/assets/rustdoc-include-katex-header.html",
+    "--cfg", "docsrs",
+]
+features = ["serde", "rand_core", "digest", "legacy_compatibility", "group-bits"]
+
+[dev-dependencies]
+sha2 = { version = "0.10", default-features = false }
+bincode = "1"
+criterion = { version = "0.5", features = ["html_reports"] }
+hex = "0.4.2"
+rand = "0.8"
+rand_core = { version = "0.6", default-features = false, features = ["getrandom"] }
+
+[build-dependencies]
+rustc_version = "0.4.0"
+
+[[bench]]
+name = "dalek_benchmarks"
+harness = false
+required-features = ["alloc", "rand_core"]
+
+[dependencies]
+cfg-if = "1"
+ff = { version = "0.13", default-features = false, optional = true }
+group = { version = "0.13", default-features = false, optional = true }
+rand_core = { version = "0.6.4", default-features = false, optional = true }
+digest = { version = "0.10", default-features = false, optional = true }
+subtle = { version = "2.6.0", default-features = false, features = ["const-generics"]}
+serde = { version = "1.0", default-features = false, optional = true, features = ["derive"] }
+zeroize = { version = "1", default-features = false, optional = true }
+
+[target.'cfg(target_arch = "x86_64")'.dependencies]
+cpufeatures = "0.2.17"
+
+[target.'cfg(curve25519_dalek_backend = "fiat")'.dependencies]
+fiat-crypto = { version = "0.3.0", default-features = false }
+
+[features]
+default = ["alloc", "precomputed-tables", "zeroize"]
+alloc = ["zeroize?/alloc"]
+precomputed-tables = []
+legacy_compatibility = []
+group = ["dep:group", "rand_core"]
+group-bits = ["group", "ff/bits"]
+digest = ["dep:digest", "digest/core-api"]
+
+# Derive dependency removed - only using serial backend
+# [target.'cfg(all(not(curve25519_dalek_backend = "fiat"), not(curve25519_dalek_backend = "serial"), target_arch = "x86_64"))'.dependencies]
+# curve25519-dalek-derive = { version = "0.1", path = "../curve25519-dalek-derive" }
+
+[lints.rust.unexpected_cfgs]
+level = "warn"
+check-cfg = [
+    'cfg(allow_unused_unsafe)',
+    'cfg(curve25519_dalek_backend, values("fiat", "serial", "simd", "unstable_avx512"))',
+    'cfg(curve25519_dalek_diagnostics, values("build"))',
+    'cfg(curve25519_dalek_bits, values("32", "64"))',
+    'cfg(nightly)',
+    'cfg(verify)',
+]
+
+[package.metadata.charon]
+start_from = [
+  "curve25519_dalek::backend::serial::curve_models",
+  "curve25519_dalek::backend::serial::u64::field",
+  "curve25519_dalek::backend::serial::u64::scalar",
+  "curve25519_dalek::edwards",
+  "curve25519_dalek::field",
+  "curve25519_dalek::montgomery",
+  "curve25519_dalek::ristretto",
+  "curve25519_dalek::scalar",
+]
+exclude = [
+  # Debug impls
+  "curve25519_dalek::backend::serial::curve_models::{impl core::fmt::Debug for _}",
+  "curve25519_dalek::backend::serial::u64::field::{impl core::fmt::Debug for _}",
+  "curve25519_dalek::backend::serial::u64::scalar::{impl core::fmt::Debug for _}",
+  "curve25519_dalek::montgomery::{impl core::fmt::Debug for _}",
+  "curve25519_dalek::scalar::{impl core::fmt::Debug for _}",
+  "curve25519_dalek::ristretto::{impl core::fmt::Debug for _}",
+  "curve25519_dalek::edwards::{impl core::fmt::Debug for _}",
+  "curve25519_dalek::edwards::affine::{impl core::fmt::Debug for _}",
+  # Hash impls
+  "curve25519_dalek::montgomery::{impl core::hash::Hash for _}",
+  "curve25519_dalek::scalar::{impl core::hash::Hash for _}",
+  "curve25519_dalek::ristretto::{impl core::hash::Hash for _}",
+  "curve25519_dalek::edwards::{impl core::hash::Hash for _}",
+  # Copy/Clone impls
+  "curve25519_dalek::backend::serial::curve_models::{impl core::marker::Copy for curve25519_dalek::backend::serial::curve_models::ProjectivePoint}",
+  "curve25519_dalek::backend::serial::curve_models::{impl core::clone::Clone for curve25519_dalek::backend::serial::curve_models::ProjectivePoint}",
+  # Sum/Product impls
+  "curve25519_dalek::scalar::{impl core::iter::traits::accum::Sum<_> for _}",
+  "curve25519_dalek::scalar::{impl core::iter::traits::accum::Product<_> for _}",
+  "curve25519_dalek::edwards::{impl core::iter::traits::accum::Sum<_> for _}",
+  "curve25519_dalek::ristretto::{impl core::iter::traits::accum::Sum<_> for _}",
+  # Zeroize impls
+  "curve25519_dalek::ristretto::{impl zeroize::Zeroize for _}",
+  "curve25519_dalek::edwards::{impl zeroize::Zeroize for _}",
+  # MultiscalarMul trait declarations
+  "curve25519_dalek::traits::MultiscalarMul",
+  "curve25519_dalek::traits::VartimeMultiscalarMul",
+  "curve25519_dalek::traits::VartimePrecomputedMultiscalarMul",
+  # MultiscalarMul impls
+  "curve25519_dalek::edwards::{impl curve25519_dalek::traits::MultiscalarMul for _}",
+  "curve25519_dalek::ristretto::{impl curve25519_dalek::traits::MultiscalarMul for _}",
+  "curve25519_dalek::backend::serial::scalar_mul::straus::{impl curve25519_dalek::traits::MultiscalarMul for _}",
+  # Vartime free functions
+  "curve25519_dalek::backend::vartime_double_base_mul",
+  "curve25519_dalek::backend::serial::scalar_mul::vartime_double_base::mul",
+  # VartimeMultiscalarMul / VartimePrecomputedMultiscalarMul impls
+  "curve25519_dalek::backend::pippenger_optional_multiscalar_mul",
+  "curve25519_dalek::backend::straus_optional_multiscalar_mul",
+  "curve25519_dalek::backend::VartimePrecomputedStraus",
+  "curve25519_dalek::backend::serial::scalar_mul::pippenger::{impl curve25519_dalek::traits::VartimeMultiscalarMul for _}",
+  "curve25519_dalek::backend::serial::scalar_mul::precomputed_straus::{impl curve25519_dalek::traits::VartimePrecomputedMultiscalarMul for _}",
+  "curve25519_dalek::backend::serial::scalar_mul::straus::{impl curve25519_dalek::traits::VartimeMultiscalarMul for _}",
+  "curve25519_dalek::edwards::{impl curve25519_dalek::traits::VartimeMultiscalarMul for _}",
+  "curve25519_dalek::edwards::VartimeEdwardsPrecomputation",
+  "curve25519_dalek::edwards::{impl curve25519_dalek::traits::VartimePrecomputedMultiscalarMul for _}",
+  "curve25519_dalek::ristretto::{impl curve25519_dalek::traits::VartimeMultiscalarMul for _}",
+  "curve25519_dalek::ristretto::VartimeRistrettoPrecomputation",
+  "curve25519_dalek::ristretto::{impl curve25519_dalek::traits::VartimePrecomputedMultiscalarMul for _}",
+  "curve25519_dalek::backend::{impl curve25519_dalek::traits::VartimePrecomputedMultiscalarMul for _}",
+  # EXCLUDED BY CHOICE
+  # The following excludes aren't required for Charon to function; they have been added here
+  # since they are not part of the verification scope.
+  # TODO: https://github.com/Beneficial-AI-Foundation/curve25519-dalek-lean-verify/issues/829
+  # Zeroize impls (remaining modules)
+  "curve25519_dalek::backend::serial::curve_models::{impl zeroize::Zeroize for _}",
+  "curve25519_dalek::backend::serial::u64::field::{impl zeroize::Zeroize for _}",
+  "curve25519_dalek::montgomery::{impl zeroize::Zeroize for _}",
+  # Default impls
+  "curve25519_dalek::backend::serial::curve_models::{impl core::default::Default for _}",
+  "curve25519_dalek::edwards::{impl core::default::Default for _}",
+  "curve25519_dalek::montgomery::{impl core::default::Default for _}",
+  "curve25519_dalek::ristretto::{impl core::default::Default for _}",
+  # Neg impls
+  "curve25519_dalek::backend::serial::curve_models::{impl core::ops::arith::Neg<_> for _}",
+  "curve25519_dalek::edwards::{impl core::ops::arith::Neg<_> for _}",
+  "curve25519_dalek::ristretto::{impl core::ops::arith::Neg<_> for _}",
+  # AddAssign impls
+  "curve25519_dalek::edwards::{impl core::ops::arith::AddAssign<_> for _}",
+  "curve25519_dalek::ristretto::{impl core::ops::arith::AddAssign<_> for _}",
+  "curve25519_dalek::scalar::{impl core::ops::arith::AddAssign<_> for _}",
+  # SubAssign impls
+  "curve25519_dalek::edwards::{impl core::ops::arith::SubAssign<_> for _}",
+  "curve25519_dalek::ristretto::{impl core::ops::arith::SubAssign<_> for _}",
+  "curve25519_dalek::scalar::{impl core::ops::arith::SubAssign<_> for _}",
+  # MulAssign impls
+  "curve25519_dalek::backend::serial::u64::field::{impl core::ops::arith::MulAssign<_> for _}",
+  "curve25519_dalek::edwards::{impl core::ops::arith::MulAssign<_> for _}",
+  "curve25519_dalek::ristretto::{impl core::ops::arith::MulAssign<_> for _}",
+  # ValidityCheck impls
+  "curve25519_dalek::backend::serial::curve_models::{impl curve25519_dalek::traits::ValidityCheck for _}",
+  "curve25519_dalek::edwards::{impl curve25519_dalek::traits::ValidityCheck for _}",
+  # Other unverified functions
+  "curve25519_dalek::edwards::affine::{impl core::ops::arith::Mul<_, _> for curve25519_dalek::scalar::Scalar}",
+  "curve25519_dalek::edwards::{curve25519_dalek::edwards::CompressedEdwardsY}::to_bytes",
+  "curve25519_dalek::ristretto::{curve25519_dalek::ristretto::RistrettoPoint}::coset4",
+  "curve25519_dalek::scalar::{curve25519_dalek::scalar::Scalar}::non_adjacent_form",
+  # END EXCLUDED BY CHOICE
+]
+opaque = []

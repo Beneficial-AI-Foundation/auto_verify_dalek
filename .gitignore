@@ -53,3 +53,8 @@ site/public/doc
 full_proof_recovery_benchmark
 full_proof_recovery_benchmark_back
 log/
+
+.azad/
+curve25519-dalek/data/
+functions.json
+prmopt_log.md

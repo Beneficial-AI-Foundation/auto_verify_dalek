@@ -63,6 +63,28 @@ should not share writable caches or work directories.
 The broker holds the model key, allows only the chosen provider, and records
 usage. The agent should never receive a reusable API key.
 
+## Harness-level controls (implemented in `harness/driver.py` + `agentproc.py`)
+
+These are the host-side controls the driver enforces today. They are weaker
+than a container (the agent still sees the host filesystem) and are recorded
+in every ledger record under `isolation`.
+
+| Leak | Control | Flag / evidence |
+| --- | --- | --- |
+| Operator's interactive Claude Code state: auto-memory under `~/.claude/projects/<repo-slug>/memory`, `~/.claude/settings.json` (model, hooks, plugins, skills), `~/.claude.json` MCP servers (`probe-lean`, …) | Every run gets a fresh `CLAUDE_CONFIG_DIR` seeded with **only** `.credentials.json`; all `CLAUDE*` env vars inherited from a parent Claude Code session are stripped | `ledger/runs/<ts>/claude_config/` (gitignored, mode 0700), `isolation.config_dir`, `isolation.credentials_seeded` |
+| Repo-level `.claude/settings.local.json` (operator allowlist, e.g. `lake env`) and `CLAUDE.md` | `--setting-sources user` — only the (empty) fresh user dir is read | `isolation.setting_sources` |
+| Network: web tools, `curl`/`wget`, `git fetch/pull/clone`, `lake update`, `lake env`, package installs | `--settings .claude/settings-offline.json` deny-list, on top of the `--allowedTools` allowlist (`Read,Grep,Glob,Edit,Write,Bash(lake build*),Bash(grep*)`) | `isolation.settings`, `isolation.settings_sha256` |
+| MCP servers from any config | `--strict-mcp-config` with no `--mcp-config` ⇒ zero servers (`system.init.mcp_servers == []` in the transcript) | `isolation.strict_mcp_config` |
+| Model drift | The fresh config dir carries no `model` setting; the driver records the models actually billed per round | `rounds[].models_used`, `rounds[].cost_usd` |
+
+`--no-isolation` disables the fresh config dir for debugging and marks the
+record `isolated: false`; such records are not scorable.
+
+Not covered here (needs the container described below): host filesystem
+(sibling clones, `~/.lake` caches, this repo's own `.git` history), DNS/egress
+beyond what the permission deny-list catches, and the reusable OAuth
+credential handed to the agent.
+
 ## Final verification
 
 The final verifier runs in a different fresh environment. It receives only the

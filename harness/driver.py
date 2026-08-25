@@ -164,8 +164,11 @@ def rollback(mod, new):
 
 
 # ── agent invocation (multi-round; subprocess mechanics in agentproc.py) ─────
+# No `lake env`: the offline settings deny it (it can run arbitrary binaries
+# under the toolchain env), and the agent only needs `lake build`.
 ALLOWED_TOOLS = ("Read,Grep,Glob,Edit,Write,"
-                 "Bash(lake build*),Bash(lake env*),Bash(grep*)")
+                 "Bash(lake build*),Bash(grep*)")
+OFFLINE_SETTINGS = os.path.join(REPO, ".claude", "settings-offline.json")
 
 # Gate rejections that mean "not done yet" — the same session is resumed
 # with this feedback. Everything else is a policy violation: abort.
@@ -182,7 +185,7 @@ FEEDBACK = {
 }
 
 
-def run_rounds(prompt, tid, path, before_counts, args, env):
+def run_rounds(prompt, tid, path, before_counts, args, env, settings_path):
     """Round 1 fresh session, rounds 2..N --resume with gate feedback.
 
     Returns (outcome, detail, rounds, session_id). No rollback here: the
@@ -194,11 +197,12 @@ def run_rounds(prompt, tid, path, before_counts, args, env):
     outcome, detail = "agent_error", {"error": "no rounds ran"}
     for rnd in range(1, args.rounds + 1):
         tpath = os.path.join(TRANSCRIPTS, f"{tid}.r{rnd}.jsonl")
-        status, rc, wall, _result, prov = agentproc.run_round(
+        status, rc, wall, result, prov = agentproc.run_round(
             prompt, tpath, cwd=REPO, session_id=session_id,
             resume=(rnd > 1), model=args.model, max_turns=args.max_turns,
             allowed_tools=ALLOWED_TOOLS, deadline_seconds=args.timeout,
-            continue_message=FEEDBACK.get(outcome), env=env)
+            continue_message=FEEDBACK.get(outcome), env=env,
+            settings_path=settings_path)
 
         if status != "ok":
             outcome, detail = "agent_error", {"error": status}
@@ -217,6 +221,11 @@ def run_rounds(prompt, tid, path, before_counts, args, env):
             "wall_seconds": round(wall, 1), "status": status,
             "transcript": os.path.relpath(tpath, REPO),
             "provenance": prov,
+            # actual models billed (the isolated config dir has no user
+            # `model` setting, so "default" here means claude's default)
+            "models_used": sorted((result or {}).get("modelUsage") or {}),
+            "cost_usd": (result or {}).get("total_cost_usd"),
+            "num_turns": (result or {}).get("num_turns"),
             **({"usage_totals": analysis.get("usage_totals"),
                 "assistant_turns": analysis.get("assistant_turns"),
                 "buckets": analysis.get("buckets")}
@@ -276,6 +285,16 @@ def main():
     ap.add_argument("--wire-log", action="store_true",
                     help="record raw API requests via a localhost proxy "
                          "(ledger/wire/wire_requests.jsonl); best-effort")
+    ap.add_argument("--settings", default=OFFLINE_SETTINGS,
+                    help="claude --settings file (network deny-list); "
+                         "default .claude/settings-offline.json")
+    ap.add_argument("--run-dir", default="",
+                    help="per-run evidence dir holding the isolated "
+                         "CLAUDE_CONFIG_DIR (default ledger/runs/<utc-ts>)")
+    ap.add_argument("--no-isolation", action="store_true",
+                    help="DEBUG ONLY: reuse the operator's ~/.claude "
+                         "(memory, plugins, MCP, local settings leak in); "
+                         "the ledger marks such records isolated=false")
     ap.add_argument("--commit", action="store_true",
                     help="git commit each accepted fill")
     ap.add_argument("--dry-run", action="store_true",
@@ -285,6 +304,30 @@ def main():
     os.makedirs(TRANSCRIPTS, exist_ok=True)
     agentproc.install_signal_handler()
     env = os.environ.copy()
+    if not os.path.isfile(args.settings):
+        sys.exit(f"settings file not found: {args.settings}")
+    settings_path = os.path.abspath(args.settings)
+    isolation = {"isolated": not args.no_isolation,
+                 "settings": os.path.relpath(settings_path, REPO),
+                 "settings_sha256": agentproc.sha256_file(settings_path),
+                 "setting_sources": "user", "strict_mcp_config": True}
+    if args.no_isolation:
+        print("[driver] WARNING: --no-isolation — agent shares ~/.claude "
+              "with interactive sessions", flush=True)
+    elif not args.dry_run:
+        run_dir = args.run_dir or os.path.join(
+            LEDGER_DIR, "runs",
+            now_iso().replace(":", "").replace("+0000", "Z"))
+        cfg, seeded = agentproc.make_config_dir(run_dir)
+        if not seeded and not any(k in env for k in
+                                  ("ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN")):
+            sys.exit("no credentials: neither ~/.claude/.credentials.json "
+                     "nor ANTHROPIC_API_KEY — the isolated agent cannot "
+                     "authenticate")
+        env = agentproc.isolated_env(env, cfg)
+        isolation.update({"config_dir": os.path.relpath(cfg, REPO),
+                          "credentials_seeded": seeded})
+        print(f"[driver] isolated CLAUDE_CONFIG_DIR={cfg}", flush=True)
     if args.wire_log and not args.dry_run:
         agentproc.start_wire_proxy(os.path.join(LEDGER_DIR, "wire"), env)
     inv = json.load(open(INVENTORY))
@@ -325,7 +368,7 @@ def main():
 
         tid = re.sub(r"[^A-Za-z0-9_.]+", "_", loc)
         outcome, detail, rounds, session_id = run_rounds(
-            prompt, tid, path, before_counts, args, env)
+            prompt, tid, path, before_counts, args, env, settings_path)
 
         if outcome == "accepted":
             before_counts = detail.pop("counts_after")
@@ -345,6 +388,7 @@ def main():
             "ts": now_iso(), "target": loc, "decl": decl, "path": path,
             "outcome": outcome, "detail": detail,
             "session_id": session_id,
+            "isolation": isolation,
             "rounds_run": len(rounds), "max_rounds": args.rounds,
             "wall_seconds": round(sum(r["wall_seconds"] for r in rounds), 1),
             "output_tokens_total": out_tokens,

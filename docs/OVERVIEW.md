@@ -33,7 +33,8 @@ container
   `S2-seed-recovery` (only a seed `S ⊆ T` given, recover `W = T \ S`) →
   `R2-rust-to-lean` (start from Rust, include Aeneas extraction).
 
-### 5. network blocking
-.claude/settings-offline.json
-use this configuration when running experiments
-`claude -p`
+### 5. network blocking / isolation
+`.claude/settings-offline.json` — `harness/driver.py` passes it by default
+(`--settings`), together with a fresh per-run `CLAUDE_CONFIG_DIR`,
+`--setting-sources user` and `--strict-mcp-config`.
+See `docs/ISOLATION-AND-INTEGRITY.md` § Harness-level controls.

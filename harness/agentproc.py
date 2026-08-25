@@ -29,8 +29,10 @@ What this module owns (driver.py must not reimplement any of it):
     native-binary claude. Best-effort: any failure leaves env untouched and
     the run proceeds straight to api.anthropic.com.
 """
+import hashlib
 import json
 import os
+import shutil
 import signal
 import subprocess
 import sys
@@ -123,15 +125,70 @@ def kill_wire_proxy():
     _WIRE_PROC = None
 
 
+# ── isolation: fresh config dir + sealed env ─────────────────────────────
+# The agent must not share state with the operator's interactive Claude Code:
+#   * ~/.claude/projects/<cwd-slug>/memory  — auto-memory written by
+#     interactive sessions in this repo would silently flow into the
+#     experiment agent's context (and vice versa);
+#   * ~/.claude/settings.json + plugins/hooks/skills + ~/.claude.json MCP
+#     servers (probe-lean etc.) — unrecorded capabilities;
+#   * .claude/settings.local.json — the operator's permission allowlist.
+# Fix: every driver run gets its own CLAUDE_CONFIG_DIR seeded with ONLY the
+# OAuth credentials file, `--setting-sources user` (so the repo's
+# .claude/settings*.json are not read), `--settings <offline>` for the
+# network deny-list, and `--strict-mcp-config` with no MCP config (= no MCP
+# servers). Session files (needed by --resume) live in that same dir, so it
+# must persist for the whole run. The dir is kept under the ledger as
+# evidence of exactly what the agent could see.
+CREDENTIALS_FILE = ".credentials.json"
+
+
+def make_config_dir(run_dir):
+    """Create <run_dir>/claude_config holding only the credentials file.
+    Returns (config_dir, seeded: bool)."""
+    real_home = os.environ.get("CLAUDE_CONFIG_DIR") \
+        or os.path.join(os.path.expanduser("~"), ".claude")
+    cfg = os.path.join(run_dir, "claude_config")
+    os.makedirs(cfg, exist_ok=True)
+    os.chmod(cfg, 0o700)  # holds a credentials copy; gitignored too
+    src = os.path.join(real_home, CREDENTIALS_FILE)
+    seeded = False
+    if os.path.isfile(src):
+        shutil.copy2(src, os.path.join(cfg, CREDENTIALS_FILE))
+        os.chmod(os.path.join(cfg, CREDENTIALS_FILE), 0o600)
+        seeded = True
+    return cfg, seeded
+
+
+def isolated_env(base_env, config_dir):
+    """Copy of base_env with every CLAUDE* variable removed (the driver may
+    itself be running inside an interactive Claude Code session, whose
+    CLAUDECODE / CLAUDE_CODE_SESSION_ID / messaging-socket vars would link
+    the child to it) and CLAUDE_CONFIG_DIR pointing at the fresh dir.
+    ANTHROPIC_* (API key / wire-proxy base URL) is kept."""
+    env = {k: v for k, v in base_env.items() if not k.startswith("CLAUDE")}
+    env["CLAUDE_CONFIG_DIR"] = config_dir
+    return env
+
+
+def sha256_file(path):
+    with open(path, "rb") as fh:
+        return hashlib.sha256(fh.read()).hexdigest()
+
+
 # ── command construction ─────────────────────────────────────────────────
 def build_command(prompt, session_id, resume, model, max_turns,
-                  allowed_tools, continue_message=None):
+                  allowed_tools, continue_message=None, settings_path=None):
     """One noninteractive claude invocation. Round 1 pins the session UUID
     with --session-id; later rounds resume exactly that UUID. Tool flags are
     per-invocation, so they are repeated on every round."""
     flags = ["--output-format", "stream-json", "--verbose",
              "--max-turns", str(max_turns),
-             "--allowedTools", allowed_tools]
+             "--allowedTools", allowed_tools,
+             "--setting-sources", "user",
+             "--strict-mcp-config"]
+    if settings_path:
+        flags += ["--settings", settings_path]
     if model:
         flags += ["--model", model]
     if resume:
@@ -150,7 +207,8 @@ def _bounded_wait(wall_deadline):
 
 def run_round(prompt, transcript_path, *, cwd, session_id, resume,
               model="", max_turns=30, allowed_tools="",
-              deadline_seconds=None, continue_message=None, env=None):
+              deadline_seconds=None, continue_message=None, env=None,
+              settings_path=None):
     """Run one claude round; stream-json goes verbatim to transcript_path.
 
     Returns (status, returncode, wall_seconds, result_event, provenance)
@@ -160,7 +218,7 @@ def run_round(prompt, transcript_path, *, cwd, session_id, resume,
     """
     global _LIVE_PROC
     cmd = build_command(prompt, session_id, resume, model, max_turns,
-                        allowed_tools, continue_message)
+                        allowed_tools, continue_message, settings_path)
     t0 = time.time()
     killed_deadline = False
     with open(transcript_path, "w") as fh:

@@ -29,6 +29,13 @@ Gate stack per attempt (all must pass to accept):
      (the native_decide hijack path — plan.md §4 policy)
   c. `lake build` exits 0 within --build-timeout (default 1200s; a
      timeout is rejected_kernel_budget — N3 minimal, plan.md §6)
+  c'. G1 statement identity (harness/gates/StmtCanon.lean --module):
+     every constant declared in the target module before the attempt must
+     still exist with the same kind and α-invariant canonical statement
+     (agent-territory definitions δ-unfolded, so re-defining a helper
+     cannot hide a change). Added declarations are allowed. Baseline is
+     fingerprinted once per run over all target modules and refreshed
+     for a module after each accept.
   d. sorry accounting vs pre-attempt snapshot: target file's sorry-warning
      count strictly decreases; every other file's count unchanged
   e. G2 trust-base gate (harness/gates/g2_trust_base.py --skip-build;
@@ -36,6 +43,10 @@ Gate stack per attempt (all must pass to accept):
 
 Rollback never uses destructive git verbs: modified tracked files are
 restored via `git show HEAD:<f> > <f>`; new untracked files are removed.
+
+Whole-T verdict (DEC-10) is NOT decided here: run harness/replay.py (fresh
+worktree rebuild + G2 + G1 vs frozen statements) and harness/report.py
+(inventory × ledger × tree × replay) after the batch.
 
 Ledger:  ledger/rounds.jsonl        one record per attempt (see RECORD below)
     Every record carries provenance (DEC-17): `environment` (run-level:
@@ -326,7 +337,8 @@ def record_provenance(prompt):
     }
 
 
-def run_rounds(prompt, tid, path, before_counts, args, env, settings_path):
+def run_rounds(prompt, tid, path, before_counts, args, env, settings_path,
+               g1_base=None):
     """Multi-round attempt on one target. Stop rules (DEC-16), ported from
     CryptoProver run.py and adapted to one-sorry targets:
 
@@ -383,7 +395,8 @@ def run_rounds(prompt, tid, path, before_counts, args, env, settings_path):
         elif rc != 0:
             outcome, detail = "agent_error", {"error": f"exit {rc}"}
         else:
-            outcome, detail = gate(path, before_counts, args.build_timeout)
+            outcome, detail = gate(path, before_counts, args.build_timeout,
+                                   g1_base)
 
         m = END_REASON_RE.search(result.get("result") or "")
         end_reason = m.group(1).upper() if m else None
@@ -462,8 +475,49 @@ def run_rounds(prompt, tid, path, before_counts, args, env, settings_path):
     return outcome, detail, rounds, session_ids
 
 
+# ── G1: statement identity (DEC-10 "unchanged supplied statements") ─────
+STMT_CANON = os.path.join("harness", "gates", "StmtCanon.lean")
+
+
+def stmt_fingerprints(modules, timeout=600):
+    """{module: {name: {kind, canon, pp}}} for every user-facing constant
+    declared in `modules`, via StmtCanon --module (needs current .olean
+    files: run after `lake build`). Returns (fps, seconds) or raises
+    RuntimeError with the tool's tail."""
+    t0 = time.time()
+    p = subprocess.run(["lake", "env", "lean", "--run", STMT_CANON,
+                        "--module", ",".join(modules)],
+                       cwd=REPO, capture_output=True, text=True,
+                       timeout=timeout)
+    if p.returncode != 0:
+        raise RuntimeError((p.stdout + p.stderr)[-2000:])
+    fps = {m: {} for m in modules}
+    for ln in p.stdout.splitlines():
+        if not ln.startswith("{"):
+            continue
+        r = json.loads(ln)
+        if "error" in r or not r.get("found"):
+            raise RuntimeError(f"StmtCanon: {r}")
+        fps.setdefault(r["module"], {})[r["name"]] = {
+            "kind": r["kind"], "canon": r["canon"], "pp": r["pp"]}
+    return fps, round(time.time() - t0, 1)
+
+
+def stmt_diff(base, after):
+    """Baseline names that vanished or whose (kind, canon) changed. Added
+    names are allowed (helper lemmas)."""
+    missing = sorted(n for n in base if n not in after)
+    changed = {n: {"before": base[n]["pp"], "after": after[n]["pp"],
+                   "kind": (base[n]["kind"], after[n]["kind"])}
+               for n in base if n in after
+               and (base[n]["kind"], base[n]["canon"])
+               != (after[n]["kind"], after[n]["canon"])}
+    return missing, changed
+
+
 # ── gates ────────────────────────────────────────────────────────────────
-def gate(target_path, before_counts, build_timeout=BUILD_TIMEOUT):
+def gate(target_path, before_counts, build_timeout=BUILD_TIMEOUT,
+         g1_base=None):
     mod, new = changed_files()
     if new or set(mod) - {target_path}:
         return "rejected_scope", {"modified": mod, "new": new}
@@ -481,6 +535,19 @@ def gate(target_path, before_counts, build_timeout=BUILD_TIMEOUT):
         return "rejected_kernel_budget", {**b, "build_timeout": build_timeout}
     if rc != 0:
         return "rejected_build", b
+    if g1_base is not None:
+        mod_name = path_to_module(target_path)
+        try:
+            fps, g1_s = stmt_fingerprints([mod_name])
+        except (RuntimeError, subprocess.TimeoutExpired) as e:
+            return "rejected_g1_error", {**b, "g1_error": str(e)[-1500:]}
+        b["g1_seconds"] = g1_s
+        missing, changed = stmt_diff(g1_base.get(mod_name, {}),
+                                     fps.get(mod_name, {}))
+        if missing or changed:
+            return "rejected_statement_changed", {
+                **b, "missing": missing, "changed": changed}
+        b["g1_after"] = fps[mod_name]
     if after.get(target_path, 0) >= before_counts.get(target_path, 0):
         return "rejected_sorry_remains", {**b,
                                           "before": before_counts.get(target_path, 0),
@@ -613,7 +680,7 @@ def main():
         targets = targets[:args.limit]
     print(f"{len(targets)} target(s), zones={args.zones}")
 
-    before_counts, baseline_s = {}, None
+    before_counts, baseline_s, g1_base = {}, None, None
     if not args.dry_run:
         mod, _ = changed_files()
         if mod:
@@ -629,6 +696,16 @@ def main():
             sys.exit("baseline lake build failed — fix before running driver")
         print(f"baseline: {sum(before_counts.values())} sorry decls "
               f"in {len(before_counts)} files, {baseline_s}s build")
+        target_mods = sorted({path_to_module(resolve_target(t)[0])
+                              for t in targets if resolve_target(t)})
+        print(f"G1 baseline: fingerprinting {len(target_mods)} module(s) …",
+              flush=True)
+        try:
+            g1_base, g1_s = stmt_fingerprints(target_mods)
+        except (RuntimeError, subprocess.TimeoutExpired) as e:
+            sys.exit(f"G1 baseline failed: {str(e)[-2000:]}")
+        print(f"G1 baseline: {sum(len(v) for v in g1_base.values())} "
+              f"declarations, {g1_s}s", flush=True)
         if baseline_s > args.build_timeout / 3:
             print(f"[driver] WARNING: baseline build {baseline_s}s is over a "
                   f"third of --build-timeout {args.build_timeout}s; accepted "
@@ -650,10 +727,12 @@ def main():
         tid = re.sub(r"[^A-Za-z0-9_.]+", "_", loc)
         prov = record_provenance(prompt)
         outcome, detail, rounds, session_ids = run_rounds(
-            prompt, tid, path, before_counts, args, env, settings_path)
+            prompt, tid, path, before_counts, args, env, settings_path,
+            g1_base)
 
         if outcome == "accepted":
             before_counts = detail.pop("counts_after")
+            g1_base[path_to_module(path)] = detail.pop("g1_after")
             accepted += 1
             if args.commit:
                 sh(["git", "add", path])

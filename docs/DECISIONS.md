@@ -109,14 +109,31 @@ room unless there is stronger evidence.
 
 ### DEC-10 — What counts as success?
 
-**Status:** PROPOSED
+**Status:** ACCEPTED (2026-08-26, Zhang-Liao; phase-1 mechanics implemented —
+`harness/driver.py` gate c′, `harness/replay.py`, `harness/report.py`;
+phase-2 spec-quality checks still OPEN)
 
 **Question:** Is a clean build or zero `sorry` enough?
 
-**Suggested start:** No. Success needs the whole declared task complete, every
-target in `T` specified and proved, unchanged supplied statements, no new
-trusted assumptions or shortcuts, and a fresh replay. Generated specifications
-also need quality checks.
+**Decision:** No. A phase-1 (`S = T`) experiment is COMPLETE only when all of
+the following hold, each checked mechanically:
+
+| Requirement | Where checked | Failure outcome |
+| --- | --- | --- |
+| every target in `T` proved (no `sorry` at its location) | `report.py` joins inventory, ledger, and the tree | `INCOMPLETE: k of n targets still open` |
+| supplied statements unchanged | per attempt: driver gate c′ fingerprints every constant of the target module before and after (`StmtCanon --module`: kind + α-invariant canonical type, agent-territory definitions δ-unfolded so aliasing a weakened bound behind a helper `def` is detected); whole tree: `replay.py` compares every Specs/Aux module against `harness/frozen/statements.json` | `rejected_statement_changed` (policy violation, attempt aborts); replay `FAIL` |
+| no new trusted assumptions or shortcuts | G2 (`collectAxioms` closure inside the frozen whitelist, no new `axiom`, frozen-file hashes) per attempt and in replay; forbidden-attribute scan per attempt (DEC-11) | `rejected_g2`, `rejected_forbidden_attr` |
+| fresh replay | `replay.py`: `git worktree` of the ref (+ tracked diff for runs without `--commit`), empty `.lake/build`, `lake build`, G2, G1; dependency packages shared by symlink but content-hashed against `harness/frozen/packages.sha256` | replay `FAIL` |
+
+`report.py --replay <report>` prints the single verdict and exits non-zero
+unless COMPLETE. Zero `sorry` in the selected zones is required *in the
+replay*, not only in the working tree. Adding helper declarations is allowed;
+removing or changing any declaration that existed at baseline is not.
+
+Still OPEN (phase 2, agent-authored statements): which spec-quality checks
+are mandatory. The N1 vocabulary audit in `resynth.py` is the current
+candidate hard check; comparison against the hidden reference statement is
+data, not a gate (see `log/plan.md` §10).
 
 ### DEC-11 — Which Lean features are allowed?
 

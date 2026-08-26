@@ -38,6 +38,13 @@ Rollback never uses destructive git verbs: modified tracked files are
 restored via `git show HEAD:<f> > <f>`; new untracked files are removed.
 
 Ledger:  ledger/rounds.jsonl        one record per attempt (see RECORD below)
+    Every record carries provenance (DEC-17): `environment` (run-level:
+    git HEAD/untracked list, lean-toolchain, lake-manifest/lakefile/
+    inventory sha, lean/lake/claude versions, OS, CPU, RAM, harness file
+    shas, prompt template sha) and `provenance` (per target: git HEAD at
+    attempt start — drifts under --commit — and the rendered prompt sha).
+    `models_used` is the union of billed model ids over all rounds, from
+    the API result's `modelUsage`, not the requested --model.
          ledger/transcripts/*.jsonl raw stream-json, never discarded —
                                     bucket rules can be re-run post-hoc
 
@@ -48,6 +55,7 @@ Usage examples:
 """
 import argparse
 import datetime
+import hashlib
 import json
 import os
 import re
@@ -240,6 +248,84 @@ def _history_block(rounds):
             + "\n  ".join(lines))
 
 
+# ── provenance (DEC-17) ──────────────────────────────────────────────────
+def _cmd_out(cmd, cwd=REPO):
+    try:
+        r = subprocess.run(cmd, cwd=cwd, capture_output=True, text=True,
+                           timeout=30)
+        return (r.stdout or r.stderr).strip() if r.returncode == 0 \
+            else f"<exit {r.returncode}>"
+    except (OSError, subprocess.TimeoutExpired) as e:
+        return f"<{type(e).__name__}>"
+
+
+def _read(path):
+    try:
+        with open(os.path.join(REPO, path)) as fh:
+            return fh.read().strip()
+    except OSError:
+        return None
+
+
+def environment_snapshot():
+    """Run-level environment record (DEC-17). Everything an auditor needs to
+    re-create the machine side of a run: repository revision, Lean toolchain
+    and dependency lock, tool versions, hardware, OS. Per-record items that
+    drift within a run (HEAD after --commit, prompt hash) live in
+    `record_provenance`."""
+    import platform
+    cpu = None
+    try:
+        with open("/proc/cpuinfo") as fh:
+            for line in fh:
+                if line.startswith("model name"):
+                    cpu = line.split(":", 1)[1].strip()
+                    break
+    except OSError:
+        pass
+    mem_kb = None
+    try:
+        with open("/proc/meminfo") as fh:
+            mem_kb = int(fh.readline().split()[1])
+    except (OSError, ValueError, IndexError):
+        pass
+    return {
+        "git_head": _cmd_out(["git", "rev-parse", "HEAD"]),
+        "git_branch": _cmd_out(["git", "rev-parse", "--abbrev-ref", "HEAD"]),
+        "git_describe": _cmd_out(["git", "describe", "--always", "--dirty"]),
+        # untracked files are invisible to HEAD but part of the input
+        "git_untracked": _cmd_out(
+            ["git", "ls-files", "--others", "--exclude-standard"]).splitlines(),
+        "lean_toolchain": _read("lean-toolchain"),
+        "lake_manifest_sha256": agentproc.sha256_file(
+            os.path.join(REPO, "lake-manifest.json")),
+        "lakefile_sha256": agentproc.sha256_file(
+            os.path.join(REPO, "lakefile.toml")),
+        "inventory_sha256": agentproc.sha256_file(INVENTORY),
+        "lean_version": _cmd_out(["lean", "--version"]),
+        "lake_version": _cmd_out(["lake", "--version"]),
+        "claude_version": _cmd_out(["claude", "--version"]),
+        "python_version": platform.python_version(),
+        "os": platform.platform(),
+        "kernel": platform.release(),
+        "arch": platform.machine(),
+        "cpu_model": cpu,
+        "cpu_count": os.cpu_count(),
+        "mem_total_kb": mem_kb,
+        "driver_sha256": agentproc.sha256_file(os.path.abspath(__file__)),
+        "agentproc_sha256": agentproc.sha256_file(agentproc.__file__),
+        "prompt_template_sha256": hashlib.sha256(PROMPT.encode()).hexdigest(),
+    }
+
+
+def record_provenance(prompt):
+    """Per-record items that can change between targets in one run."""
+    return {
+        "git_head": _cmd_out(["git", "rev-parse", "HEAD"]),
+        "prompt_sha256": hashlib.sha256(prompt.encode()).hexdigest(),
+    }
+
+
 def run_rounds(prompt, tid, path, before_counts, args, env, settings_path):
     """Multi-round attempt on one target. Stop rules (DEC-16), ported from
     CryptoProver run.py and adapted to one-sorry targets:
@@ -418,7 +504,14 @@ def main():
     ap.add_argument("--zones", default="specs,aux")
     ap.add_argument("--limit", type=int, default=0, help="0 = all")
     ap.add_argument("--match", default="", help="substring filter on location")
-    ap.add_argument("--model", default="")
+    ap.add_argument("--model", default="",
+                    help="REQUIRED (flag or run-config): the isolated config "
+                         "dir carries no user model setting, so an unpinned "
+                         "run uses whatever claude's built-in default is")
+    ap.add_argument("--run-id", default="",
+                    help="batch label written to every ledger record "
+                         "(default: driver start time, UTC); rerunning a "
+                         "target under a new run-id keeps attempts separable")
     ap.add_argument("--max-turns", type=int, default=30, help="per round")
     ap.add_argument("--timeout", type=int, default=900,
                     help="seconds per ROUND (wall clock, process-group kill); "
@@ -469,7 +562,11 @@ def main():
         cfg_path = sys.argv[sys.argv.index("--run-config") + 1]
         ap.set_defaults(**json.load(open(cfg_path)))
     args = ap.parse_args()
-    LIMIT_KEYS = ("rounds", "max_turns", "timeout",
+    if not args.model:
+        sys.exit("--model is required (or `model` in --run-config): "
+                 "see DEC-13; the isolated agent has no default model setting")
+    run_id = args.run_id or now_iso().replace(":", "").replace("+0000", "Z")
+    LIMIT_KEYS = ("model", "rounds", "max_turns", "timeout",
                   "max_cost_usd", "build_timeout", "stall_rounds",
                   "bloat_threshold_tokens", "auto_reset", "max_auto_resets")
     limits = {k: getattr(args, k) for k in LIMIT_KEYS}
@@ -477,6 +574,7 @@ def main():
         limits["run_config"] = os.path.relpath(os.path.abspath(args.run_config), REPO)
         limits["run_config_sha256"] = agentproc.sha256_file(args.run_config)
 
+    environment = environment_snapshot()
     os.makedirs(TRANSCRIPTS, exist_ok=True)
     agentproc.install_signal_handler()
     env = os.environ.copy()
@@ -550,6 +648,7 @@ def main():
             continue
 
         tid = re.sub(r"[^A-Za-z0-9_.]+", "_", loc)
+        prov = record_provenance(prompt)
         outcome, detail, rounds, session_ids = run_rounds(
             prompt, tid, path, before_counts, args, env, settings_path)
 
@@ -568,15 +667,20 @@ def main():
         out_tokens = sum((r.get("usage_totals") or {}).get("output_tokens")
                          or 0 for r in rounds)
         record = {
-            "ts": now_iso(), "target": loc, "decl": decl, "path": path,
+            "ts": now_iso(), "run_id": run_id,
+            "target": loc, "decl": decl, "path": path,
             "outcome": outcome, "detail": detail,
             "session_ids": session_ids,
             "isolation": isolation,
             "limits": limits,
+            "environment": environment,
+            "provenance": prov,
+            "models_used": sorted({m for r in rounds
+                                   for m in r.get("models_used") or []}),
             "rounds_run": len(rounds), "max_rounds": args.rounds,
             "wall_seconds": round(sum(r["wall_seconds"] for r in rounds), 1),
             "output_tokens_total": out_tokens,
-            "model": args.model or "default",
+            "model": args.model,
             "baseline_build_seconds": baseline_s,
             "rounds": rounds,
         }

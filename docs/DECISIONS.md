@@ -227,13 +227,37 @@ the round cap.
 
 ### DEC-17 — What environment details are recorded?
 
-**Status:** OPEN
+**Status:** ACCEPTED (2026-08-26, Zhang-Liao; implemented in `harness/driver.py`
+`environment_snapshot` / `record_provenance`)
 
 **Question:** How much OS, image, CPU, toolchain, and model-version information
 is needed to repeat a run?
 
-**Suggested start:** Pin software and image versions. Record architecture,
-resource limits, cache policy, date, and exact model identifier where possible.
+**Decision:** Every ledger record carries two provenance blocks in addition to
+`limits` and `isolation`.
+
+*`environment`* (captured once per driver run):
+
+| Field | Purpose |
+| --- | --- |
+| `git_head`, `git_branch`, `git_describe`, `git_untracked` | problem version: targets, `Math/`, prompt template and gates all live in the tree; untracked files are listed because HEAD does not cover them |
+| `lean_toolchain`, `lake_manifest_sha256`, `lakefile_sha256`, `lean_version`, `lake_version` | toolchain and dependency lock |
+| `inventory_sha256`, `prompt_template_sha256`, `driver_sha256`, `agentproc_sha256` | harness version independent of commit state |
+| `claude_version`, `python_version` | agent runtime |
+| `os`, `kernel`, `arch`, `cpu_model`, `cpu_count`, `mem_total_kb` | machine; needed to interpret wall-clock limits and `lake build` times |
+
+*`provenance`* (captured per target, before the first round): `git_head` —
+drifts within a run under `--commit`, so the run-level value is not enough
+to replay attempt *k* — and `prompt_sha256` of the rendered prompt.
+
+*`models_used`*: union over rounds of the model ids the API billed
+(`modelUsage` in the result event). This is the record of what actually ran;
+`model` is only what was requested.
+
+Two records are comparable only when `environment.git_head`,
+`environment.lean_toolchain`, `environment.lake_manifest_sha256`,
+`models_used` and `limits` agree. Not recorded: container image digest (no
+container yet, see DEC-08) and API-side model snapshot dates beyond the id.
 
 ## Claim boundary
 

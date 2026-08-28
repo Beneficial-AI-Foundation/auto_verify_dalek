@@ -111,6 +111,8 @@ result, not the requested model.
 
 ### Partially solved
 
+(DEC-12 moved to "accepted" above — see the seal paragraph below.)
+
 **DEC-08 — what sandbox is enough.** Filesystem layer closed: no host
 checkout (slots), no sibling repositories (empty `$HOME`), no old Git history
 (sealed slot + hidden `.git`), no shared writable caches (`.lake/packages`
@@ -127,10 +129,13 @@ today: runtime filesystem access to the solution history was blocked and
 receipted; network egress was restricted, not blocked; training-data
 contamination is unknown. Nothing stronger.
 
-**DEC-12 — humans during a scored run.** The agent never touches the
-operator's checkout and the tracked tree must be clean at start, but there is
-no sealed-bundle moment: an untracked-file change during a run would not be
-detected. `environment.git_untracked` lists what existed at start.
+**DEC-12 — humans during a scored run.** Implemented as a seal: every
+non-ignored file of the operator tree is hashed at run start
+(`environment.seal`, manifest under `ledger/runs/<ts>/`), re-hashed before
+each target and at the end. A change in the input set (Lean/Rust sources,
+lock files, `harness/`, inventory, settings) is a violation recorded in
+`provenance.seal`; a change elsewhere is drift. Accepted merge-backs are
+expected and excluded.
 
 **Open question "how are parallel agents isolated" — answered.** One sealed
 slot, one sandbox, one config dir per job; file groups never span slots;

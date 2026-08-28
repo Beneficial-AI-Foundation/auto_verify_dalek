@@ -39,9 +39,9 @@ Whole run: `replay.py` (fresh worktree, empty build cache) → `report.py` →
 | ✅ | When to give up? | DEC-16 rounds, turns, wall clock, cost, stall/bloat reset, build budget | implemented |
 | ✅ | Can a run be repeated? | DEC-17 git, toolchain, machine, harness hashes, billed models in every record | implemented |
 | ✅ | Agents interfere in parallel? | one sealed slot + sandbox per job, `--jobs N` | implemented |
+| ✅ | Can a human tamper mid-run? | DEC-12 tree hashed at run start; input-set change = violation, other change = drift; re-checked per target | implemented |
 | 🟡 | Can the agent peek at answers? | DEC-08 filesystem closed; network deny-listed not blocked; credential in sandbox; no broker | partial (= CryptoProver) |
 | 🟡 | What may we claim? | DEC-09 "filesystem blocked and receipted; egress restricted; training data unknown" | supportable today |
-| 🟡 | Can a human tamper mid-run? | DEC-12 checkout untouched, but no tree hash at run start | partial |
 | ⬜ | How many runs, which models? | DEC-13 no `--repeats`, no success-rate aggregation | open |
 | ⬜ | Agent writes the spec itself? | DEC-05/06/07 seed `S`, `Math/` visibility, writer/reviewer roles | not started (Phase 2) |
 | ⬜ | Where do transcripts live, who reads? | DEC-01/02/15 | open |
@@ -52,5 +52,5 @@ Whole run: `replay.py` (fresh worktree, empty build cache) → `report.py` →
 1. Shakeout: real multi-round run on the Scalar slice (`--jobs 2`).
 2. `--repeats` + aggregation (DEC-13) — without it no number is comparable.
 3. Close network: `--unshare-net`, API via proxy, credential out of sandbox (DEC-08).
-4. Seal moment: hash whole tree at run start (DEC-12).
+4. Decide what a broken seal / deadline / host restart does to a run (invalidation rules).
 5. Then Phase 2.

@@ -193,13 +193,40 @@ assumptions are governed by the frozen axiom whitelist, enumerated by
 
 ### DEC-12 — Can humans help during a scored run?
 
-**Status:** PROPOSED
+**Status:** ACCEPTED (2026-08-28, Zhang-Liao; seal implemented in
+`harness/driver.py` `tree_manifest` / `seal_check`)
 
 **Question:** May a person repair statements or guide agents after the run
 starts?
 
-**Suggested start:** No human changes after the bundle is sealed. Human work is
-allowed while designing the experiment and reviewing results afterwards.
+**Decision:** No human changes after the run starts. Human work is allowed
+while designing the experiment and reviewing results afterwards.
+
+*Mechanism.* The agent never works in the operator's tree (slots, DEC-08),
+so the only way a human change reaches a run is through the files the slot
+was copied from or the gates read. At run start the driver hashes every
+tracked or untracked-not-ignored file of the operator tree (`ledger/`
+excluded; ~350 files, well under a second) into
+`ledger/runs/<ts>/tree_manifest.json` and records two digests in
+`environment.seal`:
+
+| Digest | Over | On change |
+| --- | --- | --- |
+| `input_tree_sha256` | the input set: `Curve25519Dalek/`, `Utils/`, `curve25519-dalek/` (Rust), `lakefile.toml`, `lake-manifest.json`, `lean-toolchain`, `harness/` (gates, prompt, `frozen/`), `.verilib/sorry_inventory.json`, `.claude/settings-offline.json` | **violation** — `provenance.seal.input_ok = false` and the paths are listed; the run continues so the evidence is complete, and the record is not scorable |
+| `tree_sha256` | every non-ignored file | **drift** — listed under `provenance.seal.drift`, not a violation (README edits, notes) |
+
+The check re-runs before every target and once at the end of the run.
+Accepted merge-backs change target files in the operator tree legitimately;
+the expected manifest is updated with the post-accept hash so they are not
+violations. Anything the agent could read but that is not in the input set is
+still hashed, so an audit can see whether e.g. `docs/` changed mid-run; the
+decision not to fail on it is deliberate — "which files matter" is a judgement
+left to the audit, not to the code.
+
+Not covered: `.lake/packages` (its own `harness/frozen/packages.sha256`,
+checked by replay) and the running `claude` binary (version recorded only).
+Whether a broken seal aborts the run or only marks it is part of the open
+question "what event invalidates a run".
 
 ## Running and reporting experiments
 

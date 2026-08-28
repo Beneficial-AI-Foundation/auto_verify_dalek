@@ -31,21 +31,21 @@ Whole run: `replay.py` (fresh worktree, empty build cache) → `report.py` →
 
 ## Decisions
 
-| | Decision | State |
-|---|---|---|
-| ✅ | DEC-10 success = all of T proved + statements unchanged + no new axioms + fresh replay | implemented |
-| ✅ | DEC-11 `native_decide` allowed, `implemented_by`/`extern` banned, axiom whitelist | implemented |
-| ✅ | DEC-14 full-project `S = T` first; Scalar slice for shakeout | accepted |
-| ✅ | DEC-16 stop rules: rounds, turns, wall clock, cost, stall/bloat reset, build budget | implemented |
-| ✅ | DEC-17 provenance: git, toolchain, machine, harness hashes, billed models | implemented |
-| ✅ | parallel agents: one sealed slot + sandbox per job, `--jobs N` | implemented |
-| 🟡 | DEC-08 sandbox — **filesystem closed**; network deny-listed not blocked, credential in sandbox, no broker | partial (= CryptoProver level) |
-| 🟡 | DEC-09 claim label: "filesystem access blocked and receipted; egress restricted; training data unknown" | supportable today |
-| 🟡 | DEC-12 no humans mid-run — checkout untouched, but no sealed-bundle moment | partial |
-| ⬜ | DEC-13 model matrix / repeats — no `--repeats`, no success-rate aggregation | open |
-| ⬜ | DEC-05/06/07 seed `S`, `Math/` visibility, writer/reviewer roles (Phase 2) | not started |
-| ⬜ | DEC-01/02/15 storage & access to raw transcripts | open |
-| ⬜ | DEC-04 `T` selection in driver, DEC-18 claim boundary in report, run-invalidation rules | open |
+| | Question | Decision | State |
+|---|---|---|---|
+| ✅ | What counts as done? | DEC-10 all of T proved + statements unchanged + no new axioms + fresh replay | implemented |
+| ✅ | Which Lean tricks allowed? | DEC-11 `native_decide` ok; `implemented_by`/`extern` banned; axiom whitelist | implemented |
+| ✅ | Which targets first? | DEC-14 full-project `S = T`; Scalar slice for shakeout | accepted |
+| ✅ | When to give up? | DEC-16 rounds, turns, wall clock, cost, stall/bloat reset, build budget | implemented |
+| ✅ | Can a run be repeated? | DEC-17 git, toolchain, machine, harness hashes, billed models in every record | implemented |
+| ✅ | Agents interfere in parallel? | one sealed slot + sandbox per job, `--jobs N` | implemented |
+| 🟡 | Can the agent peek at answers? | DEC-08 filesystem closed; network deny-listed not blocked; credential in sandbox; no broker | partial (= CryptoProver) |
+| 🟡 | What may we claim? | DEC-09 "filesystem blocked and receipted; egress restricted; training data unknown" | supportable today |
+| 🟡 | Can a human tamper mid-run? | DEC-12 checkout untouched, but no tree hash at run start | partial |
+| ⬜ | How many runs, which models? | DEC-13 no `--repeats`, no success-rate aggregation | open |
+| ⬜ | Agent writes the spec itself? | DEC-05/06/07 seed `S`, `Math/` visibility, writer/reviewer roles | not started (Phase 2) |
+| ⬜ | Where do transcripts live, who reads? | DEC-01/02/15 | open |
+| ⬜ | Misc | DEC-04 `T` selection in driver · DEC-18 claim boundary in report · run-invalidation rules | open |
 
 ## Next
 

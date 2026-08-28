@@ -101,7 +101,9 @@ calls go through a restricted broker. Verification runs elsewhere.
 `sandbox_selftest`, driver `--sandbox bwrap` default):** the agent runs in a
 bubblewrap mount namespace — empty `$HOME` (only `~/.elan` and the `claude`
 binary, read-only), repo bound at its real path with `.git`, `ledger/`,
-`harness/` replaced by empty tmpfs, fresh `/tmp`, `/proc`, `/dev`. A 10-probe
+`harness/` replaced by empty tmpfs, fresh `/tmp`, `/proc`, `/dev`. Since
+`--jobs`, the bound repo is a per-job sealed slot copy, not the operator's
+checkout, and `.lake/packages` is shared read-only. A 12-probe
 self-test runs before the first target and its result is in every record
 under `isolation.sandbox_selftest`. This closes "host checkout, sibling
 repositories, old Git history, shared writable caches". Still open: network
@@ -307,7 +309,13 @@ cryptographic-security claims need separate work.
 - [ ] Which seed-search method fits the available compute budget?
 - [ ] How do we test that the sandbox really blocks files, Git, DNS, and web
       access?
-- [ ] How are parallel agents isolated from one another?
+- [x] How are parallel agents isolated from one another? — `--jobs N`, one
+      sealed slot workspace + sandbox + config dir per job, file groups never
+      span slots, `.lake/packages` shared read-only (2026-08-28,
+      `harness/driver.py` `make_slot`; see ISOLATION-AND-INTEGRITY.md).
+      Still open: CPU contention between concurrent `lake build`s changes
+      what the wall-clock limits mean, so `jobs` is part of `limits` and
+      records with different `jobs` are not directly comparable.
 - [ ] Which hidden-spec quality checks are mandatory?
 - [ ] Is a private or post-training-cutoff test target available?
 - [ ] What event invalidates a run and requires a rerun?

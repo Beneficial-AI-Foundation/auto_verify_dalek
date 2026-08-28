@@ -59,8 +59,13 @@ Ledger:  ledger/rounds.jsonl        one record per attempt (see RECORD below)
          ledger/transcripts/*.jsonl raw stream-json, never discarded —
                                     bucket rules can be re-run post-hoc
 
+Workspaces: the agent never runs in this checkout. Each --jobs slot is a
+sealed copy (see make_slot); accepted files are copied back here (and
+committed with --commit). Targets are grouped by file per slot.
+
 Usage examples:
   python3 harness/driver.py --zones specs --limit 10 --dry-run
+  python3 harness/driver.py --zones specs --jobs 2 --model <id>
   python3 harness/driver.py --zones specs --limit 10 --commit
   python3 harness/driver.py --match AffineNielsPoint --max-turns 40
 """

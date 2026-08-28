@@ -1,0 +1,12 @@
+{
+  "model": "claude-opus-5",
+  "rounds": 5,
+  "max_turns": 30,
+  "timeout": 900,
+  "max_cost_usd": 0,
+  "build_timeout": 1200,
+  "stall_rounds": 2,
+  "bloat_threshold_tokens": 200000,
+  "auto_reset": true,
+  "max_auto_resets": 3
+}

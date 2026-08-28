@@ -787,11 +787,13 @@ def main():
                 "credentials_seeded": seeded})
             if args.sandbox == "bwrap":
                 try:
-                    prefix = agentproc.bwrap_prefix(work, cfg)
+                    prefix = agentproc.bwrap_prefix(
+                        work, cfg, extra_ro=[settings_path])
                 except RuntimeError as e:
                     sys.exit(f"--sandbox bwrap: {e} "
                              f"(use --sandbox none for debug)")
-                checks = agentproc.sandbox_selftest(prefix, work, cfg)
+                checks = agentproc.sandbox_selftest(
+                    prefix, work, cfg, extra_ro=[settings_path])
                 failed = [k for k, ok in checks.items() if not ok]
                 slot["isolation"].update({
                     "sandbox_hidden": list(agentproc.SANDBOX_HIDDEN),

@@ -209,7 +209,9 @@ def _claude_binary_paths():
 
 
 def bwrap_prefix(repo, config_dir, hidden=SANDBOX_HIDDEN, extra_ro=()):
-    """argv prefix that runs the rest of the command inside bwrap."""
+    """argv prefix that runs the rest of the command inside bwrap.
+    extra_ro: files/dirs outside repo the agent process must read (e.g. the
+    --settings file, which lives in the main checkout, not the slot)."""
     if not shutil.which("bwrap"):
         raise RuntimeError("bwrap (bubblewrap) not installed")
     home = os.path.expanduser("~")
@@ -238,7 +240,7 @@ def bwrap_prefix(repo, config_dir, hidden=SANDBOX_HIDDEN, extra_ro=()):
     return argv
 
 
-def sandbox_selftest(prefix, repo, config_dir):
+def sandbox_selftest(prefix, repo, config_dir, extra_ro=()):
     """Run probes inside the sandbox and return {check: bool}. Every check
     must be True before a scored run; the dict is recorded in the ledger."""
     home = os.path.expanduser("~")
@@ -258,6 +260,7 @@ def sandbox_selftest(prefix, repo, config_dir):
         "no_mathlib_cache": f"[ ! -e {home}/.cache ]",
         "config_dir_writable": f"touch {config_dir}/.rw && rm {config_dir}/.rw",
         "repo_writable": f"touch {repo}/.rw && rm {repo}/.rw",
+        **{f"readable:{os.path.basename(p)}": f"[ -r {p} ]" for p in extra_ro},
         "lake_runs": "lake --version >/dev/null",
         "claude_runs": "claude --version >/dev/null",
     }

@@ -88,7 +88,9 @@ Also run a simpler baseline for comparison.
 
 ### DEC-08 — What sandbox is enough?
 
-**Status:** OPEN
+**Status:** PARTIAL (2026-08-28, Zhang-Liao; filesystem layer implemented in
+`harness/agentproc.py` `bwrap_prefix` / `sandbox_selftest` and
+`harness/driver.py` `make_slot`; network/credential/broker layer OPEN)
 
 **Question:** Is a locked-down container enough, or do scored runs need a
 microVM or remote worker?
@@ -97,18 +99,40 @@ microVM or remote worker?
 history, credentials, shared writable caches, or general network access. Model
 calls go through a restricted broker. Verification runs elsewhere.
 
-**Implemented so far (2026-08-28, `harness/agentproc.py` `bwrap_prefix` /
-`sandbox_selftest`, driver `--sandbox bwrap` default):** the agent runs in a
-bubblewrap mount namespace — empty `$HOME` (only `~/.elan` and the `claude`
-binary, read-only), repo bound at its real path with `.git`, `ledger/`,
-`harness/` replaced by empty tmpfs, fresh `/tmp`, `/proc`, `/dev`. Since
-`--jobs`, the bound repo is a per-job sealed slot copy, not the operator's
-checkout, and `.lake/packages` is shared read-only. A 12-probe
-self-test runs before the first target and its result is in every record
-under `isolation.sandbox_selftest`. This closes "host checkout, sibling
-repositories, old Git history, shared writable caches". Still open: network
-is shared (`--share-net`; deny-list only), no model broker (the agent holds
-the OAuth credential copy), verification runs on the same host.
+**Current state, item by item:**
+
+| Requirement | Status | Mechanism / evidence |
+| --- | --- | --- |
+| no host checkout | closed | every agent runs in a per-job slot: rsync copy of the tree, sealed with `git init` + one commit; the operator's checkout is never mounted |
+| no sibling repositories | closed | `$HOME` is an empty tmpfs inside bubblewrap; only `~/.elan` and the `claude` binary are bound read-only |
+| no old Git history | closed | slot `.git` holds exactly the baseline commit and is additionally hidden by an empty tmpfs; `git rev-parse HEAD` fails inside the sandbox |
+| no shared writable caches | closed | `.lake/packages` is bound read-only (`packages_readonly` probe); `~/.cache` does not exist; each slot has its own `.lake/build` |
+| no credentials | open | the per-run `CLAUDE_CONFIG_DIR` holds a copy of the OAuth `.credentials.json`, readable by the agent process |
+| no general network access | open | `--share-net`: the agent has the host's network; the only control is the `--settings` deny-list (`curl`, `wget`, `git fetch`, …), which a `python3`/`lean` one-liner bypasses |
+| broker; verification elsewhere | open | `claude` talks to the API directly (optionally through the logging wire proxy); gates run on the same host |
+
+A 12-probe self-test runs inside each slot's sandbox before the first target
+and is recorded under `isolation.sandbox_selftest`; the driver aborts if any
+probe fails. Toolset: `--tools Read,Grep,Glob,Edit,Write,Bash`,
+`--disable-slash-commands`, `--strict-mcp-config` (no subagents, no web
+tools, no skills, no MCP).
+
+**What may be claimed today:** runtime *filesystem* access to the solution
+history, sibling checkouts and caches was blocked and receipted. Network
+egress was restricted by a deny-list, not blocked. This is the same
+operational-isolation profile CryptoProver's Docker launcher reaches, and its
+`docker/README.md` draws the same line: not a `scoreable` profile until
+provider-only egress and negative reachability receipts exist. Parity with
+CryptoProver is a comparison, not a standard; a run labelled "sandboxed" must
+say which of the three open items were still open.
+
+**To close the remaining items (planned, small):** bwrap `--unshare-net`
+(loopback only) with the API reached through the existing wire proxy bound
+into the sandbox; move the credential to the proxy side so the agent
+process never holds it; record a negative reachability receipt (a `curl` to
+a public host must fail) in the self-test. Whether a microVM is needed
+depends only on this network layer — for the filesystem layer a mount
+namespace is sufficient.
 
 ### DEC-09 — What can we say about cheating?
 

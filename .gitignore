@@ -61,3 +61,4 @@ prmopt_log.md
 
 # harness: per-run isolated CLAUDE_CONFIG_DIR (holds a copy of OAuth credentials + session files)
 ledger/runs/*/claude_config/
+ledger/runs/*/slot*/claude_config/

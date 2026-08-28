@@ -43,7 +43,8 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 
 # Module-level handle to the live claude subprocess so a signal to the driver
 # can propagate the kill to the whole process group.
-_LIVE_PROC = None
+_LIVE_PROCS = set()   # every running claude process (one per slot)
+_LIVE_LOCK = __import__('threading').Lock()
 _WIRE_PROC = None
 RECEIVED_SIGNAL = None  # driver checks this after each round
 
@@ -57,14 +58,16 @@ def install_signal_handler():
     def _handler(signum, _frame):
         global RECEIVED_SIGNAL
         RECEIVED_SIGNAL = signum
-        proc = _LIVE_PROC
-        if proc is not None and proc.poll() is None:
-            print(f"\n[agent] signal {signum} — killing claude process group "
-                  f"{proc.pid}", flush=True)
-            try:
-                os.killpg(proc.pid, signal.SIGKILL)
-            except ProcessLookupError:
-                pass
+        with _LIVE_LOCK:
+            live = [p for p in _LIVE_PROCS if p.poll() is None]
+        if live:
+            for proc in live:
+                print(f"\n[agent] signal {signum} — killing claude process "
+                      f"group {proc.pid}", flush=True)
+                try:
+                    os.killpg(proc.pid, signal.SIGKILL)
+                except ProcessLookupError:
+                    pass
             kill_wire_proxy()
             # Let run_round return so the driver can rollback + persist a
             # ledger record before exiting 128+signum.
@@ -188,6 +191,9 @@ def isolated_env(base_env, config_dir):
 # the API / wire proxy are reachable; the settings deny-list remains the
 # only network control. Still no broker (DEC-08 stays OPEN on that point).
 SANDBOX_HIDDEN = (".git", "ledger", "harness")
+# `.lake/packages` in a slot is a symlink to the main checkout's; the target
+# is bound read-only, so all slots share mathlib/aeneas without a copy and
+# no slot can write into it (self-test `packages_readonly`).
 
 
 def _claude_binary_paths():
@@ -216,7 +222,10 @@ def bwrap_prefix(repo, config_dir, hidden=SANDBOX_HIDDEN, extra_ro=()):
             "--proc", "/proc", "--dev", "/dev", "--tmpfs", "/tmp",
             "--tmpfs", home,
             "--ro-bind", os.path.join(home, ".elan"), os.path.join(home, ".elan")]
-    for p in list(_claude_binary_paths()) + list(extra_ro):
+    pk = os.path.join(repo, ".lake", "packages")
+    shared_pk = os.path.realpath(pk) if os.path.islink(pk) else None
+    for p in list(_claude_binary_paths()) + list(extra_ro) \
+            + ([shared_pk] if shared_pk else []):
         argv += ["--ro-bind", p, p]
     argv += ["--bind", repo, repo]
     for h in hidden:
@@ -239,7 +248,10 @@ def sandbox_selftest(prefix, repo, config_dir):
             allowed_home.add(os.path.relpath(p, home).split(os.sep)[0])
     probes = {
         "no_git_history": f"! git -C {repo} rev-parse HEAD >/dev/null 2>&1",
-        "no_ledger_transcripts": f"[ \"$(ls -A {repo}/ledger | wc -l)\" = 1 ]",
+        "no_ledger_transcripts":
+            f"[ ! -e {repo}/ledger ] || [ \"$(ls -A {repo}/ledger | wc -l)\" = 1 ]",
+        "packages_readonly":
+            f"! touch {repo}/.lake/packages/.rw 2>/dev/null",
         "no_harness": f"[ -z \"$(ls -A {repo}/harness)\" ]",
         "no_ssh_or_gitconfig":
             f"[ ! -e {home}/.ssh ] && [ ! -e {home}/.gitconfig ]",
@@ -330,7 +342,6 @@ def run_round(prompt, transcript_path, *, cwd, session_id, resume,
     always SIGKILLed at the end — even on clean exit — to reap any
     background children claude left behind.
     """
-    global _LIVE_PROC
     cmd = build_command(prompt, session_id, resume, model, max_turns,
                         allowed_tools, continue_message, settings_path)
     if sandbox_prefix:
@@ -342,7 +353,8 @@ def run_round(prompt, transcript_path, *, cwd, session_id, resume,
             cmd, cwd=cwd, stdout=fh, stderr=subprocess.STDOUT,
             stdin=subprocess.DEVNULL, text=True, env=env,
             start_new_session=True)
-        _LIVE_PROC = proc
+        with _LIVE_LOCK:
+            _LIVE_PROCS.add(proc)
         wall_deadline = (time.time() + deadline_seconds) \
             if deadline_seconds else None
         while True:
@@ -376,7 +388,8 @@ def run_round(prompt, transcript_path, *, cwd, session_id, resume,
             os.killpg(proc.pid, signal.SIGKILL)
         except ProcessLookupError:
             pass
-        _LIVE_PROC = None
+        with _LIVE_LOCK:
+            _LIVE_PROCS.discard(proc)
 
     wall = time.time() - t0
     result_event, provenance = last_result_event(transcript_path)

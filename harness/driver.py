@@ -65,6 +65,7 @@ Usage examples:
   python3 harness/driver.py --match AffineNielsPoint --max-turns 40
 """
 import argparse
+import copy
 import datetime
 import hashlib
 import json
@@ -74,6 +75,7 @@ import shutil
 import signal
 import subprocess
 import sys
+import threading
 import time
 
 
@@ -110,8 +112,9 @@ End your final message with exactly one line:
 END_REASON_RE = re.compile(r"(?m)^\s*END_REASON:(COMPLETE|LIMIT)\s*$", re.I)
 
 
-def sh(cmd, **kw):
-    return subprocess.run(cmd, cwd=REPO, capture_output=True, text=True, **kw)
+def sh(cmd, work=None, **kw):
+    return subprocess.run(cmd, cwd=work or REPO, capture_output=True,
+                          text=True, **kw)
 
 
 def now_iso():
@@ -122,7 +125,7 @@ def now_iso():
 BUILD_TIMEOUT = 1200  # seconds; fixed so runs on different machines are comparable
 
 
-def build_sorry_counts(timeout=BUILD_TIMEOUT):
+def build_sorry_counts(work, timeout=BUILD_TIMEOUT):
     """lake build → (exit_code | "timeout", {file: sorry_warning_count}, wall_s).
 
     N3 minimal version (plan.md §6): a `decide`-style kernel blow-up passes
@@ -133,7 +136,7 @@ def build_sorry_counts(timeout=BUILD_TIMEOUT):
     workers, which keep burning cores.
     """
     t0 = time.time()
-    proc = subprocess.Popen(["lake", "build"], cwd=REPO,
+    proc = subprocess.Popen(["lake", "build"], cwd=work,
                             stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
                             text=True, start_new_session=True)
     try:
@@ -157,10 +160,10 @@ def build_sorry_counts(timeout=BUILD_TIMEOUT):
 
 
 # ── target resolution (robust to line drift from earlier accepts) ───────
-def resolve_target(loc):
+def resolve_target(loc, work=REPO):
     """inventory 'path:line:col' → (path, decl_name, current_line) or None if filled."""
     path, line = loc.split(":")[0], int(loc.split(":")[1])
-    full = os.path.join(REPO, path)
+    full = os.path.join(work, path)
     lines = open(full).read().splitlines()
     sorry_lines = [i + 1 for i, l in enumerate(lines)
                    if re.search(r"\bsorry\b", l) and not l.lstrip().startswith("--")]
@@ -178,46 +181,80 @@ def path_to_module(path):
     return path.removesuffix(".lean").replace("/", ".")
 
 
-# ── rollback without destructive git verbs ──────────────────────────────
-# Untracked files present when the driver starts (e.g. harness scripts not yet
-# committed) are NOT the agent's doing: snapshot them once and gate/rollback
-# only on the increment. Without this, every attempt is scope-rejected and —
-# worse — rollback() would delete the pre-existing files.
-BASELINE_UNTRACKED = set()
+# ── slot workspaces (one per parallel job) ───────────────────────────────
+# Every agent works in its own sealed copy of the tree, never in the
+# operator's checkout:
+#   * rsync of the tracked+untracked tree (clean tracked tree is required)
+#     minus .git, ledger/, .lake/packages; .lake/build is copied so the slot
+#     starts warm (no rebuild);
+#   * .lake/packages is a symlink to the main checkout's — 8.5 GB of
+#     mathlib/aeneas shared read-only (bwrap binds the target ro; the
+#     sandbox self-test asserts it is not writable);
+#   * `git init` + one commit: a sealed history with exactly the baseline,
+#     so scope checks (`git status`), forbidden-attr diffs and rollback
+#     (`git show HEAD:`) run unchanged against the slot, and nothing in the
+#     slot's object store points back at the real history;
+#   * every accept is committed in the slot at once, so a later rejected
+#     target in the same file rolls back to the last accept, not to the
+#     baseline. (Without slots this required --commit on the main tree.)
+# Targets are grouped by file and a whole file group goes to one slot, so
+# two slots never edit the same file and merge-back is a plain copy.
+SLOT_EXCLUDES = (".git", "ledger", ".lake/packages", ".claude/settings.local.json")
 
 
-def snapshot_untracked():
-    global BASELINE_UNTRACKED
-    _, new = changed_files()
-    BASELINE_UNTRACKED = set(new)
+def make_slot(run_dir, i):
+    slot = os.path.join(run_dir, f"slot{i}", "work")
+    os.makedirs(slot, exist_ok=True)
+    cmd = ["rsync", "-a", "--delete"]
+    for e in SLOT_EXCLUDES:
+        cmd += ["--exclude", "/" + e]
+    cmd += [REPO + "/", slot + "/"]
+    r = subprocess.run(cmd, capture_output=True, text=True)
+    if r.returncode != 0:
+        sys.exit(f"slot {i}: rsync failed: {r.stderr[-800:]}")
+    pk = os.path.join(slot, ".lake", "packages")
+    if not os.path.islink(pk):
+        os.makedirs(os.path.dirname(pk), exist_ok=True)
+        os.symlink(os.path.join(REPO, ".lake", "packages"), pk)
+    g = ["git", "-c", "user.name=harness", "-c", "user.email=harness@localhost"]
+    for c in (["init", "-q"], ["add", "-A"],
+              ["commit", "-q", "--allow-empty", "-m", "sealed baseline"]):
+        r = subprocess.run(g + c, cwd=slot, capture_output=True, text=True)
+        if r.returncode != 0:
+            sys.exit(f"slot {i}: git {c[0]} failed: {r.stderr[-800:]}")
+    return slot
 
 
-def changed_files():
-    out = sh(["git", "status", "--porcelain"]).stdout
+def changed_files(work):
+    out = sh(["git", "status", "--porcelain"], work).stdout
     mod, new = [], []
     for ln in out.splitlines():
         st, f = ln[:2], ln[3:].strip().strip('"')
         if f.startswith((".verilib/", "ledger/")):
             continue
-        if "?" in st:
-            if f not in BASELINE_UNTRACKED:
-                new.append(f)
-        else:
-            mod.append(f)
+        (new if "?" in st else mod).append(f)
     return mod, new
 
 
-def rollback(mod, new):
+def rollback(mod, new, work):
+    """Never uses destructive git verbs: tracked files are restored via
+    `git show HEAD:<f>`; agent-created files are removed."""
     for f in mod:
-        blob = sh(["git", "show", f"HEAD:{f}"])
+        blob = sh(["git", "show", f"HEAD:{f}"], work)
         if blob.returncode == 0:
-            open(os.path.join(REPO, f), "w").write(blob.stdout)
-    for f in new:  # only agent-created files (baseline untracked excluded)
-        p = os.path.join(REPO, f)
+            open(os.path.join(work, f), "w").write(blob.stdout)
+    for f in new:
+        p = os.path.join(work, f)
         if os.path.isfile(p):
             os.remove(p)
         elif os.path.isdir(p):  # porcelain lists a fully-untracked dir as `dir/`
             shutil.rmtree(p)
+
+
+def slot_commit(work, path, msg):
+    sh(["git", "add", path], work)
+    sh(["git", "-c", "user.name=harness", "-c", "user.email=harness@localhost",
+        "commit", "-q", "-m", msg], work)
 
 
 # ── agent invocation (multi-round; subprocess mechanics in agentproc.py) ─────
@@ -242,9 +279,9 @@ FEEDBACK = {
 }
 
 
-def _file_sha(path):
+def _file_sha(path, work):
     try:
-        return agentproc.sha256_file(os.path.join(REPO, path))
+        return agentproc.sha256_file(os.path.join(work, path))
     except OSError:
         return None
 
@@ -338,7 +375,7 @@ def record_provenance(prompt):
 
 
 def run_rounds(prompt, tid, path, before_counts, args, env, settings_path,
-               g1_base=None):
+               g1_base, work, sandbox_prefix, log):
     """Multi-round attempt on one target. Stop rules (DEC-16), ported from
     CryptoProver run.py and adapted to one-sorry targets:
 
@@ -378,16 +415,15 @@ def run_rounds(prompt, tid, path, before_counts, args, env, settings_path,
             round_prompt = prompt + "\n\n" + _history_block(rounds)
         else:
             round_prompt = prompt
-        sha_before = _file_sha(path)
+        sha_before = _file_sha(path, work)
         tpath = os.path.join(TRANSCRIPTS, f"{tid}.r{rnd}.jsonl")
         status, rc, wall, result, prov = agentproc.run_round(
-            round_prompt, tpath, cwd=REPO, session_id=session_id,
+            round_prompt, tpath, cwd=work, session_id=session_id,
             resume=not fresh, model=args.model, max_turns=args.max_turns,
             allowed_tools=ALLOWED_TOOLS,
             deadline_seconds=args.timeout,
             continue_message=continue_message, env=env,
-            settings_path=settings_path,
-            sandbox_prefix=getattr(args, "sandbox_prefix", None))
+            settings_path=settings_path, sandbox_prefix=sandbox_prefix)
         was_fresh, fresh = fresh, False
         result = result or {}
 
@@ -396,8 +432,8 @@ def run_rounds(prompt, tid, path, before_counts, args, env, settings_path,
         elif rc != 0:
             outcome, detail = "agent_error", {"error": f"exit {rc}"}
         else:
-            outcome, detail = gate(path, before_counts, args.build_timeout,
-                                   g1_base)
+            outcome, detail = gate(work, path, before_counts,
+                                   args.build_timeout, g1_base)
 
         m = END_REASON_RE.search(result.get("result") or "")
         end_reason = m.group(1).upper() if m else None
@@ -410,7 +446,7 @@ def run_rounds(prompt, tid, path, before_counts, args, env, settings_path,
         cost = result.get("total_cost_usd")
         cost_total += float(cost or 0)
         session_cc_tokens += usage.get("cache_creation_input_tokens", 0) or 0
-        sha_after = _file_sha(path)
+        sha_after = _file_sha(path, work)
         edited = sha_after != sha_before
         stall_run = 0 if edited else stall_run + 1
 
@@ -465,8 +501,7 @@ def run_rounds(prompt, tid, path, before_counts, args, env, settings_path,
             rounds[-1]["reset_after"] = {
                 "cause": ["stall"] * stall + ["bloat"] * bloat,
                 "reset_no": resets}
-            print(f"    reset→fresh session ({rounds[-1]['reset_after']})",
-                  flush=True)
+            log(f"    reset→fresh session ({rounds[-1]['reset_after']})")
             continue_message = None
         else:
             continue_message = FEEDBACK[outcome]
@@ -480,7 +515,7 @@ def run_rounds(prompt, tid, path, before_counts, args, env, settings_path,
 STMT_CANON = os.path.join("harness", "gates", "StmtCanon.lean")
 
 
-def stmt_fingerprints(modules, timeout=600):
+def stmt_fingerprints(modules, work, timeout=600):
     """{module: {name: {kind, canon, pp}}} for every user-facing constant
     declared in `modules`, via StmtCanon --module (needs current .olean
     files: run after `lake build`). Returns (fps, seconds) or raises
@@ -488,7 +523,7 @@ def stmt_fingerprints(modules, timeout=600):
     t0 = time.time()
     p = subprocess.run(["lake", "env", "lean", "--run", STMT_CANON,
                         "--module", ",".join(modules)],
-                       cwd=REPO, capture_output=True, text=True,
+                       cwd=work, capture_output=True, text=True,
                        timeout=timeout)
     if p.returncode != 0:
         raise RuntimeError((p.stdout + p.stderr)[-2000:])
@@ -517,18 +552,18 @@ def stmt_diff(base, after):
 
 
 # ── gates ────────────────────────────────────────────────────────────────
-def gate(target_path, before_counts, build_timeout=BUILD_TIMEOUT,
+def gate(work, target_path, before_counts, build_timeout=BUILD_TIMEOUT,
          g1_base=None):
-    mod, new = changed_files()
+    mod, new = changed_files(work)
     if new or set(mod) - {target_path}:
         return "rejected_scope", {"modified": mod, "new": new}
     if mod:  # target actually touched — scan forbidden constructs
-        diff = sh(["git", "diff", "--unified=0", "--", target_path]).stdout
+        diff = sh(["git", "diff", "--unified=0", "--", target_path], work).stdout
         added = "\n".join(l[1:] for l in diff.splitlines()
                           if l.startswith("+") and not l.startswith("+++"))
         if FORBIDDEN_RE.search(added):
             return "rejected_forbidden_attr", {}
-    rc, after, build_s = build_sorry_counts(build_timeout)
+    rc, after, build_s = build_sorry_counts(work, build_timeout)
     b = {"gate_build_seconds": build_s}
     if rc == "timeout":
         # policy violation, not "not done yet": resuming would just make
@@ -539,7 +574,7 @@ def gate(target_path, before_counts, build_timeout=BUILD_TIMEOUT,
     if g1_base is not None:
         mod_name = path_to_module(target_path)
         try:
-            fps, g1_s = stmt_fingerprints([mod_name])
+            fps, g1_s = stmt_fingerprints([mod_name], work)
         except (RuntimeError, subprocess.TimeoutExpired) as e:
             return "rejected_g1_error", {**b, "g1_error": str(e)[-1500:]}
         b["g1_seconds"] = g1_s
@@ -560,7 +595,8 @@ def gate(target_path, before_counts, build_timeout=BUILD_TIMEOUT,
             "delta": {f: (others_before.get(f, 0), others_after.get(f, 0))
                       for f in set(others_before) ^ set(others_after)
                       | {f for f in others_before if others_before.get(f) != others_after.get(f)}}}
-    g2 = sh(["python3", "harness/gates/g2_trust_base.py", "--skip-build"])
+    g2 = sh(["python3", os.path.join(work, "harness", "gates",
+                                     "g2_trust_base.py"), "--skip-build"], work)
     if g2.returncode != 0:
         return "rejected_g2", {**b, "g2_tail": g2.stdout[-1500:]}
     return "accepted", {**b, "counts_after": after}
@@ -573,79 +609,85 @@ def main():
     ap.add_argument("--limit", type=int, default=0, help="0 = all")
     ap.add_argument("--match", default="", help="substring filter on location")
     ap.add_argument("--model", default="",
-                    help="REQUIRED (flag or run-config): the isolated config "
+                    help="claude --model; REQUIRED (the isolated config "
                          "dir carries no user model setting, so an unpinned "
-                         "run uses whatever claude's built-in default is")
+                         "run would silently use claude's default)")
     ap.add_argument("--run-id", default="",
-                    help="batch label written to every ledger record "
-                         "(default: driver start time, UTC); rerunning a "
-                         "target under a new run-id keeps attempts separable")
+                    help="tag written into every ledger record (default: "
+                         "UTC timestamp)")
     ap.add_argument("--max-turns", type=int, default=30, help="per round")
     ap.add_argument("--timeout", type=int, default=900,
-                    help="seconds per ROUND (wall clock, process-group kill); "
-                         "per-target bound = --rounds × --timeout")
+                    help="wall-clock seconds per round (process-group kill)")
     ap.add_argument("--build-timeout", type=int, default=BUILD_TIMEOUT,
                     help="seconds for each harness-side `lake build` (baseline "
-                         "and gate); exceeding it in the gate is "
-                         "rejected_kernel_budget (N3 minimal)")
+                         "and gate); exceeding it is rejected_kernel_budget")
     ap.add_argument("--run-config", default="",
-                    help="JSON file of limit defaults (keys = long flag names "
-                         "with underscores); CLI flags override; recorded in "
-                         "the ledger `limits` block (DEC-16)")
+                    help="JSON with limits (model, rounds, max_turns, timeout, "
+                         "build_timeout, max_cost_usd, stall_rounds, "
+                         "bloat_threshold_tokens, max_auto_resets, jobs); "
+                         "CLI flags override")
     ap.add_argument("--max-cost-usd", type=float, default=0.0,
-                    help="cumulative reported cost cap per target; 0 = off")
+                    help="per-target cumulative reported cost cap (0 = off)")
     ap.add_argument("--stall-rounds", type=int, default=2,
-                    help="consecutive rounds leaving the target file "
-                         "byte-identical before a session reset; 0 disables")
+                    help="consecutive rounds with the target file unchanged "
+                         "before a session reset (0 = off)")
     ap.add_argument("--bloat-threshold-tokens", type=int, default=200_000,
-                    help="session cumulative cache-creation tokens that "
-                         "trigger a preemptive session reset")
+                    help="session cache-creation tokens that trigger a "
+                         "session reset")
     ap.add_argument("--auto-reset", dest="auto_reset", action="store_true",
                     default=True)
     ap.add_argument("--no-auto-reset", dest="auto_reset", action="store_false",
-                    help="on stall/bloat stop instead of resetting the session")
+                    help="stop on stall/bloat instead of resetting the session")
     ap.add_argument("--max-auto-resets", type=int, default=3)
     ap.add_argument("--rounds", type=int, default=5,
-                    help="max claude rounds per target; rounds >1 resume the "
-                         "same session with gate feedback (CryptoProver "
-                         "default 5; 1 = single-shot)")
+                    help="max agent rounds per target (round 1 fresh, then "
+                         "--resume with gate feedback)")
+    ap.add_argument("--jobs", type=int, default=1,
+                    help="parallel agents; each gets its own sealed slot "
+                         "workspace + sandbox + CLAUDE_CONFIG_DIR. Targets "
+                         "are grouped by file; one file never spans slots")
     ap.add_argument("--wire-log", action="store_true",
                     help="record raw API requests via a localhost proxy "
-                         "(ledger/wire/wire_requests.jsonl); best-effort")
+                         "(ledger/wire/)")
     ap.add_argument("--settings", default=OFFLINE_SETTINGS,
                     help="claude --settings file (network deny-list); "
                          "default .claude/settings-offline.json")
     ap.add_argument("--run-dir", default="",
-                    help="per-run evidence dir holding the isolated "
-                         "CLAUDE_CONFIG_DIR (default ledger/runs/<utc-ts>)")
+                    help="directory for this run's slots and isolated "
+                         "CLAUDE_CONFIG_DIRs (default ledger/runs/<utc-ts>)")
     ap.add_argument("--sandbox", choices=("bwrap", "none"), default="bwrap",
                     help="filesystem sandbox for the agent process (DEC-08): "
-                         "bwrap = private mount namespace, empty $HOME, repo "
-                         "without .git/ledger/harness; none = host filesystem "
+                         "bwrap = private mount namespace, empty $HOME, slot "
+                         "without .git/harness; none = host filesystem "
                          "(debug only, marked in the ledger)")
     ap.add_argument("--no-isolation", action="store_true",
-                    help="DEBUG ONLY: reuse the operator's ~/.claude "
+                    help="debug: share the operator's ~/.claude with the agent "
                          "(memory, plugins, MCP, local settings leak in); "
-                         "the ledger marks such records isolated=false")
+                         "records are marked isolated=false")
     ap.add_argument("--commit", action="store_true",
-                    help="git commit each accepted fill")
-    ap.add_argument("--dry-run", action="store_true",
-                    help="resolve targets + print prompts, no agent, no build")
-    if "--run-config" in sys.argv:
-        cfg_path = sys.argv[sys.argv.index("--run-config") + 1]
-        ap.set_defaults(**json.load(open(cfg_path)))
+                    help="git commit each accepted fill in the main checkout")
+    ap.add_argument("--dry-run", action="store_true")
     args = ap.parse_args()
+    if args.run_config:
+        cfg = json.load(open(args.run_config))
+        for k, v in cfg.items():
+            if getattr(args, k, None) == ap.get_default(k):
+                setattr(args, k, v)
     if not args.model:
         sys.exit("--model is required (or `model` in --run-config): "
                  "see DEC-13; the isolated agent has no default model setting")
-    run_id = args.run_id or now_iso().replace(":", "").replace("+0000", "Z")
+    if args.jobs < 1:
+        sys.exit("--jobs must be >= 1")
+
     LIMIT_KEYS = ("model", "rounds", "max_turns", "timeout",
-                  "max_cost_usd", "build_timeout", "stall_rounds",
-                  "bloat_threshold_tokens", "auto_reset", "max_auto_resets")
+                  "build_timeout", "max_cost_usd", "stall_rounds",
+                  "bloat_threshold_tokens", "auto_reset", "max_auto_resets",
+                  "jobs")
     limits = {k: getattr(args, k) for k in LIMIT_KEYS}
     if args.run_config:
         limits["run_config"] = os.path.relpath(os.path.abspath(args.run_config), REPO)
         limits["run_config_sha256"] = agentproc.sha256_file(args.run_config)
+    run_id = args.run_id or now_iso()
 
     environment = environment_snapshot()
     os.makedirs(TRANSCRIPTS, exist_ok=True)
@@ -660,48 +702,19 @@ def main():
                  "setting_sources": "user", "strict_mcp_config": True,
                  "tools": agentproc.tool_names(ALLOWED_TOOLS),
                  "allowed_tools": ALLOWED_TOOLS,
-                 "disable_slash_commands": True}
+                 "disable_slash_commands": True,
+                 "sandbox": "none" if args.no_isolation else args.sandbox,
+                 "slots": True}
     if args.no_isolation:
-        isolation["sandbox"] = "none"
         print("[driver] WARNING: --no-isolation — agent shares ~/.claude "
               "with interactive sessions and sees the host filesystem",
               flush=True)
-    elif not args.dry_run:
-        run_dir = args.run_dir or os.path.join(
-            LEDGER_DIR, "runs",
-            now_iso().replace(":", "").replace("+0000", "Z"))
-        cfg, seeded = agentproc.make_config_dir(run_dir)
-        if not seeded and not any(k in env for k in
-                                  ("ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN")):
-            sys.exit("no credentials: neither ~/.claude/.credentials.json "
-                     "nor ANTHROPIC_API_KEY — the isolated agent cannot "
-                     "authenticate")
-        env = agentproc.isolated_env(env, cfg)
-        isolation.update({"config_dir": os.path.relpath(cfg, REPO),
-                          "credentials_seeded": seeded})
-        print(f"[driver] isolated CLAUDE_CONFIG_DIR={cfg}", flush=True)
-        if args.sandbox == "bwrap":
-            try:
-                prefix = agentproc.bwrap_prefix(REPO, cfg)
-            except RuntimeError as e:
-                sys.exit(f"--sandbox bwrap: {e} (use --sandbox none for debug)")
-            print("[driver] sandbox self-test …", flush=True)
-            checks = agentproc.sandbox_selftest(prefix, REPO, cfg)
-            failed = [k for k, ok in checks.items() if not ok]
-            isolation.update({"sandbox": "bwrap",
-                              "sandbox_hidden": list(agentproc.SANDBOX_HIDDEN),
-                              "sandbox_selftest": checks})
-            if failed:
-                sys.exit(f"sandbox self-test FAILED: {failed}")
-            args.sandbox_prefix = prefix
-            print(f"[driver] sandbox ok ({len(checks)} checks)", flush=True)
-        else:
-            isolation["sandbox"] = "none"
-            print("[driver] WARNING: --sandbox none — agent sees the host "
-                  "filesystem (.git history, sibling repos, caches)",
-                  flush=True)
+    if args.sandbox == "none" and not args.no_isolation:
+        print("[driver] WARNING: --sandbox none — agent sees the host "
+              "filesystem (.git history, sibling repos, caches)", flush=True)
     if args.wire_log and not args.dry_run:
         agentproc.start_wire_proxy(os.path.join(LEDGER_DIR, "wire"), env)
+
     inv = json.load(open(INVENTORY))
     targets = [loc for z in args.zones.split(",")
                for loc in inv["locations"][z.strip()]]
@@ -709,105 +722,199 @@ def main():
         targets = [t for t in targets if args.match in t]
     if args.limit:
         targets = targets[:args.limit]
-    print(f"{len(targets)} target(s), zones={args.zones}")
+    print(f"{len(targets)} target(s), zones={args.zones}, jobs={args.jobs}")
 
-    before_counts, baseline_s, g1_base = {}, None, None
-    if not args.dry_run:
-        mod, _ = changed_files()
-        if mod:
-            sys.exit(f"working tree not clean (tracked changes: {mod}); "
-                     f"commit or restore first")
-        snapshot_untracked()  # pre-existing untracked files are not the agent's
-        print("baseline build …", flush=True)
-        rc, before_counts, baseline_s = build_sorry_counts(args.build_timeout)
-        if rc == "timeout":
-            sys.exit(f"baseline lake build exceeded --build-timeout "
-                     f"{args.build_timeout}s; raise it explicitly")
-        if rc != 0:
-            sys.exit("baseline lake build failed — fix before running driver")
-        print(f"baseline: {sum(before_counts.values())} sorry decls "
-              f"in {len(before_counts)} files, {baseline_s}s build")
-        target_mods = sorted({path_to_module(resolve_target(t)[0])
-                              for t in targets if resolve_target(t)})
-        print(f"G1 baseline: fingerprinting {len(target_mods)} module(s) …",
-              flush=True)
-        try:
-            g1_base, g1_s = stmt_fingerprints(target_mods)
-        except (RuntimeError, subprocess.TimeoutExpired) as e:
-            sys.exit(f"G1 baseline failed: {str(e)[-2000:]}")
-        print(f"G1 baseline: {sum(len(v) for v in g1_base.values())} "
-              f"declarations, {g1_s}s", flush=True)
-        if baseline_s > args.build_timeout / 3:
-            print(f"[driver] WARNING: baseline build {baseline_s}s is over a "
-                  f"third of --build-timeout {args.build_timeout}s; accepted "
-                  f"proofs only make it slower", flush=True)
+    if args.dry_run:
+        for i, loc in enumerate(targets):
+            res = resolve_target(loc)
+            if res is None:
+                print(f"[{i+1}/{len(targets)}] {loc}: no sorry left, skip")
+                continue
+            path, decl, line = res
+            print(f"[{i+1}/{len(targets)}] {loc} → `{decl}` (line {line})")
+        return
 
-    accepted = 0
-    for i, loc in enumerate(targets):
-        res = resolve_target(loc)
-        if res is None:
-            print(f"[{i+1}/{len(targets)}] {loc}: no sorry left, skip")
-            continue
-        path, decl, line = res
-        prompt = PROMPT.format(decl=decl, path=path, line=line,
-                               module=path_to_module(path))
-        print(f"[{i+1}/{len(targets)}] {loc} → `{decl}` (line {line})")
-        if args.dry_run:
-            continue
+    # ── baseline on the main checkout ──
+    mod, _ = changed_files(REPO)
+    if mod:
+        sys.exit(f"working tree not clean (tracked changes: {mod}); "
+                 f"commit or restore first")
+    print("baseline build …", flush=True)
+    rc, before_counts, baseline_s = build_sorry_counts(REPO, args.build_timeout)
+    if rc == "timeout":
+        sys.exit(f"baseline lake build exceeded --build-timeout "
+                 f"{args.build_timeout}s; raise it explicitly")
+    if rc != 0:
+        sys.exit("baseline lake build failed — fix before running driver")
+    print(f"baseline: {sum(before_counts.values())} sorry decls "
+          f"in {len(before_counts)} files, {baseline_s}s build")
+    target_mods = sorted({path_to_module(resolve_target(t)[0])
+                          for t in targets if resolve_target(t)})
+    print(f"G1 baseline: fingerprinting {len(target_mods)} module(s) …",
+          flush=True)
+    try:
+        g1_base, g1_s = stmt_fingerprints(target_mods, REPO)
+    except (RuntimeError, subprocess.TimeoutExpired) as e:
+        sys.exit(f"G1 baseline failed: {str(e)[-2000:]}")
+    print(f"G1 baseline: {sum(len(v) for v in g1_base.values())} "
+          f"declarations, {g1_s}s", flush=True)
+    if baseline_s > args.build_timeout / 3:
+        print(f"[driver] WARNING: baseline build {baseline_s}s is over a "
+              f"third of --build-timeout {args.build_timeout}s; accepted "
+              f"proofs only make it slower", flush=True)
 
-        tid = re.sub(r"[^A-Za-z0-9_.]+", "_", loc)
-        prov = record_provenance(prompt)
-        outcome, detail, rounds, session_ids = run_rounds(
-            prompt, tid, path, before_counts, args, env, settings_path,
-            g1_base)
+    # ── slots: sealed workspace + config dir + sandbox per job ──
+    run_dir = args.run_dir or os.path.join(
+        LEDGER_DIR, "runs", now_iso().replace(":", "").replace("+0000", "Z"))
+    slots = []
+    for i in range(args.jobs):
+        work = make_slot(run_dir, i)
+        slot = {"i": i, "work": work, "env": env, "prefix": None,
+                "isolation": dict(isolation,
+                                  work=os.path.relpath(work, REPO))}
+        if not args.no_isolation:
+            cfg, seeded = agentproc.make_config_dir(
+                os.path.join(run_dir, f"slot{i}"))
+            if not seeded and not any(
+                    k in env for k in ("ANTHROPIC_API_KEY",
+                                       "ANTHROPIC_AUTH_TOKEN")):
+                sys.exit("no credentials: neither ~/.claude/.credentials.json "
+                         "nor ANTHROPIC_API_KEY — the isolated agent cannot "
+                         "authenticate")
+            slot["env"] = agentproc.isolated_env(env, cfg)
+            slot["isolation"].update({
+                "config_dir": os.path.relpath(cfg, REPO),
+                "credentials_seeded": seeded})
+            if args.sandbox == "bwrap":
+                try:
+                    prefix = agentproc.bwrap_prefix(work, cfg)
+                except RuntimeError as e:
+                    sys.exit(f"--sandbox bwrap: {e} "
+                             f"(use --sandbox none for debug)")
+                checks = agentproc.sandbox_selftest(prefix, work, cfg)
+                failed = [k for k, ok in checks.items() if not ok]
+                slot["isolation"].update({
+                    "sandbox_hidden": list(agentproc.SANDBOX_HIDDEN),
+                    "sandbox_selftest": checks})
+                if failed:
+                    sys.exit(f"slot {i}: sandbox self-test FAILED: {failed}")
+                slot["prefix"] = prefix
+        slots.append(slot)
+        print(f"[driver] slot {i}: {os.path.relpath(work, REPO)}"
+              + (f" sandbox ok ({len(slot['isolation']['sandbox_selftest'])} "
+                 f"checks)" if slot["prefix"] else ""), flush=True)
 
-        if outcome == "accepted":
-            before_counts = detail.pop("counts_after")
-            g1_base[path_to_module(path)] = detail.pop("g1_after")
-            accepted += 1
+    # ── work queue: file groups, inventory order ──
+    groups, by_path = [], {}
+    for loc in targets:
+        path = loc.split(":")[0]
+        if path not in by_path:
+            by_path[path] = []
+            groups.append(by_path[path])
+        by_path[path].append(loc)
+    queue = list(groups)
+    lock = threading.Lock()          # queue, ledger, merge-back, counters
+    state = {"accepted": 0, "done": 0, "n": len(targets)}
+    common = {"before_counts": before_counts, "g1_base": g1_base,
+              "baseline_s": baseline_s, "run_id": run_id, "limits": limits,
+              "environment": environment, "settings_path": settings_path}
+
+    def worker(slot):
+        my_counts = dict(before_counts)
+        my_g1 = copy.deepcopy(g1_base)
+        while agentproc.RECEIVED_SIGNAL is None:
+            with lock:
+                if not queue:
+                    return
+                group = queue.pop(0)
+            for loc in group:
+                if agentproc.RECEIVED_SIGNAL is not None:
+                    return
+                process_target(slot, loc, my_counts, my_g1, args, common,
+                               lock, state)
+
+    threads = [threading.Thread(target=worker, args=(sl,), daemon=True,
+                                name=f"slot{sl['i']}") for sl in slots]
+    for t in threads:
+        t.start()
+    for t in threads:
+        while t.is_alive():
+            t.join(timeout=1.0)
+
+    if agentproc.RECEIVED_SIGNAL is not None:
+        print("[driver] interrupted — rollback + ledger persisted; exiting")
+        sys.exit(128 + agentproc.RECEIVED_SIGNAL)
+    print(f"\ndone: {state['accepted']}/{state['n']} accepted; "
+          f"ledger at ledger/rounds.jsonl")
+
+
+def process_target(slot, loc, my_counts, my_g1, args, common, lock, state):
+    """One target in one slot: resolve → rounds → accept (slot commit +
+    merge-back to the main checkout) or rollback → ledger record."""
+    work, i = slot["work"], slot["i"]
+
+    def log(msg):
+        print(f"[s{i}] {msg}", flush=True)
+
+    with lock:
+        state["done"] += 1
+        k = state["done"]
+    res = resolve_target(loc, work)
+    if res is None:
+        log(f"[{k}/{state['n']}] {loc}: no sorry left, skip")
+        return
+    path, decl, line = res
+    prompt = PROMPT.format(decl=decl, path=path, line=line,
+                           module=path_to_module(path))
+    log(f"[{k}/{state['n']}] {loc} → `{decl}` (line {line})")
+    tid = re.sub(r"[^A-Za-z0-9_.]+", "_", loc)
+    prov = record_provenance(prompt)
+    outcome, detail, rounds, session_ids = run_rounds(
+        prompt, tid, path, my_counts, args, slot["env"],
+        common["settings_path"], my_g1, work, slot["prefix"], log)
+
+    if outcome == "accepted":
+        my_counts.clear()
+        my_counts.update(detail.pop("counts_after"))
+        my_g1[path_to_module(path)] = detail.pop("g1_after")
+        msg = (f"phase1: fill {decl} ({loc})\n\n"
+               f"Co-Authored-By: Claude Fable 5 <noreply@anthropic.com>")
+        slot_commit(work, path, msg)
+        with lock:  # merge-back: this slot owns every target in `path`
+            shutil.copyfile(os.path.join(work, path), os.path.join(REPO, path))
             if args.commit:
                 sh(["git", "add", path])
-                sh(["git", "commit", "-m",
-                    f"phase1: fill {decl} ({loc})\n\n"
-                    f"Co-Authored-By: Claude Fable 5 <noreply@anthropic.com>"])
-        else:
-            mod, new = changed_files()
-            rollback(mod, new)
+                sh(["git", "commit", "-q", "-m", msg])
+            state["accepted"] += 1
+    else:
+        mod, new = changed_files(work)
+        rollback(mod, new, work)
 
-        out_tokens = sum((r.get("usage_totals") or {}).get("output_tokens")
-                         or 0 for r in rounds)
-        record = {
-            "ts": now_iso(), "run_id": run_id,
-            "target": loc, "decl": decl, "path": path,
-            "outcome": outcome, "detail": detail,
-            "session_ids": session_ids,
-            "isolation": isolation,
-            "limits": limits,
-            "environment": environment,
-            "provenance": prov,
-            "models_used": sorted({m for r in rounds
-                                   for m in r.get("models_used") or []}),
-            "rounds_run": len(rounds), "max_rounds": args.rounds,
-            "wall_seconds": round(sum(r["wall_seconds"] for r in rounds), 1),
-            "output_tokens_total": out_tokens,
-            "model": args.model,
-            "baseline_build_seconds": baseline_s,
-            "rounds": rounds,
-        }
-        with open(os.path.join(LEDGER_DIR, "rounds.jsonl"), "a") as fh:
-            fh.write(json.dumps(record, ensure_ascii=False) + "\n")
-        print(f"    {outcome} | rounds={len(rounds)} "
-              f"sessions={len(session_ids)}"
-              + (f" out={out_tokens}" if out_tokens else ""))
-
-        if agentproc.RECEIVED_SIGNAL is not None:
-            print("[driver] interrupted — rollback + ledger persisted; "
-                  "exiting")
-            sys.exit(128 + agentproc.RECEIVED_SIGNAL)
-
-    if not args.dry_run:
-        print(f"\ndone: {accepted}/{len(targets)} accepted; "
-              f"ledger at ledger/rounds.jsonl")
+    out_tokens = sum((r.get("usage_totals") or {}).get("output_tokens")
+                     or 0 for r in rounds)
+    record = {
+        "ts": now_iso(), "run_id": common["run_id"],
+        "target": loc, "decl": decl, "path": path,
+        "outcome": outcome, "detail": detail,
+        "session_ids": session_ids,
+        "slot": i,
+        "isolation": slot["isolation"],
+        "limits": common["limits"],
+        "environment": common["environment"],
+        "provenance": prov,
+        "models_used": sorted({m for r in rounds
+                               for m in r.get("models_used") or []}),
+        "rounds_run": len(rounds), "max_rounds": args.rounds,
+        "wall_seconds": round(sum(r["wall_seconds"] for r in rounds), 1),
+        "output_tokens_total": out_tokens,
+        "model": args.model,
+        "baseline_build_seconds": common["baseline_s"],
+        "rounds": rounds,
+    }
+    with lock, open(os.path.join(LEDGER_DIR, "rounds.jsonl"), "a") as fh:
+        fh.write(json.dumps(record, ensure_ascii=False) + "\n")
+    log(f"    {outcome} | rounds={len(rounds)} sessions={len(session_ids)}"
+        + (f" out={out_tokens}" if out_tokens else ""))
 
 
 if __name__ == "__main__":

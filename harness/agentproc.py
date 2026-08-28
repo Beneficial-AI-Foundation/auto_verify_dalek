@@ -171,6 +171,98 @@ def isolated_env(base_env, config_dir):
     return env
 
 
+# ── filesystem sandbox (bubblewrap) ──────────────────────────────────────
+# DEC-08 minimum: no host checkout history, no sibling repositories, no
+# credentials, no shared writable caches. The config-dir isolation above only
+# hides Claude Code's own state; the agent's Bash/Read tools still saw the
+# whole host filesystem. bwrap gives the agent a private mount namespace:
+#   * /usr, /etc read-only; /proc, /dev, /tmp fresh
+#   * $HOME is an empty tmpfs — sibling checkouts, ~/.cache/mathlib,
+#     ~/.gitconfig, ~/.ssh, ~/.claude … do not exist
+#   * read-only: ~/.elan (toolchains) and the claude binary
+#   * read-write: the repo at its real path (so lake paths resolve), with
+#     `.git`, `ledger/`, `harness/` replaced by empty tmpfs — no history,
+#     no other targets' transcripts, no gate code / frozen statements
+#   * the run's CLAUDE_CONFIG_DIR (under ledger/) bound back in read-write
+# Not covered: network. Loopback + host network are shared (--share-net) so
+# the API / wire proxy are reachable; the settings deny-list remains the
+# only network control. Still no broker (DEC-08 stays OPEN on that point).
+SANDBOX_HIDDEN = (".git", "ledger", "harness")
+
+
+def _claude_binary_paths():
+    exe = shutil.which("claude")
+    if not exe:
+        raise RuntimeError("claude not on PATH")
+    real = os.path.realpath(exe)
+    paths = {exe, real}
+    # bun/node single-file builds sometimes sit in a versions dir that is
+    # consulted at start-up; expose the whole dir read-only.
+    paths.add(os.path.dirname(real))
+    return sorted(paths)
+
+
+def bwrap_prefix(repo, config_dir, hidden=SANDBOX_HIDDEN, extra_ro=()):
+    """argv prefix that runs the rest of the command inside bwrap."""
+    if not shutil.which("bwrap"):
+        raise RuntimeError("bwrap (bubblewrap) not installed")
+    home = os.path.expanduser("~")
+    repo = os.path.abspath(repo)
+    config_dir = os.path.abspath(config_dir)
+    argv = ["bwrap", "--unshare-all", "--share-net", "--die-with-parent",
+            "--ro-bind", "/usr", "/usr", "--ro-bind", "/etc", "/etc",
+            "--symlink", "usr/lib", "/lib", "--symlink", "usr/lib64", "/lib64",
+            "--symlink", "usr/bin", "/bin", "--symlink", "usr/sbin", "/sbin",
+            "--proc", "/proc", "--dev", "/dev", "--tmpfs", "/tmp",
+            "--tmpfs", home,
+            "--ro-bind", os.path.join(home, ".elan"), os.path.join(home, ".elan")]
+    for p in list(_claude_binary_paths()) + list(extra_ro):
+        argv += ["--ro-bind", p, p]
+    argv += ["--bind", repo, repo]
+    for h in hidden:
+        full = os.path.join(repo, h)
+        if os.path.exists(full):
+            argv += ["--tmpfs", full]
+    # config dir lives under ledger/ (hidden) — bind it back in, writable
+    argv += ["--bind", config_dir, config_dir]
+    argv += ["--setenv", "HOME", home, "--chdir", repo, "--"]
+    return argv
+
+
+def sandbox_selftest(prefix, repo, config_dir):
+    """Run probes inside the sandbox and return {check: bool}. Every check
+    must be True before a scored run; the dict is recorded in the ledger."""
+    home = os.path.expanduser("~")
+    allowed_home = {os.path.relpath(repo, home).split(os.sep)[0], ".elan"}
+    for p in _claude_binary_paths():
+        if p.startswith(home + os.sep):
+            allowed_home.add(os.path.relpath(p, home).split(os.sep)[0])
+    probes = {
+        "no_git_history": f"! git -C {repo} rev-parse HEAD >/dev/null 2>&1",
+        "no_ledger_transcripts": f"[ \"$(ls -A {repo}/ledger | wc -l)\" = 1 ]",
+        "no_harness": f"[ -z \"$(ls -A {repo}/harness)\" ]",
+        "no_ssh_or_gitconfig":
+            f"[ ! -e {home}/.ssh ] && [ ! -e {home}/.gitconfig ]",
+        "no_mathlib_cache": f"[ ! -e {home}/.cache ]",
+        "config_dir_writable": f"touch {config_dir}/.rw && rm {config_dir}/.rw",
+        "repo_writable": f"touch {repo}/.rw && rm {repo}/.rw",
+        "lake_runs": "lake --version >/dev/null",
+        "claude_runs": "claude --version >/dev/null",
+    }
+    out = {}
+    # $HOME holds only the repo, ~/.elan and the claude install dir
+    r = subprocess.run(prefix + ["ls", "-A", home], capture_output=True,
+                       text=True, timeout=120)
+    out["home_only_allowed"] = (r.returncode == 0 and
+                                set(r.stdout.split()) == allowed_home)
+    for name, sh in probes.items():
+        r = subprocess.run(prefix + ["bash", "-c", sh],
+                           stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                           timeout=120)
+        out[name] = (r.returncode == 0)
+    return out
+
+
 def sha256_file(path):
     with open(path, "rb") as fh:
         return hashlib.sha256(fh.read()).hexdigest()
@@ -208,7 +300,7 @@ def _bounded_wait(wall_deadline):
 def run_round(prompt, transcript_path, *, cwd, session_id, resume,
               model="", max_turns=30, allowed_tools="",
               deadline_seconds=None, continue_message=None, env=None,
-              settings_path=None):
+              settings_path=None, sandbox_prefix=None):
     """Run one claude round; stream-json goes verbatim to transcript_path.
 
     Returns (status, returncode, wall_seconds, result_event, provenance)
@@ -219,6 +311,8 @@ def run_round(prompt, transcript_path, *, cwd, session_id, resume,
     global _LIVE_PROC
     cmd = build_command(prompt, session_id, resume, model, max_turns,
                         allowed_tools, continue_message, settings_path)
+    if sandbox_prefix:
+        cmd = list(sandbox_prefix) + cmd
     t0 = time.time()
     killed_deadline = False
     with open(transcript_path, "w") as fh:

@@ -97,6 +97,17 @@ microVM or remote worker?
 history, credentials, shared writable caches, or general network access. Model
 calls go through a restricted broker. Verification runs elsewhere.
 
+**Implemented so far (2026-08-28, `harness/agentproc.py` `bwrap_prefix` /
+`sandbox_selftest`, driver `--sandbox bwrap` default):** the agent runs in a
+bubblewrap mount namespace — empty `$HOME` (only `~/.elan` and the `claude`
+binary, read-only), repo bound at its real path with `.git`, `ledger/`,
+`harness/` replaced by empty tmpfs, fresh `/tmp`, `/proc`, `/dev`. A 10-probe
+self-test runs before the first target and its result is in every record
+under `isolation.sandbox_selftest`. This closes "host checkout, sibling
+repositories, old Git history, shared writable caches". Still open: network
+is shared (`--share-net`; deny-list only), no model broker (the agent holds
+the OAuth credential copy), verification runs on the same host.
+
 ### DEC-09 — What can we say about cheating?
 
 **Status:** PROPOSED

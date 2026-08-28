@@ -386,7 +386,8 @@ def run_rounds(prompt, tid, path, before_counts, args, env, settings_path,
             allowed_tools=ALLOWED_TOOLS,
             deadline_seconds=args.timeout,
             continue_message=continue_message, env=env,
-            settings_path=settings_path)
+            settings_path=settings_path,
+            sandbox_prefix=getattr(args, "sandbox_prefix", None))
         was_fresh, fresh = fresh, False
         result = result or {}
 
@@ -617,6 +618,11 @@ def main():
     ap.add_argument("--run-dir", default="",
                     help="per-run evidence dir holding the isolated "
                          "CLAUDE_CONFIG_DIR (default ledger/runs/<utc-ts>)")
+    ap.add_argument("--sandbox", choices=("bwrap", "none"), default="bwrap",
+                    help="filesystem sandbox for the agent process (DEC-08): "
+                         "bwrap = private mount namespace, empty $HOME, repo "
+                         "without .git/ledger/harness; none = host filesystem "
+                         "(debug only, marked in the ledger)")
     ap.add_argument("--no-isolation", action="store_true",
                     help="DEBUG ONLY: reuse the operator's ~/.claude "
                          "(memory, plugins, MCP, local settings leak in); "
@@ -653,8 +659,10 @@ def main():
                  "settings_sha256": agentproc.sha256_file(settings_path),
                  "setting_sources": "user", "strict_mcp_config": True}
     if args.no_isolation:
+        isolation["sandbox"] = "none"
         print("[driver] WARNING: --no-isolation — agent shares ~/.claude "
-              "with interactive sessions", flush=True)
+              "with interactive sessions and sees the host filesystem",
+              flush=True)
     elif not args.dry_run:
         run_dir = args.run_dir or os.path.join(
             LEDGER_DIR, "runs",
@@ -669,6 +677,26 @@ def main():
         isolation.update({"config_dir": os.path.relpath(cfg, REPO),
                           "credentials_seeded": seeded})
         print(f"[driver] isolated CLAUDE_CONFIG_DIR={cfg}", flush=True)
+        if args.sandbox == "bwrap":
+            try:
+                prefix = agentproc.bwrap_prefix(REPO, cfg)
+            except RuntimeError as e:
+                sys.exit(f"--sandbox bwrap: {e} (use --sandbox none for debug)")
+            print("[driver] sandbox self-test …", flush=True)
+            checks = agentproc.sandbox_selftest(prefix, REPO, cfg)
+            failed = [k for k, ok in checks.items() if not ok]
+            isolation.update({"sandbox": "bwrap",
+                              "sandbox_hidden": list(agentproc.SANDBOX_HIDDEN),
+                              "sandbox_selftest": checks})
+            if failed:
+                sys.exit(f"sandbox self-test FAILED: {failed}")
+            args.sandbox_prefix = prefix
+            print(f"[driver] sandbox ok ({len(checks)} checks)", flush=True)
+        else:
+            isolation["sandbox"] = "none"
+            print("[driver] WARNING: --sandbox none — agent sees the host "
+                  "filesystem (.git history, sibling repos, caches)",
+                  flush=True)
     if args.wire_log and not args.dry_run:
         agentproc.start_wire_proxy(os.path.join(LEDGER_DIR, "wire"), env)
     inv = json.load(open(INVENTORY))

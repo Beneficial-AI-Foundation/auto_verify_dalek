@@ -76,13 +76,17 @@ in every ledger record under `isolation`.
 | Network: web tools, `curl`/`wget`, `git fetch/pull/clone`, `lake update`, `lake env`, package installs | `--settings .claude/settings-offline.json` deny-list, on top of the `--allowedTools` allowlist (`Read,Grep,Glob,Edit,Write,Bash(lake build*),Bash(grep*)`) | `isolation.settings`, `isolation.settings_sha256` |
 | MCP servers from any config | `--strict-mcp-config` with no `--mcp-config` ⇒ zero servers (`system.init.mcp_servers == []` in the transcript) | `isolation.strict_mcp_config` |
 | Model drift | The fresh config dir carries no `model` setting; the driver records the models actually billed per round | `rounds[].models_used`, `rounds[].cost_usd` |
+| Host filesystem: this repo's `.git` history, sibling checkouts under `~`, `~/.cache/mathlib`, `~/.ssh`, `~/.gitconfig`, other targets' transcripts in `ledger/`, gate code and frozen statements in `harness/` | `--sandbox bwrap` (default): the agent process runs in a bubblewrap mount namespace — `/usr`, `/etc` read-only; fresh `/proc`, `/dev`, `/tmp`; `$HOME` is an empty tmpfs with only `~/.elan` and the `claude` binary bound read-only; the repo is bound read-write at its real path with `.git`, `ledger/`, `harness/` replaced by empty tmpfs; the run's `CLAUDE_CONFIG_DIR` is bound back in. Before the first target the driver runs 10 probes inside the sandbox (no `git rev-parse`, `$HOME` contents exactly the allowed set, `ledger/` holds only the config dir, `harness/` empty, `lake`/`claude` run, repo and config dir writable) and aborts if any fails | `isolation.sandbox`, `isolation.sandbox_hidden`, `isolation.sandbox_selftest` |
 
 `--no-isolation` disables the fresh config dir for debugging and marks the
-record `isolated: false`; such records are not scorable.
+record `isolated: false`; `--sandbox none` keeps the config dir but drops the
+mount namespace and marks `sandbox: "none"`. Neither kind of record is
+scorable.
 
-Not covered here (needs the container described below): host filesystem
-(sibling clones, `~/.lake` caches, this repo's own `.git` history), DNS/egress
-beyond what the permission deny-list catches, and the reusable OAuth
+Not covered here (needs the container described below): network. bwrap runs
+with `--share-net`, so the agent has the host's network (loopback is needed
+for the wire proxy, egress for the API); DNS/egress control is still only the
+permission deny-list. Also not covered: the reusable OAuth
 credential handed to the agent.
 
 ## Final verification

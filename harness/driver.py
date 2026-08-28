@@ -301,6 +301,73 @@ def _history_block(rounds):
             + "\n  ".join(lines))
 
 
+# ── seal (DEC-12): hash the main checkout at run start ──────────────────
+# `git_head` covers tracked content only when the tree is clean; the gate's
+# own inputs (harness/frozen/*, limits JSON, settings) may be untracked and
+# HEAD says nothing about them. So every non-ignored file is hashed once at
+# run start and re-hashed before each target and at the end. Two digests:
+#   input_tree_sha256  over INPUT_PREFIXES — what the agent or a gate reads.
+#                      An unexplained change here breaks the seal: the record
+#                      is marked seal.input_ok=false (the run is not aborted;
+#                      classification of invalidation is DEC "what event
+#                      invalidates a run", still open).
+#   tree_sha256        over everything non-ignored. A change outside the input
+#                      set is recorded as drift, not a violation (README edits).
+# Accepted merge-backs legitimately change target files in the main checkout;
+# the expected manifest is updated with the post-accept hash so they do not
+# count as violations.
+INPUT_PREFIXES = ("Curve25519Dalek/", "Curve25519Dalek.lean", "Utils/",
+                  "Utils.lean", "lakefile.toml", "lake-manifest.json",
+                  "lean-toolchain", "harness/", ".verilib/sorry_inventory.json",
+                  ".claude/settings-offline.json", "curve25519-dalek/")
+SEAL_EXCLUDE = ("ledger/",)
+
+
+def is_input(path):
+    return path.startswith(INPUT_PREFIXES)
+
+
+def tree_manifest():
+    """{path: sha256} for every tracked or untracked-not-ignored file."""
+    out = sh(["git", "ls-files", "--cached", "--others", "--exclude-standard",
+              "-z"]).stdout
+    man = {}
+    for f in out.split("\0"):
+        if not f or f.startswith(SEAL_EXCLUDE):
+            continue
+        full = os.path.join(REPO, f)
+        if os.path.isfile(full) and not os.path.islink(full):
+            man[f] = agentproc.sha256_file(full)
+    return man
+
+
+def _digest(man, pred=lambda p: True):
+    h = hashlib.sha256()
+    for f in sorted(man):
+        if pred(f):
+            h.update(f"{f}\0{man[f]}\n".encode())
+    return h.hexdigest()
+
+
+def seal_digests(man):
+    return {"input_tree_sha256": _digest(man, is_input),
+            "tree_sha256": _digest(man),
+            "files": len(man), "input_files": sum(map(is_input, man))}
+
+
+def seal_check(expected):
+    """Re-hash the main checkout and diff against `expected` (path→sha).
+    Returns {input_ok, violations, drift} where violations are input-set
+    paths that changed/appeared/vanished and drift the same outside it."""
+    now = tree_manifest()
+    changed = sorted(set(expected) ^ set(now)
+                     | {f for f in expected if f in now and expected[f] != now[f]})
+    viol = [f for f in changed if is_input(f)]
+    drift = [f for f in changed if not is_input(f)]
+    return {"input_ok": not viol, "violations": viol, "drift": drift,
+            **seal_digests(now)}
+
+
 # ── provenance (DEC-17) ──────────────────────────────────────────────────
 def _cmd_out(cmd, cwd=REPO):
     try:
@@ -744,6 +811,19 @@ def main():
     if mod:
         sys.exit(f"working tree not clean (tracked changes: {mod}); "
                  f"commit or restore first")
+    run_dir = args.run_dir or os.path.join(
+        LEDGER_DIR, "runs", now_iso().replace(":", "").replace("+0000", "Z"))
+    os.makedirs(run_dir, exist_ok=True)
+    expected_manifest = tree_manifest()
+    seal = seal_digests(expected_manifest)
+    seal["manifest"] = os.path.relpath(
+        os.path.join(run_dir, "tree_manifest.json"), REPO)
+    with open(os.path.join(run_dir, "tree_manifest.json"), "w") as fh:
+        json.dump(expected_manifest, fh, indent=0, sort_keys=True)
+    environment["seal"] = seal
+    print(f"seal: {seal['input_files']} input files "
+          f"{seal['input_tree_sha256'][:12]}…, {seal['files']} files total "
+          f"{seal['tree_sha256'][:12]}…", flush=True)
     print("baseline build …", flush=True)
     rc, before_counts, baseline_s = build_sorry_counts(REPO, args.build_timeout)
     if rc == "timeout":
@@ -769,8 +849,6 @@ def main():
               f"proofs only make it slower", flush=True)
 
     # ── slots: sealed workspace + config dir + sandbox per job ──
-    run_dir = args.run_dir or os.path.join(
-        LEDGER_DIR, "runs", now_iso().replace(":", "").replace("+0000", "Z"))
     slots = []
     for i in range(args.jobs):
         work = make_slot(run_dir, i)
@@ -822,7 +900,8 @@ def main():
     queue = list(groups)
     lock = threading.Lock()          # queue, ledger, merge-back, counters
     state = {"accepted": 0, "done": 0, "n": len(targets)}
-    common = {"before_counts": before_counts, "g1_base": g1_base,
+    common = {"expected_manifest": expected_manifest,
+              "before_counts": before_counts, "g1_base": g1_base,
               "baseline_s": baseline_s, "run_id": run_id, "limits": limits,
               "environment": environment, "settings_path": settings_path}
 
@@ -848,6 +927,16 @@ def main():
         while t.is_alive():
             t.join(timeout=1.0)
 
+    final = seal_check(expected_manifest)
+    if not final["input_ok"]:
+        print(f"[driver] SEAL BROKEN at end of run: input files changed "
+              f"outside accepted merge-backs: {final['violations']}", flush=True)
+    elif final["drift"]:
+        print(f"[driver] seal ok; drift outside the input set: "
+              f"{final['drift']}", flush=True)
+    else:
+        print("[driver] seal ok: tree identical to run start "
+              "(plus accepted merge-backs)", flush=True)
     if agentproc.RECEIVED_SIGNAL is not None:
         print("[driver] interrupted — rollback + ledger persisted; exiting")
         sys.exit(128 + agentproc.RECEIVED_SIGNAL)
@@ -876,6 +965,11 @@ def process_target(slot, loc, my_counts, my_g1, args, common, lock, state):
     log(f"[{k}/{state['n']}] {loc} → `{decl}` (line {line})")
     tid = re.sub(r"[^A-Za-z0-9_.]+", "_", loc)
     prov = record_provenance(prompt)
+    with lock:
+        prov["seal"] = seal_check(common["expected_manifest"])
+    if not prov["seal"]["input_ok"]:
+        log(f"    SEAL BROKEN before this target: input files changed: "
+            f"{prov['seal']['violations']}")
     outcome, detail, rounds, session_ids = run_rounds(
         prompt, tid, path, my_counts, args, slot["env"],
         common["settings_path"], my_g1, work, slot["prefix"], log)
@@ -889,6 +983,8 @@ def process_target(slot, loc, my_counts, my_g1, args, common, lock, state):
         slot_commit(work, path, msg)
         with lock:  # merge-back: this slot owns every target in `path`
             shutil.copyfile(os.path.join(work, path), os.path.join(REPO, path))
+            common["expected_manifest"][path] = agentproc.sha256_file(
+                os.path.join(REPO, path))
             if args.commit:
                 sh(["git", "add", path])
                 sh(["git", "commit", "-q", "-m", msg])

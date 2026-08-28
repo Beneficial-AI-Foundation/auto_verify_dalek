@@ -657,7 +657,10 @@ def main():
     isolation = {"isolated": not args.no_isolation,
                  "settings": os.path.relpath(settings_path, REPO),
                  "settings_sha256": agentproc.sha256_file(settings_path),
-                 "setting_sources": "user", "strict_mcp_config": True}
+                 "setting_sources": "user", "strict_mcp_config": True,
+                 "tools": agentproc.tool_names(ALLOWED_TOOLS),
+                 "allowed_tools": ALLOWED_TOOLS,
+                 "disable_slash_commands": True}
     if args.no_isolation:
         isolation["sandbox"] = "none"
         print("[driver] WARNING: --no-isolation — agent shares ~/.claude "

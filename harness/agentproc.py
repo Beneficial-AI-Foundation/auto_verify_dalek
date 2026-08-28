@@ -269,14 +269,36 @@ def sha256_file(path):
 
 
 # ── command construction ─────────────────────────────────────────────────
+def tool_names(allowed_tools):
+    """Base tool names from an --allowedTools spec: "Bash(lake build*)" → Bash.
+    Used for --tools, which filters tool *availability* (the subagent tool
+    Agent/Task, WebFetch, Skill, … simply do not exist), whereas
+    --allowedTools is only the permission allowlist: a tool absent from it
+    can still be invoked when the permission system auto-approves it, which
+    is how the Agent tool ran in the 2026-08-28 smoke run."""
+    names = []
+    for spec in allowed_tools.split(","):
+        base = spec.strip().split("(", 1)[0]
+        if base and base not in names:
+            names.append(base)
+    return ",".join(names)
+
+
 def build_command(prompt, session_id, resume, model, max_turns,
                   allowed_tools, continue_message=None, settings_path=None):
     """One noninteractive claude invocation. Round 1 pins the session UUID
     with --session-id; later rounds resume exactly that UUID. Tool flags are
-    per-invocation, so they are repeated on every round."""
+    per-invocation, so they are repeated on every round.
+
+    --tools restricts the built-in toolset to the base names in
+    allowed_tools (no Agent/Task subagents, no WebFetch/WebSearch, no
+    Skill); --disable-slash-commands drops every skill; --allowedTools then
+    auto-approves exactly the listed patterns within that set."""
     flags = ["--output-format", "stream-json", "--verbose",
              "--max-turns", str(max_turns),
+             "--tools", tool_names(allowed_tools),
              "--allowedTools", allowed_tools,
+             "--disable-slash-commands",
              "--setting-sources", "user",
              "--strict-mcp-config"]
     if settings_path:

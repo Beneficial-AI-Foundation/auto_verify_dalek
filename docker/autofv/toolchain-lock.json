@@ -316,10 +316,47 @@
     "verify_at": ["before_execution", "after_execution"],
     "image_rebuild_on_source_only_change": false
   },
-  "native_decide": {
-    "state": "decision_required",
-    "runnable": false,
-    "checkpoint": "01-01-02",
-    "options": ["forbid_all", "baseline_only", "allow_audited"]
-  }
+  "native_decide_policy": {
+    "schema": "autofv-native-decide-policy/v1",
+    "state": "selected",
+    "runnable": true,
+    "selection": "allow_audited",
+    "operator_rationale": "For the vertical slice we need the most permissive option; later policy may either cap native_decide uses at a measured baseline count or allow it only for explicitly named specs A/B/C while forbidding it elsewhere.",
+    "criterion": {
+      "kind": "audited_use_inventory",
+      "allowed_origins": ["baseline", "agent_introduced"],
+      "scope": {"kind": "all"},
+      "required_compiler_assumptions": [
+        "Lean.ofReduceBool",
+        "Lean.trustCompiler"
+      ]
+    },
+    "inventory_rules": {
+      "native_decide_use_fields": [
+        "spec",
+        "declaration",
+        "source_path",
+        "source_sha256",
+        "expression_sha256",
+        "origin"
+      ],
+      "compiler_assumption_fields": [
+        "assumption",
+        "evidence",
+        "evidence_sha256"
+      ],
+      "ordering": "canonical_tuple_ascending",
+      "duplicates": "forbidden",
+      "completeness": "all discovered native_decide uses and supporting compiler assumptions"
+    },
+    "violation_reason": "native_decide_policy_violation",
+    "claim_consequence": "Claims are downgraded to Lean functional correctness under the exhaustively recorded native_decide compiler assumptions.",
+    "downstream_fields": [
+      "native_decide_policy",
+      "native_decide_policy_sha256",
+      "native_decide_uses",
+      "compiler_assumptions"
+    ]
+  },
+  "native_decide_policy_sha256": "bae965de1366b29fa30d89057a218d6030065d43bcf14f4f664a2e63bded7ff9"
 }

@@ -37,6 +37,7 @@ except ModuleNotFoundError as exc:
 TOOLCHAIN_LOCK = Path(__file__).resolve().parents[1] / "docker/autofv/toolchain-lock.json"
 HEX_SHA256 = re.compile(r"[0-9a-f]{64}")
 DECIMAL_USD = re.compile(r"(?:0|[1-9][0-9]*)\.[0-9]{6}")
+NATIVE_DECIDE_CRITERIA = {"allow_audited": "audited_use_inventory"}
 
 
 class ContractError(ValueError):
@@ -184,12 +185,174 @@ def load_toolchain_lock(path: str | Path = TOOLCHAIN_LOCK) -> dict[str, Any]:
 
 
 def validate_native_decide_policy(lock: dict[str, Any]) -> dict[str, Any]:
-    policy = lock.get("native_decide")
-    if not isinstance(policy, dict):
-        raise ContractError("native_decide policy is absent")
+    policy = _exact_dict(
+        lock.get("native_decide_policy"),
+        {
+            "schema",
+            "state",
+            "runnable",
+            "selection",
+            "operator_rationale",
+            "criterion",
+            "inventory_rules",
+            "violation_reason",
+            "claim_consequence",
+            "downstream_fields",
+        },
+        "native_decide policy",
+    )
+    policy_sha256 = _sha256(
+        lock.get("native_decide_policy_sha256"), "native_decide policy hash"
+    )
+    calculated = hashlib.sha256(canonical_json_bytes(policy)).hexdigest()
+    if not hmac.compare_digest(policy_sha256, calculated):
+        raise ContractError("native_decide policy hash mismatch")
+    if policy["schema"] != "autofv-native-decide-policy/v1":
+        raise ContractError("native_decide policy schema is unknown")
     if policy.get("state") != "selected" or policy.get("runnable") is not True:
         raise ContractError("native_decide policy decision is required before execution")
+    selection = policy["selection"]
+    expected_criterion = NATIVE_DECIDE_CRITERIA.get(selection)
+    if expected_criterion is None:
+        raise ContractError("native_decide policy selection is unknown")
+    _text(policy["operator_rationale"], "native_decide operator rationale")
+    if policy["violation_reason"] != "native_decide_policy_violation":
+        raise ContractError("native_decide violation reason is unknown")
+    _text(policy["claim_consequence"], "native_decide claim consequence")
+    if policy["downstream_fields"] != [
+        "native_decide_policy",
+        "native_decide_policy_sha256",
+        "native_decide_uses",
+        "compiler_assumptions",
+    ]:
+        raise ContractError("native_decide downstream fields mismatch")
+
+    criterion = _exact_dict(
+        policy["criterion"],
+        {"kind", "allowed_origins", "scope", "required_compiler_assumptions"},
+        "native_decide policy criterion",
+    )
+    if criterion["kind"] != expected_criterion:
+        raise ContractError("native_decide policy criterion does not match selection")
+    if criterion["allowed_origins"] != ["baseline", "agent_introduced"]:
+        raise ContractError("native_decide policy origins are invalid")
+    scope = _exact_dict(criterion["scope"], {"kind"}, "native_decide policy scope")
+    if scope["kind"] != "all":
+        raise ContractError("native_decide policy scope is unsupported")
+    if criterion["required_compiler_assumptions"] != [
+        "Lean.ofReduceBool",
+        "Lean.trustCompiler",
+    ]:
+        raise ContractError("native_decide compiler assumptions are invalid")
+
+    inventory_rules = _exact_dict(
+        policy["inventory_rules"],
+        {
+            "native_decide_use_fields",
+            "compiler_assumption_fields",
+            "ordering",
+            "duplicates",
+            "completeness",
+        },
+        "native_decide inventory rules",
+    )
+    if inventory_rules["native_decide_use_fields"] != [
+        "spec",
+        "declaration",
+        "source_path",
+        "source_sha256",
+        "expression_sha256",
+        "origin",
+    ]:
+        raise ContractError("native_decide use fields mismatch")
+    if inventory_rules["compiler_assumption_fields"] != [
+        "assumption",
+        "evidence",
+        "evidence_sha256",
+    ]:
+        raise ContractError("native_decide compiler evidence fields mismatch")
+    if (
+        inventory_rules["ordering"] != "canonical_tuple_ascending"
+        or inventory_rules["duplicates"] != "forbidden"
+        or inventory_rules["completeness"]
+        != "all discovered native_decide uses and supporting compiler assumptions"
+    ):
+        raise ContractError("native_decide inventory rules are invalid")
     return policy
+
+
+def evaluate_native_decide_policy(
+    lock: dict[str, Any],
+    *,
+    native_decide_uses: list[dict[str, Any]],
+    compiler_assumptions: list[dict[str, Any]],
+) -> dict[str, Any]:
+    """Validate exhaustive evidence through the single native_decide policy seam."""
+    policy = validate_native_decide_policy(lock)
+    criterion = policy["criterion"]
+    rules = policy["inventory_rules"]
+
+    if not isinstance(native_decide_uses, list):
+        raise ContractError("native_decide_uses must be an array")
+    use_keys = []
+    seen_uses = set()
+    for index, item in enumerate(native_decide_uses):
+        item = _exact_dict(
+            item,
+            set(rules["native_decide_use_fields"]),
+            f"native_decide_uses[{index}]",
+        )
+        for field in ("spec", "declaration", "source_path"):
+            _text(item[field], f"native_decide_uses[{index}].{field}")
+        _sha256(item["source_sha256"], f"native_decide_uses[{index}].source_sha256")
+        _sha256(
+            item["expression_sha256"],
+            f"native_decide_uses[{index}].expression_sha256",
+        )
+        if item["origin"] not in criterion["allowed_origins"]:
+            raise ContractError("native_decide use origin is not allowed by policy")
+        use_digest = hashlib.sha256(canonical_json_bytes(item)).hexdigest()
+        if use_digest in seen_uses:
+            raise ContractError("native_decide inventory contains a duplicate use")
+        seen_uses.add(use_digest)
+        use_keys.append(
+            (
+                item["spec"],
+                item["declaration"],
+                item["source_path"],
+                item["expression_sha256"],
+            )
+        )
+    if use_keys != sorted(use_keys):
+        raise ContractError("native_decide inventory is not canonically ordered")
+
+    if not isinstance(compiler_assumptions, list):
+        raise ContractError("compiler_assumptions must be an array")
+    assumption_names = []
+    for index, item in enumerate(compiler_assumptions):
+        item = _exact_dict(
+            item,
+            set(rules["compiler_assumption_fields"]),
+            f"compiler_assumptions[{index}]",
+        )
+        assumption_names.append(
+            _text(item["assumption"], f"compiler_assumptions[{index}].assumption")
+        )
+        _text(item["evidence"], f"compiler_assumptions[{index}].evidence")
+        _sha256(
+            item["evidence_sha256"],
+            f"compiler_assumptions[{index}].evidence_sha256",
+        )
+    if assumption_names != criterion["required_compiler_assumptions"]:
+        raise ContractError("compiler assumption evidence is not exhaustive")
+
+    return {
+        "native_decide_policy": policy["selection"],
+        "native_decide_policy_sha256": lock["native_decide_policy_sha256"],
+        "native_decide_uses": [dict(item) for item in native_decide_uses],
+        "compiler_assumptions": [dict(item) for item in compiler_assumptions],
+        "claim_consequence": policy["claim_consequence"],
+    }
 
 
 def validate_proxy_receipt(
@@ -322,13 +485,15 @@ def run_experiment(
     """Validate the sole experiment intake before any worker or agent action."""
     target_path, manifest = validate_target(target)
     config_path, config = validate_run_config(run_config)
-    policy = validate_native_decide_policy(load_toolchain_lock())
+    lock = load_toolchain_lock()
+    policy = validate_native_decide_policy(lock)
     return {
         "target": str(target_path),
         "run_config": str(config_path),
         "manifest": manifest,
         "config": config,
-        "native_decide": policy,
+        "native_decide_policy": policy["selection"],
+        "native_decide_policy_sha256": lock["native_decide_policy_sha256"],
     }
 
 

@@ -232,13 +232,27 @@ question "what event invalidates a run".
 
 ### DEC-13 — Which models and how many repeats?
 
-**Status:** OPEN
+**Status:** PARTIAL (2026-08-31, Zhang-Liao)
 
 **Question:** Which providers/models do we test, with what limits, and how many
 runs make a comparison credible?
 
-**Suggested start:** Validate the harness with one pinned model, then record a
-small model matrix. Compare models only on identical inputs and budgets.
+**Decision (for now):** Start like CryptoProver: single runs (n = 1) with one
+pinned model, to save tokens. Every record already carries what a later
+comparison needs (DEC-17 hashes, DEC-16 limits, `models_used`), so repeats can
+be added without changing the ledger format.
+
+**What n = 1 buys and what it doesn't:** CryptoProver's own P2 A/B (2 repeats
+per arm) showed per-attempt variance is large — same arm, same target: one
+attempt failed and one succeeded; identical wins cost $2.25 vs $6.06. So a
+single run tells us whether the harness works, but its numbers are anecdotes:
+**no cross-model or cross-configuration comparison may be claimed from n = 1.**
+
+**Still open (the "partial"):** `--repeats K` in measurement mode (K independent
+cold slots from one sealed baseline, never merge-back — otherwise repeat 2's
+baseline differs from repeat 1's and DEC-19 fires), and success-rate
+aggregation in `report.py` (k/K per model × target; runs comparable only on
+equal tree hash + limits). Needed before any comparative claim.
 
 ### DEC-14 — What is the first project scope?
 

@@ -80,7 +80,7 @@ TODO: remove the annotations
 
 TODO: use OpenTelemetry to check a posteriori if the agent accessed the internet in some way
 
-| ⬜ | How many runs, which models? | DEC-13 no `--repeats`, no success-rate aggregation | open |
+| 🟡 | How many runs, which models? | DEC-13 start like CryptoProver: n = 1 runs, one pinned model (saves tokens); records already carry hashes/limits/`models_used` so repeats can come later; **no comparative claim from n = 1** — `--repeats K` + k/K aggregation still open | partial |
 | ⬜ | Agent writes the spec itself? | DEC-05/06/07 seed `S`, `Math/` visibility, writer/reviewer roles | not started (Phase 2) |
 | ⬜ | Where do transcripts live, who reads? | DEC-01/02/15 | open |
 | ⬜ | Misc | DEC-04 `T` selection in driver · DEC-18 claim boundary in report · run-invalidation rules | open |
@@ -88,7 +88,7 @@ TODO: use OpenTelemetry to check a posteriori if the agent accessed the internet
 ## Next
 
 1. Shakeout: real multi-round run on the Scalar slice (`--jobs 2`).
-2. `--repeats` + aggregation (DEC-13) — without it no number is comparable.
+2. `--repeats` + aggregation (DEC-13, deferred to save tokens) — until then n = 1, no number is comparable.
 3. Close network: `--unshare-net`, API via proxy, credential out of sandbox (DEC-08).
 4. Decide what a broken seal / deadline / host restart does to a run (invalidation rules).
 5. Then Phase 2.

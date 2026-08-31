@@ -1,4 +1,5 @@
 import copy
+import inspect
 import json
 import subprocess
 import sys
@@ -69,6 +70,10 @@ class ToolchainContractTests(unittest.TestCase):
         self.assertEqual(
             data["project"]["scripts"], {"autofv": "autofv.experiment:main"}
         )
+        self.assertIs(
+            inspect.signature(experiment.run_experiment).parameters["run_round"].default,
+            experiment.agentproc.run_round,
+        )
 
         top = subprocess.run(
             [sys.executable, "-m", "autofv.experiment", "--help"],
@@ -128,6 +133,19 @@ class ToolchainContractTests(unittest.TestCase):
         self.assertNotIn("provider_api_key", serialized)
         self.assertNotIn("private key", serialized)
 
+    def test_verifier_contract_records_start_then_shell(self):
+        verifier = load_lock()["verifier"]
+        self.assertEqual(
+            verifier["start_argv"], ["limactl", "start", "autofv-verifier"]
+        )
+        self.assertEqual(
+            verifier["launcher_argv_prefix"],
+            ["limactl", "shell", "autofv-verifier", "--"],
+        )
+        self.assertEqual(
+            verifier["invocation_sequence"], ["start_argv", "launcher_argv_prefix"]
+        )
+
     def test_invalid_input_stops_before_the_injected_launcher(self):
         calls = []
 
@@ -162,6 +180,34 @@ class ToolchainContractTests(unittest.TestCase):
             with self.assertRaises(experiment.ContractError):
                 experiment.run_experiment(target, config, run_round=launcher)
         self.assertEqual(calls, [])
+
+    def test_duplicate_json_keys_and_symlinked_manifest_fail_closed(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            target = root / "target"
+            target.mkdir()
+            outside = root / "outside.json"
+            outside.write_text(
+                json.dumps(
+                    {
+                        "schema": "autofv/v1",
+                        "targets": [{"function": "crate::top", "spec": "Top.spec"}],
+                        "verify": ["lake", "build"],
+                    }
+                )
+            )
+            (target / "autofv.json").symlink_to(outside)
+            with self.assertRaises(experiment.ContractError):
+                experiment.validate_target(target)
+
+            config = root / "run.json"
+            config.write_text(
+                '{"schema":"autofv-run/v1","schema":"autofv-run/v1",'
+                '"model":"fixture-model-v1","max_wall_seconds":60,'
+                '"max_cost_usd":1.0}'
+            )
+            with self.assertRaises(experiment.ContractError):
+                experiment.validate_run_config(config)
 
 
 class ProxyReceiptContractTests(unittest.TestCase):
@@ -207,6 +253,13 @@ class ProxyReceiptContractTests(unittest.TestCase):
                 receipt,
                 **RECEIPT_EXPECTED,
                 seen_receipt_sha256={receipt["receipt_sha256"]},
+            )
+        with self.assertRaises(experiment.ContractError):
+            experiment.validate_proxy_receipt(
+                receipt,
+                **RECEIPT_EXPECTED,
+                seen_receipt_sha256=set(),
+                seen_request_ids={receipt["request_id"]},
             )
         with self.assertRaises(experiment.ContractError):
             self.validate(run_id="another-run")

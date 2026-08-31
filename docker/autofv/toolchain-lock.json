@@ -1,0 +1,325 @@
+{
+  "schema": "autofv-toolchain-lock/v1",
+  "observed_at": "2026-08-31",
+  "legitimacy_policy": "Only operator-observed, officially identified inputs marked verified may be installed or executed.",
+  "base_oci": {
+    "identity": "docker.io/library/python:3.12.12-slim-bookworm",
+    "official_origin": "https://hub.docker.com/_/python",
+    "pin": "sha256:593bd06efe90efa80dc4eee3948be7c0fde4134606dd40d8dd8dbcade98e669c",
+    "legitimacy": "verified",
+    "observed_version": "Python 3.12.12 on Debian bookworm slim",
+    "smoke": {
+      "argv": [
+        "docker",
+        "run",
+        "--rm",
+        "--runtime",
+        "runsc-hardened",
+        "--network",
+        "none",
+        "docker.io/library/python@sha256:593bd06efe90efa80dc4eee3948be7c0fde4134606dd40d8dd8dbcade98e669c",
+        "python",
+        "--version"
+      ],
+      "status": "passed",
+      "observed": "Python 3.12.12"
+    }
+  },
+  "packages": {
+    "uv-build": {
+      "identity": "PyPI distribution uv-build",
+      "official_origin": "https://github.com/astral-sh/uv",
+      "pin": "uv-build==0.12.7",
+      "legitimacy": "verified",
+      "observed_version": "0.12.7",
+      "smoke": {
+        "argv": ["python", "-c", "import importlib.metadata as m; assert m.version('uv-build') == '0.12.7'"],
+        "status": "passed"
+      }
+    },
+    "langgraph": {
+      "identity": "PyPI distribution langgraph",
+      "official_origin": "https://github.com/langchain-ai/langgraph",
+      "pin": "langgraph==1.2.11",
+      "legitimacy": "verified",
+      "observed_version": "1.2.11",
+      "smoke": {
+        "argv": ["python", "-c", "import importlib.metadata as m; import langgraph; assert m.version('langgraph') == '1.2.11'"],
+        "status": "passed"
+      }
+    },
+    "cryptography": {
+      "identity": "PyPI distribution cryptography",
+      "official_origin": "https://github.com/pyca/cryptography",
+      "pin": "cryptography==50.0.1",
+      "legitimacy": "verified",
+      "observed_version": "50.0.1",
+      "smoke": {
+        "argv": ["python", "-c", "from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey; k=Ed25519PrivateKey.generate(); m=b'autofv'; k.public_key().verify(k.sign(m),m)"],
+        "status": "passed"
+      }
+    }
+  },
+  "tools": {
+    "python": {
+      "identity": "CPython",
+      "official_origin": "https://www.python.org/",
+      "pin": "3.12.12",
+      "legitimacy": "verified",
+      "observed_version": "Python 3.12.12",
+      "smoke": {"argv": ["python", "--version"], "status": "passed"}
+    },
+    "uv": {
+      "identity": "Astral uv",
+      "official_origin": "https://github.com/astral-sh/uv",
+      "pin": "0.10.2",
+      "legitimacy": "verified",
+      "observed_version": "uv 0.10.2",
+      "smoke": {"argv": ["uv", "--version"], "status": "passed"}
+    },
+    "git": {
+      "identity": "Git",
+      "official_origin": "https://git-scm.com/",
+      "pin": "2.50.1",
+      "legitimacy": "verified",
+      "observed_version": "git version 2.50.1",
+      "smoke": {"argv": ["git", "--version"], "status": "passed"}
+    },
+    "docker": {
+      "identity": "Docker CE and CLI Ubuntu noble packages",
+      "official_origin": "https://download.docker.com/linux/ubuntu",
+      "pin": "5:29.7.2-1~ubuntu.24.04~noble",
+      "legitimacy": "verified",
+      "observed_version": "Docker 29.7.2",
+      "smoke": {"argv": ["docker", "version"], "status": "passed"}
+    },
+    "containerd": {
+      "identity": "containerd.io Ubuntu noble package",
+      "official_origin": "https://download.docker.com/linux/ubuntu",
+      "pin": "2.3.4-1~ubuntu.24.04~noble",
+      "legitimacy": "verified",
+      "observed_version": "containerd 2.3.4",
+      "smoke": {"argv": ["containerd", "--version"], "status": "passed"}
+    },
+    "buildx": {
+      "identity": "Docker Buildx",
+      "official_origin": "https://github.com/docker/buildx",
+      "pin": "0.36.1",
+      "legitimacy": "verified",
+      "observed_version": "github.com/docker/buildx v0.36.1",
+      "smoke": {"argv": ["docker", "buildx", "version"], "status": "passed"}
+    },
+    "compose": {
+      "identity": "Docker Compose",
+      "official_origin": "https://github.com/docker/compose",
+      "pin": "5.5.0",
+      "legitimacy": "verified",
+      "observed_version": "Docker Compose version v5.5.0",
+      "smoke": {"argv": ["docker", "compose", "version"], "status": "passed"}
+    },
+    "runsc": {
+      "identity": "gVisor runsc",
+      "official_origin": "https://github.com/google/gvisor",
+      "pin": "release-20260817.0",
+      "legitimacy": "verified",
+      "observed_version": "runsc version release-20260817.0, OCI 1.2.1",
+      "smoke": {"argv": ["runsc", "--version"], "status": "passed"},
+      "runtime_name": "runsc-hardened",
+      "runtime_args": ["--network=sandbox", "--directfs=false"]
+    },
+    "kernel": {
+      "identity": "Ubuntu Linux kernel",
+      "official_origin": "https://packages.ubuntu.com/noble/linux-image-generic",
+      "pin": "6.8.0-134-generic",
+      "legitimacy": "verified",
+      "observed_version": "Linux 6.8.0-134-generic",
+      "smoke": {"argv": ["uname", "-r"], "status": "passed"}
+    },
+    "lean": {
+      "identity": "Lean 4",
+      "official_origin": "https://github.com/leanprover/lean4",
+      "pin": "3b0f2862196c6a8af9eb0025ee650252694013dd",
+      "legitimacy": "verified",
+      "observed_version": "Lean 4.28.0-rc1",
+      "smoke": {"argv": ["lean", "--version"], "status": "passed"}
+    },
+    "lake": {
+      "identity": "Lake bundled with Lean 4",
+      "official_origin": "https://github.com/leanprover/lean4/tree/master/src/lake",
+      "pin": "3b0f2862196c6a8af9eb0025ee650252694013dd",
+      "legitimacy": "verified",
+      "observed_version": "Lake 5.0.0-src+3b0f286",
+      "smoke": {"argv": ["lake", "--version"], "status": "passed"}
+    },
+    "rustc": {
+      "identity": "Rust compiler",
+      "official_origin": "https://github.com/rust-lang/rust",
+      "pin": "1.94.0",
+      "legitimacy": "verified",
+      "observed_version": "rustc 1.94.0",
+      "smoke": {"argv": ["rustc", "--version"], "status": "passed"}
+    },
+    "cargo": {
+      "identity": "Cargo",
+      "official_origin": "https://github.com/rust-lang/cargo",
+      "pin": "1.94.0",
+      "legitimacy": "verified",
+      "observed_version": "cargo 1.94.0",
+      "smoke": {"argv": ["cargo", "--version"], "status": "passed"}
+    },
+    "probe-aeneas": {
+      "identity": "operator-audited probe-aeneas source and binary",
+      "official_origin": "https://github.com/Beneficial-AI-Foundation/probe-aeneas",
+      "pin": "commit c58e4c52064c304453e2c6157d8d865c209ee246; binary sha256:0d706303db9ef8d4df593f5b589428622588d4c7142227123145cd2d46f36ce3",
+      "legitimacy": "verified",
+      "observed_version": "probe-aeneas 0.19.0",
+      "smoke": {"argv": ["probe-aeneas", "--version"], "status": "passed"}
+    },
+    "probe-rust": {
+      "identity": "operator-audited probe-rust source and binary",
+      "official_origin": "https://github.com/Beneficial-AI-Foundation/probe-rust",
+      "pin": "commit 1dad391284683b6f8f8ced636ec642b46f80e2dc; binary sha256:ae1b066b4bbcadb39e62ba4642ffb7c28324e8bbaef628fb378d0032e01a4c57",
+      "legitimacy": "verified",
+      "observed_version": "probe-rust 0.10.0",
+      "smoke": {"argv": ["probe-rust", "--version"], "status": "passed"}
+    },
+    "probe-lean": {
+      "identity": "operator-audited probe-lean source and binary",
+      "official_origin": "https://github.com/Beneficial-AI-Foundation/probe-lean",
+      "pin": "commit b6369e8dd9f87254d2cb54d94212d955944ffcc0; binary sha256:b2d13a209de3dd7a265aba88952da2f3a75ec4078a567f9345abe8ee0a19dffb",
+      "legitimacy": "verified",
+      "observed_version": "probe-lean 0.12.1",
+      "smoke": {"argv": ["probe-lean", "--version"], "status": "passed"}
+    }
+  },
+  "model_client": {
+    "identity": "CPython standard-library HTTP client",
+    "official_origin": "https://docs.python.org/3.12/library/urllib.request.html",
+    "pin": "CPython 3.12.12 stdlib",
+    "legitimacy": "verified",
+    "observed_version": "CPython 3.12.12 urllib.request",
+    "smoke": {"argv": ["python", "-c", "import urllib.request"], "status": "passed"},
+    "implementation": "urllib.request",
+    "provider_abstraction": false
+  },
+  "fixed_proxy": {
+    "proxy_id": "autofv-local-fixture-proxy-v1",
+    "route_id": "autofv-infer-v1",
+    "method": "POST",
+    "path": "/v1/autofv/infer",
+    "base_address_source": "trusted_launcher",
+    "worker_credential": "run-scoped opaque proxy token",
+    "provider_authorization_location": "proxy_only",
+    "forbidden_caller_capabilities": [
+      "upstream_host",
+      "authorization",
+      "provider_admin",
+      "file_transfer",
+      "batch_jobs",
+      "connect_tunnel"
+    ],
+    "receipt_schema": {
+      "schema": "autofv-model-proxy-receipt/v1",
+      "required_fields": [
+        "proxy_id",
+        "route_id",
+        "run_id",
+        "sequence",
+        "request_id",
+        "model_id",
+        "request_sha256",
+        "response_sha256",
+        "status",
+        "usage.input_tokens",
+        "usage.output_tokens",
+        "usage.total_tokens",
+        "cost.amount",
+        "cost.currency",
+        "auth.key_id",
+        "receipt_sha256"
+      ],
+      "unknown_fields": "reject",
+      "canonical_json": "UTF-8 JSON, keys sorted lexicographically, separators ',' and ':', no whitespace, no NaN or Infinity, schema-constrained integers and decimal strings only",
+      "request_sha256": "sha256(canonical_utf8_json(autofv-model-request/v1 envelope))",
+      "response_sha256": "sha256(canonical_utf8_json(autofv-model-response/v1 envelope without receipt))",
+      "receipt_sha256": "sha256(canonical receipt without receipt_sha256 and auth.signature)",
+      "authentication": {
+        "algorithm": "Ed25519",
+        "key_id": "autofv-local-fixture-ed25519-v1",
+        "public_key_der_sha256": "e3ec71b7b1ea0e47c46ed80fdf6543c3da20f4261bc37b1e90e5a447216954ca",
+        "public_key_pem": "-----BEGIN PUBLIC KEY-----\nMCowBQYDK2VwAyEAUdkZAUmY8UstB6UCCVbTREwfdiYktcfPCnfr49XOaBA=\n-----END PUBLIC KEY-----\n",
+        "signed_bytes": "canonical receipt without receipt_sha256 and auth.signature",
+        "signature_encoding": "base64"
+      },
+      "request_uniqueness_key": ["proxy_id", "route_id", "run_id", "request_id"],
+      "receipt_uniqueness_key": ["proxy_id", "route_id", "run_id", "receipt_sha256"],
+      "ordering": "sequence must equal the next positive integer expected for the run",
+      "status_values": [
+        "ok",
+        "authentication_error",
+        "rate_limited",
+        "timeout",
+        "upstream_error",
+        "malformed_response"
+      ],
+      "usage": {
+        "type": "non-negative integer tokens",
+        "invariant": "total_tokens == input_tokens + output_tokens"
+      },
+      "cost": {
+        "amount": "canonical non-negative decimal string with exactly 6 fractional digits",
+        "currency": "USD"
+      }
+    }
+  },
+  "verifier": {
+    "identity": "dedicated Lima instance autofv-verifier",
+    "official_origin": "https://lima-vm.io/",
+    "pin": "config sha256:b2dc09adf05c8f6fd5bed4f54cf65a5bb5cc6e92050ddb57d0efa47982948116; Ubuntu image sha256:7df0201546f75b8bcc1044594c806c35749421ad3c9bc1be2a3ab806cfae39cc",
+    "legitimacy": "verified",
+    "observed_version": "Ubuntu 24.04; kernel 6.8.0-134-generic; machine 71582c8dfec94e10b17e7a7629558583",
+    "smoke": {"argv": ["limactl", "shell", "autofv-verifier", "--", "uname", "-r"], "status": "passed"},
+    "start_argv": ["limactl", "start", "autofv-verifier"],
+    "launcher_argv_prefix": ["limactl", "shell", "autofv-verifier", "--"],
+    "invocation_sequence": ["start_argv", "launcher_argv_prefix"],
+    "separate_from_agent_worker": true,
+    "receives_agent_volume_or_cache": false
+  },
+  "controller_delivery": {
+    "kind": "hashed_control_bundle",
+    "allowed_roots": [
+      "autofv/",
+      "docker/autofv/toolchain-lock.json",
+      "harness/agentproc.py",
+      "harness/gates/StmtCanon.lean",
+      "harness/gates/g2_trust_base.py",
+      "harness/phase0_audit.lean",
+      "harness/frozen/",
+      ".verilib/sorry_inventory.json"
+    ],
+    "manifest": {
+      "schema": "autofv-control-bundle/v1",
+      "entry_fields": ["path", "sha256", "size"],
+      "order": "path_ascending_utf8",
+      "file_types": ["regular_file"],
+      "path_rules": "relative UTF-8 paths, no empty/dot/dot-dot component, no absolute path, no duplicate",
+      "serialization": "canonical UTF-8 JSON with sorted keys and separators ',' and ':'"
+    },
+    "bundle_sha256": "sha256(canonical_utf8_json(manifest_without_bundle_sha256))",
+    "delivery": "trusted_launcher_copy_to_managed_volume",
+    "destination": "/autofv-control",
+    "bind_mount": false,
+    "source_checkout_mounted": false,
+    "owner": {"uid": 0, "gid": 0},
+    "modes": {"directory": "0555", "file": "0444"},
+    "writable_by_agent": false,
+    "verify_at": ["before_execution", "after_execution"],
+    "image_rebuild_on_source_only_change": false
+  },
+  "native_decide": {
+    "state": "decision_required",
+    "runnable": false,
+    "checkpoint": "01-01-02",
+    "options": ["forbid_all", "baseline_only", "allow_audited"]
+  }
+}

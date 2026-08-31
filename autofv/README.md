@@ -1,8 +1,9 @@
 # AutoFV controller
 
-`autofv` is the trusted host-side controller for a sealed formal-verification
-experiment. It validates inputs before starting an agent worker and rejects
-cross-boundary data that does not match the frozen experiment contract.
+`autofv` runs the trusted, host-side part of a sealed formal-verification
+experiment. It validates the target and run config before starting an agent
+worker. It also checks data returned across the sandbox boundary against the
+pinned experiment contract.
 
 ## Current entry points
 
@@ -12,22 +13,34 @@ cross-boundary data that does not match the frozen experiment contract.
   receipt schema, verifier launcher, and control-bundle rules.
 - `../tests/test_cli_snapshot.py` is the executable contract for this package.
 
-The `native_decide` policy is intentionally `decision_required` until the
-operator chooses a policy. AutoFV must not run while that choice is pending.
+## `native_decide` policy
+
+For the current vertical slice, AutoFV allows `native_decide` in both the input
+project and agent edits. The result must list every use, its source hashes and
+whether it came from the input or the agent. It must also list the compiler
+assumptions behind `native_decide`. The final claim is limited to functional
+correctness under those recorded assumptions.
+
+All checks go through `evaluate_native_decide_policy(...)`. It returns the same
+four hash-bound fields to every downstream gate: `native_decide_policy`,
+`native_decide_policy_sha256`, `native_decide_uses`, and
+`compiler_assumptions`. A future policy can replace the current
+`audited_use_inventory` criterion with a count cap or a named-spec allowlist.
+The downstream gates keep using these four fields instead of choosing their own
+defaults.
 
 ## Why `cryptography` is here
 
-The sandbox can return untrusted model output, but it must not be able to forge
-the receipt used for accounting or result state. The trusted model proxy signs
-each canonical receipt with Ed25519. `experiment.py` uses `cryptography` only to
-verify that signature and the pinned public-key identity before accepting the
-receipt's response hash, token counts, or cost.
+AutoFV treats all sandbox output as untrusted. The receipt used for accounting
+and result state must come from the model proxy, which signs each receipt with
+Ed25519. `experiment.py` uses `cryptography` to verify that signature and the
+pinned public key before accepting the response hash, token counts, or cost.
 
 Only the public verification key is recorded in the toolchain lock. The private
 signing key stays proxy-side and must never enter the repository, worker image,
-agent volume, or exported artifacts. SHA-256 is also checked for canonical
-identity and integrity, but a hash alone would not authenticate who issued a
-receipt because an agent could recompute it.
+agent volume, or exported artifacts. SHA-256 shows that the receipt bytes have
+not changed. Ed25519 shows that the receipt came from the proxy rather than the
+agent.
 
 ## Local development
 

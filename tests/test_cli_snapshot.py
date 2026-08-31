@@ -390,10 +390,11 @@ class NativeDecidePolicyContractTests(unittest.TestCase):
         del missing["native_decide_policy"]
         mutations.append(("missing", missing))
 
-        unknown = load_lock()
-        unknown["native_decide_policy"]["selection"] = "operator_choice_from_env"
-        self.rehash(unknown)
-        mutations.append(("unknown", unknown))
+        for selection in ("forbid_all", "baseline_only", "operator_choice_from_env"):
+            unselected = load_lock()
+            unselected["native_decide_policy"]["selection"] = selection
+            self.rehash(unselected)
+            mutations.append((selection, unselected))
 
         pending = load_lock()
         pending["native_decide_policy"]["state"] = "decision_required"

@@ -15,7 +15,11 @@ sealed slot copy ──▶ claude -p in bwrap sandbox ──▶ gate ──▶ a
    (per job)          (≤5 rounds, --resume)       a–e          + merge-back
 ```
 
-TODO: *merge-back* *rollback* what does it do?
+*merge-back* = on accept, copy the target file from the slot to the operator
+tree under one lock (plain copy — never a git merge, see DEC-19).
+*rollback* = on reject, restore the slot to its last accepted state
+(`git show HEAD:` in the slot), so a later target in the same file starts
+from the last accept, not from the baseline.
 
 Gate: **a** only target file changed · **b** no `axiom` / `@[implemented_by]` /
 `@[extern]` · **c** `lake build` ok ≤ 20 min · 
@@ -60,9 +64,12 @@ top-level public API functions
 | ✅ | When to give up? | DEC-16 rounds, turns, wall clock, cost, stall/bloat reset, build budget | implemented |
 | ✅ | Can a run be repeated? | DEC-17 git, toolchain, machine, harness hashes, billed models in every record | implemented |
 | ✅ | Agents interfere in parallel? | one sealed slot + sandbox per job, `--jobs N` | implemented |
+| ✅ | How to merge conflicting edits? | DEC-19 never merge code: file groups never span slots (owner-map tripwire), merge-back is a plain copy refused on hash mismatch (`rejected_merge_conflict`, job rolled back); no hand-merging mid-run (breaks DEC-12 seal); post-run git conflicts resolved by a human, `replay.py` is the arbiter | implemented |
 
-TODO: how to solve merge conflict? Sometimes original functions spec is wrong
-does all the public functions are chosen
+TODO: sometimes the original function spec is wrong — needs an honest
+escalation path (cf. CryptoProver FALSE_CONTRACT: agent supplies a
+counterexample witness, harness re-verifies it against the frozen statement)
+TODO: are all the public functions chosen?
 
 | ✅ | Can a human tamper mid-run? | DEC-12 tree hashed at run start; input-set change = violation, other change = drift; re-checked per target | implemented |
 | 🟡 | Can the agent peek at answers? | DEC-08 filesystem closed; network deny-listed not blocked; credential in sandbox; no broker | partial (= CryptoProver) |

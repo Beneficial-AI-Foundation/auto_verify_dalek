@@ -340,6 +340,33 @@ Two records are comparable only when `environment.git_head`,
 `models_used` and `limits` agree. Not recorded: container image digest (no
 container yet, see DEC-08) and API-side model snapshot dates beyond the id.
 
+### DEC-19 — How are conflicting parallel edits merged?
+
+**Status:** ACCEPTED (2026-08-31, Zhang-Liao; implemented — grouping and
+merge-back in `harness/driver.py` `make_slot` / the accept path; a per-run
+`file_owner` map catches a file group reaching two slots, and the merge-back
+copy is refused (`rejected_merge_conflict`, job rolled back) when the operator
+tree's copy of the file no longer matches the expected manifest)
+
+**Question:** Two parallel jobs edit the same file — how do we merge their
+changes?
+
+**Decision:** We never merge code. Conflicts are prevented, not resolved.
+
+- Targets are grouped by file, and a whole file group goes to one slot, so
+  two slots never edit the same file. Merge-back is a plain copy under one
+  lock, not a git merge.
+- If a conflict still appears, it is a grouping bug in the driver: roll back
+  both jobs, fix the driver, rerun. No hand-merging during a run — a human
+  change mid-run breaks the DEC-12 seal and the run is not scorable.
+- After the run, a human may resolve ordinary git conflicts when moving
+  accepted files to the main branch. Correctness is then decided by
+  `replay.py` (fresh worktree, empty cache, all gates), not by reading the
+  diff.
+
+*Precedent.* CryptoProver works the same way: one git worktree per agent,
+whole-tree accept/discard between runs (promotion receipts).
+
 ## Claim boundary
 
 ### DEC-18 — Which properties are in scope?

@@ -903,7 +903,8 @@ def main():
     common = {"expected_manifest": expected_manifest,
               "before_counts": before_counts, "g1_base": g1_base,
               "baseline_s": baseline_s, "run_id": run_id, "limits": limits,
-              "environment": environment, "settings_path": settings_path}
+              "environment": environment, "settings_path": settings_path,
+              "file_owner": {}}    # path → slot index (DEC-19)
 
     def worker(slot):
         my_counts = dict(before_counts)
@@ -913,6 +914,19 @@ def main():
                 if not queue:
                     return
                 group = queue.pop(0)
+                # DEC-19 tripwire: a file group must be owned by exactly one
+                # slot for the whole run. The queue pop makes that true by
+                # construction today; this guard turns a future regression
+                # (grouping bug) into a loud stop instead of a silent
+                # clobbering merge-back.
+                gpath = group[0].split(":")[0]
+                owner = common["file_owner"].setdefault(gpath, slot["i"])
+                if owner != slot["i"]:
+                    print(f"[driver] GROUPING BUG (DEC-19): {gpath} assigned "
+                          f"to slot {slot['i']} but owned by slot {owner}; "
+                          f"skipping group — fix the driver and rerun",
+                          flush=True)
+                    continue
             for loc in group:
                 if agentproc.RECEIVED_SIGNAL is not None:
                     return
@@ -975,20 +989,42 @@ def process_target(slot, loc, my_counts, my_g1, args, common, lock, state):
         common["settings_path"], my_g1, work, slot["prefix"], log)
 
     if outcome == "accepted":
-        my_counts.clear()
-        my_counts.update(detail.pop("counts_after"))
-        my_g1[path_to_module(path)] = detail.pop("g1_after")
+        # DEC-19 merge-back guard: we never merge code. The copy below is
+        # only legal while the operator tree's copy of `path` still has the
+        # hash this run last wrote (or started with). A mismatch means
+        # someone else — another slot (grouping bug) or a human (seal
+        # violation) — changed the file mid-run: do not clobber, roll the
+        # job back, record the conflict. Fix the cause and rerun.
         msg = (f"phase1: fill {decl} ({loc})\n\n"
                f"Co-Authored-By: Claude Fable 5 <noreply@anthropic.com>")
-        slot_commit(work, path, msg)
         with lock:  # merge-back: this slot owns every target in `path`
-            shutil.copyfile(os.path.join(work, path), os.path.join(REPO, path))
-            common["expected_manifest"][path] = agentproc.sha256_file(
-                os.path.join(REPO, path))
-            if args.commit:
-                sh(["git", "add", path])
-                sh(["git", "commit", "-q", "-m", msg])
-            state["accepted"] += 1
+            repo_file = os.path.join(REPO, path)
+            expected = common["expected_manifest"].get(path)
+            found = (agentproc.sha256_file(repo_file)
+                     if os.path.exists(repo_file) else None)
+            if found != expected:
+                outcome = "rejected_merge_conflict"
+                detail["merge_conflict"] = {
+                    "path": path, "expected_sha256": expected,
+                    "found_sha256": found}
+            else:
+                my_counts.clear()
+                my_counts.update(detail.pop("counts_after"))
+                my_g1[path_to_module(path)] = detail.pop("g1_after")
+                slot_commit(work, path, msg)
+                shutil.copyfile(os.path.join(work, path), repo_file)
+                common["expected_manifest"][path] = agentproc.sha256_file(
+                    repo_file)
+                if args.commit:
+                    sh(["git", "add", path])
+                    sh(["git", "commit", "-q", "-m", msg])
+                state["accepted"] += 1
+        if outcome == "rejected_merge_conflict":
+            log(f"    MERGE CONFLICT (DEC-19): {path} changed in the "
+                f"operator tree outside accepted merge-backs — job rolled "
+                f"back, nothing copied")
+            mod, new = changed_files(work)
+            rollback(mod, new, work)
     else:
         mod, new = changed_files(work)
         rollback(mod, new, work)

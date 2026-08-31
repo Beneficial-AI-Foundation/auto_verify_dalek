@@ -10,23 +10,29 @@ When a decision is accepted, add the date, owner, and link to the discussion.
 
 ### DEC-01 — What belongs in this repository?
 
-**Status:** PROPOSED
+**Status:** ACCEPTED (2026-08-31, Zhang-Liao; already the practice)
 
 **Question:** Is this only a runner script, or the reviewed home of the whole
 experiment setup?
 
-**Suggested start:** Keep docs, schemas, builder/runner/checker code, manifests,
-and small result summaries here. Keep large run files elsewhere.
+**Decision:** The repo is the reviewed home of the experiment: docs, schemas,
+harness code, manifests, and small result summaries. Raw run evidence
+(`ledger/` — transcripts, wire logs, per-run configs) is never committed;
+`ledger/` is in `.gitignore`.
 
 ### DEC-02 — Where do large run files live?
 
-**Status:** OPEN
+**Status:** PARTIAL (2026-08-31, Zhang-Liao; interim below, bucket unchosen)
 
 **Question:** Which BAIF-managed storage should hold transcripts, patches,
 logs, and sealed bundles?
 
-**Suggested start:** Use storage with restricted access and file hashes.
-Keep failed runs as well as successful ones.
+**Interim:** Everything stays in the local `ledger/` tree (`transcripts/`
+raw stream-json — never discarded, failed runs included — `wire/`, `runs/`,
+`rounds.jsonl`). Before anything leaves the machine: tar the run + a sha256
+manifest, cross-checkable against the DEC-17 hashes already in every record.
+**Still open:** which BAIF-managed restricted bucket receives the tars.
+Choosing it changes no formats — upload the sealed tar as-is.
 
 ### DEC-03 — Is Aeneas extraction part of the task?
 
@@ -232,7 +238,7 @@ question "what event invalidates a run".
 
 ### DEC-13 — Which models and how many repeats?
 
-**Status:** PARTIAL (2026-08-31, Zhang-Liao)
+**Status:** ACCEPTED for now (2026-08-31, Zhang-Liao; repeats deferred — see below)
 
 **Question:** Which providers/models do we test, with what limits, and how many
 runs make a comparison credible?
@@ -271,13 +277,15 @@ cannot be attributed (spec not synthesizable vs. proof not provable).
 
 ### DEC-15 — Who can read raw run data?
 
-**Status:** OPEN
+**Status:** ACCEPTED for now (2026-08-31, Zhang-Liao; = the suggested start)
 
 **Question:** Are full model transcripts public, restricted to reviewers, or
 deleted after a fixed period?
 
-**Suggested start:** Keep raw evidence in restricted storage long enough for
-audit. Publish hashes, costs, outcomes, and redacted summaries.
+**Decision (for now):** Raw evidence (transcripts, wire logs) stays in
+restricted storage, kept long enough for audit, never deleted on a timer.
+Published: hashes, costs, outcomes, and redacted summaries — not raw
+transcripts. Revisit if a venue requires public transcripts.
 
 ### DEC-16 — When does a run stop?
 

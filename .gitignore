@@ -59,6 +59,8 @@ curve25519-dalek/data/
 functions.json
 prmopt_log.md
 
-# harness: per-run isolated CLAUDE_CONFIG_DIR (holds a copy of OAuth credentials + session files)
-ledger/runs/*/claude_config/
-ledger/runs/*/slot*/claude_config/
+# harness: raw run evidence — transcripts, wire logs, per-run isolated
+# CLAUDE_CONFIG_DIR (holds a copy of OAuth credentials + session files).
+# Never committed (DEC-01/02/15): raw stays in restricted storage, the repo
+# gets hashes and summaries only.
+ledger/

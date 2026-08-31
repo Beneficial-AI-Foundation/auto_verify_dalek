@@ -80,9 +80,9 @@ TODO: remove the annotations
 
 TODO: use OpenTelemetry to check a posteriori if the agent accessed the internet in some way
 
-| 🟡 | How many runs, which models? | DEC-13 start like CryptoProver: n = 1 runs, one pinned model (saves tokens); records already carry hashes/limits/`models_used` so repeats can come later; **no comparative claim from n = 1** — `--repeats K` + k/K aggregation still open | partial |
+| ✅ | How many runs, which models? | DEC-13 solved for now: n = 1 runs, one pinned model (saves tokens, like CryptoProver); **no comparative claim from n = 1**; records already carry hashes/limits/`models_used`, so `--repeats K` + k/K aggregation can be added when comparisons are needed | accepted (repeats deferred) |
 | ⬜ | Agent writes the spec itself? | DEC-05/06/07 seed `S`, `Math/` visibility, writer/reviewer roles | not started (Phase 2) |
-| ⬜ | Where do transcripts live, who reads? | DEC-01/02/15 | open |
+| 🟡 | Where do transcripts live, who reads? | DEC-01/02/15 transcripts in `ledger/transcripts/`, never discarded, `ledger/` git-ignored; raw restricted, publish hashes + outcomes + redacted summaries; open: which BAIF bucket gets the sealed tars | partial |
 | ⬜ | Misc | DEC-04 `T` selection in driver · DEC-18 claim boundary in report · run-invalidation rules | open |
 
 ## Next

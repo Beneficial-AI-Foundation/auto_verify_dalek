@@ -1,6 +1,8 @@
 import copy
+import hashlib
 import inspect
 import json
+import os
 import subprocess
 import sys
 import tempfile
@@ -8,6 +10,7 @@ import tomllib
 import unittest
 from decimal import Decimal
 from pathlib import Path
+from unittest import mock
 
 from autofv import experiment
 
@@ -60,6 +63,39 @@ RECEIPT_EXPECTED = {
     "request_sha256": "1" * 64,
     "response_sha256": "2" * 64,
 }
+
+POLICY_RATIONALE = (
+    "For the vertical slice we need the most permissive option; later policy may "
+    "either cap native_decide uses at a measured baseline count or allow it only "
+    "for explicitly named specs A/B/C while forbidding it elsewhere."
+)
+POLICY_SHA256 = "bae965de1366b29fa30d89057a218d6030065d43bcf14f4f664a2e63bded7ff9"
+
+
+def audited_native_decide_use():
+    return {
+        "spec": "Curve25519Dalek.Scalar.invert_spec",
+        "declaration": "Curve25519Dalek.Scalar.invert",
+        "source_path": "Curve25519Dalek/Scalar.lean",
+        "source_sha256": "3" * 64,
+        "expression_sha256": "4" * 64,
+        "origin": "baseline",
+    }
+
+
+def compiler_assumptions():
+    return [
+        {
+            "assumption": "Lean.ofReduceBool",
+            "evidence": "Pinned Lean compiler source and binary identity",
+            "evidence_sha256": "5" * 64,
+        },
+        {
+            "assumption": "Lean.trustCompiler",
+            "evidence": "Pinned native compiler toolchain identity",
+            "evidence_sha256": "6" * 64,
+        },
+    ]
 
 
 class ToolchainContractTests(unittest.TestCase):
@@ -316,13 +352,127 @@ class ControlBundleContractTests(unittest.TestCase):
 
 
 class NativeDecidePolicyContractTests(unittest.TestCase):
-    def test_unselected_policy_blocks_freeze(self):
+    @staticmethod
+    def rehash(lock):
+        lock["native_decide_policy_sha256"] = hashlib.sha256(
+            json.dumps(
+                lock["native_decide_policy"],
+                sort_keys=True,
+                separators=(",", ":"),
+                ensure_ascii=False,
+                allow_nan=False,
+            ).encode()
+        ).hexdigest()
+
+    def test_selected_policy_is_explicit_canonical_and_hash_bound(self):
         lock = load_lock()
-        self.assertEqual(lock["native_decide"]["state"], "decision_required")
-        self.assertFalse(lock["native_decide"]["runnable"])
-        self.assertNotIn("selected_policy", lock["native_decide"])
-        with self.assertRaises(experiment.ContractError):
-            experiment.validate_native_decide_policy(lock)
+        policy = experiment.validate_native_decide_policy(lock)
+
+        self.assertEqual(policy["state"], "selected")
+        self.assertTrue(policy["runnable"])
+        self.assertEqual(policy["selection"], "allow_audited")
+        self.assertEqual(policy["operator_rationale"], POLICY_RATIONALE)
+        self.assertEqual(lock["native_decide_policy_sha256"], POLICY_SHA256)
+        self.assertEqual(
+            policy["downstream_fields"],
+            [
+                "native_decide_policy",
+                "native_decide_policy_sha256",
+                "native_decide_uses",
+                "compiler_assumptions",
+            ],
+        )
+
+    def test_missing_unknown_pending_and_hash_mismatched_policies_fail_closed(self):
+        mutations = []
+
+        missing = load_lock()
+        del missing["native_decide_policy"]
+        mutations.append(("missing", missing))
+
+        unknown = load_lock()
+        unknown["native_decide_policy"]["selection"] = "operator_choice_from_env"
+        self.rehash(unknown)
+        mutations.append(("unknown", unknown))
+
+        pending = load_lock()
+        pending["native_decide_policy"]["state"] = "decision_required"
+        pending["native_decide_policy"]["runnable"] = False
+        self.rehash(pending)
+        mutations.append(("pending", pending))
+
+        mismatched = load_lock()
+        mismatched["native_decide_policy_sha256"] = "0" * 64
+        mutations.append(("hash mismatch", mismatched))
+
+        for name, lock in mutations:
+            with self.subTest(name=name), self.assertRaises(experiment.ContractError):
+                experiment.validate_native_decide_policy(lock)
+
+    def test_audited_uses_require_exhaustive_inventory_and_compiler_evidence(self):
+        result = experiment.evaluate_native_decide_policy(
+            load_lock(),
+            native_decide_uses=[audited_native_decide_use()],
+            compiler_assumptions=compiler_assumptions(),
+        )
+        self.assertEqual(result["native_decide_policy"], "allow_audited")
+        self.assertEqual(result["native_decide_policy_sha256"], POLICY_SHA256)
+        self.assertEqual(result["native_decide_uses"], [audited_native_decide_use()])
+        self.assertEqual(result["compiler_assumptions"], compiler_assumptions())
+        self.assertIn("downgraded", result["claim_consequence"])
+
+    def test_incomplete_or_noncanonical_audit_evidence_fails_closed(self):
+        invalid_cases = []
+
+        missing_use_field = audited_native_decide_use()
+        del missing_use_field["expression_sha256"]
+        invalid_cases.append(
+            ("missing per-use evidence", [missing_use_field], compiler_assumptions())
+        )
+
+        invalid_origin = audited_native_decide_use()
+        invalid_origin["origin"] = "unclassified"
+        invalid_cases.append(
+            ("unknown origin", [invalid_origin], compiler_assumptions())
+        )
+
+        duplicate_uses = [audited_native_decide_use(), audited_native_decide_use()]
+        invalid_cases.append(
+            ("duplicate inventory", duplicate_uses, compiler_assumptions())
+        )
+
+        missing_assumption = compiler_assumptions()[:-1]
+        invalid_cases.append(
+            ("missing compiler evidence", [audited_native_decide_use()], missing_assumption)
+        )
+
+        duplicate_assumptions = compiler_assumptions() + compiler_assumptions()[:1]
+        invalid_cases.append(
+            (
+                "duplicate compiler evidence",
+                [audited_native_decide_use()],
+                duplicate_assumptions,
+            )
+        )
+
+        for name, uses, assumptions in invalid_cases:
+            with self.subTest(name=name), self.assertRaises(experiment.ContractError):
+                experiment.evaluate_native_decide_policy(
+                    load_lock(),
+                    native_decide_uses=uses,
+                    compiler_assumptions=assumptions,
+                )
+
+    def test_launch_exports_hash_bound_policy_without_environment_fallback(self):
+        signature = inspect.signature(experiment.evaluate_native_decide_policy)
+        self.assertIs(
+            signature.parameters["native_decide_uses"].default,
+            inspect.Parameter.empty,
+        )
+        self.assertIs(
+            signature.parameters["compiler_assumptions"].default,
+            inspect.Parameter.empty,
+        )
 
         calls = []
         with tempfile.TemporaryDirectory() as tmp:
@@ -349,10 +499,14 @@ class NativeDecidePolicyContractTests(unittest.TestCase):
                     }
                 )
             )
-            with self.assertRaises(experiment.ContractError):
-                experiment.run_experiment(
+            with mock.patch.dict(
+                os.environ, {"AUTOFV_NATIVE_DECIDE_POLICY": "forbid_all"}
+            ):
+                result = experiment.run_experiment(
                     target, config, run_round=lambda *a, **k: calls.append((a, k))
                 )
+        self.assertEqual(result["native_decide_policy"], "allow_audited")
+        self.assertEqual(result["native_decide_policy_sha256"], POLICY_SHA256)
         self.assertEqual(calls, [])
 
 

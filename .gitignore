@@ -64,4 +64,4 @@ prmopt_log.md
 # Never committed (DEC-01/02/15): raw stays in restricted storage, the repo
 # gets hashes and summaries only.
 ledger/
-.verilib/
+# .verilib/

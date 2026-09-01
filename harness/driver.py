@@ -67,7 +67,7 @@ Usage examples:
   python3 harness/driver.py --zones specs --limit 10 --dry-run
   python3 harness/driver.py --zones specs --jobs 2 --model <id>
   python3 harness/driver.py --zones specs --limit 10 --commit
-  python3 harness/driver.py --match AffineNielsPoint --max-turns 40
+  python3 harness/driver.py --path Curve25519Dalek/Specs/Scalar/Scalar --max-turns 40
 """
 import argparse
 import copy
@@ -679,7 +679,11 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--zones", default="specs,aux")
     ap.add_argument("--limit", type=int, default=0, help="0 = all")
-    ap.add_argument("--match", default="", help="substring filter on location")
+    ap.add_argument("--path", default="",
+                    help="keep only targets in this .lean file or under "
+                         "this directory (path prefix on whole components, "
+                         "not a substring: Specs/Scalar/Scalar does not "
+                         "catch Scalar52)")
     ap.add_argument("--model", default="",
                     help="claude --model; REQUIRED (the isolated config "
                          "dir carries no user model setting, so an unpinned "
@@ -790,8 +794,11 @@ def main():
     inv = json.load(open(INVENTORY))
     targets = [loc for z in args.zones.split(",")
                for loc in inv["locations"][z.strip()]]
-    if args.match:
-        targets = [t for t in targets if args.match in t]
+    if args.path:
+        want = args.path.rstrip("/")
+        targets = [t for t in targets
+                   if t.split(":")[0] == want
+                   or t.split(":")[0].startswith(want + "/")]
     if args.limit:
         targets = targets[:args.limit]
     print(f"{len(targets)} target(s), zones={args.zones}, jobs={args.jobs}")

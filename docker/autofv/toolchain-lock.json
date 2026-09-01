@@ -167,6 +167,54 @@
       "observed_version": "cargo 1.94.0",
       "smoke": {"argv": ["cargo", "--version"], "status": "passed"}
     },
+    "rustup": {
+      "identity": "rustup bundled with the official Rust builder image",
+      "official_origin": "https://github.com/rust-lang/rustup",
+      "pin": "1.29.0 from docker.io/library/rust:1.94.0-bookworm",
+      "legitimacy": "verified",
+      "observed_version": "rustup 1.29.0",
+      "smoke": {"argv": ["rustup", "--version"], "status": "passed"}
+    },
+    "rust-analyzer": {
+      "identity": "rust-analyzer Rust toolchain component",
+      "official_origin": "https://github.com/rust-lang/rust-analyzer",
+      "pin": "component bundled with Rust 1.94.0",
+      "legitimacy": "verified",
+      "observed_version": "rust-analyzer component for Rust 1.94.0",
+      "smoke": {"argv": ["rust-analyzer", "--version"], "status": "passed"}
+    },
+    "scip": {
+      "identity": "Sourcegraph SCIP command-line tool",
+      "official_origin": "https://github.com/sourcegraph/scip",
+      "pin": "v0.6.1; linux-arm64 archive sha256:ace458df964e9a4bb8d0b18f8a0763269f9768ea9f089393cfed9822c819dc5f",
+      "legitimacy": "verified",
+      "observed_version": "scip version 0.6.1",
+      "smoke": {"argv": ["scip", "--version"], "status": "passed"}
+    },
+    "cargo-public-api": {
+      "identity": "cargo-public-api Cargo subcommand",
+      "official_origin": "https://github.com/Enselic/cargo-public-api",
+      "pin": "0.52.0; crates.io source sha256:80f55cea4022db86641f1ece5098c9df2f13d79624e61a461d5379dc5d4b7511",
+      "legitimacy": "verified",
+      "observed_version": "cargo-public-api 0.52.0",
+      "smoke": {"argv": ["cargo", "public-api", "--version"], "status": "passed"}
+    },
+    "nightly-rustc": {
+      "identity": "Rust nightly compiler required by cargo-public-api and Charon",
+      "official_origin": "https://static.rust-lang.org/dist/2026-06-01/",
+      "pin": "nightly-2026-06-01; channel manifest sha256:aaf1cb59b5996dd51831c9114b6e3a4a176e197851de91194b473117e142b935",
+      "legitimacy": "verified",
+      "observed_version": "rustc 1.98.0-nightly (14210df0e 2026-05-31)",
+      "smoke": {"argv": ["rustc", "+nightly", "--version"], "status": "passed"}
+    },
+    "charon": {
+      "identity": "Aeneas Charon Rust compiler frontend",
+      "official_origin": "https://github.com/AeneasVerif/charon",
+      "pin": "0.1.216; commit 6f058254eb741c12e9b388df07adaf7cc8aac8ed",
+      "legitimacy": "verified",
+      "observed_version": "charon 0.1.216",
+      "smoke": {"argv": ["charon", "--help"], "status": "passed"}
+    },
     "probe-aeneas": {
       "identity": "operator-audited probe-aeneas source and binary",
       "official_origin": "https://github.com/Beneficial-AI-Foundation/probe-aeneas",
@@ -191,6 +239,288 @@
       "observed_version": "probe-lean 0.12.1",
       "smoke": {"argv": ["probe-lean", "--version"], "status": "passed"}
     }
+  },
+  "image": {
+    "schema": "autofv-toolchain-image/v1",
+    "platform": "linux/arm64",
+    "image_digest": "sha256:77b39dba4adf6d7ed57c5028c313430f4d987e172bda25aac1b628a83f1ed85e",
+    "image_manifest_sha256": "77b39dba4adf6d7ed57c5028c313430f4d987e172bda25aac1b628a83f1ed85e",
+    "image_config_sha256": "325425937518f783ca6a489c240acc2e189d77d27ef8a94b5ed9952e2af02027",
+    "dockerfile_sha256": "7afa5c17b2fbf5b2bf46303d10580ca16d118cb0800b357e631b6b11c007176a",
+    "build_inputs": {
+      "platform": "linux/arm64",
+      "base_oci": {
+        "identity": "docker.io/library/python:3.12.12-slim-bookworm",
+        "digest": "sha256:593bd06efe90efa80dc4eee3948be7c0fde4134606dd40d8dd8dbcade98e669c"
+      },
+      "builder_oci": {
+        "identity": "docker.io/library/rust:1.94.0-bookworm",
+        "digest": "sha256:6ae102bdbf528294bc79ad6e1fae682f6f7c2a6e6621506ba959f9685b308a55",
+        "official_origin": "https://github.com/docker-library/official-images"
+      },
+      "git": {
+        "version": "2.50.1",
+        "source": "https://www.kernel.org/pub/software/scm/git/git-2.50.1.tar.xz",
+        "source_sha256": "7e3e6c36decbd8f1eedd14d42db6674be03671c2204864befa2a41756c5c8fc4"
+      },
+      "lean": {
+        "version": "4.28.0-rc1",
+        "commit": "3b0f2862196c6a8af9eb0025ee650252694013dd",
+        "source": "https://github.com/leanprover/lean4/releases/download/v4.28.0-rc1/lean-4.28.0-rc1-linux_aarch64.zip",
+        "source_sha256": "234be1fa539de49b5315843c6aa7c42da0934c425455ea9a4130b4f383eca23e"
+      },
+      "uv": {
+        "version": "0.10.2",
+        "source": "https://github.com/astral-sh/uv/releases/download/0.10.2/uv-aarch64-unknown-linux-musl.tar.gz",
+        "source_sha256": "685e47f8f88b6845a9fc2ca27c3d246c0f53af8c017daf8e98ac0a97fe20365b"
+      },
+      "probe-aeneas": {
+        "version": "0.19.0",
+        "commit": "c58e4c52064c304453e2c6157d8d865c209ee246",
+        "source_archive_sha256": "e362133e1468ddfb1e93e1103f2f58921819edd442cc21885b812e8aea11cf21",
+        "cargo_lock_sha256": "0f5871a3a56a6c5a70c5988b0fa38f573c2fab6a2763e6783e0f5aae5bbd5c7f"
+      },
+      "probe-rust": {
+        "version": "0.10.0",
+        "commit": "1dad391284683b6f8f8ced636ec642b46f80e2dc",
+        "source_archive_sha256": "3ad84de7f0d5e634527076dedf3fc8ff032503d9774f10dd701b369389d5bc2a",
+        "cargo_lock_sha256": "fa1bdc9f223e90360fe204b6e80fbe22edd2ce245ceefead76f7e5f6682079e1"
+      },
+      "probe-lean": {
+        "version": "0.12.1",
+        "commit": "b6369e8dd9f87254d2cb54d94212d955944ffcc0",
+        "source_archive_sha256": "160ad319283fc863e94d6e273fa1e59a60721edd9b211e161063b8d03f7a0d7b",
+        "lake_manifest_sha256": "543140398f23db9b9ab7211484ba9b27a70c5fe1b335a5a33ddd2b6f9253690b",
+        "dependency_fetcher": "network-capable system Git from the pinned Rust builder OCI"
+      },
+      "probe_runtime_closure": {
+        "rustup": {
+          "version": "1.29.0",
+          "source": "docker.io/library/rust:1.94.0-bookworm@sha256:6ae102bdbf528294bc79ad6e1fae682f6f7c2a6e6621506ba959f9685b308a55",
+          "auto_install": false,
+          "legitimacy": "verified"
+        },
+        "rust_analyzer": {
+          "version": "component bundled with Rust 1.94.0",
+          "source": "official rustup distribution selected by the pinned Rust builder OCI",
+          "components": ["rust-analyzer", "rust-src"],
+          "legitimacy": "verified"
+        },
+        "scip": {
+          "version": "0.6.1",
+          "source": "https://github.com/sourcegraph/scip/releases/download/v0.6.1/scip-linux-arm64.tar.gz",
+          "source_sha256": "ace458df964e9a4bb8d0b18f8a0763269f9768ea9f089393cfed9822c819dc5f",
+          "source_size": 12759324,
+          "legitimacy": "verified"
+        },
+        "cargo_public_api": {
+          "version": "0.52.0",
+          "source": "https://static.crates.io/crates/cargo-public-api/cargo-public-api-0.52.0.crate",
+          "source_sha256": "80f55cea4022db86641f1ece5098c9df2f13d79624e61a461d5379dc5d4b7511",
+          "source_size": 53727,
+          "curl_sys": {
+            "version": "0.4.77",
+            "features": ["static-curl"],
+            "resolution": "direct dependency added to the extracted manifest for Cargo feature unification"
+          },
+          "libcurl_linkage": "vendored_static",
+          "build_environment": ["OPENSSL_STATIC=1"],
+          "legitimacy": "verified"
+        },
+        "nightly": {
+          "channel": "nightly-2026-06-01",
+          "observed_version": "rustc 1.98.0-nightly (14210df0e 2026-05-31)",
+          "manifest": "https://static.rust-lang.org/dist/2026-06-01/channel-rust-nightly.toml",
+          "manifest_sha256": "aaf1cb59b5996dd51831c9114b6e3a4a176e197851de91194b473117e142b935",
+          "components": ["llvm-tools-preview", "rust-src", "rustc-dev"],
+          "cargo_public_api_alias": "nightly",
+          "legitimacy": "verified"
+        },
+        "charon": {
+          "version": "0.1.216",
+          "commit": "6f058254eb741c12e9b388df07adaf7cc8aac8ed",
+          "source": "https://github.com/AeneasVerif/charon",
+          "source_archive_sha256": "109b382be35447ae164e3e94219eb3b6f4551e4ace6750acacac37946528f663",
+          "cargo_lock_sha256": "7d00cbd388962477aefe5830d6d36ab5cde35e234b4359fb96132bfd4b09afc2",
+          "rust_toolchain": "nightly-2026-06-01",
+          "legitimacy": "verified"
+        },
+        "probe_lean_runtime": {
+          "version": "0.12.1 for Lean v4.28.0-rc1",
+          "binary": "/home/autofv/.local/bin/probe-lean-v4.28.0-rc1",
+          "library": "/usr/local/lib/probe-lean-v4.28.0-rc1",
+          "source_archive_sha256": "160ad319283fc863e94d6e273fa1e59a60721edd9b211e161063b8d03f7a0d7b",
+          "legitimacy": "verified"
+        }
+      },
+      "python_packages": [
+        "cryptography==50.0.1",
+        "langgraph==1.2.11",
+        "uv-build==0.12.7"
+      ],
+      "native_decide_policy_sha256": "bae965de1366b29fa30d89057a218d6030065d43bcf14f4f664a2e63bded7ff9"
+    },
+    "build_inputs_sha256": "95e1833ea5c4bb941afc1cd0bf4a61cb725aa06771b6bf0b37afb2de61da9b5e",
+    "labels": {
+      "org.autofv.toolchain-lock-schema": "autofv-toolchain-lock/v1",
+      "org.autofv.build-inputs-sha256": "95e1833ea5c4bb941afc1cd0bf4a61cb725aa06771b6bf0b37afb2de61da9b5e",
+      "org.autofv.native-decide-policy-sha256": "bae965de1366b29fa30d89057a218d6030065d43bcf14f4f664a2e63bded7ff9"
+    },
+    "builder_receipt": {
+      "schema": "autofv-image-builder-receipt/v1",
+      "launcher": "Lima instance autofv-agent",
+      "machine_id": "2afbc1aefbcc49e393a2e1f0cf20aee5",
+      "guest": "Ubuntu 24.04.4; Linux 6.8.0-134-generic; arm64",
+      "docker": "29.7.2",
+      "buildx": "0.36.1",
+      "build_context": [
+        "Dockerfile",
+        "inputs/charon.tar.gz",
+        "inputs/probe-aeneas.tar.gz",
+        "inputs/probe-rust.tar.gz",
+        "inputs/probe-lean.tar.gz"
+      ],
+      "secret_mounts": [],
+      "ssh_forwarding": false,
+      "host_checkout_mounted": false
+    },
+    "builder_receipt_sha256": "88fc9bc74ce453cb7a71e29ea5a4ae31334c0c232c5b4a3c7c3d8e4d6ef522e9",
+    "build_metadata_sha256": "d9fa090a5918d0d024b0f80371177984a37db4f1f510998306084c3b12a68161",
+    "no_secret_build": true,
+    "runtime_smokes": [
+      {
+        "name": "python",
+        "argv": ["python", "--version"],
+        "output_sha256": "4779e6cfff3cb145a2682ddbee430c3799faf5d16c91d9c093925d4f71f4771a"
+      },
+      {
+        "name": "git",
+        "argv": ["git", "--version"],
+        "output_sha256": "d7884bffc2345a1acc5c675cd2e5087cd2f93b0432b1927706e4f9f9d49f7c9d"
+      },
+      {
+        "name": "lean",
+        "argv": ["lean", "--version"],
+        "output_sha256": "487b2a6bee78b9e746ecc9e4e4a25c2f0e5c3886bc40ec0fb3111633b83e1213"
+      },
+      {
+        "name": "lake",
+        "argv": ["lake", "--version"],
+        "output_sha256": "3470e53371df652cbf2e25d6ec64e84d00c8115cbb4f2a9413ad1f50b8c027e7"
+      },
+      {
+        "name": "rustup",
+        "argv": ["rustup", "--version"],
+        "output_sha256": "93fc6806b82b1947e90299f3dee2550e8fe236229399029924a20b4ae4af8dcb"
+      },
+      {
+        "name": "rustc",
+        "argv": ["rustc", "--version"],
+        "output_sha256": "197e965ff0c94a943b6fbd32486d37b82a5ce1343ee115bbf474dda568c70e07"
+      },
+      {
+        "name": "cargo",
+        "argv": ["cargo", "--version"],
+        "output_sha256": "72b433113ee5077fc4f37d1bf85ee44df416adbfd21544180a8188b06d4850af"
+      },
+      {
+        "name": "rust-analyzer",
+        "argv": ["rust-analyzer", "--version"],
+        "output_sha256": "840475dde0d86460f38686227fd3690ace3969158854c923254baee9b6811d92"
+      },
+      {
+        "name": "scip",
+        "argv": ["scip", "--version"],
+        "output_sha256": "fb63a44c026ad3adb1b518f070b66f8ab7433b5b03c540958ad95f7a86e69cfa"
+      },
+      {
+        "name": "cargo-public-api",
+        "argv": ["cargo", "public-api", "--version"],
+        "output_sha256": "bbf54f629598c56fa864d1c3d0a57162673f3dc0d99c46ded85fdbadcfd0adbe"
+      },
+      {
+        "name": "nightly-rustc",
+        "argv": ["rustc", "+nightly", "--version"],
+        "output_sha256": "aba115941112e451074271c9c845be50e8cac7fccf779b39230f282c8d5884cf"
+      },
+      {
+        "name": "charon",
+        "argv": ["charon", "--help"],
+        "output_sha256": "9431045f869e16ce34386d8174824eaac5b751334c586bd5d81ee58f1b611fe5"
+      },
+      {
+        "name": "probe-aeneas",
+        "argv": ["probe-aeneas", "--version"],
+        "output_sha256": "09605a37e6a2042b0295dc22a997b186c5f53eb365e0925c9bda61104b71a8e0"
+      },
+      {
+        "name": "probe-rust",
+        "argv": ["probe-rust", "--version"],
+        "output_sha256": "caa722343c73cd45b29eba31f7247ddb3960aa4c43154ea1c4c5571fc9527506"
+      },
+      {
+        "name": "probe-lean",
+        "argv": ["probe-lean", "--version"],
+        "output_sha256": "d04a00c7ffb90f9d99b0e382199953a707fa7bcc467ccdb7373f5aded71f0f29"
+      },
+      {
+        "name": "model-client",
+        "argv": ["python", "-c", "import urllib.request"],
+        "output_sha256": "6e340b9cffb37a989ca544e6bb780a2c78901d3fb33738768511a30617afa01d"
+      },
+      {
+        "name": "python-packages",
+        "argv": ["python", "-c", "import importlib.metadata as m; from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey; import langgraph; assert m.version('cryptography') == '50.0.1'; assert m.version('langgraph') == '1.2.11'; assert m.version('uv-build') == '0.12.7'; k=Ed25519PrivateKey.generate(); p=b'autofv'; k.public_key().verify(k.sign(p),p)"],
+        "output_sha256": "6e340b9cffb37a989ca544e6bb780a2c78901d3fb33738768511a30617afa01d"
+      }
+    ],
+    "probe_contract_smokes": [
+      {
+        "name": "probe-rust-extract-offline",
+        "argv": [
+          "probe-rust",
+          "extract",
+          "/work/rust-fixture",
+          "--with-locations",
+          "--with-public-api",
+          "--auto-install",
+          "-o",
+          "/work/rust-atoms.json"
+        ],
+        "expected_facts": {
+          "schema": "probe-rust/extract",
+          "schema-version": "3.0",
+          "tool": {"name": "probe-rust", "version": "0.10.0", "command": "extract"},
+          "source-language": "rust",
+          "source-package": "tiny-probe",
+          "functions": {
+            "leaf": {"code-path": "src/lib.rs", "is-public": true, "is-public-api": true, "has-locations": true},
+            "top": {"code-path": "src/lib.rs", "is-public": true, "is-public-api": true, "has-locations": true}
+          }
+        },
+        "facts_sha256": "e7d1a9233efdcc213cc479c371fb3f5c57fc2240077ba592e505435ff884a62b"
+      },
+      {
+        "name": "probe-aeneas-extract-offline",
+        "argv": [
+          "probe-aeneas",
+          "extract",
+          "/work/aeneas-fixture",
+          "--with-public-api",
+          "-o",
+          "/work/aeneas-atoms.json"
+        ],
+        "expected_facts": {
+          "schema": "probe-aeneas/extract",
+          "schema-version": "3.0",
+          "tool": {"name": "probe-aeneas", "version": "0.19.0", "command": "extract"},
+          "input-languages": ["lean", "rust"],
+          "charon-versions": ["0.1.216"],
+          "public-api-ran": true
+        },
+        "facts_sha256": "e0d7113a377cb2e7eba60d6cc691e7b5281cffa78fccfd23a41e1a5a899c7c35"
+      }
+    ]
   },
   "model_client": {
     "identity": "CPython standard-library HTTP client",

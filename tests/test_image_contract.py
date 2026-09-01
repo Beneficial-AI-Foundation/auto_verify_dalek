@@ -14,6 +14,7 @@ LOCK_PATH = ROOT / "docker" / "autofv" / "toolchain-lock.json"
 DOCKER = ("sudo", "docker")
 SHA256 = re.compile(r"(?:sha256:)?[0-9a-f]{64}")
 FINAL_UID = "65532"
+LEAN_VERSION = "v4.28.0-rc1"
 
 
 def load_lock():
@@ -69,6 +70,36 @@ class ImageBuildTests(unittest.TestCase):
         ):
             self.assertNotIn(forbidden, dockerfile.lower())
 
+    def test_offline_probe_runtime_closure_is_pinned(self):
+        dockerfile = DOCKERFILE.read_text(encoding="utf-8")
+        closure = load_lock()["image"]["build_inputs"]["probe_runtime_closure"]
+        self.assertEqual(
+            set(closure),
+            {
+                "rustup",
+                "rust_analyzer",
+                "scip",
+                "cargo_public_api",
+                "nightly",
+                "charon",
+                "probe_lean_runtime",
+            },
+        )
+        for record in closure.values():
+            self.assertEqual(record["legitimacy"], "verified")
+
+        self.assertIn("rustup component add rust-analyzer rust-src", dockerfile)
+        self.assertIn("nightly-2026-06-01", dockerfile)
+        self.assertIn("cargo-public-api-0.52.0.crate", dockerfile)
+        self.assertIn("[dependencies.curl-sys]", dockerfile)
+        self.assertIn('features = ["static-curl"]', dockerfile)
+        self.assertIn("scip-linux-arm64.tar.gz", dockerfile)
+        self.assertIn("inputs/charon.tar.gz", dockerfile)
+        self.assertIn("charon-driver", dockerfile)
+        self.assertIn(f"probe-lean-{LEAN_VERSION}", dockerfile)
+        self.assertIn(".lake/build/lib/lean", dockerfile)
+        self.assertIn('RUSTUP_AUTO_INSTALL="0"', dockerfile)
+
     def test_recorded_build_identity_matches_locked_inputs(self):
         lock = load_lock()
         image = image_record()
@@ -84,7 +115,11 @@ class ImageBuildTests(unittest.TestCase):
         )
         self.assertRegex(image["image_digest"], r"^sha256:[0-9a-f]{64}$")
         self.assertRegex(image["image_manifest_sha256"], r"^[0-9a-f]{64}$")
-        self.assertRegex(image["builder_receipt_sha256"], r"^[0-9a-f]{64}$")
+        self.assertEqual(
+            image["builder_receipt_sha256"],
+            canonical_sha256(image["builder_receipt"]),
+        )
+        self.assertRegex(image["build_metadata_sha256"], r"^[0-9a-f]{64}$")
         self.assertTrue(image["no_secret_build"])
         self.assertEqual(
             image["labels"],
@@ -131,11 +166,11 @@ class RuntimeSmokeTests(unittest.TestCase):
             "--user",
             "0:0",
             "--mount",
-            f"type=volume,src={self.volume},dst=/work",
+            f"type=volume,src={self.volume},dst=/work,volume-nocopy",
             self.image["image_digest"],
             "sh",
             "-c",
-            f"chown {FINAL_UID}:{FINAL_UID} /work",
+            f"chown {FINAL_UID}:{FINAL_UID} /work && chmod 0700 /work",
         )
 
     def tearDown(self):
@@ -166,10 +201,96 @@ class RuntimeSmokeTests(unittest.TestCase):
             "--tmpfs",
             "/home/autofv/.cache:rw,noexec,nosuid,nodev,size=64m",
             "--mount",
-            f"type=volume,src={self.volume},dst=/work",
+            f"type=volume,src={self.volume},dst=/work,volume-nocopy",
             self.image["image_digest"],
             *command,
         ]
+
+    def copy_tree_to_volume(self, source, destination):
+        name = f"autofv-plan02-copy-{os.getpid()}-{self._testMethodName.lower()}"
+        docker(
+            "create",
+            "--name",
+            name,
+            "--network",
+            "none",
+            "--user",
+            "0:0",
+            "--mount",
+            f"type=volume,src={self.volume},dst=/work,volume-nocopy",
+            self.image["image_digest"],
+            "sleep",
+            "60",
+        )
+        try:
+            docker("start", name)
+            docker("exec", "--user", "0:0", name, "mkdir", "-p", destination)
+            docker("cp", f"{source}/.", f"{name}:{destination}")
+            docker(
+                "exec",
+                "--user",
+                "0:0",
+                name,
+                "chown",
+                "-R",
+                f"{FINAL_UID}:{FINAL_UID}",
+                destination,
+            )
+        finally:
+            docker("rm", "-f", name, check=False)
+
+    @staticmethod
+    def write_rust_fixture(root):
+        (root / "src").mkdir(parents=True)
+        (root / "Cargo.toml").write_text(
+            """[package]
+name = "tiny-probe"
+version = "0.1.0"
+edition = "2021"
+
+[lib]
+path = "src/lib.rs"
+""",
+            encoding="utf-8",
+        )
+        (root / "src" / "lib.rs").write_text(
+            """pub fn leaf(value: u64) -> u64 {
+    value + 1
+}
+
+pub fn top(value: u64) -> u64 {
+    leaf(value)
+}
+""",
+            encoding="utf-8",
+        )
+
+    @staticmethod
+    def probe_rust_facts(document):
+        selected = {}
+        for atom in document["data"].values():
+            name = atom.get("display-name")
+            if name in {"leaf", "top"}:
+                selected[name] = {
+                    "code-path": atom.get("code-path"),
+                    "is-public": atom.get("is-public"),
+                    "is-public-api": atom.get("is-public-api"),
+                    "has-locations": "dependencies-with-locations" in atom,
+                }
+        return {
+            "schema": document["schema"],
+            "schema-version": document["schema-version"],
+            "tool": document["tool"],
+            "source-language": document["source"]["language"],
+            "source-package": document["source"]["package"],
+            "functions": selected,
+        }
+
+    def probe_contract(self, name):
+        contracts = {
+            item["name"]: item for item in self.image["probe_contract_smokes"]
+        }
+        return contracts[name]
 
     def test_read_only_runsc_runtime_uses_final_user_and_managed_writes(self):
         completed = run(
@@ -192,6 +313,14 @@ class RuntimeSmokeTests(unittest.TestCase):
                 "git",
                 "lean",
                 "lake",
+                "rustup",
+                "rustc",
+                "cargo",
+                "rust-analyzer",
+                "scip",
+                "cargo-public-api",
+                "nightly-rustc",
+                "charon",
                 "probe-aeneas",
                 "probe-rust",
                 "probe-lean",
@@ -207,6 +336,112 @@ class RuntimeSmokeTests(unittest.TestCase):
                 ).hexdigest()
                 self.assertEqual(completed.returncode, 0, completed.stderr.decode())
                 self.assertEqual(digest, smoke["output_sha256"])
+
+    def test_probe_rust_extract_runs_with_full_closure_offline(self):
+        contract = self.probe_contract("probe-rust-extract-offline")
+        with tempfile.TemporaryDirectory() as tmp:
+            fixture = Path(tmp) / "rust-fixture"
+            self.write_rust_fixture(fixture)
+            self.copy_tree_to_volume(fixture, "/work/rust-fixture")
+
+        completed = run(self.runtime_argv(*contract["argv"]), check=False)
+        self.assertEqual(completed.returncode, 0, completed.stderr.decode())
+        self.assertIn(b"cargo-public-api found", completed.stdout)
+        document = json.loads(
+            run(self.runtime_argv("cat", "/work/rust-atoms.json")).stdout
+        )
+        facts = self.probe_rust_facts(document)
+        self.assertEqual(facts, contract["expected_facts"])
+        self.assertEqual(canonical_sha256(facts), contract["facts_sha256"])
+
+    def test_probe_aeneas_extract_resolves_pinned_subtools_offline(self):
+        contract = self.probe_contract("probe-aeneas-extract-offline")
+        with tempfile.TemporaryDirectory() as tmp:
+            fixture = Path(tmp) / "aeneas-fixture"
+            self.write_rust_fixture(fixture)
+            (fixture / "aeneas-config.yml").write_text(
+                'crate:\n  dir: "."\n  name: "tiny-probe"\n',
+                encoding="utf-8",
+            )
+            (fixture / "lakefile.toml").write_text(
+                """name = "TinyProbe"
+version = "0.1.0"
+defaultTargets = ["TinyProbe"]
+
+[[lean_lib]]
+name = "TinyProbe"
+""",
+                encoding="utf-8",
+            )
+            (fixture / "lean-toolchain").write_text(
+                f"leanprover/lean4:{LEAN_VERSION}\n", encoding="utf-8"
+            )
+            (fixture / "TinyProbe.lean").write_text(
+                """namespace TinyProbe
+def leaf (value : Nat) : Nat := value + 1
+def top (value : Nat) : Nat := leaf value
+end TinyProbe
+""",
+                encoding="utf-8",
+            )
+            (fixture / "functions.json").write_text(
+                json.dumps(
+                    {
+                        "functions": [
+                            {
+                                "lean_name": "TinyProbe.leaf",
+                                "rust_name": "tiny_probe::leaf",
+                                "source": "src/lib.rs",
+                                "lines": "L1-L3",
+                            },
+                            {
+                                "lean_name": "TinyProbe.top",
+                                "rust_name": "tiny_probe::top",
+                                "source": "src/lib.rs",
+                                "lines": "L5-L7",
+                            },
+                        ]
+                    },
+                    sort_keys=True,
+                    separators=(",", ":"),
+                )
+                + "\n",
+                encoding="utf-8",
+            )
+            self.copy_tree_to_volume(fixture, "/work/aeneas-fixture")
+
+        completed = run(self.runtime_argv(*contract["argv"]), check=False)
+        self.assertEqual(completed.returncode, 0, completed.stderr.decode())
+        rust_document = json.loads(
+            run(
+                self.runtime_argv(
+                    "cat",
+                    "/work/aeneas-fixture/.verilib/probes/rust_extract.json",
+                )
+            ).stdout
+        )
+        merged = json.loads(
+            run(self.runtime_argv("cat", "/work/aeneas-atoms.json")).stdout
+        )
+        charon_versions = sorted(
+            {
+                atom["charon-version"]
+                for atom in rust_document["data"].values()
+                if atom.get("charon-version")
+            }
+        )
+        facts = {
+            "schema": merged["schema"],
+            "schema-version": merged["schema-version"],
+            "tool": merged["tool"],
+            "input-languages": sorted(
+                item["source"]["language"] for item in merged["inputs"]
+            ),
+            "charon-versions": charon_versions,
+            "public-api-ran": b"cargo-public-api found" in completed.stdout,
+        }
+        self.assertEqual(facts, contract["expected_facts"])
+        self.assertEqual(canonical_sha256(facts), contract["facts_sha256"])
 
     def test_statement_gate_runs_from_a_copied_control_file(self):
         name = f"autofv-plan02-gate-{os.getpid()}"

@@ -511,5 +511,142 @@ class NativeDecidePolicyContractTests(unittest.TestCase):
         self.assertEqual(calls, [])
 
 
+class PreparedConfigTests(unittest.TestCase):
+    fixture = ROOT / "tests" / "fixtures" / "diamond"
+    target = {
+        "function": "probe:autofv-diamond/0.1.0/lib/top()",
+        "spec": "Diamond.top_spec",
+    }
+    manifest = {
+        "schema": "autofv/v1",
+        "targets": [target],
+        "verify": ["lake", "build"],
+    }
+    run_config = {
+        "schema": "autofv-run/v1",
+        "model": "fixture-model-v1",
+        "max_wall_seconds": 300,
+        "max_cost_usd": 1,
+    }
+
+    def test_prepared_fixture_is_one_canonical_supplied_target(self):
+        _, manifest = experiment.validate_target(self.fixture)
+        _, run_config = experiment.validate_run_config(self.fixture / "run.json")
+
+        self.assertEqual(manifest, self.manifest)
+        self.assertEqual(len(manifest["targets"]), 1)
+        self.assertTrue(all(target["spec"] for target in manifest["targets"]))
+        self.assertEqual(set(run_config), set(self.run_config))
+        self.assertEqual(run_config["model"], "fixture-model-v1")
+        self.assertEqual(run_config["max_wall_seconds"], 300)
+        self.assertEqual(run_config["max_cost_usd"], Decimal("1"))
+
+        raw_run_config = json.loads((self.fixture / "run.json").read_text())
+        self.assertEqual(
+            hashlib.sha256(experiment.canonical_json_bytes(manifest)).hexdigest(),
+            "89db5d595108034139a45d9569ebdb99d6fe38282c20ee641c1a4a18a05c6902",
+        )
+        self.assertEqual(
+            hashlib.sha256(
+                experiment.canonical_json_bytes(raw_run_config)
+            ).hexdigest(),
+            "f2a6f19fbf8f9700f9cd58b2cb616317438f28fd7868506c01a1e8ec19acf92e",
+        )
+
+    def test_manifest_rejects_duplicate_empty_null_missing_and_unsafe_fields(self):
+        invalid_cases = {}
+
+        duplicate = copy.deepcopy(self.manifest)
+        duplicate["targets"].append(copy.deepcopy(self.target))
+        invalid_cases["duplicate target"] = duplicate
+
+        for name, value in (("empty targets", []), ("null targets", None)):
+            manifest = copy.deepcopy(self.manifest)
+            manifest["targets"] = value
+            invalid_cases[name] = manifest
+
+        missing = copy.deepcopy(self.manifest)
+        del missing["targets"]
+        invalid_cases["missing targets"] = missing
+
+        unknown = copy.deepcopy(self.manifest)
+        unknown["proxy_url"] = "https://example.invalid"
+        invalid_cases["unknown field"] = unknown
+
+        relative_command = copy.deepcopy(self.manifest)
+        relative_command["verify"] = ["./lake", "build"]
+        invalid_cases["relative command"] = relative_command
+
+        for name, manifest in invalid_cases.items():
+            with self.subTest(name=name), tempfile.TemporaryDirectory() as tmp:
+                target = Path(tmp) / "target"
+                target.mkdir()
+                (target / "autofv.json").write_text(json.dumps(manifest))
+                with self.assertRaises(experiment.ContractError):
+                    experiment.validate_target(target)
+
+    def test_run_config_rejects_unknown_fields_and_non_positive_budgets(self):
+        invalid_cases = {}
+
+        unknown = copy.deepcopy(self.run_config)
+        unknown["worker"] = "untrusted"
+        invalid_cases["unknown field"] = unknown
+
+        for field in ("max_wall_seconds", "max_cost_usd"):
+            for value in (0, -1):
+                config = copy.deepcopy(self.run_config)
+                config[field] = value
+                invalid_cases[f"{field}={value}"] = config
+
+        for name, config in invalid_cases.items():
+            with self.subTest(name=name), tempfile.TemporaryDirectory() as tmp:
+                path = Path(tmp) / "run.json"
+                path.write_text(json.dumps(config))
+                with self.assertRaises(experiment.ContractError):
+                    experiment.validate_run_config(path)
+
+    def test_object_order_does_not_change_frozen_manifest_hash(self):
+        reordered = {
+            "verify": ["lake", "build"],
+            "targets": [
+                {
+                    "spec": "Diamond.top_spec",
+                    "function": "probe:autofv-diamond/0.1.0/lib/top()",
+                }
+            ],
+            "schema": "autofv/v1",
+        }
+        expected = "89db5d595108034139a45d9569ebdb99d6fe38282c20ee641c1a4a18a05c6902"
+        self.assertEqual(
+            hashlib.sha256(experiment.canonical_json_bytes(self.manifest)).hexdigest(),
+            expected,
+        )
+        self.assertEqual(
+            hashlib.sha256(experiment.canonical_json_bytes(reordered)).hexdigest(),
+            expected,
+        )
+
+    def test_fixture_exposes_no_internal_or_secret_controls(self):
+        manifest = json.loads((self.fixture / "autofv.json").read_text())
+        run_config = json.loads((self.fixture / "run.json").read_text())
+        self.assertEqual(set(manifest), {"schema", "targets", "verify"})
+        self.assertEqual(set(run_config), set(self.run_config))
+
+        serialized = json.dumps([manifest, run_config], sort_keys=True).lower()
+        for forbidden in (
+            "proxy_url",
+            "receipt",
+            "tool_path",
+            "worker",
+            "provider",
+            "credential",
+            "trust_override",
+            "reference",
+            "target_mode",
+        ):
+            with self.subTest(forbidden=forbidden):
+                self.assertNotIn(forbidden, serialized)
+
+
 if __name__ == "__main__":
     unittest.main()

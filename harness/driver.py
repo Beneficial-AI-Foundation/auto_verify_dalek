@@ -796,8 +796,12 @@ def main():
         agentproc.start_wire_proxy(os.path.join(LEDGER_DIR, "wire"), env)
 
     inv = json.load(open(INVENTORY))
-    targets = [loc for z in args.zones.split(",")
-               for loc in inv["locations"][z.strip()]]
+    zones = [z.strip() for z in args.zones.split(",")]
+    bad = [z for z in zones if z not in inv["locations"]]
+    if bad:
+        sys.exit(f"unknown zone(s) {bad}; inventory has: "
+                 f"{sorted(inv['locations'])}")
+    targets = [loc for z in zones for loc in inv["locations"][z]]
     if args.path:
         want = args.path.rstrip("/")
         targets = [t for t in targets

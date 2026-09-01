@@ -1,0 +1,13 @@
+{
+  "schema": "autofv/v1",
+  "targets": [
+    {
+      "function": "probe:autofv-diamond/0.1.0/lib/top()",
+      "spec": "Diamond.top_spec"
+    }
+  ],
+  "verify": [
+    "lake",
+    "build"
+  ]
+}

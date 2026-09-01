@@ -1,0 +1,6 @@
+{
+  "max_cost_usd": 1,
+  "max_wall_seconds": 300,
+  "model": "fixture-model-v1",
+  "schema": "autofv-run/v1"
+}

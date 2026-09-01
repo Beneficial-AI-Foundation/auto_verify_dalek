@@ -459,6 +459,10 @@ def run_rounds(prompt, tid, path, before_counts, args, env, settings_path,
                             per-target bound is rounds × timeout
       * --max-cost-usd      cumulative reported cost cap per target (0 = off)
       * END_REASON:LIMIT    agent's honest give-up ends the attempt
+      * max turns           a round that dies of --max-turns (claude exits 1,
+                            subtype error_max_turns) is not an agent_error:
+                            the gate runs on what's on disk and a FEEDBACK
+                            rejection resumes the session next round
       * stall               --stall-rounds consecutive rounds that leave the
                             target file byte-identical → session reset
                             (fresh context + compact round history); after
@@ -504,6 +508,14 @@ def run_rounds(prompt, tid, path, before_counts, args, env, settings_path,
 
         if status != "ok":
             outcome, detail = "agent_error", {"error": status}
+        elif rc != 0 and result.get("subtype") == "error_max_turns":
+            # Ran out of --max-turns mid-work — not a failure, the round
+            # just ended early. Gate whatever is on disk: a FEEDBACK
+            # rejection (build fails / sorry remains) resumes the same
+            # session next round; a finished proof is accepted as usual.
+            outcome, detail = gate(work, path, before_counts,
+                                   args.build_timeout, g1_base)
+            detail["max_turns_exhausted"] = True
         elif rc != 0:
             outcome, detail = "agent_error", {"error": f"exit {rc}"}
         else:

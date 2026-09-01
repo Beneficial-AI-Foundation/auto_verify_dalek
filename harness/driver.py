@@ -141,7 +141,10 @@ def build_sorry_counts(work, timeout=BUILD_TIMEOUT):
     workers, which keep burning cores.
     """
     t0 = time.time()
-    proc = subprocess.Popen(["lake", "build"], cwd=work,
+    # nice -n 19: gate builds are batch work; don't starve the host (or the
+    # other --jobs slot). The timeout stays wall-clock, so on a loaded
+    # machine a niced build can hit it sooner — the budget includes that.
+    proc = subprocess.Popen(["nice", "-n", "19", "lake", "build"], cwd=work,
                             stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
                             text=True, start_new_session=True)
     try:
@@ -593,7 +596,8 @@ def stmt_fingerprints(modules, work, timeout=600):
     files: run after `lake build`). Returns (fps, seconds) or raises
     RuntimeError with the tool's tail."""
     t0 = time.time()
-    p = subprocess.run(["lake", "env", "lean", "--run", STMT_CANON,
+    p = subprocess.run(["nice", "-n", "19",
+                        "lake", "env", "lean", "--run", STMT_CANON,
                         "--module", ",".join(modules)],
                        cwd=work, capture_output=True, text=True,
                        timeout=timeout)

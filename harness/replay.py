@@ -105,7 +105,7 @@ def zone_of(path, inv):
 
 # ── G1 over frozen statements ───────────────────────────────────────────
 def stmt_fingerprints(cwd, modules, timeout=1800):
-    p = sh(["lake", "env", "lean", "--run", STMT_CANON,
+    p = sh(["nice", "-n", "19", "lake", "env", "lean", "--run", STMT_CANON,
             "--module", ",".join(modules)], cwd, timeout)
     if p.returncode != 0:
         raise RuntimeError((p.stdout + p.stderr)[-2000:])
@@ -220,7 +220,8 @@ def main():
         print("lake build (fresh .lake/build) …", flush=True)
         t0 = time.time()
         try:
-            b = sh(["lake", "build"], wt, args.build_timeout)
+            b = sh(["nice", "-n", "19", "lake", "build"], wt,
+                   args.build_timeout)
             build = {"rc": b.returncode, "seconds": round(time.time() - t0, 1)}
             if b.returncode != 0:
                 build["tail"] = (b.stdout + b.stderr)[-3000:]

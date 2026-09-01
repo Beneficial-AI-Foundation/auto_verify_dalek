@@ -349,6 +349,10 @@ def run_round(prompt, transcript_path, *, cwd, session_id, resume,
                         allowed_tools, continue_message, settings_path)
     if sandbox_prefix:
         cmd = list(sandbox_prefix) + cmd
+    # nice -n 19 the whole agent subtree: claude itself is API-bound, but
+    # every `lake build` / `lean` it spawns via Bash inherits the niceness,
+    # so agent iteration builds run at batch priority like the gate builds.
+    cmd = ["nice", "-n", "19"] + cmd
     t0 = time.time()
     killed_deadline = False
     with open(transcript_path, "w") as fh:

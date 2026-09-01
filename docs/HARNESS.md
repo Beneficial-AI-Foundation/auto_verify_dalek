@@ -22,9 +22,10 @@ tree under one lock (plain copy — never a git merge, see DEC-19).
 from the last accept, not from the baseline.
 
 Gate: **a** only target file changed · **b** no `axiom` / `@[implemented_by]` /
-`@[extern]` · **c** `lake build` ok ≤ 20 min · 
+`@[extern]` · **c** `lake build` ok ≤ 20 min, run under `nice -n 19` (driver gate and
+replay; batch priority, wall-clock budget unchanged) ·
 
-TODO: `nice -n 19` and too little
+TODO: is 20 min too little for the big modules?
 
 
 **c′** every statement in the

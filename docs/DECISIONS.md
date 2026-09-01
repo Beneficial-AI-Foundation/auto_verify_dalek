@@ -45,13 +45,23 @@ Test Rust-to-Lean later as a separate experiment.
 
 ### DEC-04 — How do we choose the top-level set `T`?
 
-**Status:** PROPOSED
+**Status:** ACCEPTED for now (2026-09-01, Zhang-Liao; hardening deferred)
 
 **Question:** Which graph rule and which API/trait targets should define `T`?
 
-**Suggested start:** Check in a deterministic script using pinned probe data.
-Use `A → B` for “A calls B,” and report `api` and `trait-instance` targets
-separately.
+**Decision:** `T` is a fixed checked-in list, pinned by the DEC-12 tree hash —
+no re-derivation at run time. The public-API face is the api-top list
+(`harness/api_top.py`: Rust `pub` visibility × API-module membership ×
+extracted-and-specced set from `functions.json`; API functions, constants,
+and trait instances reported separately), cross-checked against
+CryptoProver's published list (exclusions recorded in
+`api_top_specs.json` `cryptoprover_crosscheck`) and manually audited
+(2026-08-24, `debug_top_api.md`). On that basis the claim **may** say
+"all public APIs", citing the audit.
+
+**Deferred hardening** (see `top_func.md`): closure-coverage check over the
+spec call graph, independent edge recomputation via `probe-lean`, golden
+negative tests so a future re-run of the classifier cannot drift silently.
 
 ### DEC-05 — How do we choose the supplied seed `S`?
 

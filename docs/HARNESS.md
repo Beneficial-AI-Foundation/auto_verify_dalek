@@ -69,7 +69,6 @@ top-level public API functions
 TODO: sometimes the original function spec is wrong — needs an honest
 escalation path (cf. CryptoProver FALSE_CONTRACT: agent supplies a
 counterexample witness, harness re-verifies it against the frozen statement)
-TODO: are all the public functions chosen?
 
 | ✅ | Can a human tamper mid-run? | DEC-12 tree hashed at run start; input-set change = violation, other change = drift; re-checked per target | implemented |
 | 🟡 | Can the agent peek at answers? | DEC-08 filesystem closed; network deny-listed not blocked; credential in sandbox; no broker | partial (= CryptoProver) |
@@ -83,7 +82,8 @@ TODO: use OpenTelemetry to check a posteriori if the agent accessed the internet
 | ✅ | How many runs, which models? | DEC-13 solved for now: n = 1 runs, one pinned model (saves tokens, like CryptoProver); **no comparative claim from n = 1**; records already carry hashes/limits/`models_used`, so `--repeats K` + k/K aggregation can be added when comparisons are needed | accepted (repeats deferred) |
 | ⬜ | Agent writes the spec itself? | DEC-05/06/07 seed `S`, `Math/` visibility, writer/reviewer roles | not started (Phase 2) |
 | 🟡 | Where do transcripts live, who reads? | DEC-01/02/15 transcripts in `ledger/transcripts/`, never discarded, `ledger/` git-ignored; raw restricted, publish hashes + outcomes + redacted summaries; open: which BAIF bucket gets the sealed tars | partial |
-| ⬜ | Misc | DEC-04 `T` selection in driver · DEC-18 claim boundary in report · run-invalidation rules | open |
+| ✅ | Is `T` really all the public APIs? | DEC-04 fixed checked-in list, pinned by tree hash; API face from `harness/api_top.py` (pub visibility × extraction × specs), CryptoProver cross-check + manual audit (`debug_top_api.md`) — "all public APIs" wording allowed; re-derivation hardening deferred (`top_func.md`) | accepted for now |
+| ⬜ | Misc | DEC-18 claim boundary in report · run-invalidation rules | open |
 
 ## Next
 

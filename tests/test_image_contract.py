@@ -481,5 +481,178 @@ end TinyProbe
             docker("rm", "-f", name, check=False)
 
 
+class ContentDriftTests(unittest.TestCase):
+    def test_recorded_image_identity_matches_current_content_inputs(self):
+        lock = load_lock()
+        identity = compute_image_build_identity(lock, DOCKERFILE.read_bytes())
+        self.assertEqual(identity, lock["image"]["build_identity"])
+        self.assertEqual(
+            canonical_sha256(identity), lock["image"]["build_identity_sha256"]
+        )
+        assert_image_lock_current(lock, DOCKERFILE.read_bytes())
+
+    def test_image_content_and_policy_mutations_make_the_lock_stale(self):
+        lock = load_lock()
+        cases = []
+
+        changed_inputs = json.loads(json.dumps(lock))
+        changed_inputs["image"]["build_inputs"]["lean"]["commit"] = "f" * 40
+        cases.append(("build-input", changed_inputs, DOCKERFILE.read_bytes()))
+
+        changed_policy = json.loads(json.dumps(lock))
+        changed_policy["native_decide_policy"]["criterion"]["scope"] = {
+            "kind": "named_specs",
+            "specs": ["A"],
+        }
+        cases.append(("policy", changed_policy, DOCKERFILE.read_bytes()))
+
+        cases.append(
+            ("dockerfile", lock, DOCKERFILE.read_bytes() + b"\n# content drift\n")
+        )
+
+        for name, candidate, dockerfile in cases:
+            with self.subTest(name=name):
+                with self.assertRaisesRegex(ImageIdentityError, "stale image lock"):
+                    assert_image_lock_current(candidate, dockerfile)
+
+    def test_controller_only_mutation_changes_bundle_not_image_identity(self):
+        lock = load_lock()
+        identity = compute_image_build_identity(lock, DOCKERFILE.read_bytes())
+        contract = json.loads(json.dumps(lock["controller_delivery"]))
+        contract["allowed_members"] = ["autofv/experiment.py"]
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            source = root / "autofv" / "experiment.py"
+            source.parent.mkdir(parents=True)
+            source.write_bytes(b"before\n")
+            before = build_control_bundle_manifest(
+                root, contract["allowed_members"], contract
+            )
+            source.write_bytes(b"after\n")
+            after = build_control_bundle_manifest(
+                root, contract["allowed_members"], contract
+            )
+
+        self.assertNotEqual(before["bundle_sha256"], after["bundle_sha256"])
+        self.assertEqual(
+            identity, compute_image_build_identity(lock, DOCKERFILE.read_bytes())
+        )
+
+
+class ControlBundleBoundaryTests(unittest.TestCase):
+    @staticmethod
+    def contract_with_members(*members):
+        contract = json.loads(json.dumps(load_lock()["controller_delivery"]))
+        contract["allowed_members"] = list(members)
+        return contract
+
+    def test_manifest_is_canonical_for_the_exact_locked_members(self):
+        contract = load_lock()["controller_delivery"]
+        manifest = build_control_bundle_manifest(
+            ROOT, contract["allowed_members"], contract
+        )
+        entries = manifest["entries"]
+
+        self.assertEqual(
+            set(manifest), {"schema", "entries", "bundle_sha256"}
+        )
+        self.assertEqual(
+            [entry["path"] for entry in entries],
+            sorted(contract["allowed_members"]),
+        )
+        self.assertTrue(
+            all(set(entry) == set(contract["manifest"]["entry_fields"])
+                for entry in entries)
+        )
+        self.assertTrue(
+            all(entry["mode"] == contract["modes"]["file"] for entry in entries)
+        )
+        self.assertEqual(
+            manifest["bundle_sha256"],
+            canonical_sha256({"schema": manifest["schema"], "entries": entries}),
+        )
+        validate_control_bundle_manifest(ROOT, manifest, contract)
+
+    def test_rejects_noncanonical_duplicate_and_out_of_allowlist_members(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            source = root / "autofv" / "experiment.py"
+            source.parent.mkdir(parents=True)
+            source.write_bytes(b"trusted\n")
+            contract = self.contract_with_members("autofv/experiment.py")
+
+            hostile_members = (
+                ["autofv/experiment.py", "autofv/experiment.py"],
+                ["harness/driver.py"],
+                ["/autofv/experiment.py"],
+                ["autofv//experiment.py"],
+                ["autofv/./experiment.py"],
+                ["autofv/../experiment.py"],
+                ["autofv\\experiment.py"],
+            )
+            for members in hostile_members:
+                with self.subTest(members=members):
+                    with self.assertRaises(ControlBundleError):
+                        build_control_bundle_manifest(root, members, contract)
+
+    def test_rejects_symlinks_and_special_files(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            bundle = root / "autofv"
+            bundle.mkdir()
+            regular = bundle / "regular.py"
+            regular.write_bytes(b"trusted\n")
+            symlink = bundle / "symlink.py"
+            symlink.symlink_to(regular)
+            fifo = bundle / "special"
+            os.mkfifo(fifo)
+
+            for member in ("autofv/symlink.py", "autofv/special"):
+                with self.subTest(member=member):
+                    contract = self.contract_with_members(member)
+                    with self.assertRaises(ControlBundleError):
+                        build_control_bundle_manifest(root, [member], contract)
+
+    def test_rejects_stale_hashes_and_noncanonical_metadata_before_copy(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            source = root / "autofv" / "experiment.py"
+            source.parent.mkdir(parents=True)
+            source.write_bytes(b"trusted\n")
+            contract = self.contract_with_members("autofv/experiment.py")
+            manifest = build_control_bundle_manifest(
+                root, contract["allowed_members"], contract
+            )
+
+            source.write_bytes(b"mutated\n")
+            with self.assertRaisesRegex(ControlBundleError, "content mismatch"):
+                validate_control_bundle_manifest(root, manifest, contract)
+
+            source.write_bytes(b"trusted\n")
+            reversed_manifest = json.loads(json.dumps(manifest))
+            reversed_manifest["entries"].append(
+                json.loads(json.dumps(reversed_manifest["entries"][0]))
+            )
+            with self.assertRaises(ControlBundleError):
+                validate_control_bundle_manifest(root, reversed_manifest, contract)
+
+            unknown_metadata = json.loads(json.dumps(manifest))
+            unknown_metadata["unexpected"] = True
+            with self.assertRaises(ControlBundleError):
+                validate_control_bundle_manifest(root, unknown_metadata, contract)
+
+    def test_final_image_build_context_excludes_the_control_bundle(self):
+        lock = load_lock()
+        context = set(lock["image"]["builder_receipt"]["build_context"])
+        members = set(lock["controller_delivery"]["allowed_members"])
+        dockerfile = DOCKERFILE.read_text(encoding="utf-8").lower()
+
+        self.assertTrue(context.isdisjoint(members))
+        self.assertNotIn(lock["controller_delivery"]["destination"], dockerfile)
+        self.assertFalse(lock["image"]["builder_receipt"]["host_checkout_mounted"])
+        self.assertFalse(lock["controller_delivery"]["bind_mount"])
+
+
 if __name__ == "__main__":
     unittest.main()

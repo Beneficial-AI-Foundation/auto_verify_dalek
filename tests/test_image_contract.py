@@ -2,6 +2,7 @@ import hashlib
 import json
 import os
 import re
+import stat
 import subprocess
 import tempfile
 import unittest
@@ -45,6 +46,218 @@ def image_record():
     if SHA256.fullmatch(image["image_digest"]) is None:
         raise AssertionError("image_digest is not a SHA-256 digest")
     return image
+
+
+class ImageIdentityError(ValueError):
+    pass
+
+
+class ControlBundleError(ValueError):
+    pass
+
+
+def compute_image_build_identity(lock, dockerfile_bytes):
+    try:
+        image = lock["image"]
+        build_inputs = image["build_inputs"]
+        policy = lock["native_decide_policy"]
+        return {
+            "schema": "autofv-image-build-identity/v1",
+            "dockerfile_sha256": hashlib.sha256(dockerfile_bytes).hexdigest(),
+            "build_inputs_sha256": canonical_sha256(build_inputs),
+            "platform": build_inputs["platform"],
+            "base_oci_digest": build_inputs["base_oci"]["digest"],
+            "native_decide_policy_sha256": canonical_sha256(policy),
+        }
+    except (KeyError, TypeError) as error:
+        raise ImageIdentityError("stale image lock: incomplete identity inputs") from error
+
+
+def assert_image_lock_current(lock, dockerfile_bytes):
+    image = lock.get("image", {})
+    current = compute_image_build_identity(lock, dockerfile_bytes)
+    checks = (
+        current == image.get("build_identity"),
+        canonical_sha256(current) == image.get("build_identity_sha256"),
+        current["dockerfile_sha256"] == image.get("dockerfile_sha256"),
+        current["build_inputs_sha256"] == image.get("build_inputs_sha256"),
+        current["platform"] == image.get("platform"),
+        current["native_decide_policy_sha256"]
+        == lock.get("native_decide_policy_sha256"),
+        current["native_decide_policy_sha256"]
+        == image.get("build_inputs", {}).get("native_decide_policy_sha256"),
+        SHA256.fullmatch(image.get("image_digest", "")) is not None,
+    )
+    if not all(checks):
+        raise ImageIdentityError("stale image lock: rebuild and re-pin required")
+    return image["image_digest"]
+
+
+def _canonical_member_path(member):
+    if not isinstance(member, str) or not member or "\\" in member or "\0" in member:
+        raise ControlBundleError("non-canonical bundle member")
+    try:
+        member.encode("utf-8")
+    except UnicodeEncodeError as error:
+        raise ControlBundleError("non-canonical bundle member") from error
+    parts = member.split("/")
+    if member.startswith("/") or any(part in {"", ".", ".."} for part in parts):
+        raise ControlBundleError("non-canonical bundle member")
+    return parts
+
+
+def _member_is_allowed(member, allowed_roots):
+    return any(
+        member.startswith(root) if root.endswith("/") else member == root
+        for root in allowed_roots
+    )
+
+
+def _validate_bundle_contract(contract):
+    try:
+        allowed = contract["allowed_members"]
+        allowed_roots = contract["allowed_roots"]
+        manifest = contract["manifest"]
+        modes = contract["modes"]
+    except (KeyError, TypeError) as error:
+        raise ControlBundleError("incomplete control-bundle contract") from error
+    if (
+        not isinstance(allowed, list)
+        or not all(isinstance(member, str) for member in allowed)
+        or allowed != sorted(set(allowed))
+    ):
+        raise ControlBundleError("allowed members are not canonical and unique")
+    if not isinstance(allowed_roots, list) or not all(
+        isinstance(root, str) for root in allowed_roots
+    ):
+        raise ControlBundleError("allowed roots are invalid")
+    if not isinstance(manifest, dict):
+        raise ControlBundleError("manifest contract is invalid")
+    for member in allowed:
+        _canonical_member_path(member)
+        if not _member_is_allowed(member, allowed_roots):
+            raise ControlBundleError("allowed member lies outside allowed roots")
+    if manifest.get("file_types") != ["regular_file"]:
+        raise ControlBundleError("only regular bundle members are supported")
+    if set(manifest.get("entry_fields", ())) != {"path", "sha256", "size"}:
+        raise ControlBundleError("non-canonical bundle entry schema")
+    if modes != {"directory": "0555", "file": "0444"}:
+        raise ControlBundleError("bundle must be delivered read-only")
+    return allowed, manifest, modes
+
+
+def _read_regular_member(root, member):
+    parts = _canonical_member_path(member)
+    candidate = root
+    for index, part in enumerate(parts):
+        candidate = candidate / part
+        try:
+            member_stat = os.lstat(candidate)
+        except OSError as error:
+            raise ControlBundleError("bundle member is missing") from error
+        if stat.S_ISLNK(member_stat.st_mode):
+            raise ControlBundleError("bundle member may not be a symlink")
+        if index < len(parts) - 1 and not stat.S_ISDIR(member_stat.st_mode):
+            raise ControlBundleError("bundle member parent is not a directory")
+    if not stat.S_ISREG(member_stat.st_mode):
+        raise ControlBundleError("bundle member must be a regular file")
+
+    flags = os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0)
+    try:
+        descriptor = os.open(candidate, flags)
+    except OSError as error:
+        raise ControlBundleError("bundle member could not be opened safely") from error
+    try:
+        opened_stat = os.fstat(descriptor)
+        if not stat.S_ISREG(opened_stat.st_mode) or (
+            opened_stat.st_dev,
+            opened_stat.st_ino,
+        ) != (member_stat.st_dev, member_stat.st_ino):
+            raise ControlBundleError("bundle member changed during validation")
+        chunks = []
+        while chunk := os.read(descriptor, 1024 * 1024):
+            chunks.append(chunk)
+    finally:
+        os.close(descriptor)
+    return b"".join(chunks)
+
+
+def build_control_bundle_manifest(root, members, contract):
+    allowed, manifest_contract, modes = _validate_bundle_contract(contract)
+    if not isinstance(members, list):
+        raise ControlBundleError("bundle members must be a list")
+    for member in members:
+        _canonical_member_path(member)
+    if len(members) != len(set(members)):
+        raise ControlBundleError("duplicate bundle member")
+    if set(members) != set(allowed):
+        raise ControlBundleError("bundle members do not match the exact allowlist")
+
+    root = Path(root)
+    try:
+        root_stat = os.lstat(root)
+    except OSError as error:
+        raise ControlBundleError("bundle root is missing") from error
+    if stat.S_ISLNK(root_stat.st_mode) or not stat.S_ISDIR(root_stat.st_mode):
+        raise ControlBundleError("bundle root must be a real directory")
+    entries = []
+    for member in sorted(members):
+        data = _read_regular_member(root, member)
+        entries.append(
+            {
+                "path": member,
+                "sha256": hashlib.sha256(data).hexdigest(),
+                "size": len(data),
+            }
+        )
+    body = {
+        "schema": manifest_contract["schema"],
+        "entries": entries,
+        "modes": modes,
+    }
+    return {**body, "bundle_sha256": canonical_sha256(body)}
+
+
+def validate_control_bundle_manifest(root, manifest, contract):
+    if not isinstance(manifest, dict) or set(manifest) != {
+        "schema",
+        "entries",
+        "modes",
+        "bundle_sha256",
+    }:
+        raise ControlBundleError("non-canonical bundle metadata")
+    if not isinstance(manifest.get("entries"), list):
+        raise ControlBundleError("non-canonical bundle metadata")
+    contract_manifest = contract.get("manifest", {})
+    if (
+        manifest.get("schema") != contract_manifest.get("schema")
+        or manifest.get("modes") != contract.get("modes")
+        or not isinstance(manifest.get("bundle_sha256"), str)
+        or re.fullmatch(r"[0-9a-f]{64}", manifest["bundle_sha256"]) is None
+    ):
+        raise ControlBundleError("non-canonical bundle metadata")
+    expected_fields = set(contract_manifest.get("entry_fields", ()))
+    if any(
+        not isinstance(entry, dict) or set(entry) != expected_fields
+        for entry in manifest["entries"]
+    ):
+        raise ControlBundleError("non-canonical bundle metadata")
+    for entry in manifest["entries"]:
+        _canonical_member_path(entry["path"])
+        if (
+            not isinstance(entry["sha256"], str)
+            or re.fullmatch(r"[0-9a-f]{64}", entry["sha256"]) is None
+            or type(entry["size"]) is not int
+            or entry["size"] < 0
+        ):
+            raise ControlBundleError("non-canonical bundle metadata")
+    paths = [entry["path"] for entry in manifest["entries"]]
+    if paths != sorted(paths) or len(paths) != len(set(paths)):
+        raise ControlBundleError("non-canonical bundle metadata")
+    expected = build_control_bundle_manifest(root, paths, contract)
+    if manifest != expected:
+        raise ControlBundleError("control bundle content mismatch before copy")
+    return manifest["bundle_sha256"]
 
 
 class ImageBuildTests(unittest.TestCase):
@@ -555,7 +768,7 @@ class ControlBundleBoundaryTests(unittest.TestCase):
         entries = manifest["entries"]
 
         self.assertEqual(
-            set(manifest), {"schema", "entries", "bundle_sha256"}
+            set(manifest), {"schema", "entries", "modes", "bundle_sha256"}
         )
         self.assertEqual(
             [entry["path"] for entry in entries],
@@ -565,12 +778,16 @@ class ControlBundleBoundaryTests(unittest.TestCase):
             all(set(entry) == set(contract["manifest"]["entry_fields"])
                 for entry in entries)
         )
-        self.assertTrue(
-            all(entry["mode"] == contract["modes"]["file"] for entry in entries)
-        )
+        self.assertEqual(manifest["modes"], contract["modes"])
         self.assertEqual(
             manifest["bundle_sha256"],
-            canonical_sha256({"schema": manifest["schema"], "entries": entries}),
+            canonical_sha256(
+                {
+                    "schema": manifest["schema"],
+                    "entries": entries,
+                    "modes": manifest["modes"],
+                }
+            ),
         )
         validate_control_bundle_manifest(ROOT, manifest, contract)
 

@@ -246,6 +246,15 @@
     "image_digest": "sha256:77b39dba4adf6d7ed57c5028c313430f4d987e172bda25aac1b628a83f1ed85e",
     "image_manifest_sha256": "77b39dba4adf6d7ed57c5028c313430f4d987e172bda25aac1b628a83f1ed85e",
     "image_config_sha256": "325425937518f783ca6a489c240acc2e189d77d27ef8a94b5ed9952e2af02027",
+    "build_identity": {
+      "schema": "autofv-image-build-identity/v1",
+      "dockerfile_sha256": "7afa5c17b2fbf5b2bf46303d10580ca16d118cb0800b357e631b6b11c007176a",
+      "build_inputs_sha256": "95e1833ea5c4bb941afc1cd0bf4a61cb725aa06771b6bf0b37afb2de61da9b5e",
+      "platform": "linux/arm64",
+      "base_oci_digest": "sha256:593bd06efe90efa80dc4eee3948be7c0fde4134606dd40d8dd8dbcade98e669c",
+      "native_decide_policy_sha256": "bae965de1366b29fa30d89057a218d6030065d43bcf14f4f664a2e63bded7ff9"
+    },
+    "build_identity_sha256": "94565c459693ea120b1c2b2e8170fc0d9b979f86392706d32ed56ea55d4eca53",
     "dockerfile_sha256": "7afa5c17b2fbf5b2bf46303d10580ca16d118cb0800b357e631b6b11c007176a",
     "build_inputs": {
       "platform": "linux/arm64",
@@ -627,11 +636,30 @@
       "harness/frozen/",
       ".verilib/sorry_inventory.json"
     ],
+    "allowed_members": [
+      ".verilib/sorry_inventory.json",
+      "autofv/__init__.py",
+      "autofv/experiment.py",
+      "docker/autofv/toolchain-lock.json",
+      "harness/agentproc.py",
+      "harness/frozen/external_axioms.json",
+      "harness/frozen/frozen_files.sha256",
+      "harness/frozen/math_assumptions.json",
+      "harness/frozen/native_decide_sites.json",
+      "harness/frozen/packages.sha256",
+      "harness/frozen/statements.json",
+      "harness/gates/StmtCanon.lean",
+      "harness/gates/g2_trust_base.py",
+      "harness/phase0_audit.lean"
+    ],
     "manifest": {
       "schema": "autofv-control-bundle/v1",
       "entry_fields": ["path", "sha256", "size"],
       "order": "path_ascending_utf8",
       "file_types": ["regular_file"],
+      "member_set": "exactly allowed_members; omissions and additions reject",
+      "mode_binding": "canonical manifest body includes controller_delivery.modes",
+      "unknown_fields": "reject",
       "path_rules": "relative UTF-8 paths, no empty/dot/dot-dot component, no absolute path, no duplicate",
       "serialization": "canonical UTF-8 JSON with sorted keys and separators ',' and ':'"
     },

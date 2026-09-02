@@ -1,8 +1,8 @@
-/-
-Copyright (c) 2025 Beneficial AI Foundation. All rights reserved.
-Released under Apache 2.0 license as described in the file LICENSE.
-Authors: Markus Dablander, Hoang Le Truong, Alessandro D'Angelo
--/
+
+
+
+
+
 import Curve25519Dalek.Funs
 import Curve25519Dalek.Math.Basic
 import Curve25519Dalek.Math.Edwards.Curve
@@ -18,15 +18,15 @@ import Curve25519Dalek.Specs.Backend.Serial.U64.Field.FieldElement51.Conditional
 import Curve25519Dalek.Specs.Backend.Serial.U64.Constants.SQRT_M1
 import Curve25519Dalek.Specs.Field.FieldElement51.Invert
 import Curve25519Dalek.Specs.Field.FieldElement51.IsZero
-/-! # Spec Theorem for `FieldElement51::sqrt_ratio_i`
 
-Specification and proof for `FieldElement51::sqrt_ratio_i`.
 
-This function computes a nonnegative square root of u/v or i*u/v (where i = sqrt(-1) = SQRT_M1 constant),
-returning a flag indicating which case occurred and handling zero inputs specially.
 
-**Source**: curve25519-dalek/src/field.rs
--/
+
+
+
+
+
+
 
 
 
@@ -36,7 +36,7 @@ open curve25519_dalek.backend.serial.u64.field.FieldElement51
 open curve25519_dalek.math
 namespace curve25519_dalek.field.FieldElement51
 
-/-- The SQRT_M1 constant as a plain FieldElement51 (alias for `constants.SQRT_M1_raw`). -/
+
 def SQRT_M1_val := backend.serial.u64.constants.SQRT_M1_raw
 
 theorem SQRT_M1_val_spec : (Field51_as_Nat SQRT_M1_val)^2 % p = p - 1 := by
@@ -113,7 +113,7 @@ private theorem nonneg_of_neg_mod_p (a b : ℕ)
     have := Nat.mod_two_eq_zero_or_one (b % p)
     omega
 
-/-- Whole-element `Field51_as_Nat` equality from pointwise limb-value equality. -/
+
 private theorem field51_as_Nat_eq_of_pointwise_eq
     {x y : backend.serial.u64.field.FieldElement51}
     (hxy : ∀ i < 5, x[i]!.val = y[i]!.val) :
@@ -123,7 +123,7 @@ private theorem field51_as_Nat_eq_of_pointwise_eq
   intro i hi
   exact congrArg (fun t => 2 ^ (51 * i) * t) (hxy i (by simpa only [Finset.mem_range] using hi))
 
-/-- Whole-element consequence of a limbwise `conditional_assign` postcondition. -/
+
 private theorem field51_as_Nat_conditional_assign
     (x y z : backend.serial.u64.field.FieldElement51)
     (c : subtle.Choice)
@@ -146,7 +146,7 @@ private theorem field51_as_Nat_conditional_assign
     simpa only [Array.getElem!_Nat_eq, List.getElem!_eq_getElem?_getD] using
       congrArg UScalar.val hz
 
-/-- Whole-element consequence of taking the right branch in `conditional_assign`. -/
+
 private theorem field51_as_Nat_conditional_assign_eq_right
     (x y z : backend.serial.u64.field.FieldElement51)
     (c : subtle.Choice)
@@ -156,7 +156,7 @@ private theorem field51_as_Nat_conditional_assign_eq_right
   simpa only [hc, ↓reduceIte] using
     field51_as_Nat_conditional_assign x y z c z_post
 
-/-- Whole-element consequence of taking the left branch in `conditional_assign`. -/
+
 private theorem field51_as_Nat_conditional_assign_eq_left
     (x y z : backend.serial.u64.field.FieldElement51)
     (c : subtle.Choice)
@@ -166,7 +166,7 @@ private theorem field51_as_Nat_conditional_assign_eq_left
   simpa only [hc, ↓reduceIte] using
     field51_as_Nat_conditional_assign x y z c z_post
 
-/-- Convert a pointwise postcondition into whole-element equality on `Field51_as_Nat`. -/
+
 private theorem field51_as_Nat_eq_of_post
     (base x : backend.serial.u64.field.FieldElement51)
     (x_post : ∀ i < 5, x[i]! = base[i]!) :
@@ -176,7 +176,7 @@ private theorem field51_as_Nat_eq_of_post
   simpa only [Array.getElem!_Nat_eq, List.getElem!_eq_getElem?_getD] using
     congrArg UScalar.val (x_post i hi)
 
-/-- `conditional_negate` preserves the represented square modulo `p`. -/
+
 private theorem conditional_negate_sq
     (r1 x r2 : backend.serial.u64.field.FieldElement51)
     (r_is_negative : subtle.Choice)
@@ -194,7 +194,7 @@ private theorem conditional_negate_sq
       simpa only [h] using hr2
     rw [hr2r1]
 
-/-- After `conditional_negate`, the result `r2` is always non-negative (even mod p). -/
+
 private theorem conditional_negate_nonneg
     (r1 x r2 : backend.serial.u64.field.FieldElement51)
     (r_is_negative : subtle.Choice)
@@ -217,7 +217,7 @@ private theorem conditional_negate_nonneg
     have := mt r_is_negative_post.mpr h
     omega
 
-/-- Limb bounds after `conditional_negate`: either the negated value or the original value. -/
+
 private theorem conditional_negate_bounds_of_eq
     (base r1 x r2 : backend.serial.u64.field.FieldElement51)
     (r_is_negative : subtle.Choice)
@@ -243,7 +243,7 @@ private theorem conditional_negate_bounds_of_eq
     have hbase := base_bounds i hi
     omega
 
-/-- Common square-preservation branch pattern after `conditional_negate`. -/
+
 private theorem conditional_negate_sq_mul_eq_of_modeq
     (base r1 x r2 : backend.serial.u64.field.FieldElement51)
     (r_is_negative : subtle.Choice)
@@ -258,7 +258,7 @@ private theorem conditional_negate_sq_mul_eq_of_modeq
   rw [r1_eq] at r2_eq_sq
   exact r2_eq_sq.mul_right b |>.trans hbase
 
-/-- If `conditional_negate` does not negate, the output still represents the base element. -/
+
 private theorem conditional_negate_eq_of_not_negative
     (base r1 x r2 : backend.serial.u64.field.FieldElement51)
     (r_is_negative : subtle.Choice)
@@ -271,7 +271,7 @@ private theorem conditional_negate_eq_of_not_negative
       exact field51_as_Nat_conditional_assign_eq_left r1 x r2 r_is_negative h_not_neg r2_post
     _ = Field51_as_Nat base := r1_eq
 
-/-- Main algebraic bridge before the branch split in `sqrt_ratio_i`. -/
+
 private theorem check_eq_v_of_sqrt_ratio_data
     (u v fe v3 fe1 v7 fe2 fe3 fe4 r fe5 check :
       backend.serial.u64.field.FieldElement51)
@@ -342,7 +342,7 @@ private theorem check_eq_v_of_sqrt_ratio_data
     ring
   rw [this]
 
-/-- Main algebraic bridge before the branch split in `sqrt_ratio_i`. -/
+
 private theorem check_eq_mod_of_sqrt_ratio_data
     (u v fe v3 fe1 v7 fe2 fe3 fe4 r fe5 check r_prime :
       backend.serial.u64.field.FieldElement51)
@@ -456,7 +456,7 @@ private theorem modEq_zero_of_sqrt_m1_mul_self {a : ℕ}
     rw [hk]
     exact Nat.mul_mod_right p k
 
-/-- Bundled postcondition for a fully normalized `sqrt_ratio_i` result. -/
+
 private abbrev sqrt_ratio_i_cases
     (u v r2 : backend.serial.u64.field.FieldElement51)
     (c : subtle.Choice) : Prop :=
@@ -487,7 +487,7 @@ variable
     backend.serial.u64.field.FieldElement51}
   {r_is_negative : subtle.Choice}
 
-/-- Solves the branch where `check = -u`, so `r_prime` is the square root candidate. -/
+
 private theorem solve_first_choice_true
     (check_fe6 : Field51_as_Nat check ≡ Field51_as_Nat fe6 [MOD p])
     (r_prime_sq_v_u : Field51_as_Nat r_prime ^ 2 * Field51_as_Nat v ≡
@@ -570,7 +570,7 @@ private theorem solve_first_choice_true
   · exact conditional_negate_nonneg r1 r_neg r2 r_is_negative
       r_is_negative_post r_neg_post1 r2_post
 
-/-- Solves the branch where `check = u` and `check = -u*i`, forcing `u = 0`. -/
+
 private theorem solve_second_choice_true_choice3_true
     (sqrt_m1_u : Field51_as_Nat SQRT_M1_val * Field51_as_Nat u ≡
       Field51_as_Nat u [MOD p])
@@ -638,7 +638,7 @@ private theorem solve_second_choice_true_choice3_true
   · rw [r2_eq_rprime]
     exact h_rprime_parity
 
-/-- Solves the nonsquare `r_prime` branch, proving the `i*u` output case. -/
+
 private theorem solve_second_choice_true_choice3_false
     (u_eq1 : Field51_as_Nat SQRT_M1_val * Field51_as_Nat check ≡
       Field51_as_Nat u [MOD p])
@@ -760,7 +760,7 @@ private theorem solve_second_choice_true_choice3_false
   · exact conditional_negate_nonneg r1 r_neg r2 r_is_negative
       r_is_negative_post r_neg_post1 r2_post
 
-/-- Solves the square `r` branch, where the unmodified candidate already works. -/
+
 private theorem solve_second_choice_false_choice3_true
     (r_sq_v_u : Field51_as_Nat r ^ 2 * Field51_as_Nat v ≡ Field51_as_Nat u [MOD p])
     (fe2_post1 : Field51_as_Nat fe2 ≡ Field51_as_Nat u * Field51_as_Nat v3 [MOD p])
@@ -831,7 +831,7 @@ private theorem solve_second_choice_false_choice3_true
   · exact conditional_negate_nonneg r1 r_neg r2 r_is_negative
       r_is_negative_post r_neg_post1 r2_post
 
-/-- Solves the nonsquare `r` branch where no matching signature is found for check. -/
+
 private theorem solve_second_choice_false_choice3_false
     (check_eq_v : Field51_as_Nat check ≡
       Field51_as_Nat u ^ (2 + (2 ^ 252 - 3) * 2) *
@@ -1064,20 +1064,20 @@ private theorem solve_second_choice_false_choice3_false
 
 end sqrt_ratio_i_branch_solvers
 
-set_option maxHeartbeats 250000 in -- the proof works even with 230k heartbeats, but not much less.
-/-- Spec for `FieldElement51::sqrt_ratio_i`: computes a nonnegative square root of u/v or
-i*u/v (where i = sqrt(-1) = SQRT_M1), returning a flag indicating which case occurred.
+set_option maxHeartbeats 250000 in
 
-Returns `(Choice(1), +sqrt(u/v))` if u/v is square, `(Choice(1), 0)` if u=0,
-`(Choice(0), 0)` if v=0 and u≠0, `(Choice(0), +sqrt(i*u/v))` if u/v is nonsquare.
 
-Postconditions (4 mutually exclusive cases + non-negativity):
-1. u ≡ 0 → c=1, r≡0
-2. u≢0, v≡0 → c=0, r≡0
-3. u≢0, v≢0, ∃x, x²v≡u → c=1, r²v≡u
-4. u≢0, v≢0, ¬∃x, x²v≡u → c=0, r²v≡SQRT_M1·u
-5. r is non-negative (r % p % 2 = 0)
--/
+
+
+
+
+
+
+
+
+
+
+
 theorem sqrt_ratio_i_spec'
     (u : backend.serial.u64.field.FieldElement51)
     (v : backend.serial.u64.field.FieldElement51)
@@ -1088,23 +1088,23 @@ theorem sqrt_ratio_i_spec'
     let v_nat := Field51_as_Nat v % p
     let r_nat := Field51_as_Nat c.2 % p
     let i_nat := Field51_as_Nat SQRT_M1_val % p
-    -- Case 1: u is zero
+
     (u_nat = 0 →
     c.1.val = 1#u8 ∧ r_nat = 0 ∧
     (∀ i < 5,  c.2[i]!.val ≤ 2 ^ 53 - 1)) ∧
-    -- Case 2: u is nonzero and v is zero
+
     (u_nat ≠ 0 ∧ v_nat = 0 →
     c.1.val = 0#u8 ∧ r_nat = 0 ∧
     (∀ i < 5,  c.2[i]!.val ≤ 2 ^ 53 - 1)) ∧
-    -- Case 3: u and v are nonzero and u/v is a square
+
     (u_nat ≠ 0 ∧ v_nat ≠ 0 ∧ (∃ x : Nat, (x^2 * v_nat) % p = u_nat) →
     c.1.val = 1#u8 ∧ (r_nat ^ 2 * v_nat) % p = u_nat ∧
     (∀ i < 5,  c.2[i]!.val ≤ 2 ^ 53 - 1)) ∧
-    -- Case 4: u and v are nonzero and u/v is not a square
+
     (u_nat ≠ 0 ∧ v_nat ≠ 0 ∧ (¬(∃ x : Nat, (x^2 * v_nat) % p = u_nat)) →
     c.1.val = 0#u8 ∧ (r_nat ^2 * v_nat) % p = (i_nat * u_nat) % p ∧
     (∀ i < 5,  c.2[i]!.val ≤ 2 ^ 53 - 1)) ∧
-    -- Non-negativity of the result
+
     (r_nat % 2 = 0)
     := by
   sorry

@@ -1,8 +1,8 @@
-/-
-Copyright (c) 2026 Beneficial AI Foundation. All rights reserved.
-Released under Apache 2.0 license as described in the file LICENSE.
-Authors: Markus Dablander, Alessandro D'Angelo
--/
+
+
+
+
+
 import Curve25519Dalek.Funs
 import Curve25519Dalek.Math.Basic
 import Curve25519Dalek.Math.Ristretto.Representation
@@ -18,45 +18,45 @@ import Curve25519Dalek.Specs.Backend.Serial.U64.Field.FieldElement51.Neg
 import Curve25519Dalek.Specs.Backend.Serial.U64.Constants.SQRT_M1
 import Curve25519Dalek.Specs.Backend.Serial.U64.Constants.INVSQRT_A_MINUS_D
 
-/-! # Spec Theorem for `RistrettoPoint::compress`
 
-Specification and proof for `RistrettoPoint::compress`.
 
-This function implements the Ristretto compression (ENCODE) function, which maps a
-RistrettoPoint to its canonical 32-byte representation. The function is defined in the
 
-- [Ristretto specification](https://datatracker.ietf.org/doc/html/draft-irtf-cfrg-ristretto255-decaf448-08#section-4.3.2).
 
-It takes a RistrettoPoint (which represents an equivalence class of Edwards points) and produces a unique, canonical byte representation.
->>
-**Source**: curve25519-dalek/src/ristretto.rs
--/
+
+
+
+
+
+
+
+
+
 
 open Aeneas Aeneas.Std Result Aeneas.Std.WP Edwards
 open curve25519_dalek.backend.serial.u64.field
 open curve25519_dalek.math curve25519_dalek.ristretto
 namespace curve25519_dalek.ristretto.RistrettoPoint
 
-/-
-natural language description:
-
-• Takes a RistrettoPoint (represented internally as an even EdwardsPoint in extended coordinates
-  (X, Y, Z, T)) and compresses it to a canonical 32-byte representation according to the
-  Ristretto ENCODE function specified in:
-
-  https://datatracker.ietf.org/doc/html/draft-irtf-cfrg-ristretto255-decaf448-08#section-4.3.2
-
-  Arithmetics are performed in the field 𝔽ₚ where p = 2^255 - 19.
-
-natural language specs:
-
-• The function always succeeds (no panic) for all valid RistrettoPoint inputs
-• The output is a valid CompressedRistretto 32-byte representation
-• The output accurately reflects the output of the pure mathematical compression function
--/
 
 
--- Bridge helpers: lift Field51_as_Nat postconditions to FieldElement51.toField equalities
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 private lemma bridge_mul {a b c : FieldElement51}
     (h : Field51_as_Nat a ≡ Field51_as_Nat b * Field51_as_Nat c [MOD p]) :
     a.toField = b.toField * c.toField := by
@@ -191,12 +191,12 @@ private lemma lift_rm_sq (rm : FieldElement51)
     rw [← ZMod.intCast_mod _ p, h, Int.cast_one]
   push_cast at this; exact this
 
-set_option maxHeartbeats 800000 in -- maxHeartbeats increased: compress has many sub-calls, progress* needs more time after Aeneas update
-/-- **Spec and proof concerning `ristretto.RistrettoPoint.compress`**:
-• The function always succeeds (no panic) for all valid RistrettoPoint inputs
-• The output is a valid CompressedRistretto 32-byte representation
-• The output accurately reflects the output of the pure mathematical compression function
--/
+set_option maxHeartbeats 800000 in
+
+
+
+
+
 @[progress]
 theorem compress_spec (self : RistrettoPoint) (h : self.IsValid) :
     compress self ⦃ (result : CompressedRistretto) =>

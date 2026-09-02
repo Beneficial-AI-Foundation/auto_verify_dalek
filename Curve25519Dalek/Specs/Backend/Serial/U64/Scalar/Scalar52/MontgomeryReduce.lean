@@ -1,9 +1,9 @@
-/-
-Copyright (c) 2025 Beneficial AI Foundation. All rights reserved.
-Released under Apache 2.0 license as described in the file LICENSE.
-Authors: Markus Dablander
--/
--- import Curve25519Dalek.Aux
+
+
+
+
+
+
 import Curve25519Dalek.Funs
 import Curve25519Dalek.Math.Basic
 import Curve25519Dalek.ExternallyVerified
@@ -21,17 +21,17 @@ import Mathlib.Data.Nat.ModEq
 import Mathlib.Data.Int.ModEq
 import Mathlib.Data.ZMod.Basic
 
-/-! # Spec Theorem for `Scalar52::montgomery_reduce`
 
-Specification and proof for `Scalar52::montgomery_reduce`.
 
-This function performs Montgomery reduction.
 
-**Source**: curve25519-dalek/src/backend/serial/u64/scalar.rs
 
-## TODO
-- Complete proof
--/
+
+
+
+
+
+
+
 
 open Aeneas Aeneas.Std Result Aeneas.Std.WP curve25519_dalek.backend.serial.u64
 open Polynomial
@@ -39,49 +39,49 @@ namespace curve25519_dalek.backend.serial.u64.scalar.Scalar52
 
 set_option exponentiation.threshold 262
 
-/-
-natural language description:
 
-    • **Motivation**: The Montgomery form `M(x) := x * R`, where `R = 2^{260} = 2^{5*52}`,
-      is used to optimize chains of modular arithmetic operations (like elliptic curve scalar
-      multiplication). The isomorphism induced by `* R` changes the multiplication to:
-      `MontMul(x,y) := M(x) * M(y) * R⁻¹`. Therefore, instead of computing standard reduction
-      (`x % L`) which requires complex division logic, one needs to compute `x * R⁻¹ (mod L)`.
-      Montgomery reduction refers to the algorithm that computes this `x * R⁻¹` using efficient
-      bitwise shifts.
 
-    • **Mechanism**: The algorithm avoids division by adding multiples of `L` to the input `x`
-      until the result is exactly divisible by `R = 2^{260}` (i.e., the lower 260 bits are all zero).
-      Since `R = 2^{260}` and limbs are 52 bits, we perform 5 "zeroing" steps (`part1`)
-      followed by 4 "result assembly" steps (`part2`).
 
-    • **Part 1: The Zeroing Strategy**
-      We iteratively ensure the lowest remaining limb is 0 by adding a carefully chosen multiple of `L`.
-      The helper `part1` calculates a "zeroing factor" `p` using the precomputed `LFACTOR`
-      (where `LFACTOR * L ≡ -1 (mod 2⁵²)`).
 
-      - **Limb 0 (First part1)**:
-        * **Problem**: `limbs[0]` is non-zero. We cannot shift yet.
-        * **Action**: Calculate `p` such that `limbs[0] + p * L ≡ 0 (mod 2⁵²)`.
-        * **Result**: The sum's lowest 52 bits become 0.
-        * **Shift**: We discard these zero bits (effectively dividing by 2⁵²). The carry flows to the next limb.
 
-      *This repeats 5 times (using updated carries) until the entire lower 260 bits are zero.*
 
-    • **Part 2: Result Reconstruction**
-      After 5 reductions, the number is divisible by `R`. The helper `part2` extracts the quotient.
-      It takes the high-order accumulated bits, slices off the lower 52 bits as a result limb (`w`),
-      and passes the remaining upper bits (`carry`) to the next position. This reassembles
-      the final 256-bit result (`r0` through `r4`).
 
-natural language specs:
 
-    • For any 9-limb array `a` of u128 values (representing a 512-bit integer):
-      - The function returns a `Scalar52` `m` such that:
-        `Scalar52_as_Nat(m) * R ≡ U128x9_as_Nat(a) (mod L)`
--/
 
--- Bridge lemma: converts the existing LFACTOR_spec (on Nat) to the form needed for Int arithmetic
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 private lemma LFACTOR_prop :
     (↑constants.LFACTOR.val * ↑constants.L[0]!.val : Int) % (2 ^ 52) = (2 ^ 52) - 1 := by
   have h_nat := constants.LFACTOR_spec
@@ -103,7 +103,7 @@ private lemma LFACTOR_prop :
   rw [← Int.add_sub_cancel (_root_.L * ↑constants.LFACTOR.val : Int) 1, Int.sub_emod]; norm_cast
   rw [h_mod_zero]; exact rfl
 
-/-- The "Montgomery Step": Proves that adding the reduction factor clears the lower 52 bits. -/
+
 private lemma mont_step (x : Int) (p : Int) (carry_out : Int)
     (hp : p = (x * ↑constants.LFACTOR.val) % (2 ^ 52))
     (hcarry : carry_out = (x + p * ↑constants.L[0]!.val) / (2 ^ 52)) :
@@ -199,15 +199,15 @@ private theorem part2_spec (sum : U128) :
   w.val = sum.val % (2 ^ 52) ∧
   carry.val = sum.val / (2 ^ 52) ∧
   carry.val < 2 ^ 76 ∧
-  w.val < 2 ^ 52 ⦄ := by -- 2^128 / 2^52 = 2^76
+  w.val < 2 ^ 52 ⦄ := by
   unfold montgomery_reduce.part2
-  -- Rust: let w = (sum as u64) & ((1u64 << 52) - 1);
-  progress as ⟨w_cast, hw_cast⟩     -- Cast sum to u64
-  progress as ⟨mask1, hmask1⟩       -- 1 << 52
-  progress as ⟨mask, hmask⟩         -- (1 << 52) - 1
-  progress as ⟨w, hw⟩               -- Bitwise AND
-  -- Rust: (sum >> 52, w)
-  progress as ⟨carry, hcarry⟩       -- Shift right
+
+  progress as ⟨w_cast, hw_cast⟩
+  progress as ⟨mask1, hmask1⟩
+  progress as ⟨mask, hmask⟩
+  progress as ⟨w, hw⟩
+
+  progress as ⟨carry, hcarry⟩
   have h_w_val : w.val = sum.val % 2^52 := by
     rw [hw]; simp only [UScalar.val_and]
     have h_mask_val : mask.val = 2^52 - 1 := by
@@ -230,13 +230,13 @@ private theorem part2_spec (sum : U128) :
          _ = 2^76 * 2^52 := by norm_num
   exact ⟨h_w_val, h_carry_val, h_carry_bound, h_w_bound⟩
 
-set_option maxHeartbeats 200000 in -- Progress will timout otherwise
-/-- **Spec and proof concerning `scalar.Scalar52.montgomery_reduce`**:
-- No panic (always returns successfully)
-- The result m satisfies the Montgomery reduction property:
-  m * R ≡ a (mod L), where R = 2^260 is the Montgomery constant
--/
-@[externally_verified, progress] -- working proof commented out because of slow build
+set_option maxHeartbeats 200000 in
+
+
+
+
+
+@[externally_verified, progress]
 theorem montgomery_reduce_spec (a : Array U128 9#usize)
     (h_bounds : ∀ i < 9, a[i]!.val < 2 ^ 127) :
     montgomery_reduce a ⦃ m =>

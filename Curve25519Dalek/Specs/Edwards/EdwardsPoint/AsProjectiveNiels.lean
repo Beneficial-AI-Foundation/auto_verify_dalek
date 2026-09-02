@@ -1,8 +1,8 @@
-/-
-Copyright (c) 2025 Beneficial AI Foundation. All rights reserved.
-Released under Apache 2.0 license as described in the file LICENSE.
-Authors: Markus Dablander, Alessandro D'Angelo, Hoang Le Truong
--/
+
+
+
+
+
 import Curve25519Dalek.Funs
 import Curve25519Dalek.Math.Basic
 import Curve25519Dalek.ExternallyVerified
@@ -14,15 +14,15 @@ import Curve25519Dalek.Specs.Backend.Serial.U64.Field.FieldElement51.Sub
 import Curve25519Dalek.Specs.Backend.Serial.U64.Constants.EDWARDS_D2
 import Curve25519Dalek.Aux
 
-/-! # Spec Theorem for `EdwardsPoint::as_projective_niels`
 
-Specification and proof for `EdwardsPoint::as_projective_niels`.
 
-This function converts an EdwardsPoint to a ProjectiveNielsPoint, which is a
-representation optimized for point addition operations.
 
-Source: curve25519-dalek/src/edwards.rs
--/
+
+
+
+
+
+
 
 open Aeneas Aeneas.Std Result Aeneas.Std.WP curve25519_dalek.backend.serial.u64.field.FieldElement51
   curve25519_dalek.backend.serial.u64.constants
@@ -30,36 +30,36 @@ open curve25519_dalek.backend.serial.curve_models.ProjectiveNielsPoint
 open curve25519_dalek.montgomery
 namespace curve25519_dalek.edwards.EdwardsPoint
 
-/-
-natural language description:
 
-• Converts an EdwardsPoint from extended twisted Edwards coordinates (X, Y, Z, T)
-to ProjectiveNiels coordinates (A, B, Z', C), where:
-  - A ≡ Y + X (mod p)
-  - B ≡ Y - X (mod p)
-  - Z' = Z (unchanged)
-  - C ≡ T * 2 * d (mod p)
 
-natural language specs:
 
-• The function always succeeds (no panic)
-• For the input Edwards point (X, Y, Z, T), the resulting ProjectiveNielsPoint has coordinates:
-  - A ≡ Y + X (mod p)
-  - B ≡ Y - X (mod p)
-  - Z' = Z
-  - C ≡ T * 2 * d (mod p)
-where p = 2^255 - 19
--/
 
-/-- **Spec and proof concerning `edwards.EdwardsPoint.as_projective_niels`**:
-- No panic (always returns successfully)
-- For the input Edwards point (X, Y, Z, T), the resulting ProjectiveNielsPoint has coordinates:
-  - A ≡ Y + X (mod p)
-  - B ≡ Y - X (mod p)
-  - Z' = Z
-  - C ≡ T * 2 * d (mod p)
-where p = 2^255 - 19
--/
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 @[externally_verified, progress]
 theorem as_projective_niels_spec (e : EdwardsPoint)
     (he : e.IsValid) :

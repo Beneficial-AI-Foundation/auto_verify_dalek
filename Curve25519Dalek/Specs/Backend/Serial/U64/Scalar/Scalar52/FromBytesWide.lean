@@ -1,39 +1,39 @@
-/-
-Copyright (c) 2025 Beneficial AI Foundation. All rights reserved.
-Released under Apache 2.0 license as described in the file LICENSE.
-Authors: Markus Dablander
--/
+
+
+
+
+
 import Curve25519Dalek.Funs
 import Curve25519Dalek.Math.Basic
 import Curve25519Dalek.ExternallyVerified
 
-/-! # Spec Theorem for `Scalar52::from_bytes_wide`
 
-This function constructs an unpacked scalar from a wide byte array.
 
-Source: curve25519-dalek/src/backend/serial/u64/scalar.rs
 
-## TODO
-- Complete proof
--/
+
+
+
+
+
+
 
 open Aeneas Aeneas.Std Result Aeneas.Std.WP
 namespace curve25519_dalek.backend.serial.u64.scalar.Scalar52
 
-/-
-natural language description:
 
-    • Takes a 64-byte array b as input and returns an unpacked scalar u that
-      represents the 512-bit integer value reduced modulo L, redistributed into five limbs.
 
-natural language specs:
 
-    • scalar_to_nat(u) = u8x64_to_nat(b) % L
--/
 
-/-- **Spec theorem for `scalar.Scalar52.from_bytes_wide`**:
-- The result represents the input byte array reduced modulo L (canonical form) -/
-@[externally_verified, progress] -- proven in Verus
+
+
+
+
+
+
+
+
+
+@[externally_verified, progress]
 theorem from_bytes_wide_spec (b : Array U8 64#usize) :
     from_bytes_wide b ⦃ (u : Scalar52) =>
         Scalar52_as_Nat u = U8x64_as_Nat b % L ∧

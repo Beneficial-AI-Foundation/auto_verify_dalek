@@ -1,8 +1,8 @@
-/-
-Copyright (c) 2026 Beneficial AI Foundation. All rights reserved.
-Released under Apache 2.0 license as described in the file LICENSE.
-Authors: Markus Dablander, Alessandro D'Angelo
--/
+
+
+
+
+
 import Curve25519Dalek.Funs
 import Curve25519Dalek.FunsExternal
 import Curve25519Dalek.Math.Edwards.Representation
@@ -23,24 +23,24 @@ import Curve25519Dalek.Specs.Backend.Serial.U64.Constants.MINUS_ONE
 import Curve25519Dalek.Specs.Backend.Serial.U64.Constants.SQRT_AD_MINUS_ONE
 import Curve25519Dalek.Specs.Backend.Serial.U64.Constants.EDWARDS_D_MINUS_ONE_SQUARED
 
-/-! # Spec Theorem for `RistrettoPoint::elligator_ristretto_flavor`
 
-Specification and proof for `RistrettoPoint::elligator_ristretto_flavor`.
 
-This function implements the Ristretto MAP function from the
-[Ristretto specification (RFC draft, Section 4.3.4)](https://datatracker.ietf.org/doc/html/draft-irtf-cfrg-ristretto255-decaf448-04#section-4.3.4).
 
-It maps an arbitrary field element r_0 ∈ 𝔽_p (p = 2^255 - 19) to a valid Ristretto point
-(an even Edwards curve point). The construction uses Elligator 2 to find a point on the
-Jacobi quartic t^2 = s^4 + 2As^2 + 1, then applies a 2-isogeny to the twisted Edwards
-curve -x^2 + y^2 = 1 + dx^2y^2. The image of this isogeny is exactly the set of even
-points 2E(𝔽_p), which is the Ristretto quotient group.
 
-This is a private helper called exclusively by `from_uniform_bytes` (hash-to-point),
-which maps two independent field elements through this function and adds the results.
 
-**Source**: curve25519-dalek/src/ristretto.rs (lines 676-728)
--/
+
+
+
+
+
+
+
+
+
+
+
+
+
 
 open Aeneas Aeneas.Std Result Aeneas.Std.WP curve25519_dalek.math
 open Edwards curve25519_dalek.backend.serial.u64.constants
@@ -48,7 +48,7 @@ open curve25519_dalek.backend.serial.u64.field
 open curve25519_dalek.backend.serial.u64.field.FieldElement51
 namespace curve25519_dalek.ristretto.RistrettoPoint
 
-/-- Postconditions exported by the `sqrt_ratio_i` call used inside Elligator. -/
+
 private structure ElligatorSqrtRatioPosts
     (N_s D : FieldElement51) (x : subtle.Choice × FieldElement51) : Prop where
   zero_case : Field51_as_Nat N_s % p = 0 → x.1.val = 1#u8 ∧ Field51_as_Nat x.2 % p = 0
@@ -71,7 +71,7 @@ private structure ElligatorSqrtRatioPosts
             Field51_as_Nat field.FieldElement51.SQRT_M1_val % p *
             (Field51_as_Nat N_s % p) % p
 
-/-- Relations connecting `s_prime`, `s_prime_neg`, and the branch-selected `s_prime1`. -/
+
 private structure ElligatorSPrimePosts
     (s s_prime s_prime_neg s_prime1 : FieldElement51)
     (x : subtle.Choice × FieldElement51) (s_prime_is_pos : subtle.Choice) : Prop where
@@ -81,7 +81,7 @@ private structure ElligatorSPrimePosts
     ∀ i : Nat, i < 5 →
       s_prime1[i]! = if s_prime_is_pos.val = 1#u8 then s_prime_neg[i]! else s_prime[i]!
 
-/-- Postconditions for the branch choice that determines `not_sq` and the selected `c2`. -/
+
 private structure ElligatorChoicePosts
     (c r c2 : FieldElement51)
     (x : subtle.Choice × FieldElement51) (not_sq : subtle.Choice) : Prop where
@@ -91,7 +91,7 @@ private structure ElligatorChoicePosts
       c2[i]! = if not_sq.val = 1#u8 then r[i]! else c[i]!
   c_minus_one : Field51_as_Nat c = p - 1
 
-/-- Parity/sign metadata used when normalizing `s_prime` to the canonical Edwards sign. -/
+
 private structure ElligatorS1Posts
     (s_prime1 s1 : FieldElement51)
     (x : subtle.Choice × FieldElement51) (not_sq : subtle.Choice) : Prop where
@@ -99,13 +99,13 @@ private structure ElligatorS1Posts
     ∀ i : Nat, i < 5 →
       s1[i]! = if not_sq.val = 1#u8 then s_prime1[i]! else x.2[i]!
 
-/-- Sign witnesses used to relate `c1`, `s_prime_is_pos`, and `abs_edwards`. -/
+
 private structure ElligatorSignPosts
     (s_prime : FieldElement51) (c1 s_prime_is_pos : subtle.Choice) : Prop where
   odd_flag : c1.val = 1#u8 ↔ Field51_as_Nat s_prime % p % 2 = 1
   pos_flag : c1.val = 1#u8 ↔ s_prime_is_pos = Choice.zero
 
-/-- Arithmetic postconditions for the completed-point coordinates built by Elligator. -/
+
 private structure ElligatorCompletedPointPosts
     (one s_sq cp_X cp_Y cp_Z cp_T fe s_plus_s s1 D N_t : FieldElement51) : Prop where
   s_sq_eq : Field51_as_Nat s_sq ≡ Field51_as_Nat s1 ^ 2 [MOD p]
@@ -122,18 +122,18 @@ private structure ElligatorCompletedPointPosts
   fe_sq : ↑(Field51_as_Nat fe) ^ 2 % ↑p = (a * ↑_root_.d - 1) % ↑p
   one_eq : Field51_as_Nat one = 1
 
-/-- **Elligator invariant**: the value s1 produced by the Elligator map never satisfies s1² = -1.
-This ensures the denominator 1 + s1² is never zero in 𝔽_p.
 
-**Proof sketch** (both cases yield a quadratic in r with non-square discriminant):
-- The Elligator map computes r = √(-1)·s², N_s = (r+1)(1-d²), D = (-1-dr)(r+d),
-  then applies sqrt_ratio_i(N_s, D) to get s1 satisfying either:
-  - **Case A** (square): s1²·D = N_s, so s1²=-1 gives N_s+D = 0.
-    Expanding: -(d²+d+1)r² - 2(1+d)r - d = 0 with Δ = -4(d³-d-1), a non-square mod p.
-  - **Case B** (non-square): s1²·D = r·N_s, so s1²=-1 gives r·N_s+D = 0.
-    Expanding: (1-d-d²)r² - 2d²r - d = 0 with Δ = 4d(d-1)²(d+1).
-    Since d is a non-square and (1+d) is a square, d(1+d) is a non-square, so Δ is a non-square.
--/
+
+
+
+
+
+
+
+
+
+
+
 private lemma elligator_s1_sq_ne_neg_one
     (r_F N_s_F D_F s1_F : CurveField)
     (hNs : N_s_F = (r_F + 1) * (1 - (d : CurveField) ^ 2))
@@ -141,7 +141,7 @@ private lemma elligator_s1_sq_ne_neg_one
     (h_cases : s1_F ^ 2 * D_F = N_s_F ∨ s1_F ^ 2 * D_F = r_F * N_s_F)
     : s1_F ^ 2 ≠ -1 := by
   set dd := (d : CurveField) with hdd
-  -- The discriminant 4d(d-1)²(d+1) is not a square (d non-square, 1+d square ⟹ d(1+d) non-square)
+
   have h_disc_not_sq : ¬IsSquare (4 * dd * (dd - 1) ^ 2 * (dd + 1)) := by
     have h_eq : 4 * dd * (dd - 1) ^ 2 * (dd + 1) =
         (Int.cast (4 * (d : ℤ) * ((d : ℤ) - 1) ^ 2 * ((d : ℤ) + 1)) : CurveField) := by
@@ -150,26 +150,26 @@ private lemma elligator_s1_sq_ne_neg_one
     exact (legendreSym.eq_neg_one_iff p).mp (by norm_num [d, p])
   intro h_neg1
   rcases h_cases with hA | hB
-  · -- Case A: s1² · D = N_s, with s1² = -1 gives N_s + D = 0
+  ·
     have h_sum : N_s_F + D_F = 0 := by
       have : N_s_F = -D_F := by
         calc N_s_F = s1_F ^ 2 * D_F := hA.symm
           _ = -1 * D_F := by rw [h_neg1]
           _ = -D_F := by ring
       rw [this]; ring
-    -- Expand to polynomial in r_F
+
     have h_expanded : (r_F + 1) * (1 - dd ^ 2) + (-1 - dd * r_F) * (r_F + dd) = 0 := by
       rw [← hNs, ← hD]; exact h_sum
     have h_poly : dd * r_F ^ 2 + 2 * dd ^ 2 * r_F + (dd + dd ^ 2 - 1) = 0 := by
       linear_combination -h_expanded
-    -- Complete the square: (2d·r + 2d²)² = 4d(d-1)²(d+1)
+
     have h_sq : (2 * dd * r_F + 2 * dd ^ 2) ^ 2 = 4 * dd * (dd - 1) ^ 2 * (dd + 1) := by
       have : (2 * dd * r_F + 2 * dd ^ 2) ^ 2 =
         4 * dd * (dd * r_F ^ 2 + 2 * dd ^ 2 * r_F + (dd + dd ^ 2 - 1)) +
         4 * dd * (dd - 1) ^ 2 * (dd + 1) := by ring
       rw [this, h_poly, mul_zero, zero_add]
     exact h_disc_not_sq ⟨2 * dd * r_F + 2 * dd ^ 2, by rw [← sq]; exact h_sq.symm⟩
-  · -- Case B: s1² · D = r · N_s, with s1² = -1 gives r · N_s + D = 0
+  ·
     have h_sum : r_F * N_s_F + D_F = 0 := by
       have : r_F * N_s_F = -D_F := by
         calc r_F * N_s_F = s1_F ^ 2 * D_F := hB.symm
@@ -180,7 +180,7 @@ private lemma elligator_s1_sq_ne_neg_one
       rw [← hNs, ← hD]; exact h_sum
     have h_poly : (1 - dd - dd ^ 2) * r_F ^ 2 - 2 * dd ^ 2 * r_F - dd = 0 := by
       linear_combination h_expanded
-    -- Complete the square: (2(1-d-d²)·r - 2d²)² = 4d(d-1)²(d+1)
+
     have h_sq : (2 * (1 - dd - dd ^ 2) * r_F - 2 * dd ^ 2) ^ 2 =
         4 * dd * (dd - 1) ^ 2 * (dd + 1) := by
       have : (2 * (1 - dd - dd ^ 2) * r_F - 2 * dd ^ 2) ^ 2 =
@@ -189,11 +189,11 @@ private lemma elligator_s1_sq_ne_neg_one
       rw [this, h_poly, mul_zero, zero_add]
     exact h_disc_not_sq ⟨2 * (1 - dd - dd ^ 2) * r_F - 2 * dd ^ 2, by rw [← sq]; exact h_sq.symm⟩
 
-/-- The twisted Edwards curve equation `a·X²T² + Y²Z² = Z²T² + d·X²Y²` holds for
-the Elligator completed point coordinates when `ω² = -d-1` and the "inner identity"
-`(d+1)·Nt² = D²·((1+σ)² + d·(1-σ)²)` holds (where σ = s²).
-This lemma handles the factorization: after substituting X=2sD, Y=1-s², Z=Nt·ω, T=1+s²,
-the curve equation reduces to `4s²·[(d+1)Nt² - D²·P(s²,d)] = 0`. -/
+
+
+
+
+
 private lemma elligator_curve_eq_of_inner {dd s Df Nt w : CurveField}
     (hw : w ^ 2 = -dd - 1)
     (h_inner : s = 0 ∨
@@ -206,21 +206,21 @@ private lemma elligator_curve_eq_of_inner {dd s Df Nt w : CurveField}
   · rw [hs0]; ring
   · linear_combination 4 * s ^ 2 * h + (-4 * s ^ 2 * Nt ^ 2) * hw
 
-/-- Case A ring identity: when c₁ = -1 (square case), Nₜ = -(r-1)(d-1)²-D,
-the inner identity `(d+1)Nₜ² = (D+Nₛ)² + d(D-Nₛ)²` holds as a polynomial identity in r, d. -/
+
+
 private lemma inner_ring_A (dd r : CurveField) :
     (dd + 1) * (-(r - 1) * (dd - 1) ^ 2 - (-1 - dd * r) * (r + dd)) ^ 2 =
     ((-1 - dd * r) * (r + dd) + (r + 1) * (1 - dd ^ 2)) ^ 2 +
     dd * ((-1 - dd * r) * (r + dd) - (r + 1) * (1 - dd ^ 2)) ^ 2 := by ring
 
-/-- Case B ring identity: when c₁ = r (non-square case), Nₜ = r(r-1)(d-1)²-D,
-the inner identity `(d+1)Nₜ² = (D+rNₛ)² + d(D-rNₛ)²` holds as a polynomial identity in r, d. -/
+
+
 private lemma inner_ring_B (dd r : CurveField) :
     (dd + 1) * (r * (r - 1) * (dd - 1) ^ 2 - (-1 - dd * r) * (r + dd)) ^ 2 =
     ((-1 - dd * r) * (r + dd) + r * ((r + 1) * (1 - dd ^ 2))) ^ 2 +
     dd * ((-1 - dd * r) * (r + dd) - r * ((r + 1) * (1 - dd ^ 2))) ^ 2 := by ring
 
-/-- Bridge lemma: when s²D = Nₛ, converts `(D+Nₛ)² + d(D-Nₛ)²` to `D²((1+s²)² + d(1-s²)²)`. -/
+
 private lemma constr_to_squares {dd s Df Ns : CurveField}
     (h : s ^ 2 * Df = Ns) :
     (Df + Ns) ^ 2 + dd * (Df - Ns) ^ 2 =
@@ -228,7 +228,7 @@ private lemma constr_to_squares {dd s Df Ns : CurveField}
   linear_combination
     -((2 - 2 * dd) * Df + (1 + dd) * (Ns + s ^ 2 * Df)) * h
 
-/-- Bridge lemma (case B): when s²D = r·Nₛ, converts `(D+rNₛ)² + d(D-rNₛ)²` to `D²((1+s²)² + d(1-s²)²)`. -/
+
 private lemma constr_to_squares_r {dd s r Df Ns : CurveField}
     (h : s ^ 2 * Df = r * Ns) :
     (Df + r * Ns) ^ 2 + dd * (Df - r * Ns) ^ 2 =
@@ -236,8 +236,8 @@ private lemma constr_to_squares_r {dd s r Df Ns : CurveField}
   linear_combination
     -((2 - 2 * dd) * Df + (1 + dd) * (r * Ns + s ^ 2 * Df)) * h
 
-/-- If d is not a square and -1 is a square in a field, then d·x² + y² = 0 implies x = 0 ∧ y = 0.
-Used to show N_t ≠ 0 in the Elligator map. -/
+
+
 private lemma non_square_quad_zero {d x y : CurveField}
     (hd : ¬IsSquare d) (hm1 : IsSquare (-1 : CurveField))
     (h : d * x ^ 2 + y ^ 2 = 0) : x = 0 ∧ y = 0 := by
@@ -250,7 +250,7 @@ private lemma non_square_quad_zero {d x y : CurveField}
     exact hd ⟨_, h2⟩
   exact ⟨hx, sq_eq_zero_iff.mp (by rw [hx] at h; simpa using h)⟩
 
-/-- Conditional field element assignment: if choice flag = 1, result = first operand. -/
+
 private lemma cond_f51_eq {z x y : FieldElement51}
     {c : subtle.Choice}
     (hpost : ∀ i < 5, z[i]! = if c.val = 1#u8 then x[i]! else y[i]!)
@@ -260,7 +260,7 @@ private lemma cond_f51_eq {z x y : FieldElement51}
     List.getElem!_eq_getElem?_getD, hc, ↓reduceIte] at h; simp only [Array.getElem!_Nat_eq,
       List.getElem!_eq_getElem?_getD, h]
 
-/-- Conditional field element assignment: if choice flag ≠ 1, result = second operand. -/
+
 private lemma cond_f51_eq_neg {z x y : FieldElement51}
     {c : subtle.Choice}
     (hpost : ∀ i < 5, z[i]! = if c.val = 1#u8 then x[i]! else y[i]!)
@@ -270,13 +270,13 @@ private lemma cond_f51_eq_neg {z x y : FieldElement51}
     List.getElem!_eq_getElem?_getD, hc, ↓reduceIte] at h; simp only [Array.getElem!_Nat_eq,
       List.getElem!_eq_getElem?_getD, h]
 
-/-- If Field51_as_Nat x ≡ 0 (mod p), then x.toField = 0. -/
+
 private lemma toField_of_mod_zero {x : FieldElement51}
     (h : Field51_as_Nat x % p = 0) : x.toField = 0 := by
   unfold toField
   exact (ZMod.natCast_eq_zero_iff _ _).mpr (Nat.dvd_iff_mod_eq_zero.mpr h)
 
-/-- Lift (a%p)²*(b%p) %p = c%p to CurveField equality a²*b = c. -/
+
 private lemma lift_sq_mod {a b c : ℕ}
     (h : (a % p) ^ 2 * (b % p) % p = c % p) :
     (a : CurveField) ^ 2 * (b : CurveField) = (c : CurveField) := by
@@ -284,7 +284,7 @@ private lemma lift_sq_mod {a b c : ℕ}
     (Nat.mod_modEq b p).symm |>.trans h
   have h := lift_mod_eq _ _ hme; push_cast at h; exact h
 
-/-- Lift pointwise field-element addition to `Field51_as_Nat` addition. -/
+
 private lemma field51_as_nat_eq_add
     {z x y : FieldElement51}
     (hpost : ∀ i : Nat, i < 5 → ((z[i]!) : Nat) = ((x[i]!) : Nat) + ((y[i]!) : Nat)) :
@@ -296,8 +296,8 @@ private lemma field51_as_nat_eq_add
   rw [Finset.mem_range] at hi
   rw [hpost i hi, mul_add]
 
-/-- Arithmetic postconditions needed to lift the intermediate Elligator values into
-`CurveField` equalities. -/
+
+
 private structure ElligatorLiftPosts
     (cp_T one s_sq s1 r_plus_one r one_minus_d_sq N_s r_plus_d d
       c_minus_dr d_times_r c D r_minus_one c2 c_r_minus_one c_r_minus_one_d
@@ -325,7 +325,7 @@ private structure ElligatorLiftPosts
   N_t_add : (Field51_as_Nat N_t + Field51_as_Nat D) % p = Field51_as_Nat c_r_minus_one_d % p
   d_minus_one_sq_eq : Field51_as_Nat d_minus_one_sq = (_root_.d - 1) ^ 2 % p
 
-/-- Lifted `CurveField` equalities derived from `ElligatorLiftPosts`. -/
+
 private structure ElligatorLiftFacts
     (cp_T r_plus_one one_minus_d_sq N_s r_plus_d c_minus_dr D r_minus_one c_r_minus_one
       c_r_minus_one_d N_t s1 r c2 d_minus_one_sq : FieldElement51) : Prop where
@@ -342,8 +342,8 @@ private structure ElligatorLiftFacts
   N_t_add_eq : N_t.toField + D.toField = c_r_minus_one_d.toField
   N_t_eq : N_t.toField = c2.toField * (r.toField - 1) * (Ed25519.d - 1) ^ 2 - D.toField
 
-/-- Shared field-lift bundle for the Elligator construction.
-Used in both the intermediate `CompletedPoint.IsValid` proof and the final semantic bridge. -/
+
+
 private lemma lift_bridge_bundle
     (cp_T one s_sq s1 r_plus_one r one_minus_d_sq N_s r_plus_d d
       c_minus_dr d_times_r c D r_minus_one c2 c_r_minus_one c_r_minus_one_d
@@ -443,19 +443,19 @@ private lemma lift_bridge_bundle
     N_t_eq := h_Nt_eq_F
   }
 
-/-- When the square flag holds, `not_sq` is `Choice.zero`, so `not_sq.val ≠ 1#u8`. -/
+
 private lemma not_sq_val_ne_one {not_sq : subtle.Choice} {P : Prop}
     (h_post : P ↔ not_sq = Choice.zero) (h : P) : not_sq.val ≠ 1#u8 := by
   have heq := h_post.mp h; subst heq; decide
 
-/-- When the square flag fails, `not_sq` is `Choice.one`, so `not_sq.val = 1#u8`. -/
+
 private lemma not_sq_val_eq_one {not_sq : subtle.Choice} {P : Prop}
     (h_post : P ↔ not_sq = Choice.zero) (h : ¬P) : not_sq.val = 1#u8 := by
   rcases not_sq with ⟨val, hv | hv⟩
   · exact absurd (h_post.mpr (by simp only [Choice.zero, hv])) h
   · exact hv
 
-/-- Package the square/non-square consequences for the selected Elligator value `s1`. -/
+
 private lemma elligator_s1_sq_c2_cases
     (s c r N_s D i s_prime s_prime_neg s_prime1 s1 c2 : FieldElement51)
     (x : subtle.Choice × FieldElement51)
@@ -581,7 +581,7 @@ private lemma elligator_s1_sq_c2_cases
     · unfold toField
       rw [cond_f51_eq c2_post h_nsq]
 
-/-- Package the full `CompletedPoint.IsValid` proof for the Elligator completed point. -/
+
 private lemma elligator_completed_point_valid
     (s one c r N_s D i s_prime s_prime_neg s_prime1 s1 s_sq c2 N_t cp_X cp_Y cp_Z cp_T fe s_plus_s :
       FieldElement51)
@@ -812,7 +812,7 @@ private lemma elligator_completed_point_valid
       omega,
     h_cp_Z_ne, h_cp_T_ne, h_cp_curve⟩
 
-/-- If the extracted `sqrt_ratio_i` flag is square, the pure Elligator squareness predicate holds. -/
+
 private lemma elligator_is_square_of_flag
     (s N_s D : FieldElement51)
     (x : subtle.Choice × FieldElement51)
@@ -840,7 +840,7 @@ private lemma elligator_is_square_of_flag
       exact ⟨x.2.toField,
         lift_sq_mod (N_post2_D ⟨hN0, hD_mod, hSq⟩).2⟩
 
-/-- If the extracted `sqrt_ratio_i` flag is non-square, the pure Elligator squareness predicate fails. -/
+
 private lemma elligator_not_is_square_of_flag
     (s N_s D : FieldElement51)
     (x : subtle.Choice × FieldElement51)
@@ -873,7 +873,7 @@ private lemma elligator_not_is_square_of_flag
             simp only [ZMod.natCast_val, ZMod.cast_id', id_eq]
             exact hx)))⟩⟩).1
 
-/-- Bridge the implementation's branch-selected `c2` to the pure `elligator_c` definition. -/
+
 private lemma elligator_c_bridge
     (s c r c2 : FieldElement51)
     (x : subtle.Choice × FieldElement51)
@@ -905,7 +905,7 @@ private lemma elligator_c_bridge
       rw [cond_f51_eq c2_post h_nsq]]
     exact h_r_bridge
 
-/-- Bridge the square branch of the implementation's selected `s1` to the pure `elligator_s`. -/
+
 private lemma elligator_s_bridge_square
     (s N_s D s_prime1 s1 : FieldElement51)
     (x : subtle.Choice × FieldElement51)
@@ -963,7 +963,7 @@ private lemma elligator_s_bridge_square
     rw [ZMod.val_natCast]
     exact x_post2
 
-/-- Bridge the non-square branch of the implementation's selected `s1` to the pure `elligator_s`. -/
+
 private lemma elligator_s_bridge_nonsquare
     (s N_s D i s_prime s_prime_neg s_prime1 s1 : FieldElement51)
     (x : subtle.Choice × FieldElement51)
@@ -1085,81 +1085,81 @@ private lemma elligator_s_bridge_nonsquare
       ⟨x.2.toField, by rw [← h_disc_sq]; ring⟩
     rw [h_disc_sq, sqrt_sq hIsSq]
 
-/-
-natural language description:
 
-    • Takes a field element r_0 and maps it to a valid RistrettoPoint using the
-      Ristretto Elligator map (RFC draft Section 4.3.4):
-      https://datatracker.ietf.org/doc/html/draft-irtf-cfrg-ristretto255-decaf448-04#section-4.3.4
 
-    • This is the MAP function used by `from_uniform_bytes` (hash-to-point): it splits
-      64 bytes into two halves, maps each through `elligator_ristretto_flavor`, and adds
-      the two resulting points to get a uniformly distributed Ristretto group element.
 
-    • The algorithm works through the Jacobi quartic as an intermediate representation,
-      using Elligator 2 to find a point on the quartic, then applying a 2-isogeny to
-      land on the Edwards curve. The key steps are:
 
-      Step 1: Compute r = sqrt(-1) * r_0^2.
-              Since sqrt(-1) is a non-square in F_p, r is a non-square (unless r_0 = 0).
 
-      Step 2: Compute the Elligator ratio N_s / D where:
-              N_s = (r + 1)(1 - d^2)
-              D   = (-1 - d*r)(r + d)
-              These define the s^2-coordinate ratio on the Jacobi quartic.
 
-      Step 3: Attempt sqrt(N_s / D) via sqrt_ratio_i:
-              If N_s/D is a square:     was_square = 1, s = +sqrt(N_s/D), c = -1
-              If N_s/D is not a square: was_square = 0, s = +sqrt(i * N_s/D)
 
-      Step 4: Compute s' = s * r_0, then force s' to be non-positive (canonical sign).
-              This is done via conditional_assign with the negated value.
 
-      Step 5: Select the final s and c based on was_square:
-              If was_square:     s = s (from sqrt),       c = -1
-              If not was_square: s = -|s * r_0| (= s'),   c = r = i * r_0^2
 
-      Step 6: Compute the Jacobi quartic t-coordinate numerator:
-              N_t = c * (r - 1) * (d - 1)^2 - D
 
-      Step 7: Construct the output in CompletedPoint (P1xP1) form, representing the
-              Jacobi-to-Edwards isogeny. The four coordinates are:
-              X_cp = 2*s*D               (numerator of x)
-              T_cp = 1 + s^2             (denominator of x)
-              Y_cp = 1 - s^2             (numerator of y)
-              Z_cp = N_t * sqrt(a*d - 1) (denominator of y, involving the isogeny constant)
 
-      Step 8: Convert CompletedPoint to extended Edwards coordinates via as_extended:
-              X' = X_cp * T_cp,  Y' = Y_cp * Z_cp,  Z' = Z_cp * T_cp,  T' = X_cp * Y_cp
 
-    • The output is always an even Edwards point because:
-      1 - y^2 = 1 - ((1-s^2)/(1+s^2))^2 = (2s/(1+s^2))^2
-      which is manifestly a perfect square in F_p (IsSquare(1 - y^2) holds).
 
-    • The denominator 1 + s^2 is never zero because the Elligator map never produces
-      s such that s^2 = -1. This is proven via a discriminant argument: in both the
-      square and non-square cases, assuming s^2 = -1 leads to a quadratic in r whose
-      discriminant 4d(d-1)^2(d+1) is a non-square mod p (since d is a non-square and
-      d+1 is a square, their product d(d+1) is a non-square).
 
-natural language specs:
 
-    • The function always succeeds (no panic) for all valid field element inputs r_0
-    • The output is a valid RistrettoPoint:
-        - It lies on the twisted Edwards curve -x^2 + y^2 = 1 + d*x^2*y^2
-        - It is an even point: IsSquare(Z^2 - Y^2) holds (equivalently IsSquare(1 - y^2))
-    • The output matches the pure mathematical Elligator map:
-        result.toPoint = (elligator_ristretto_flavor_pure r_0.toField).val
-      bridging the 51-bit limb implementation to the abstract ZMod p computation
--/
 
-set_option maxHeartbeats 900000 in -- needed for complex progress
-/-- **Spec and proof concerning `ristretto.RistrettoPoint.elligator_ristretto_flavor`**:
-• The function always succeeds (no panic) for all valid field element inputs
-• The output is indeed a valid RistrettoPoint (i.e., an even Edwards point that lies on the curve)
-• The output point corresponds to `elligator_ristretto_flavor_pure s.toField`, bridging
-  the implementation to the pure mathematical Elligator map defined in Representation.lean
--/
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+set_option maxHeartbeats 900000 in
+
+
+
+
+
+
 @[progress]
 theorem elligator_ristretto_flavor_spec
     (s : FieldElement51)

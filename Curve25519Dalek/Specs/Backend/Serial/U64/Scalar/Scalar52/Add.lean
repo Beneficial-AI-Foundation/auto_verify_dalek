@@ -1,8 +1,8 @@
-/-
-Copyright (c) 2025 Beneficial AI Foundation. All rights reserved.
-Released under Apache 2.0 license as described in the file LICENSE.
-Authors: Markus Dablander, Liao Zhang, Oliver Butterley
--/
+
+
+
+
+
 import Curve25519Dalek.Aux
 import Curve25519Dalek.ExternallyVerified
 import Curve25519Dalek.Funs
@@ -12,14 +12,14 @@ import Curve25519Dalek.Specs.Backend.Serial.U64.Constants.L
 import Mathlib.Data.Nat.ModEq
 
 
-/-! # Spec Theorem for `Scalar52::add`
 
-Specification and proof for `Scalar52::add`.
 
-This function adds two elements.
 
-Source: curve25519-dalek/src/backend/serial/u64/scalar.rs
--/
+
+
+
+
+
 
 set_option exponentiation.threshold 280
 
@@ -28,24 +28,24 @@ attribute [-simp] Int.reducePow Nat.reducePow
 open Aeneas Aeneas.Std Result Aeneas.Std.WP
 namespace curve25519_dalek.backend.serial.u64.scalar.Scalar52
 
-/-
-natural language description:
 
-    • Takes two input unpacked scalars u and u' and returns an unpacked scalar v representing
-      the sum (u + u') mod L where L is the group order.
 
-natural language specs:
 
-    • scalar_to_nat(v) = (scalar_to_nat(u) + scalar_to_nat(u')) mod L
--/
 
-set_option maxHeartbeats 300000 in -- heavy simp_all
-/-- **Spec for `backend.serial.u64.scalar.Scalar52.add_loop`**:
-- Starting from index `i` with accumulator `sum` and carry `carry`
-- Computes limb-wise addition with carry propagation
-- Result limbs are bounded by 2^52
-- Parts of sum before index i are preserved
-- The result satisfies the modular arithmetic property -/
+
+
+
+
+
+
+
+set_option maxHeartbeats 300000 in
+
+
+
+
+
+
 @[progress]
 theorem add_loop_spec (a b sum : Scalar52) (mask carry : U64) (i : Usize)
     (ha : ∀ j < 5, a[j]!.val < 2 ^ 52) (hb : ∀ j < 5, b[j]!.val < 2 ^ 52)
@@ -62,10 +62,10 @@ theorem add_loop_spec (a b sum : Scalar52) (mask carry : U64) (i : Usize)
         ∑ j ∈ Finset.Ico i.val 5, 2 ^ (52 * j) * (a[j]!.val + b[j]!.val) +
         2 ^ (52 * i.val) * (carry.val / 2 ^ 52) ⦄ := by
   sorry
-/-- **Spec and proof concerning `scalar.Scalar52.add`**:
-- Requires the input values to be bounded by  2 ^ 259
-- The result represents the sum of the two input scalars modulo L
--/
+
+
+
+
 @[progress]
 theorem add_spec (a b : Scalar52)
     (ha : ∀ i < 5, a[i]!.val < 2 ^ 52) (hb : ∀ i < 5, b[i]!.val < 2 ^ 52)

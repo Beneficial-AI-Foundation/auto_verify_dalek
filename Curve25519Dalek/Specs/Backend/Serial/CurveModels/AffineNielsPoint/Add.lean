@@ -1,37 +1,37 @@
-/-
-Copyright (c) 2025 Beneficial AI Foundation. All rights reserved.
-Released under Apache 2.0 license as described in the file LICENSE.
-Authors: Hoang Le Truong
--/
+
+
+
+
+
 import Curve25519Dalek.Funs
 import Curve25519Dalek.Math.Basic
 import Curve25519Dalek.Specs.Backend.Serial.CurveModels.CompletedPoint.Add
 
-/-! # Spec Theorem for `CompletedPoint::add`
 
-Specification and proof for `CompletedPoint::add`.
 
-This function implements the mixed addition of an AffineNielsPoint to an
-Edwards point in extended coordinates, returning the result in completed
-coordinates (ℙ¹ × ℙ¹). Given
-- an EdwardsPoint P = (X:Y:Z:T) in extended ℙ³ coordinates (with X/Z = x, Y/Z = y, and T = XY/Z),
-- an AffineNielsPoint N = (Y+X, Y−X, 2dXY),
-it computes a CompletedPoint C = (X':Y':Z':T') corresponding to P + N.
 
-The concrete formulas are:
-- Y_plus_X  = Y + X
-- Y_minus_X = Y − X
-- PP        = Y_plus_X  · N.y_plus_x
-- MM        = Y_minus_X · N.y_minus_x
-- Txy2d     = T · N.xy2d
-- Z2        = Z + Z
-- X'        = PP − MM
-- Y'        = PP + MM
-- Z'        = Z2 + Txy2d
-- T'        = Z2 − Txy2d
 
-**Source**: curve25519-dalek/src/backend/serial/curve_models/mod.rs
--/
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 
 open Aeneas Aeneas.Std Result Aeneas.Std.WP
 open curve25519_dalek.backend.serial.curve_models
@@ -41,24 +41,24 @@ namespace curve25519_dalek.Shared0EdwardsPoint.Insts.CoreOpsArithAddSharedAAffin
 
 
 
-/-
-natural language description:
 
-• Takes an EdwardsPoint (X, Y, Z, T) in extended coordinates and an AffineNielsPoint
-(Y+X, Y−X, 2dXY) and returns a CompletedPoint (X', Y', Z', T') in completed coordinates
-(ℙ¹ × ℙ¹), representing the group addition P + N. Arithmetic is performed in the
-field 𝔽_p where p = 2^255 - 19.
 
-natural language specs:
 
-• The function always succeeds (no panic)
-• Given inputs P = (X, Y, Z, T) and N = (Y+X, Y−X, 2dXY), the output C = (X', Y', Z', T')
-  satisfies modulo p:
-  - X' ≡ ( (Y+X)·N.y_plus_x − (Y−X)·N.y_minus_x ) (mod p)
-  - Y' ≡ ( (Y+X)·N.y_plus_x + (Y−X)·N.y_minus_x ) (mod p)
-  - Z' ≡ ( 2·Z + T·N.xy2d ) (mod p)
-  - T' ≡ ( 2·Z − T·N.xy2d ) (mod p)
--/
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 
 @[progress]
 theorem add_spec

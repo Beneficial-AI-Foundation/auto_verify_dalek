@@ -1,44 +1,44 @@
-/-
-Copyright (c) 2026 Beneficial AI Foundation. All rights reserved.
-Released under Apache 2.0 license as described in the file LICENSE.
-Authors: Hoang Le Truong
--/
+
+
+
+
+
 import Curve25519Dalek.Funs
 import Curve25519Dalek.Math.Basic
 import Curve25519Dalek.Aux
 import Curve25519Dalek.Specs.Scalar.Scalar.FromU128
 
 
-/-! # Spec Theorem for `Scalar::from` (From<u16>)
 
-Specification and proof for the `From<u16>` trait implementation for Scalar.
 
-This function constructs a `Scalar` from a `u16` value by writing its 2
-little-endian bytes into the first 2 bytes of a 32-byte zero array.
-Because every `u16` value is less than 2¹⁶, and 2¹⁶ < L (the group order,
-≈ 2²⁵²), the resulting `Scalar` is automatically in canonical form.
 
-**Source**: curve25519-dalek/src/scalar.rs (lines 499:4-504:5)
--/
+
+
+
+
+
+
+
+
 open Aeneas Aeneas.Std Result Aeneas.Std.WP
 namespace curve25519_dalek.scalar.Scalar.Insts.CoreConvertFromU16
 
-/-
-natural language description:
 
-• Takes a u16 value `x`
-• Creates a 32-byte array initialized to zero
-• Converts `x` to its 2-byte little-endian representation `x_bytes`
-• Copies `x_bytes` into the first 2 bytes of the 32-byte array
-• Returns a Scalar wrapping the resulting 32-byte array
 
-natural language specs:
 
-• The function always succeeds (no panic) for any u16 input
-• The resulting Scalar's byte representation, interpreted as a little-endian
-  natural number via U8x32_as_Nat, equals x.val (the natural number value of x)
-• Since x.val < 2^16 < L, the resulting Scalar is automatically canonical
--/
+
+
+
+
+
+
+
+
+
+
+
+
+
 
 
 private lemma hdigits (x : Std.U16) :
@@ -85,12 +85,12 @@ private lemma U8x32_as_Nat_setSlice_zero (bs : List Std.U8) (h_len : bs.length =
     rw[U8x32_as_Nat_setSlice_zeroI _ h_len, hmap]
     exact h_len
 
-/-- **Spec and proof concerning `scalar.Scalar.Insts.CoreConvertFromU16.from`**:
-• The function always succeeds (no panic)
-• The resulting Scalar's byte representation equals x.val
-  (i.e., U8x32_as_Nat result.bytes = x.val)
-• The result is automatically canonical (less than L) since x.val < 2^16 < L
--/
+
+
+
+
+
+
 @[progress]
 theorem from_spec (x : Std.U16) :
     «from» x ⦃ result =>

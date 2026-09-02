@@ -1,23 +1,23 @@
-/-
-Copyright (c) 2025 Beneficial AI Foundation. All rights reserved.
-Released under Apache 2.0 license as described in the file LICENSE.
-Authors: Alessandro D'Angelo, Oliver Butterley, Hoang Le Truong
--/
+
+
+
+
+
 import Curve25519Dalek.Math.Basic
 import Curve25519Dalek.Math.Edwards.Curve
 import Curve25519Dalek.Math.Edwards.Representation
 import Curve25519Dalek.Math.Montgomery.Curve
 import Curve25519Dalek.Types
 
-/-!
-# Montgomery Point Representations
 
-Bridge infrastructure connecting Rust `MontgomeryPoint` to mathematical points.
--/
 
-/-!
-## MontgomeryPoint Validity
--/
+
+
+
+
+
+
+
 
 namespace curve25519_dalek.backend.serial.curve_models
 
@@ -31,21 +31,21 @@ open curve25519_dalek curve25519_dalek.math
 open Edwards
 
 
-/--
-Validity for MontgomeryPoint.
-A MontgomeryPoint is a 32-byte integer `u` representing a coordinate on the curve `v² = u³ + Au² + u`.
-It is valid if:
-1. The integer `u` is strictly less than the field modulus `p`.
-2. `u` maps to a valid Edwards `y` coordinate (i.e., `u ≠ -1`).
-3. The resulting Edwards point exists (i.e., we can solve for `x`).
--/
+
+
+
+
+
+
+
+
 def MontgomeryPoint.IsValid (m : MontgomeryPoint) : Prop :=
   let u : ZMod p:= U8x32_as_Field m
-  -- The check `u_int < p` is implicitly handled because
-  -- bytesToField returns a `ZMod p`, which is canonical by definition.
-  -- However, to match the Rust strictness (rejecting non-canonical inputs),
-  -- we should technically check the raw Nat value.
-  -- But for the linter ''deterministic timeout' issue, we just need to avoid U8x32_as_Nat.
+
+
+
+
+
   if u + 1 = 0 then
     False
   else
@@ -58,23 +58,23 @@ noncomputable instance (m : MontgomeryPoint) : Decidable (MontgomeryPoint.IsVali
   unfold MontgomeryPoint.IsValid
   infer_instance
 
-/--
-The Edwards denominator is never zero.
--/
+
+
+
 lemma edwards_denom_nonzero (y : ZMod p) : (Ed25519.d : ZMod p) * y ^ 2 + 1 ≠ 0 := by
   intro h_zero
   have h_eq : Ed25519.d * y^2 = -1 := eq_neg_of_add_eq_zero_left h_zero
   by_cases hy : y = 0
-  · -- If y = 0, then 0 = -1, contradiction.
+  ·
     rw [hy, pow_two] at h_eq; simp only [mul_zero] at h_eq; contradiction
-  · -- y ≠ 0 case
+  ·
     have h_d_val : Ed25519.d = -1 * (y^2)⁻¹ := by
       apply (eq_mul_inv_iff_mul_eq₀ (pow_ne_zero 2 hy)).mpr
       exact h_eq
     have h_d_sq : IsSquare (Ed25519.d : ZMod p) := by
       rw [h_d_val]
       apply IsSquare.mul
-      · exact Edwards.neg_one_is_square -- From Curve.lean
+      · exact Edwards.neg_one_is_square
       · rw [← inv_pow]; exact IsSquare.sq (y⁻¹)
     exact Edwards.d_not_square h_d_sq
 
@@ -85,28 +85,28 @@ lemma montgomery_helper {F : Type*} [Field F] (d y x_sq : F)
   rw [h_x]; apply (mul_right_inj' h_den).mp; field_simp [h_den]
   try ring
 
-/--
-Convert MontgomeryPoint to Point Ed25519.
-1. Recovers `y` from `u` via `y = (u-1)/(u+1)`.
-2. Recovers `x` from `y` (choosing the canonical positive root).
-Returns 0 (identity) if invalid.
--/noncomputable def MontgomeryPoint.toPoint (m : MontgomeryPoint) : Point Ed25519 :=
+
+
+
+
+
+noncomputable def MontgomeryPoint.toPoint (m : MontgomeryPoint) : Point Ed25519 :=
   if h : (MontgomeryPoint.IsValid m) then
-    -- The following is equivalent to defining u := 8x32_as_Nat m % p, but it uses Horner's method
-    --  to avoid un folding heavy computations on large Nats casted as Mod p.
+
+
     let u : ZMod p:= U8x32_as_Field m
-    -- We know u != -1 from IsValid, so inversion is safe/correct
+
     let one : ZMod p := 1
     let y : ZMod p := (u - one) * (u + one)⁻¹
-    -- Recover x squared
+
     let num : ZMod p := y^2 - one
     let den : ZMod p := (d : ZMod p) * y^2 + one
     let x2 : ZMod p := num * den⁻¹
-    -- Extract root (guaranteed to exist by IsValid)
+
     match h_sqrt : sqrt_checked x2 with
     | (x_abs, is_sq) =>
-    -- For Montgomery -> Edwards, the sign of x is lost.
-    -- We canonically choose the non-negative (even) root.
+
+
     { x := x_abs, y := y, on_curve := by
         have h_is_sq_true : is_sq = true := by
           unfold MontgomeryPoint.IsValid at h
@@ -141,15 +141,15 @@ open curve25519_dalek.math
 
 section MontgomeryPoint
 
-/-- Create a point from a MontgomeryPoint byte representation.
-    Computes the v-coordinate from u using the Montgomery curve equation v² = u³ + A·u² + u.
 
-    Note: `sqrt_checked` returns a value whose square equals its input, which depends on
-    the mathematical properties of the square root function in the field.
 
-    This is a one-way conversion, since the Montgomery
-    model does not retain sign information.
--/
+
+
+
+
+
+
+
 def v_squared (u : CurveField) : CurveField := u ^ 3 + Curve25519.A * u ^ 2 + u
 
 noncomputable def MontgomeryPoint.u_affine_toPoint (u : CurveField) : Point:=
@@ -193,16 +193,16 @@ theorem non_u_affine_toPoint_spec {u v : CurveField}
   simp only [MontgomeryCurveCurve25519]
   simp only [equation]
   ring
-/-
-theorem MontgomeryPoint.u_affine_toPoint_spec (u v : CurveField)
-  (non : u ≠ 0)
-  (equation : v ^ 2 = u ^ 3 + Curve25519.A * u ^ 2 + u) :
-  MontgomeryPoint.u_affine_toPoint (u : CurveField) = WeierstrassCurve.Affine.Point.some ( non_u_affine_toPoint_spec equation) := by
-  have := Aux_u_affine_toPoint_spec non equation
-  unfold MontgomeryPoint.u_affine_toPoint
-  simp only [Bool.or_eq_true, Bool.not_eq_eq_eq_not, Bool.not_true, beq_iff_eq]
-  have := @if_neg
--/
+
+
+
+
+
+
+
+
+
+
 
 noncomputable def MontgomeryPoint.mkPoint (m : MontgomeryPoint) : Point:=
     MontgomeryPoint.u_affine_toPoint  (((U8x32_as_Nat m) % 2 ^255):ℕ )
@@ -276,7 +276,7 @@ lemma inver_Ad_eq : Edwards.Ed25519.d=    - (Curve25519.A - 2) /(Curve25519.A + 
   field_simp
   decide
 
--- Define roots_B as a square root of the B coefficient
+
 noncomputable def Curve25519.roots_B : CurveField :=
   Classical.choose B_d_relation
 
@@ -299,7 +299,7 @@ lemma roots_B_d : Curve25519.roots_B ^ 2 * Edwards.Ed25519.d= (Curve25519.A - 2)
   simp only [A_add_2, inver_Ad_eq, neg_sub]
   decide
 
--- Prove that the Montgomery to Edwards conversion inverts the Edwards to Montgomery conversion
+
 lemma montgomery_edwards_inverse {y : CurveField} (hy1 : y ≠ 1) :    let u := (1 + y) / (1 - y)
     y = (u - 1) / (u + 1) := by
   intro u
@@ -541,36 +541,36 @@ theorem map_zero : fromEdwards 0 = 0 := by
 theorem zeroY (e : Edwards.Point Edwards.Ed25519)
   (h : e.y = 1) :
   e = 0 := by
-  -- If e.y = 1, then from the Edwards curve equation: a*x² + y² = 1 + d*x²*y²
-  -- With a = -1 and y = 1: -x² + 1 = 1 + d*x²
-  -- This gives: -x² = d*x², so x²(1 + d) = 0
-  -- Since 1 + d ≠ 0 for Ed25519, we must have x² = 0, hence x = 0
-  -- Therefore e = (0, 1) which is the identity point
+
+
+
+
+
   cases e with
   | mk x y h_curve =>
     subst h
     ext
-    · -- Prove x = 0
-      -- From curve equation with y = 1: a*x² + 1 = 1 + d*x²
+    ·
+
       have h_eq : Edwards.Ed25519.a * x^2 + 1 = 1 + Edwards.Ed25519.d * x^2 := by
         convert h_curve using 2
         ring
-      -- Since a = -1: -x² + 1 = 1 + d*x²
+
       have ha : Edwards.Ed25519.a = -1 := rfl
       rw [ha] at h_eq
-      -- Simplify: -x² = d*x²
+
       have h_simp : -(x^2) = Edwards.Ed25519.d * x^2 := by grind
-      -- Therefore: x²(1 + d) = 0
+
       have h_factor : x^2 * (1 + Edwards.Ed25519.d) = 0 := by
         linear_combination -h_simp
-      -- Since 1 + d ≠ 0, we have x² = 0
+
       have h_d_neq : (1 + Edwards.Ed25519.d : ZMod p) ≠ 0 := by
-        -- This follows from properties of Ed25519.d
+
         decide
       have h_x_sq : x^2 = 0 := by
         grind
       exact sq_eq_zero_iff.mp h_x_sq
-    · -- Prove y = 1
+    ·
       rfl
 
 theorem zero_iff (e : Edwards.Point Edwards.Ed25519) :  e = 0 ↔ e.y = 1 := by
@@ -583,27 +583,27 @@ theorem zero_iff (e : Edwards.Point Edwards.Ed25519) :  e = 0 ↔ e.y = 1 := by
 theorem exceptEdwardsPoint {e : Edwards.Point Edwards.Ed25519}
   (h : 1 + e.y = 0) :
   e.x = 0 := by
-  -- If 1 + e.y = 0, then e.y = -1
-  -- From the Edwards curve equation: a*x² + y² = 1 + d*x²*y²
-  -- With a = -1 and y = -1: -x² + 1 = 1 + d*x²
-  -- This gives: -x² = d*x², so x²(-1 - d) = 0
-  -- Since -(1 + d) ≠ 0 for Ed25519, we must have x² = 0, hence x = 0
+
+
+
+
+
   have hy : e.y = -1 := by grind
   have h_curve := e.on_curve
   have ha : Edwards.Ed25519.a = -1 := rfl
   rw [ha, hy] at h_curve
-  -- Now h_curve: -x² + (-1)² = 1 + d*x²*(-1)²
-  -- Simplify: -x² + 1 = 1 + d*x²
+
+
   have h_simp : -e.x^2 + 1 = 1 + Edwards.Ed25519.d * e.x^2 := by
     convert h_curve using 2
     · grind
     · ring
-  -- Therefore: -x² = d*x²
+
   have h_eq : -e.x^2 = Edwards.Ed25519.d * e.x^2 := by grind
-  -- Factor: x²(-1 - d) = 0, i.e., x²(-(1 + d)) = 0
+
   have h_factor : e.x^2 * (-(1 + Edwards.Ed25519.d)) = 0 := by
     grind
-  -- Since -(1 + d) ≠ 0, we have x² = 0
+
   have h_d_neq : (-(1 + Edwards.Ed25519.d) : ZMod p) ≠ 0 := by
     simp only [neg_add_rev, ne_eq]
     decide
@@ -635,24 +635,24 @@ theorem neg_fromEdwards (e : Edwards.Point Edwards.Ed25519) :
 theorem condition_T_point (e₁ e₂ : Edwards.Point Edwards.Ed25519)
  (h : 1 + (e₁ + e₂).y = 0) (he₁ : 1 + e₁.y = 0) :
    e₂.y = 1 := by
-  -- From h, we have (e₁ + e₂).y = -1
+
   have hy_sum : (e₁ + e₂).y = -1 := by grind
-  -- Use the Edwards addition formula for y-coordinate
+
   rw [Edwards.add_y] at hy_sum
-  -- Recall Ed25519.a = -1
+
   have ha : Edwards.Ed25519.a = -1 := rfl
-  -- The addition formula gives:
-  -- (e₁.y * e₂.y + e₁.x * e₂.x) / (1 - d * e₁.x * e₂.x * e₁.y * e₂.y) = -1
+
+
   rw [ha] at hy_sum
-  -- The denominator is non-zero by completeness
+
   have h_denom : 1 - Edwards.Ed25519.d * e₁.x * e₂.x * e₁.y * e₂.y ≠ 0 :=
     (Edwards.Ed25519.denomsNeZero e₁ e₂).2
-  -- Clearing the denominator
+
   have h_cleared : e₁.y * e₂.y + e₁.x * e₂.x =
     -(1 - Edwards.Ed25519.d * e₁.x * e₂.x * e₁.y * e₂.y) := by
     field_simp [h_denom] at hy_sum
     grind
-  -- Simplify to: e₁.y * e₂.y + e₁.x * e₂.x + 1 = d * e₁.x * e₂.x * e₁.y * e₂.y
+
   have h_eq : e₁.y * e₂.y + e₁.x * e₂.x + 1 =
     Edwards.Ed25519.d * e₁.x * e₂.x * e₁.y * e₂.y := by
     grind
@@ -864,9 +864,9 @@ lemma x_sq_mul_linear_factor_eq (e₁ : Edwards.Point Edwards.Ed25519) : e₁.x 
     rw[← this, edwards_one_sub_y_sq_mul_x_sq_eq e₁]
     ring
 
-/-- The Montgomery curve equation `v² = u³ + Au² + u`, divided through by `u²`,
-    rearranges to `1/u = (v/u)² - A - u`. This lemma establishes this equivalent form
-    for an Edwards point mapped birationally to Montgomery coordinates. -/
+
+
+
 theorem montgomery_inv_u_eq (e₁ : Edwards.Point Edwards.Ed25519)
   (non_e1_x : e₁.x ≠ 0)
   (non_e₁ : ¬ e₁.y = -1)
@@ -2410,30 +2410,30 @@ theorem comm_mul_fromEdwards {n : ℕ} (e : Edwards.Point Edwards.Ed25519) :
   · rename_i n hn
     simp only [add_smul, one_smul]
     rw[add_fromEdwards, hn]
-/-
-theorem fromEdwards_eq_MontgomeryPoint_toPoint (e : Edwards.Point Edwards.Ed25519)
-  (m : MontgomeryPoint)
-  (non : ¬ e.y = 1)
-  (non_x : ¬ e.x = 0)
-  (h : (((U8x32_as_Nat m) % 2 ^ 255) : ℕ) = (1 + e.y) / (1 - e.y)) :
-  fromEdwards e = MontgomeryPoint.mkPoint m  := by
-  unfold fromEdwards
-  simp only [non, ↓reduceDIte, non_x, false_and]
-  unfold MontgomeryPoint.mkPoint
-  rw[h]
-  clear *- non
-  apply symm
-  apply MontgomeryPoint.u_affine_toPoint_spec
-  · simp only [ne_eq, div_eq_zero_iff, not_or]
-    constructor
-    · intro ha
-      have := exceptEdwardsPoint ha
-      apply non_x this
-    · grind only
-  · have := on_MontgomeryCurves e non non_x
-    simp only at this
-    apply this
--/
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 end fromEdwards
 
 section toEdwards
@@ -2452,8 +2452,8 @@ noncomputable def toEdwards : Point → Option (Edwards.Point Edwards.Ed25519)
     if h_invalid : !was_square then
       none
     else
-    -- For Montgomery -> Edwards, the sign of x is lost.
-    -- We canonically choose the non-negative (even) root.
+
+
     some { x := x_abs, y := y, on_curve := (by
         replace h_invalid := Bool.eq_false_iff.mpr h_invalid
         simp only [Bool.not_eq_eq_eq_not, Bool.not_false] at h_invalid

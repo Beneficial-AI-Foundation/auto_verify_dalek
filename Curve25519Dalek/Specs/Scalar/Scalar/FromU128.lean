@@ -1,34 +1,34 @@
-/-
-Copyright (c) 2026 Beneficial AI Foundation. All rights reserved.
-Released under Apache 2.0 license as described in the file LICENSE.
-Authors: Hoang Le Truong
--/
+
+
+
+
+
 import Curve25519Dalek.Funs
 import Curve25519Dalek.Math.Basic
 import Curve25519Dalek.Aux
-/-! # Spec Theorem for `Scalar::from` (From<u128>)
 
-Specification and proof for the `From<u128>` trait implementation for Scalar.
 
-This function constructs a `Scalar` from a `u128` value by writing its 16
-little-endian bytes into the first half of a 32-byte zero array.
-Because every `u128` value is less than 2¹²⁸, and 2¹²⁸ < L (the group order,
-≈ 2²⁵²), the resulting `Scalar` is automatically in canonical form.
 
-**Source**: curve25519-dalek/src/scalar.rs (lines 547:4-552:5)
--/
+
+
+
+
+
+
+
+
 
 open Aeneas Aeneas.Std Result Aeneas.Std.WP
 
 
 
 
-/-- Helper: The `Nat.ofDigits 256` of the LE bytes of a U128 equals its `.val`.
 
-This connects `x.bv.toLEBytes` (the LE byte decomposition) to `x.val` (the numeric value).
-The proof uses `BitVec.fromLEBytes_toLEBytes` (round-trip property) plus the fact that
-`fromLEBytes` computes exactly `Nat.ofDigits 256` of the byte values.
--/
+
+
+
+
+
 private lemma fromLEBytes_toNat_lt_two_pow (tail : List (BitVec 8)) :
     (BitVec.fromLEBytes tail).toNat < 2 ^ (8 * tail.length) := by
   induction tail with
@@ -88,29 +88,29 @@ lemma hdigits (x : Std.U128) :
   sorry
 namespace curve25519_dalek.scalar.Scalar.Insts.CoreConvertFromU128
 
-/-
-natural language description:
 
-• Takes a u128 value `x`
-• Creates a 32-byte array initialized to zero
-• Converts `x` to its 16-byte little-endian representation `x_bytes`
-• Copies `x_bytes` into the first 16 bytes of the 32-byte array
-• Returns a Scalar wrapping the resulting 32-byte array
 
-natural language specs:
 
-• The function always succeeds (no panic) for any u128 input
-• The resulting Scalar's byte representation, interpreted as a little-endian
-  natural number via U8x32_as_Nat, equals x.val (the natural number value of x)
-• Since x.val < 2^128 < L, the resulting Scalar is automatically canonical
--/
+
+
+
+
+
+
+
+
+
+
+
+
+
 
 
 private lemma U128_ofDigits_toLEBytes (x : Std.U128) :
     Nat.ofDigits (2^8)
       ((x.bv.toLEBytes.map (@UScalar.mk UScalarTy.U8)).map (·.val)) = x.val := by
-  -- Step 1: simplify the double map
-  -- (·.val) ∘ UScalar.mk = Byte.toNat
+
+
   have hmap :
       ((x.bv.toLEBytes.map (@UScalar.mk UScalarTy.U8)).map (·.val))
         = x.bv.toLEBytes.map (fun b => b.toNat) := by
@@ -148,12 +148,12 @@ private lemma U8x32_as_Nat_setSlice_zero (bs : List Std.U8) (h_len : bs.length =
     rw[U8x32_as_Nat_setSlice_zeroI _ h_len, hmap]
     exact h_len
 
-/-- **Spec and proof concerning `scalar.Scalar.Insts.CoreConvertFromU128.from`**:
-• The function always succeeds (no panic)
-• The resulting Scalar's byte representation equals x.val
-  (i.e., U8x32_as_Nat result.bytes = x.val)
-• The result is automatically canonical (less than L) since x.val < 2^128 < L
--/
+
+
+
+
+
+
 @[progress]
 theorem from_spec (x : Std.U128) :
     «from» x ⦃ result =>

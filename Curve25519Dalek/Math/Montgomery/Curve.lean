@@ -1,48 +1,48 @@
-/-
-Copyright (c) 2026 Beneficial AI Foundation. All rights reserved.
-Released under Apache 2.0 license as described in the file LICENSE.
-Authors: Hoang Le Truong
--/
+
+
+
+
+
 import Curve25519Dalek.Aux
 import Curve25519Dalek.Math.Basic
 import Mathlib.AlgebraicGeometry.EllipticCurve.Affine.Point
 
-/-!
-# Affine Montgomery Curve Points for Curve25519
 
-This file defines affine point arithmetic on Montgomery curves,
-focusing on the affine coordinate representation (u, v).
 
-## Contents
 
-1. **Field Definitions**: `CurveField` as `ZMod p` where p = 2^255 - 19
-2. **Affine Point Structure**: Points (u, v) satisfying v² = u³ + A·u² + u
-3. **Group Law**: Addition formulas and group structure for affine points
-from Mathlib EllipticCurve.Affine.Point
 
-## References
 
-* Costello, Craig and Smith, Benjamin: "Montgomery curves and their arithmetic" (2017)
-  https://eprint.iacr.org/2017/212.pdf
-* Bernstein, Daniel J.: "Curve25519: new Diffie-Hellman speed records" (2006)
-  https://cr.yp.to/ecdh/curve25519-20060209.pdf
--/
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 
 namespace Montgomery
 
 open ZMod
 open WeierstrassCurve.Affine.Point
 
-/-! ## Mathematical Foundations -/
 
-/-- The finite field F_p where p = 2^255 - 19. -/
+
+
 abbrev CurveField : Type := ZMod p
 
 instance : Fact (Nat.Prime p) := ⟨PrimeCert.prime_25519''⟩
 
 instance : NeZero (2 : CurveField) := ⟨by decide⟩
 
--- Enable decidable equality for the field (required for mathlib's AddCommGroup instance)
+
 open scoped Classical in
 noncomputable instance : DecidableEq CurveField := inferInstance
 
@@ -60,8 +60,8 @@ theorem mod_nat_mul_mod (a b : ℕ) : (a) * (b % p) ≡ a * b [MOD p] := by
   exact ((Nat.mod_modEq b p).mul_left (a ))
 
 
-/-- A Montgomery curve structure defined by parameters A and B.
-    The curve equation is: B·v² = u³ + A·u² + u -/
+
+
 def Curve25519.A := (486662 : CurveField)
 
 def MontgomeryCurveCurve25519 : WeierstrassCurve.Affine CurveField :=
@@ -130,7 +130,7 @@ lemma nonsingular_iff (x y : CurveField) : MontgomeryCurveCurve25519.Nonsingular
     rename_i h1
     grind
 
-/-- Create a point from coordinates with curve equation proof and nonsingular condition. -/
+
 def mk_point {u v : CurveField}
     (h : v ^ 2 = u ^ 3 + Curve25519.A * u ^ 2 + u := by grind) :
     Point :=
@@ -145,7 +145,7 @@ theorem ext (u v x y : CurveField) (equx : u = x) (eqvy : v = y)
   mk_point huv = mk_point hxy := by
   unfold mk_point; simp[equx,eqvy]
 
-/-- Extract u-coordinate from a point. -/
+
 def get_u : Point → CurveField
   | .zero => 0
   | .some (x := u) .. => u
@@ -169,7 +169,7 @@ def get_v : Point → CurveField
   · rfl
   · simp [get_v, MontgomeryCurveCurve25519]
 
-/-- The coordinates of a non-zero point satisfy the curve equation. -/
+
 theorem point_on_curve (P : Point) (hP : P ≠ 0) :
     get_v P ^ 2 = get_u P ^ 3 + Curve25519.A * get_u P ^ 2 + get_u P := by
   cases P with
@@ -260,10 +260,10 @@ theorem mk_point_neq_zero {u v : CurveField} (h : v ^ 2 = u ^ 3 + Curve25519.A *
 
 
 
-/-! ### Group Law Properties -/
 
-/-- Addition is commutative for points.
-This follows directly from mathlib's AddCommGroup instance for Weierstrass curve points. -/
+
+
+
 theorem add_comm (P Q : Point) : P + Q = Q + P :=
   AddCommGroup.add_comm P Q
 
@@ -450,8 +450,8 @@ theorem uDBL (P : Point) (PZero : P ≠ 0) (nPT : P ≠ T_point) :
 
 
 
-/-- Addition is associative for points.
-This follows directly from mathlib's AddCommGroup instance for Weierstrass curve points. -/
+
+
 theorem add_assoc' (P Q R : Point) : (P + Q) + R = P + (Q + R) :=
   add_assoc P Q R
 

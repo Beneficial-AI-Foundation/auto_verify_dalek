@@ -1,68 +1,68 @@
-/-
-  Config: Project-specific configuration for Utils tools.
 
-  This file centralizes all project-specific values. To adapt these tools
-  for a different Aeneas-generated project, modify the values here.
--/
+
+
+
+
+
 import Lean
 
 open Lean
 
 namespace Utils.Config
 
-/-- The main module to import (contains Funs and Specs) -/
+
 def mainModule : Name := `Curve25519Dalek
 
-/-- The module containing function definitions -/
+
 def funsModule : Name := `Curve25519Dalek.Funs
 
-/-- The crate name used for relevance filtering (matches source paths) -/
+
 def crateName : String := "curve25519-dalek"
 
-/-!
-### Extraction Artifact Suffixes
 
-Functions whose name ends with any of these suffixes are Aeneas extraction
-artifacts (internal implementation helpers). They will be marked with
-`isExtractionArtifact = true` but still included in output.
 
-For `_body` functions, the docstring is inherited by the corresponding
-main function (e.g., `foo_body`'s docstring is used for `foo`).
--/
+
+
+
+
+
+
+
+
 def extractionArtifactSuffixes : List String := [
-  "_body",             -- Global/constant body definitions
-  "_loop",             -- Loop helper functions
-  "_loop0", "_loop1", "_loop2", "_loop3"  -- Numbered loop variants
+  "_body",
+  "_loop",
+  "_loop0", "_loop1", "_loop2", "_loop3"
 ]
 
-/-!
-### Namespace Prefix Filters
 
-Functions whose name starts with any of these prefixes will be EXCLUDED.
--/
+
+
+
+
 def excludedNamespacePrefixes : List String := [
-  "curve25519_dalek.core",   -- Rust core library implementations
-  "curve25519_dalek.subtle", -- Subtle crate implementations
-  -- "_private"                 -- Private/internal definitions
+  "curve25519_dalek.core",
+  "curve25519_dalek.subtle",
+
 ]
 
-/-!
-### Hidden Functions
 
-Specific function names that should be marked as hidden (`isHidden = true`).
-These are included in output but can be filtered out by consumers.
-Use this for functions that are technically relevant but not useful for
-verification tracking (e.g., trivial trait implementations).
--/
+
+
+
+
+
+
+
 def hiddenFunctions : List String := [
-  -- Other
+
   "curve25519_dalek.ristretto.RistrettoPoint.coset4",
   "curve25519_dalek.IdentityCurveModelsProjectivePoint",
   "curve25519_dalek.IdentityMontgomeryProjectivePoint",
   "curve25519_dalek.backend.get_selected_backend",
   "curve25519_dalek.backend.serial.u64.constants.EIGHT_TORSION_INNER_DOC_HIDDEN",
   "curve25519_dalek.window.LookupTable.select",
-  -- Clone (struct literal + .clone child that just returns ok)
+
   "curve25519_dalek.backend.serial.curve_models.AffineNielsPoint.Insts.CoreCloneClone",
   "curve25519_dalek.backend.serial.curve_models.AffineNielsPoint.Insts.CoreCloneClone.clone",
   "curve25519_dalek.backend.serial.curve_models.CompletedPoint.Insts.CoreCloneClone",
@@ -89,7 +89,7 @@ def hiddenFunctions : List String := [
   "curve25519_dalek.ristretto.RistrettoPoint.Insts.CoreCloneClone.clone",
   "curve25519_dalek.scalar.Scalar.Insts.CoreCloneClone",
   "curve25519_dalek.scalar.Scalar.Insts.CoreCloneClone.clone",
-  -- Copy (marker trait, no children)
+
   "curve25519_dalek.backend.serial.curve_models.AffineNielsPoint.Insts.CoreMarkerCopy",
   "curve25519_dalek.backend.serial.curve_models.CompletedPoint.Insts.CoreMarkerCopy",
   "curve25519_dalek.backend.serial.curve_models.ProjectiveNielsPoint.Insts.CoreMarkerCopy",
@@ -103,11 +103,11 @@ def hiddenFunctions : List String := [
   "curve25519_dalek.ristretto.CompressedRistretto.Insts.CoreMarkerCopy",
   "curve25519_dalek.ristretto.RistrettoPoint.Insts.CoreMarkerCopy",
   "curve25519_dalek.scalar.Scalar.Insts.CoreMarkerCopy",
-  -- StructuralPartialEq (marker trait, no children)
+
   "curve25519_dalek.backend.serial.curve_models.AffineNielsPoint.Insts.CoreMarkerStructuralPartialEq",
   "curve25519_dalek.edwards.CompressedEdwardsY.Insts.CoreMarkerStructuralPartialEq",
   "curve25519_dalek.ristretto.CompressedRistretto.Insts.CoreMarkerStructuralPartialEq",
-  -- Eq (struct literal + .assert_receiver_is_total_eq child that just returns ok)
+
   "curve25519_dalek.backend.serial.curve_models.AffineNielsPoint.Insts.CoreCmpEq",
   "curve25519_dalek.backend.serial.u64.field.FieldElement51.Insts.CoreCmpEq",
   "curve25519_dalek.edwards.CompressedEdwardsY.Insts.CoreCmpEq",
@@ -119,7 +119,7 @@ def hiddenFunctions : List String := [
   "curve25519_dalek.ristretto.CompressedRistretto.Insts.CoreCmpEq.assert_receiver_is_total_eq",
   "curve25519_dalek.ristretto.RistrettoPoint.Insts.CoreCmpEq",
   "curve25519_dalek.scalar.Scalar.Insts.CoreCmpEq",
-  -- PartialEq (struct literal + .eq child that delegates to array/field equality)
+
   "curve25519_dalek.backend.serial.curve_models.AffineNielsPoint.Insts.CoreCmpPartialEqAffineNielsPoint",
   "curve25519_dalek.backend.serial.u64.field.FieldElement51.Insts.CoreCmpPartialEqFieldElement51",
   "curve25519_dalek.backend.serial.u64.field.FieldElement51.Insts.CoreCmpPartialEqFieldElement51.eq",
@@ -132,7 +132,7 @@ def hiddenFunctions : List String := [
   "curve25519_dalek.ristretto.CompressedRistretto.Insts.CoreCmpPartialEqCompressedRistretto.eq",
   "curve25519_dalek.ristretto.RistrettoPoint.Insts.CoreCmpPartialEqRistrettoPoint",
   "curve25519_dalek.scalar.Scalar.Insts.CoreCmpPartialEqScalar",
-  -- Zeroize / DefaultIsZeroes
+
   "curve25519_dalek.backend.serial.curve_models.AffineNielsPoint.Insts.ZeroizeZeroize",
   "curve25519_dalek.backend.serial.curve_models.AffineNielsPoint.Insts.ZeroizeZeroize.zeroize",
   "curve25519_dalek.backend.serial.curve_models.ProjectiveNielsPoint.Insts.ZeroizeZeroize",
@@ -149,12 +149,12 @@ def hiddenFunctions : List String := [
   "curve25519_dalek.Bool.Insts.ZeroizeDefaultIsZeroes",
   "curve25519_dalek.U8.Insts.ZeroizeDefaultIsZeroes",
   "curve25519_dalek.U64.Insts.ZeroizeDefaultIsZeroes",
-  -- ValidityCheck (debug-only)
+
   "curve25519_dalek.backend.serial.curve_models.ProjectivePoint.Insts.Curve25519_dalekTraitsValidityCheck",
   "curve25519_dalek.backend.serial.curve_models.ProjectivePoint.Insts.Curve25519_dalekTraitsValidityCheck.is_valid",
   "curve25519_dalek.edwards.EdwardsPoint.Insts.Curve25519_dalekTraitsValidityCheck",
   "curve25519_dalek.edwards.EdwardsPoint.Insts.Curve25519_dalekTraitsValidityCheck.is_valid",
-  -- Default (struct literal + .default child that delegates to identity or returns zero)
+
   "curve25519_dalek.backend.serial.curve_models.AffineNielsPoint.Insts.CoreDefaultDefault",
   "curve25519_dalek.backend.serial.curve_models.AffineNielsPoint.Insts.CoreDefaultDefault.default",
   "curve25519_dalek.backend.serial.curve_models.ProjectiveNielsPoint.Insts.CoreDefaultDefault",
@@ -176,7 +176,7 @@ def hiddenFunctions : List String := [
   "curve25519_dalek.scalar.Scalar.Insts.CoreDefaultDefault",
   "curve25519_dalek.scalar.Scalar.Insts.CoreDefaultDefault.default",
   "curve25519_dalek.Bool.Insts.CoreDefaultDefault",
-  -- Trait instance struct literals (wrapper only, child has the logic)
+
   "curve25519_dalek.Array.Insts.CoreConvertTryFromShared0SliceTryFromSliceError",
   "curve25519_dalek.edwards.CompressedEdwardsY.Insts.CoreConvertTryFromShared0SliceU8TryFromSliceError",
   "curve25519_dalek.ristretto.CompressedRistretto.Insts.CoreConvertTryFromShared0SliceU8TryFromSliceError",
@@ -222,7 +222,7 @@ def hiddenFunctions : List String := [
   "curve25519_dalek.scalar.Scalar.Insts.SubtleConstantTimeEq",
   "curve25519_dalek.core.ops.range.RangeFull.Insts.CoreSliceIndexPrivate_slice_indexSealed",
   "curve25519_dalek.core.ops.range.RangeFull.Insts.CoreSliceIndexSliceIndexSliceSlice",
-  -- Trivial delegating child methods (owned/borrow variants that just call canonical impl)
+
   "curve25519_dalek.edwards.CompressedEdwardsY.Insts.CoreConvertTryFromShared0SliceU8TryFromSliceError.try_from",
   "curve25519_dalek.ristretto.CompressedRistretto.Insts.CoreConvertTryFromShared0SliceU8TryFromSliceError.try_from",
   "curve25519_dalek.montgomery.MontgomeryPoint.Insts.CoreOpsArithMulSharedBScalarMontgomeryPoint.mul",
@@ -249,7 +249,7 @@ def hiddenFunctions : List String := [
   "curve25519_dalek.scalar.Scalar.Insts.CoreOpsIndexIndexUsizeU8.index",
   "curve25519_dalek.backend.serial.u64.scalar.Scalar52.Insts.CoreOpsIndexIndexUsizeU64.index",
   "curve25519_dalek.edwards.CompressedEdwardsY.to_bytes",
-  -- Assign ops (struct literal wrappers)
+
   "curve25519_dalek.backend.serial.u64.field.FieldElement51.Insts.CoreOpsArithAddAssignSharedAFieldElement51",
   "curve25519_dalek.backend.serial.u64.field.FieldElement51.Insts.CoreOpsArithMulAssignSharedAFieldElement51",
   "curve25519_dalek.backend.serial.u64.field.FieldElement51.Insts.CoreOpsArithMulAssignSharedAFieldElement51.mul_assign",
@@ -288,7 +288,7 @@ def hiddenFunctions : List String := [
   "curve25519_dalek.scalar.Scalar.Insts.CoreOpsArithMulAssignSharedAScalar",
   "curve25519_dalek.scalar.Scalar.Insts.CoreOpsArithSubAssignScalar",
   "curve25519_dalek.scalar.Scalar.Insts.CoreOpsArithSubAssignSharedAScalar",
-  -- Arithmetic ops (borrow wrappers — struct literal + trivial .add/.sub/.mul/.neg child)
+
   "curve25519_dalek.Shared0AffineNielsPoint.Insts.CoreOpsArithNegAffineNielsPoint",
   "curve25519_dalek.Shared0EdwardsPoint.Insts.CoreOpsArithAddSharedAAffineNielsPointCompletedPoint",
   "curve25519_dalek.Shared0EdwardsPoint.Insts.CoreOpsArithAddSharedAEdwardsPointEdwardsPoint",
@@ -391,12 +391,12 @@ def hiddenFunctions : List String := [
   "curve25519_dalek.scalar.Scalar.Insts.CoreOpsArithNegScalar",
   "curve25519_dalek.scalar.Scalar.Insts.CoreOpsArithSubScalarScalar",
   "curve25519_dalek.scalar.Scalar.Insts.CoreOpsArithSubSharedBScalarScalar",
-  -- Closures (trivial closure bodies inside from_slice)
+
   "curve25519_dalek.edwards.CompressedEdwardsY.from_slice.closure.Insts.CoreOpsFunctionFnOnceTupleArrayU832CompressedEdwardsY",
   "curve25519_dalek.edwards.CompressedEdwardsY.from_slice.closure.Insts.CoreOpsFunctionFnOnceTupleArrayU832CompressedEdwardsY.call_once",
   "curve25519_dalek.ristretto.CompressedRistretto.from_slice.closure.Insts.CoreOpsFunctionFnOnceTupleArrayU832CompressedRistretto",
   "curve25519_dalek.ristretto.CompressedRistretto.from_slice.closure.Insts.CoreOpsFunctionFnOnceTupleArrayU832CompressedRistretto.call_once",
-  -- Loop bodies (extracted from parent functions)
+
   "curve25519_dalek.Shared1MontgomeryPoint.Insts.CoreOpsArithMulShared0ScalarMontgomeryPoint.mul_loop.mutual",
   "curve25519_dalek.backend.serial.u64.field.FieldElement51.Insts.CoreOpsArithAddAssignSharedAFieldElement51.add_assign_loop.mutual",
   "curve25519_dalek.backend.serial.u64.scalar.Scalar52.add_loop.mutual",
@@ -406,7 +406,7 @@ def hiddenFunctions : List String := [
   "curve25519_dalek.scalar.Scalar.batch_invert_loop0.mutual",
   "curve25519_dalek.scalar.Scalar.batch_invert_loop1.mutual",
   "curve25519_dalek.scalar.Scalar.non_adjacent_form_loop.mutual",
-  -- Inner constants and sub-helpers (not independently meaningful)
+
   "curve25519_dalek.backend.serial.u64.field.FieldElement51.from_bytes.load8_at",
   "curve25519_dalek.backend.serial.u64.field.FieldElement51.pow2k.LOW_51_BIT_MASK",
   "curve25519_dalek.backend.serial.u64.field.FieldElement51.pow2k.m",
@@ -418,22 +418,22 @@ def hiddenFunctions : List String := [
   "curve25519_dalek.scalar.Scalar52.montgomery_invert.square_multiply",
   "curve25519_dalek.scalar.Scalar.as_radix_16.bot_half",
   "curve25519_dalek.scalar.Scalar.as_radix_16.top_half",
-  -- IsIdentity (trivial trait blanket impl)
+
   "curve25519_dalek.traits.IsIdentity.Blanket.is_identity",
-  -- LookupTable From (table construction from Edwards point)
+
   "curve25519_dalek.window.LookupTableProjectiveNielsPoint.Insts.CoreConvertFromSharedAEdwardsPoint.from"
 ]
 
-/-!
-### Ignored Functions
 
-Functions that are not important for verification tracking but should still
-appear in all views. They are excluded from progress percentages.
-If an ignored function becomes specified/verified, it is no longer considered
-ignored for display purposes.
--/
+
+
+
+
+
+
+
 def ignoredFunctions : List String := [
-  -- Edwards
+
   "curve25519_dalek.edwards.decompress.step_1",
   "curve25519_dalek.edwards.decompress.step_2",
   "curve25519_dalek.edwards.EdwardsPoint.as_affine_niels",
@@ -447,13 +447,13 @@ def ignoredFunctions : List String := [
   "curve25519_dalek.Shared0EdwardsPoint.Insts.CoreOpsArithNegEdwardsPoint.neg",
   "curve25519_dalek.Shared0EdwardsPoint.Insts.CoreOpsArithSubSharedAEdwardsPointEdwardsPoint.sub",
   "curve25519_dalek.Shared0EdwardsPoint.Insts.CoreOpsArithAddSharedAEdwardsPointEdwardsPoint.add",
-  -- AffinePoint
+
   "curve25519_dalek.edwards.affine.AffinePoint.Insts.Curve25519_dalekTraitsIdentity.identity",
   "curve25519_dalek.edwards.affine.AffinePoint.Insts.SubtleConditionallySelectable.conditional_select",
   "curve25519_dalek.edwards.affine.AffinePoint.to_edwards",
   "curve25519_dalek.edwards.affine.AffinePoint.Insts.CoreCmpPartialEqAffinePoint.eq",
   "curve25519_dalek.edwards.affine.AffinePoint.Insts.SubtleConstantTimeEq.ct_eq",
-  -- Scalar
+
   "curve25519_dalek.scalar.Scalar.Insts.CoreConvertFromU8.from",
   "curve25519_dalek.scalar.Scalar.Insts.CoreConvertFromU16.from",
   "curve25519_dalek.scalar.Scalar.Insts.CoreConvertFromU32.from",
@@ -472,9 +472,9 @@ def ignoredFunctions : List String := [
   "curve25519_dalek.Shared0Scalar.Insts.CoreOpsArithMulSharedAScalarScalar.mul",
   "curve25519_dalek.Shared0Scalar.Insts.CoreOpsArithSubSharedAScalarScalar.sub",
   "curve25519_dalek.Shared0Scalar.Insts.CoreOpsArithNegScalar.neg",
-  -- Scalar52 (thin wrappers, specs live on montgomery_mul/montgomery_square)
+
   "curve25519_dalek.backend.serial.u64.scalar.Scalar52.square",
-  -- Variable-base scalar multiplication
+
   "curve25519_dalek.backend.serial.scalar_mul.variable_base.mul",
   "curve25519_dalek.backend.variable_base_mul"
 ]

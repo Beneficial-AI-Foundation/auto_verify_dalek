@@ -1,20 +1,20 @@
-/-
-Copyright (c) 2025 Beneficial AI Foundation. All rights reserved.
-Released under Apache 2.0 license as described in the file LICENSE.
-Authors: Alessandro D'Angelo
--/
+
+
+
+
+
 import Curve25519Dalek.Math.Basic
 import Curve25519Dalek.Funs
 import Mathlib.Tactic.IntervalCases
 
-/-! # Reduce -/
+
 
 open Aeneas Aeneas.Std Result Aeneas.Std.WP
 open curve25519_dalek
 
 attribute [-simp] Int.reducePow Nat.reducePow
 
-/-! ## Spec for `reduce` -/
+
 
 namespace curve25519_dalek.backend.serial.u64.field.FieldElement51.reduce
 
@@ -26,10 +26,10 @@ end curve25519_dalek.backend.serial.u64.field.FieldElement51.reduce
 
 namespace curve25519_dalek.backend.serial.u64.field.FieldElement51
 
-set_option maxHeartbeats 400000 in -- heavy progress, scalar_tac and simp_all's
-/-- **Spec and proof concerning `backend.serial.u64.field.FieldElement51.reduce`**:
-- All the limbs of the result are small, ≤ 2^(51 + ε)
-- The result is equal to the input mod p. -/
+set_option maxHeartbeats 400000 in
+
+
+
 @[progress]
 theorem reduce_spec (limbs : Array U64 5#usize) :
     reduce limbs ⦃ (result : FieldElement51) =>

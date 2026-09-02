@@ -1,8 +1,8 @@
-/-
-Copyright (c) 2025 Beneficial AI Foundation. All rights reserved.
-Released under Apache 2.0 license as described in the file LICENSE.
-Authors: Markus Dablander, Alessandro D'Angelo
--/
+
+
+
+
+
 import Curve25519Dalek.Funs
 import Curve25519Dalek.Math.Basic
 import Curve25519Dalek.Specs.Backend.Serial.U64.Field.FieldElement51.Square
@@ -17,16 +17,16 @@ import Mathlib.Data.ZMod.Basic
 set_option linter.hashCommand false
 #setup_aeneas_simps
 
-/-! # Spec Theorem for `ProjectivePoint::double`
 
-Specification and proof for `ProjectivePoint::double`.
 
-This function implements point doubling on the Curve25519 elliptic curve using projective
-coordinates. Given a point P = (X:Y:Z), it computes 2P (the point added to itself via
-elliptic curve addition).
 
-**Source**: curve25519-dalek/src/backend/serial/curve_models/mod.rs
--/
+
+
+
+
+
+
+
 
 open Aeneas Aeneas.Std Result Aeneas.Std.WP
 
@@ -36,41 +36,41 @@ open curve25519_dalek.Shared0FieldElement51.Insts.CoreOpsArithSubSharedAFieldEle
 
 namespace curve25519_dalek.backend.serial.curve_models.ProjectivePoint
 
-/-
-natural language description:
 
-• Takes a ProjectivePoint with coordinates (X, Y, Z) and returns a CompletedPoint that results
-from adding the input point to itself via elliptic curve point addition. Arithmetics are
-performed in the field 𝔽_p where p = 2^255 - 19.
 
-natural language specs:
 
-• The function always succeeds (no panic)
-• Given input point (X, Y, Z), the output CompletedPoint (X', Y', Z', T') satisfies:
-- X' ≡ 2XY (mod p)
-- Y' ≡ Y² + X² (mod p)
-- Z' ≡ Y² - X² (mod p)
-- T' ≡ 2Z² - Y² + X² (mod p)
--/
 
-/-- **Spec and proof concerning `backend.serial.curve_models.ProjectivePoint.double`**:
-- No panic (always returns successfully)
-- Given input ProjectivePoint with coordinates (X, Y, Z), the output CompletedPoint (X', Y', Z', T')
-satisfies the point doubling formulas modulo p:
-- X' ≡ 2XY (mod p)
-- Y' ≡ Y² + X² (mod p)
-- Z' ≡ Y² - X² (mod p)
-- T' ≡ 2Z² - Y² + X² (mod p)
-where p = 2^255 - 19
-These formulas implement Edwards curve point doubling, computing P + P
-(elliptic curve point addition) where P = (X:Y:Z).
 
-Input bounds: X, Y limbs < 2^53 (for X + Y < 2^54), Z limbs < 2^54.
-Output bounds: X', Z', T' limbs < 2^52, Y' limbs < 2^53.
 
-TODO: Investigate if c.Y can achieve the tighter < 2^52 bound. Currently c.Y = YY + XX
-where YY, XX < 2^52, giving Y < 2^53.
--/
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 @[progress]
 theorem double_spec_aux (q : ProjectivePoint)
     (h_qX_bounds : ∀ i < 5, (q.X[i]!).val < 2 ^ 53)
@@ -121,11 +121,11 @@ private lemma double_lift_to_field_eqs (c : CompletedPoint) (q : ProjectivePoint
     have h := lift_mod_eq _ _ hT_arith; push_cast at h; exact eq_sub_of_add_eq h
 
 attribute [local irreducible] p in
-/--
-Verification of the `double` function.
-The theorem states that the Rust implementation of point doubling corresponds
-exactly to the mathematical addition of the point to itself (`q + q`) on the Edwards curve.
--/
+
+
+
+
+
 theorem double_spec
     (q : ProjectivePoint) (hq_valid : q.IsValid) :
     ∃ c, ProjectivePoint.double q = ok c ∧

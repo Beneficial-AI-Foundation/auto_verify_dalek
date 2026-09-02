@@ -1,21 +1,21 @@
-/-
-Copyright (c) 2026 Beneficial AI Foundation. All rights reserved.
-Released under Apache 2.0 license as described in the file LICENSE.
-Authors: Oliver Butterley
--/
+
+
+
+
+
 import Curve25519Dalek.Math.Edwards.Curve
 set_option linter.style.nativeDecide false
 
-/-! # Ed25519 Basepoint Order
 
-This file contains the purely mathematical facts related to the ed25519 basepoint, independent of
-any implementation representation.
 
-Key results:
-- `basepoint ≠ 0`
-- `4 • basepoint ≠ 0`
-- `L • basepoint = 0`
--/
+
+
+
+
+
+
+
+
 
 namespace Edwards
 
@@ -24,9 +24,9 @@ def basepoint : Point Ed25519 where
   y := 46316835694926478169428394003475163141307993866256225615783033603165251855960
   on_curve := by decide
 
-/-- The Ed25519 basepoint has order L, i.e., L • basepoint = 0.
 
-This is verified computationally using double-and-add scalar multiplication via `native_decide`. -/
+
+
 theorem basepoint_order_L : L • basepoint = 0 := by
   rw [← binary_nsmul_Ed25519_eq L basepoint]
   native_decide

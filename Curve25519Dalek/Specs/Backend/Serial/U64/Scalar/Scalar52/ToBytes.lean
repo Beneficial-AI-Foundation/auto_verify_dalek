@@ -1,87 +1,87 @@
-/-
-Copyright (c) 2025 Beneficial AI Foundation. All rights reserved.
-Released under Apache 2.0 license as described in the file LICENSE.
-Authors: Markus Dablander, Lim Jin Xing, Oliver Butterley
--/
+
+
+
+
+
 import Curve25519Dalek.Funs
 import Curve25519Dalek.Math.BitList
 
 
-/-! # Spec Theorem for `Scalar52::to_bytes`
 
-This function converts a `Scalar52` to its byte representation.
 
-Source: curve25519-dalek/src/backend/serial/u64/scalar.rs
 
-## Rust Source
 
-```rust
-/// Pack the limbs of this `Scalar52` into 32 bytes
-pub fn to_bytes(self) -> [u8; 32] {
-    let mut s = [0u8; 32];
 
-    s[ 0] = (self.0[ 0] >> 0) as u8;
-    s[ 1] = (self.0[ 0] >> 8) as u8;
-    s[ 2] = (self.0[ 0] >> 16) as u8;
-    s[ 3] = (self.0[ 0] >> 24) as u8;
-    s[ 4] = (self.0[ 0] >> 32) as u8;
-    s[ 5] = (self.0[ 0] >> 40) as u8;
-    s[ 6] = ((self.0[ 0] >> 48) | (self.0[ 1] << 4)) as u8;
-    s[ 7] = (self.0[ 1] >> 4) as u8;
-    s[ 8] = (self.0[ 1] >> 12) as u8;
-    s[ 9] = (self.0[ 1] >> 20) as u8;
-    s[10] = (self.0[ 1] >> 28) as u8;
-    s[11] = (self.0[ 1] >> 36) as u8;
-    s[12] = (self.0[ 1] >> 44) as u8;
-    s[13] = (self.0[ 2] >> 0) as u8;
-    s[14] = (self.0[ 2] >> 8) as u8;
-    s[15] = (self.0[ 2] >> 16) as u8;
-    s[16] = (self.0[ 2] >> 24) as u8;
-    s[17] = (self.0[ 2] >> 32) as u8;
-    s[18] = (self.0[ 2] >> 40) as u8;
-    s[19] = ((self.0[ 2] >> 48) | (self.0[ 3] << 4)) as u8;
-    s[20] = (self.0[ 3] >> 4) as u8;
-    s[21] = (self.0[ 3] >> 12) as u8;
-    s[22] = (self.0[ 3] >> 20) as u8;
-    s[23] = (self.0[ 3] >> 28) as u8;
-    s[24] = (self.0[ 3] >> 36) as u8;
-    s[25] = (self.0[ 3] >> 44) as u8;
-    s[26] = (self.0[ 4] >> 0) as u8;
-    s[27] = (self.0[ 4] >> 8) as u8;
-    s[28] = (self.0[ 4] >> 16) as u8;
-    s[29] = (self.0[ 4] >> 24) as u8;
-    s[30] = (self.0[ 4] >> 32) as u8;
-    s[31] = (self.0[ 4] >> 40) as u8;
 
-    s
-}
-```
 
-## Bit layout
 
-Each limb holds 52 bits. Since 52 = 6×8 + 4, each limb fills 6 full bytes plus 4 bits that
-spill into a shared byte with the adjacent limb. The two shared bytes are s[6] and s[19],
-constructed via OR of the overflow bits from one limb and the start bits of the next.
 
-  | Limb | Bits | Bytes                              | Shared |
-  |------|------|------------------------------------|--------|
-  |  0   | 0–51 | s[0]–s[5], lower nibble of s[6]    | s[6]   |
-  |  1   | 0–51 | upper nibble of s[6], s[7]–s[12]   | s[6]   |
-  |  2   | 0–51 | s[13]–s[18], lower nibble of s[19] | s[19]  |
-  |  3   | 0–51 | upper nibble of s[19], s[20]–s[25] | s[19]  |
-  |  4   | 0–47 | s[26]–s[31] (48 bits)              | none   |
 
-Limb 4 uses only 48 of its 52 bits because the precondition `Scalar52_as_Nat self < L < 2^253`
-implies `self[4] < 2^(253−208) = 2^45 < 2^48`.
 
-Total: limbs hold 5×52 = 260 bits, but the value fits in 32×8 = 256 bits.
 
-## Proof overview
 
-We express each of the 32 byte assignments as a `BitList.extract` equality, use
-`List.extract_append_extract` to merge adjacent extracts into limb-level equivalences,
-then convert to `Nat` via `toNat` and close with `grind`.
--/
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 
 
 open Aeneas Aeneas.Std Result Aeneas.Std.WP
@@ -89,19 +89,19 @@ namespace curve25519_dalek.backend.serial.u64.scalar.Scalar52
 open List BitList
 attribute [local simp] Array.length_eq
 
-/-! ## BitList spec theorems for scalar operations
 
-These theorems express the four key operations (shift right, cast U64→U8, shift left, bitwise OR)
-in terms of `BitList` operations.
 
-They mirror the Nat-level spec theorems from Aeneas but with BitList postconditions:
-- Right shift by k ↔ `drop k` (plus zero padding at top)
-- Cast U64→U8 ↔ `take 8`
-- Left shift by k ↔ `replicate k false ++` (plus truncation)
-- Bitwise OR (non-overlapping) ↔ concatenation of `take`/`drop` slices
--/
 
-/-- Concatenating adjacent extracts yields the combined extract. -/
+
+
+
+
+
+
+
+
+
+
 theorem List.extract_append_extract {α : Type*} (l : List α) (a b c : Nat)
     (hab : a ≤ b) (hbc : b ≤ c) :
     l.extract a b ++ l.extract b c = l.extract a c := by
@@ -123,8 +123,8 @@ private lemma testBit_add_mul_pow_high (b q k i : Nat) (hb : b < 2 ^ k) (hi : k 
       Nat.div_eq_of_lt hb, Nat.zero_add,
       Nat.mul_div_cancel_left _ (by positivity : (0 : Nat) < 2^k)]
 
-/-- Non-overlapping OR equals addition: if `a` has zeros in the bottom `k` bits
-    and `b` fits in `k` bits, then `a ||| b = a + b`. -/
+
+
 private theorem nat_or_eq_add (a b k : Nat) (ha : a % 2 ^ k = 0) (hb : b < 2 ^ k) :
     a ||| b = a + b := by
   have ha_low : ∀ j, j < k → a.testBit j = false := by
@@ -143,25 +143,25 @@ private theorem nat_or_eq_add (a b k : Nat) (ha : a % 2 ^ k = 0) (hb : b < 2 ^ k
   · rw [hb_high i (by omega), Bool.or_false, ha_eq, Nat.add_comm]
     exact (testBit_add_mul_pow_high b (a / 2^k) k i hb (by omega)).symm
 
-/-- `ofNat k 0 = replicate k false` (all-zeros bit list). -/
+
 private theorem ofNat_zero (w : Nat) : ofNat w 0 = List.replicate w false := by
   induction w with
   | zero => simp [ofNat]
   | succ w ih => simp [ofNat, ih, List.replicate_succ]
 
-/-- `toNat (replicate k false) = 0`. -/
+
 private theorem toNat_replicate_false (k : Nat) : toNat (List.replicate k false) = 0 := by
   induction k with
   | zero => simp [toNat]
   | succ k ih => simp [List.replicate_succ, toNat, ih]
 
-/-- If the bottom `k` bits of a U64 are all false (from a shift-left), then `val % 2^k = 0`. -/
+
 private theorem val_mod_of_replicate_prefix (x : U64) (k : Nat) (rest : List Bool)
     (hx : ofU64 x = List.replicate k false ++ rest) : x.val % 2 ^ k = 0 := by
   have := congr_arg toNat hx
   grind [Nat.mul_comm, Nat.mul_mod_right, toNat_ofU64, toNat_append, toNat_replicate_false]
 
-/-- If a U64 is a right-shift of `y` by `shift` bits and `y < 2^(shift+bits)`, then `x < 2^bits`. -/
+
 private theorem val_lt_of_shift_right (x y : U64) (shift bits : Nat)
     (hx : ofU64 x = (ofU64 y).drop shift ++ List.replicate shift false)
     (hy : y.val < 2 ^ (shift + bits)) : x.val < 2 ^ bits := by
@@ -171,30 +171,30 @@ private theorem val_lt_of_shift_right (x y : U64) (shift bits : Nat)
   simp only [Nat.zero_mul, Nat.add_zero] at h
   rw [h]; exact Nat.div_lt_of_lt_mul (by rwa [← Nat.pow_add])
 
-/-- Right-shifting a U64 by `k` drops the bottom `k` bits (`BitList` spec). -/
+
 theorem U64.ShiftRight_IScalar_bitList_spec {ty1} (x : U64) (y : IScalar ty1)
     (hy0 : 0 ≤ y.val) (hy1 : y.val < 64) :
     (x >>> y) ⦃ (z : UScalar UScalarTy.U64) =>
       ofU64 z = (ofU64 x).drop y.toNat ++ List.replicate y.toNat false ⦄ := by
   sorry
-/-- Casting a U64 to U8 takes the bottom 8 bits. -/
+
 @[simp]
 theorem ofU8_cast_eq_ofU64_take (x : U64) : ofU8 (UScalar.cast .U8 x) = (ofU64 x).take 8 := by
   sorry
-/-- Left-shifting a U64 by `k` prepends `k` zero bits at the bottom and truncates to 64 bits. -/
+
 theorem U64.ShiftLeft_IScalar_bitList_spec {ty1} (x : U64) (y : IScalar ty1)
     (hy : 0 ≤ y.val) (hy' : y.val < 64) :
     (x <<< y) ⦃ (z : UScalar UScalarTy.U64) =>
       ofU64 z = List.replicate y.toNat false ++ (ofU64 x).take (64 - y.toNat) ⦄ := by
   sorry
-/-- Bitwise OR on non-overlapping values: if `x` has zeros in the bottom `k` bits and `y` fits in
-`k` bits, then OR concatenates the respective bit slices. -/
+
+
 theorem ofU64_or_non_overlapping (x y : U64) (k : Nat) (hk : k ≤ 64)
     (hx : x.val % 2 ^ k = 0) (hy : y.val < 2 ^ k) :
     ofU64 (x ||| y) = (ofU64 y).take k ++ (ofU64 x).drop k := by
   sorry
-/-- Convert an OR `bv` postcondition (as produced by `progress` on `lift (x ||| y)`) into BitList
-form, given non-overlap preconditions. -/
+
+
 private theorem ofU64_of_or_bv (x y z : U64) (k : Nat) (hk : k ≤ 64) (hx : x.val % 2 ^ k = 0)
     (hy : y.val < 2 ^ k) (hbv : z.bv = y.bv ||| x.bv) :
     ofU64 z = (ofU64 y).take k ++ (ofU64 x).drop k := by
@@ -204,15 +204,15 @@ private theorem ofU64_of_or_bv (x y z : U64) (k : Nat) (hk : k ≤ 64) (hx : x.v
     have := congrArg BitVec.toNat this; scalar_tac
   rw [heq]; exact ofU64_or_non_overlapping x y k hk hx hy
 
--- TODO: this is a strengthening of `Scalar52_top_limb_lt_of_as_Nat_lt` in Aux.lean (which gives
--- < 2^51 from < 2^259). This tighter bound should be moved to the central location.
-/-- If `Scalar52_as_Nat a < L`, then the top limb `a[4]` is bounded by `2^45`.
-This follows because `2^208 * a[4] ≤ Scalar52_as_Nat a < L < 2^253`. -/
+
+
+
+
 theorem Scalar52_top_limb_lt_of_canonical (a : Array U64 5#usize) (h : Scalar52_as_Nat a < L) :
   (a : List U64)[4]!.val < 2 ^ 45 := by
   sorry
-/-- At a shared byte (s[6] or s[19]), the lower and upper nibble contributions recombine:
-    `(x % 2^4) * 2^a + (x / 2^4) * 2^(a+4) = x * 2^a`. -/
+
+
 private theorem shared_byte_recombine (x a : Nat) :
     (x % 2 ^ 4) * 2 ^ a + (x / 2 ^ 4) * 2 ^ (a + 4) = x * 2 ^ a := by
   conv_lhs => rw [show (2 : Nat) ^ (a + 4) = 2 ^ 4 * 2 ^ a from by ring]
@@ -220,7 +220,7 @@ private theorem shared_byte_recombine (x a : Nat) :
   rw [this, ← Nat.add_mul]
   grind
 
-/-- Bridge from 5 BitList limb equivalences to the Nat-level equality. -/
+
 private theorem scalar52_eq_of_bitList_limbs (a : Scalar52) (b : Aeneas.Std.Array U8 32#usize)
     (h : ∀ i < 5, (a : List U64)[i]!.val < 2 ^ 52) (h' : (a : List U64)[4]!.val < 2 ^ 48)
     (hlimb0 : (ofU64 (a : List U64)[0]!).take 52 ≈ₗ ofU8 b[0]! ++ ofU8 b[1]! ++ ofU8 b[2]! ++
@@ -234,38 +234,38 @@ private theorem scalar52_eq_of_bitList_limbs (a : Scalar52) (b : Aeneas.Std.Arra
     (hlimb4 : (ofU64 (a : List U64)[4]!).take 48 ≈ₗ ofU8 b[26]! ++ ofU8 b[27]! ++ ofU8 b[28]! ++
         ofU8 b[29]! ++ ofU8 b[30]! ++ ofU8 b[31]!) :
     U8x32_as_Nat b = Scalar52_as_Nat a := by
-  -- Convert each BitList equivalence to a Nat identity
+
   have h0 := hlimb0.toNat_eq
   have h1 := hlimb1.toNat_eq
   have h2 := hlimb2.toNat_eq
   have h3 := hlimb3.toNat_eq
   have h4 := hlimb4.toNat_eq
-  -- Phase 1: Expand toNat of bit list operations
+
   simp only [toNat_take, toNat_drop, toNat_append, toNat_ofU8, toNat_ofU64, ofU8_length,
     length_drop, length_append, Nat.reducePow, Nat.reduceSub, Nat.reduceAdd] at h0 h1 h2 h3 h4
-  -- Expand both Nat sums
+
   unfold U8x32_as_Nat Scalar52_as_Nat
   simp only [Finset.sum_range_succ, Finset.range_zero, Finset.sum_empty, zero_add,
     Nat.reducePow, Nat.reduceMul, one_mul]
-  -- Provide limb bounds for omega and recombine shared bytes
+
   have hb0 := h 0 (by omega)
   have hb1 := h 1 (by omega)
   have hb2 := h 2 (by omega)
   have hb3 := h 3 (by omega)
   have hb6 := shared_byte_recombine b[6]!.val 48
   have hb19 := shared_byte_recombine b[19]!.val 152
-  -- Normalize all getElem! to getElem so self[i]! (from Scalar52_as_Nat) and
-  -- self[i] (from hlimb hypotheses) become the same term.
-  -- Aeneas disables List.getElem!_eq_getElem?_getD, so we must apply it explicitly.
-  -- We provide explicit length facts so simp can discharge getElem? side conditions.
+
+
+
+
   have hls : a.val.length = 5 := a.property
   have hlr : b.val.length = 32 := b.property
   simp only [Array.getElem!_Nat_eq, List.getElem!_eq_getElem?_getD,
     List.getElem?_eq_getElem, Option.getD_some, hls, hlr, Nat.reduceLT] at *
   grind
 
-/-- If the 32 bytes are as defined in the function (in the language of `BitList`), then
-`U8x32_as_Nat result = Scalar52_as_Nat self` as required. -/
+
+
 theorem scalar52_eq_of_bitList_bytes
     (self : Scalar52) (result : Aeneas.Std.Array U8 32#usize)
     (h : ∀ i < 5, (self : List U64)[i]!.val < 2 ^ 52) (h' : Scalar52_as_Nat self < L)
@@ -305,10 +305,10 @@ theorem scalar52_eq_of_bitList_bytes
     (hb31 : ofU8 result[31]! = (ofU64 (self : List U64)[4]!).extract 40 48) :
     U8x32_as_Nat result = Scalar52_as_Nat self := by
   sorry
-set_option maxHeartbeats 1600000 in -- heavy progress and simps
-/-- **Spec and proof concerning `scalar.Scalar52.to_bytes`**:
-- The result byte array represents the same number as the input unpacked scalar modulo L
-- The result is in canonical form (less than L) -/
+set_option maxHeartbeats 1600000 in
+
+
+
 @[progress]
 theorem to_bytes_spec (self : Scalar52) (h : ∀ i < 5, self[i]!.val < 2 ^ 52)
     (h' : Scalar52_as_Nat self < L) :

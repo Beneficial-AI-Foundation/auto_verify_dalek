@@ -671,7 +671,12 @@ class PreparedProjectContractTests(unittest.TestCase):
                 "name": "Diamond",
                 "version": "0.1.0",
                 "defaultTargets": ["Diamond"],
-                "lean_lib": [{"name": "Diamond"}],
+                "lean_lib": [
+                    {
+                        "name": "Diamond",
+                        "roots": ["Diamond.Top", "Diamond.Left", "Diamond.Right"],
+                    }
+                ],
             },
         )
 

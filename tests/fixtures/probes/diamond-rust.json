@@ -1,0 +1,132 @@
+{
+  "schema": "probe-rust/extract",
+  "schema-version": "3.0",
+  "tool": {
+    "name": "probe-rust",
+    "version": "0.10.0",
+    "command": "extract"
+  },
+  "source": {
+    "repo": "",
+    "commit": "",
+    "language": "rust",
+    "package": "autofv-diamond",
+    "package-version": "0.1.0"
+  },
+  "timestamp": "2026-09-02T10:23:59Z",
+  "data": {
+    "probe:autofv-diamond/0.1.0/left()": {
+      "display-name": "left",
+      "dependencies": [
+        "probe:core/https://github.com/rust-lang/rust/library/core/ops/arith/impl#[u64][`Add<Self>`]add()"
+      ],
+      "dependencies-with-locations": [
+        {
+          "code-name": "probe:core/https://github.com/rust-lang/rust/library/core/ops/arith/impl#[u64][`Add<Self>`]add()",
+          "location": "inner",
+          "line": 2
+        }
+      ],
+      "code-module": "",
+      "code-path": "src/lib.rs",
+      "code-text": {
+        "lines-start": 1,
+        "lines-end": 3
+      },
+      "kind": "exec",
+      "language": "rust",
+      "rust-qualified-name": "autofv_diamond::left",
+      "untracked": false,
+      "is-public": true,
+      "is-public-api": true
+    },
+    "probe:autofv-diamond/0.1.0/right()": {
+      "display-name": "right",
+      "dependencies": [
+        "probe:core/https://github.com/rust-lang/rust/library/core/ops/arith/impl#[u64][`Mul<Self>`]mul()"
+      ],
+      "dependencies-with-locations": [
+        {
+          "code-name": "probe:core/https://github.com/rust-lang/rust/library/core/ops/arith/impl#[u64][`Mul<Self>`]mul()",
+          "location": "inner",
+          "line": 6
+        }
+      ],
+      "code-module": "",
+      "code-path": "src/lib.rs",
+      "code-text": {
+        "lines-start": 5,
+        "lines-end": 7
+      },
+      "kind": "exec",
+      "language": "rust",
+      "rust-qualified-name": "autofv_diamond::right",
+      "untracked": false,
+      "is-public": true,
+      "is-public-api": true
+    },
+    "probe:autofv-diamond/0.1.0/top()": {
+      "display-name": "top",
+      "dependencies": [
+        "probe:autofv-diamond/0.1.0/left()",
+        "probe:autofv-diamond/0.1.0/right()",
+        "probe:core/https://github.com/rust-lang/rust/library/core/ops/arith/impl#[u64][`Add<Self>`]add()"
+      ],
+      "dependencies-with-locations": [
+        {
+          "code-name": "probe:autofv-diamond/0.1.0/left()",
+          "location": "inner",
+          "line": 10
+        },
+        {
+          "code-name": "probe:autofv-diamond/0.1.0/right()",
+          "location": "inner",
+          "line": 10
+        },
+        {
+          "code-name": "probe:core/https://github.com/rust-lang/rust/library/core/ops/arith/impl#[u64][`Add<Self>`]add()",
+          "location": "inner",
+          "line": 10
+        }
+      ],
+      "code-module": "",
+      "code-path": "src/lib.rs",
+      "code-text": {
+        "lines-start": 9,
+        "lines-end": 11
+      },
+      "kind": "exec",
+      "language": "rust",
+      "rust-qualified-name": "autofv_diamond::top",
+      "untracked": false,
+      "is-public": true,
+      "is-public-api": true
+    },
+    "probe:core/https://github.com/rust-lang/rust/library/core/ops/arith/impl#[u64][`Add<Self>`]add()": {
+      "display-name": "add",
+      "dependencies": [],
+      "code-module": "/github.com/rust-lang/rust/library/core/ops/arith",
+      "code-path": "",
+      "code-text": {
+        "lines-start": 0,
+        "lines-end": 0
+      },
+      "kind": "exec",
+      "language": "rust",
+      "untracked": false
+    },
+    "probe:core/https://github.com/rust-lang/rust/library/core/ops/arith/impl#[u64][`Mul<Self>`]mul()": {
+      "display-name": "mul",
+      "dependencies": [],
+      "code-module": "/github.com/rust-lang/rust/library/core/ops/arith",
+      "code-path": "",
+      "code-text": {
+        "lines-start": 0,
+        "lines-end": 0
+      },
+      "kind": "exec",
+      "language": "rust",
+      "untracked": false
+    }
+  }
+}

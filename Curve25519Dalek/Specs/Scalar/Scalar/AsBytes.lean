@@ -38,5 +38,6 @@ natural language specs:
 theorem as_bytes_spec (s : Scalar) :
     as_bytes s ⦃ b =>
     b = s.bytes ∧ mk b = s ⦄ := by
-  sorry
+  unfold as_bytes
+  simp
 end curve25519_dalek.scalar.Scalar

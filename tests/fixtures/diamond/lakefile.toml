@@ -4,3 +4,4 @@ defaultTargets = ["Diamond"]
 
 [[lean_lib]]
 name = "Diamond"
+roots = ["Diamond.Top", "Diamond.Left", "Diamond.Right"]

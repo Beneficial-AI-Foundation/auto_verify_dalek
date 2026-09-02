@@ -791,5 +791,74 @@ class PreparedProjectContractTests(unittest.TestCase):
             )
 
 
+class PreparedDiamondTests(unittest.TestCase):
+    target = ROOT / "tests" / "fixtures" / "diamond"
+
+    def test_lean_shape(self):
+        top_path = self.target / "Diamond" / "Top.lean"
+        left_path = self.target / "Diamond" / "Left.lean"
+        right_path = self.target / "Diamond" / "Right.lean"
+        top, left, right = (
+            top_path.read_text(),
+            left_path.read_text(),
+            right_path.read_text(),
+        )
+
+        self.assertIn("import Diamond.Left", top)
+        self.assertIn("import Diamond.Right", top)
+        self.assertRegex(
+            top,
+            r"def top \(input : Nat\) : Nat :=\s+left input \+ right input",
+        )
+        self.assertRegex(
+            top,
+            r"theorem top_spec \(input : Nat\) :\s+"
+            r"top input = input \* 3 \+ 1 := by\s+sorry",
+        )
+
+        self.assertNotEqual(left_path, right_path)
+        self.assertNotEqual(left, right)
+        self.assertRegex(
+            left, r"def left \(input : Nat\) : Nat :=\s+input \+ 1"
+        )
+        self.assertRegex(
+            right, r"def right \(input : Nat\) : Nat :=\s+input \* 2"
+        )
+        self.assertNotIn("right", left.lower())
+        self.assertNotIn("left", right.lower())
+        for source, spec in ((left, "left_spec"), (right, "right_spec")):
+            self.assertNotIn(spec, source)
+            self.assertNotIn("theorem ", source)
+            self.assertNotIn("lemma ", source)
+            self.assertNotIn("sorry", source)
+
+        reference = json.loads(
+            (
+                ROOT
+                / "tests"
+                / "fixtures"
+                / "diamond-reference"
+                / "reference.json"
+            ).read_text()
+        )
+        prepared_bytes = b"\n".join(
+            path.read_bytes() for path in self.target.rglob("*") if path.is_file()
+        )
+        hidden = ["diamond-reference", "reference.json"]
+        for leaf in reference["leaves"]:
+            hidden.extend(
+                leaf[field]
+                for field in (
+                    "statement",
+                    "statement_sha256",
+                    "proof",
+                    "proof_sha256",
+                )
+            )
+        for value in hidden:
+            with self.subTest(hidden=value):
+                self.assertNotIn(value.encode("utf-8"), prepared_bytes)
+
+
 if __name__ == "__main__":
     unittest.main()

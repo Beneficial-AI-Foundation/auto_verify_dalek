@@ -514,7 +514,7 @@ class NativeDecidePolicyContractTests(unittest.TestCase):
 class PreparedConfigTests(unittest.TestCase):
     fixture = ROOT / "tests" / "fixtures" / "diamond"
     target = {
-        "function": "probe:autofv-diamond/0.1.0/lib/top()",
+        "function": "probe:autofv-diamond/0.1.0/top()",
         "spec": "Diamond.top_spec",
     }
     manifest = {
@@ -544,7 +544,7 @@ class PreparedConfigTests(unittest.TestCase):
         raw_run_config = json.loads((self.fixture / "run.json").read_text())
         self.assertEqual(
             hashlib.sha256(experiment.canonical_json_bytes(manifest)).hexdigest(),
-            "89db5d595108034139a45d9569ebdb99d6fe38282c20ee641c1a4a18a05c6902",
+            "ccf1562758270de38094d9b2030e64ee8efcfe5e38eb7c3d0471b2c0104c29a3",
         )
         self.assertEqual(
             hashlib.sha256(
@@ -611,12 +611,12 @@ class PreparedConfigTests(unittest.TestCase):
             "targets": [
                 {
                     "spec": "Diamond.top_spec",
-                    "function": "probe:autofv-diamond/0.1.0/lib/top()",
+                    "function": "probe:autofv-diamond/0.1.0/top()",
                 }
             ],
             "schema": "autofv/v1",
         }
-        expected = "89db5d595108034139a45d9569ebdb99d6fe38282c20ee641c1a4a18a05c6902"
+        expected = "ccf1562758270de38094d9b2030e64ee8efcfe5e38eb7c3d0471b2c0104c29a3"
         self.assertEqual(
             hashlib.sha256(experiment.canonical_json_bytes(self.manifest)).hexdigest(),
             expected,
@@ -863,6 +863,167 @@ class PreparedDiamondTests(unittest.TestCase):
         for value in hidden:
             with self.subTest(hidden=value):
                 self.assertNotIn(value.encode("utf-8"), prepared_bytes)
+
+    def test_pinned_probe_truth(self):
+        probe_root = ROOT / "tests" / "fixtures" / "probes"
+        rust_bytes = (probe_root / "diamond-rust.json").read_bytes()
+        merged_bytes = (probe_root / "diamond-aeneas.json").read_bytes()
+        self.assertEqual(
+            hashlib.sha256(rust_bytes).hexdigest(),
+            "3136fead3bfd40b214e743ebeaa299f91fb9b12261af69b4a6a6a7f5c19f0b51",
+        )
+        self.assertEqual(
+            hashlib.sha256(merged_bytes).hexdigest(),
+            "7f8c313a422a0b9107786878f4d492943b195a90ba34c7a79464a6c51f54d08f",
+        )
+        rust, merged = json.loads(rust_bytes), json.loads(merged_bytes)
+
+        self.assertEqual((rust["schema"], rust["schema-version"]), ("probe-rust/extract", "3.0"))
+        self.assertEqual(
+            rust["tool"],
+            {"name": "probe-rust", "version": "0.10.0", "command": "extract"},
+        )
+        self.assertEqual(
+            (
+                rust["source"]["language"],
+                rust["source"]["package"],
+                rust["source"]["package-version"],
+            ),
+            ("rust", "autofv-diamond", "0.1.0"),
+        )
+        self.assertEqual(
+            (merged["schema"], merged["schema-version"]),
+            ("probe-aeneas/extract", "3.0"),
+        )
+        self.assertEqual(
+            merged["tool"],
+            {"name": "probe-aeneas", "version": "0.19.0", "command": "extract"},
+        )
+        self.assertEqual(
+            {
+                (
+                    item["source"]["language"],
+                    item["source"]["package"],
+                    item["source"]["package-version"],
+                )
+                for item in merged["inputs"]
+            },
+            {("lean", "Diamond", "0.1.0"), ("rust", "autofv-diamond", "0.1.0")},
+        )
+
+        atoms = merged["data"]
+        lean_atoms = {
+            name: atom
+            for name, atom in atoms.items()
+            if atom.get("language") == "lean" and atom.get("is-in-package") is True
+        }
+        self.assertEqual(
+            {name: atom["term-dependencies"] for name, atom in lean_atoms.items()},
+            {
+                "probe:Diamond.left": [],
+                "probe:Diamond.right": [],
+                "probe:Diamond.top": ["probe:Diamond.left", "probe:Diamond.right"],
+                "probe:Diamond.top_spec": ["probe:Diamond.top"],
+            },
+        )
+        self.assertEqual(
+            {
+                name: lean_atoms[name]["verification-status"]
+                for name in (
+                    "probe:Diamond.left",
+                    "probe:Diamond.right",
+                    "probe:Diamond.top",
+                    "probe:Diamond.top_spec",
+                )
+            },
+            {
+                "probe:Diamond.left": "transitively-verified",
+                "probe:Diamond.right": "transitively-verified",
+                "probe:Diamond.top": "transitively-verified",
+                "probe:Diamond.top_spec": "unverified",
+            },
+        )
+        self.assertEqual(
+            lean_atoms["probe:Diamond.top"]["primary-spec"],
+            "probe:Diamond.top_spec",
+        )
+        self.assertEqual(
+            lean_atoms["probe:Diamond.top_spec"]["type-dependencies"],
+            ["probe:Diamond.top"],
+        )
+        lean_paths = {
+            name: lean_atoms[name]["code-path"]
+            for name in (
+                "probe:Diamond.left",
+                "probe:Diamond.right",
+                "probe:Diamond.top",
+            )
+        }
+        self.assertEqual(
+            lean_paths,
+            {
+                "probe:Diamond.left": "Diamond/Left.lean",
+                "probe:Diamond.right": "Diamond/Right.lean",
+                "probe:Diamond.top": "Diamond/Top.lean",
+            },
+        )
+        self.assertNotEqual(
+            lean_paths["probe:Diamond.left"], lean_paths["probe:Diamond.right"]
+        )
+
+        manifest_target = json.loads((self.target / "autofv.json").read_text())[
+            "targets"
+        ][0]
+        self.assertEqual(
+            atoms[manifest_target["function"]]["translation-name"],
+            "probe:Diamond.top",
+        )
+        self.assertEqual(
+            f"probe:{manifest_target['spec']}",
+            lean_atoms["probe:Diamond.top"]["primary-spec"],
+        )
+
+        rust_atoms = {
+            atom["rust-qualified-name"]: atom
+            for atom in atoms.values()
+            if atom.get("rust-qualified-name", "").startswith("autofv_diamond::")
+        }
+        self.assertEqual(
+            {
+                name: (atom["translation-name"], atom["translation-path"])
+                for name, atom in rust_atoms.items()
+            },
+            {
+                "autofv_diamond::left": ("probe:Diamond.left", "Diamond/Left.lean"),
+                "autofv_diamond::right": ("probe:Diamond.right", "Diamond/Right.lean"),
+                "autofv_diamond::top": ("probe:Diamond.top", "Diamond/Top.lean"),
+            },
+        )
+        for name, atom in rust_atoms.items():
+            with self.subTest(rust=name):
+                self.assertIs(atom["is-public"], True)
+                self.assertIs(atom["is-public-api"], True)
+                self.assertEqual(atom["charon-version"], "0.1.216")
+                self.assertIs(atom["untracked"], False)
+
+        pending = [rust, merged]
+        forbidden = (
+            "diamond-reference",
+            "reference.json",
+            "model-proxy",
+            "diamond-responses",
+            "fixtures/model-proxy",
+        )
+        while pending:
+            value = pending.pop()
+            if isinstance(value, dict):
+                pending.extend(value.values())
+            elif isinstance(value, list):
+                pending.extend(value)
+            elif isinstance(value, str):
+                for marker in forbidden:
+                    with self.subTest(marker=marker, value=value):
+                        self.assertNotIn(marker, value)
 
 
 if __name__ == "__main__":

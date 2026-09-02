@@ -648,5 +648,148 @@ class PreparedConfigTests(unittest.TestCase):
                 self.assertNotIn(forbidden, serialized)
 
 
+class PreparedProjectContractTests(unittest.TestCase):
+    target = ROOT / "tests" / "fixtures" / "diamond"
+    reference_path = (
+        ROOT / "tests" / "fixtures" / "diamond-reference" / "reference.json"
+    )
+
+    def load_reference(self):
+        return json.loads(self.reference_path.read_text())
+
+    def test_lean_and_lake_match_the_audited_image_identity(self):
+        lock = load_lock()["tools"]
+        toolchain = (self.target / "lean-toolchain").read_text().strip()
+        lakefile = tomllib.loads((self.target / "lakefile.toml").read_text())
+
+        self.assertEqual(toolchain, "leanprover/lean4:v4.28.0-rc1")
+        self.assertEqual(lock["lean"]["observed_version"], "Lean 4.28.0-rc1")
+        self.assertEqual(lock["lean"]["pin"], lock["lake"]["pin"])
+        self.assertEqual(
+            lakefile,
+            {
+                "name": "Diamond",
+                "version": "0.1.0",
+                "defaultTargets": ["Diamond"],
+                "lean_lib": [{"name": "Diamond"}],
+            },
+        )
+
+    def test_reference_hashes_bind_independent_leaf_truth(self):
+        reference = self.load_reference()
+        self.assertEqual(
+            set(reference),
+            {
+                "schema",
+                "delivery",
+                "artifact_role",
+                "model_response_role",
+                "leaves",
+            },
+        )
+        self.assertEqual(reference["schema"], "autofv-verifier-reference/v1")
+        self.assertEqual(len(reference["leaves"]), 2)
+
+        identities = set()
+        content_hashes = set()
+        for leaf in reference["leaves"]:
+            self.assertEqual(
+                set(leaf),
+                {
+                    "declaration",
+                    "spec",
+                    "source",
+                    "statement",
+                    "statement_sha256",
+                    "proof",
+                    "proof_sha256",
+                },
+            )
+            identities.add((leaf["declaration"], leaf["spec"], leaf["source"]))
+            for field in ("statement", "proof"):
+                content = leaf[field]
+                self.assertIsInstance(content, str)
+                self.assertTrue(content)
+                self.assertNotIn("\r", content)
+                digest = hashlib.sha256(content.encode("utf-8")).hexdigest()
+                self.assertEqual(leaf[f"{field}_sha256"], digest)
+                content_hashes.add(digest)
+
+        self.assertEqual(
+            identities,
+            {
+                ("Diamond.left", "Diamond.left_spec", "Diamond/Left.lean"),
+                ("Diamond.right", "Diamond.right_spec", "Diamond/Right.lean"),
+            },
+        )
+        self.assertEqual(len(content_hashes), 4)
+        target_hashes = {
+            hashlib.sha256(path.read_bytes()).hexdigest()
+            for path in self.target.rglob("*")
+            if path.is_file()
+        }
+        self.assertTrue(content_hashes.isdisjoint(target_hashes))
+
+    def test_target_cannot_select_or_link_the_verifier_reference(self):
+        self.assertTrue(self.reference_path.is_file())
+        self.assertFalse(self.reference_path.resolve().is_relative_to(self.target.resolve()))
+        self.assertFalse(any(path.is_symlink() for path in self.target.rglob("*")))
+
+        manifest = json.loads((self.target / "autofv.json").read_text())
+        manifest["reference"] = "../diamond-reference/reference.json"
+        with tempfile.TemporaryDirectory() as tmp:
+            target = Path(tmp) / "target"
+            target.mkdir()
+            (target / "autofv.json").write_text(json.dumps(manifest))
+            with self.assertRaises(experiment.ContractError):
+                experiment.validate_target(target)
+
+    def test_hidden_material_is_absent_from_target_and_control_bundle(self):
+        reference = self.load_reference()
+        target_bytes = b"\n".join(
+            path.read_bytes() for path in self.target.rglob("*") if path.is_file()
+        )
+
+        bundle = load_lock()["controller_delivery"]
+        control_bytes = [experiment.canonical_json_bytes(bundle)]
+        control_bytes.extend(
+            (ROOT / member).read_bytes()
+            for member in bundle["allowed_members"]
+            if (ROOT / member).is_file()
+        )
+        exposed_bytes = target_bytes + b"\n" + b"\n".join(control_bytes)
+
+        hidden_values = ["diamond-reference", "reference.json"]
+        for leaf in reference["leaves"]:
+            hidden_values.extend(
+                (
+                    leaf["statement"],
+                    leaf["statement_sha256"],
+                    leaf["proof"],
+                    leaf["proof_sha256"],
+                )
+            )
+        for value in hidden_values:
+            with self.subTest(value=value):
+                self.assertNotIn(value.encode("utf-8"), exposed_bytes)
+
+    def test_reference_is_not_deterministic_model_response_output(self):
+        reference = self.load_reference()
+        self.assertEqual(reference["delivery"], "clean-verifier-only")
+        self.assertEqual(
+            reference["artifact_role"], "provider-side verifier reference"
+        )
+        self.assertEqual(
+            reference["model_response_role"], "generated test agent output"
+        )
+        self.assertNotEqual(
+            reference["artifact_role"], reference["model_response_role"]
+        )
+        for leaf in reference["leaves"]:
+            self.assertTrue(
+                {"request_id", "response_sha256", "receipt_sha256"}.isdisjoint(leaf)
+            )
+
+
 if __name__ == "__main__":
     unittest.main()

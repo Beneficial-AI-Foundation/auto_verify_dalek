@@ -73,6 +73,7 @@ counterexample witness, harness re-verifies it against the frozen statement)
 
 | ✅ | Can a human tamper mid-run? | DEC-12 tree hashed at run start; input-set change = violation, other change = drift; re-checked per target | implemented |
 | 🟡 | Can the agent peek at answers? | DEC-08 filesystem closed; network deny-listed not blocked; credential in sandbox; no broker | partial (= CryptoProver) |
+| ✅ | Do comments leak the proof? | `--strip-comments targets\|project`: every comment (`/-! -/`, `/-- -/`, `/- -/`, `--`: NL specs, proof sketches, `Source:` pointers) is blanked, line-preserving, in each sealed slot before the baseline commit; the stripped tree must rebuild with identical sorry counts; accepts are replayed onto the commented operator file (`strip_comments.merge_back`, invariant: merged code == accepted code); ledger `comment_strip` records scope, counts and stripped-tree hash. Operator checkout never loses a comment. cf. CryptoProver `strip_specs.py --strip-docs` (drops `///` only) | implemented, default off |
 
 TODO: remove the annotations
 

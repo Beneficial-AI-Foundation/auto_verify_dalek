@@ -68,6 +68,7 @@ Usage examples:
   python3 harness/driver.py --zones specs --jobs 2 --model <id>
   python3 harness/driver.py --zones specs --limit 10 --commit
   python3 harness/driver.py --path Curve25519Dalek/Specs/Scalar/Scalar --max-turns 40
+  python3 harness/driver.py --zones specs --strip-comments targets   # anti-leak (see strip_comments.py)
 """
 import argparse
 import copy
@@ -88,6 +89,7 @@ REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from buckets import classify, load_events  # noqa: E402
 import agentproc  # noqa: E402  (harness/agentproc.py — subprocess layer)
+import strip_comments  # noqa: E402  (anti-leak comment strip + merge-back)
 
 LEDGER_DIR = os.path.join(REPO, "ledger")
 TRANSCRIPTS = os.path.join(LEDGER_DIR, "transcripts")
@@ -210,7 +212,11 @@ def path_to_module(path):
 SLOT_EXCLUDES = (".git", "ledger", ".lake/packages", ".claude/settings.local.json")
 
 
-def make_slot(run_dir, i):
+def make_slot(run_dir, i, strip_paths=()):
+    """Build slot i. `strip_paths` (repo-relative .lean files) are comment-
+    stripped in the slot *before* the sealed baseline commit, so the agent's
+    whole visible history is comment-free (strip_comments.py; the operator's
+    checkout is untouched). Returns (slot_dir, strip_report)."""
     slot = os.path.join(run_dir, f"slot{i}", "work")
     os.makedirs(slot, exist_ok=True)
     cmd = ["rsync", "-a", "--delete"]
@@ -224,13 +230,19 @@ def make_slot(run_dir, i):
     if not os.path.islink(pk):
         os.makedirs(os.path.dirname(pk), exist_ok=True)
         os.symlink(os.path.join(REPO, ".lake", "packages"), pk)
+    strip_report = {}
+    if strip_paths:
+        try:
+            strip_report = strip_comments.strip_files(strip_paths, root=slot)
+        except ValueError as e:
+            sys.exit(f"slot {i}: comment strip failed: {e}")
     g = ["git", "-c", "user.name=harness", "-c", "user.email=harness@localhost"]
     for c in (["init", "-q"], ["add", "-A"],
               ["commit", "-q", "--allow-empty", "-m", "sealed baseline"]):
         r = subprocess.run(g + c, cwd=slot, capture_output=True, text=True)
         if r.returncode != 0:
             sys.exit(f"slot {i}: git {c[0]} failed: {r.stderr[-800:]}")
-    return slot
+    return slot, strip_report
 
 
 def changed_files(work):
@@ -738,6 +750,16 @@ def main():
                     help="parallel agents; each gets its own sealed slot "
                          "workspace + sandbox + CLAUDE_CONFIG_DIR. Targets "
                          "are grouped by file; one file never spans slots")
+    ap.add_argument("--strip-comments", choices=("off", "targets", "project"),
+                    default="off",
+                    help="anti-leak: remove every comment (docstrings, module "
+                         "docs, `--`, `/- -/`) from the .lean files the agent "
+                         "sees, in each sealed slot only (strip_comments.py). "
+                         "`targets` = the files of the selected targets; "
+                         "`project` = every .lean under Curve25519Dalek/ and "
+                         "Utils/ (slots then rebuild those modules once). "
+                         "Accepted proofs are merged back into the commented "
+                         "operator files. Default off.")
     ap.add_argument("--wire-log", action="store_true",
                     help="record raw API requests via a localhost proxy "
                          "(ledger/wire/)")
@@ -875,11 +897,60 @@ def main():
               f"third of --build-timeout {args.build_timeout}s; accepted "
               f"proofs only make it slower", flush=True)
 
+    # ── anti-leak comment strip: which files lose their comments in slots ──
+    strip_paths = []
+    if args.strip_comments == "targets":
+        strip_paths = sorted({loc.split(":")[0] for loc in targets})
+    elif args.strip_comments == "project":
+        for root_dir in ("Curve25519Dalek", "Utils"):
+            for d, _, fs in os.walk(os.path.join(REPO, root_dir)):
+                strip_paths += [os.path.relpath(os.path.join(d, f), REPO)
+                                for f in fs if f.endswith(".lean")]
+        strip_paths += ["Curve25519Dalek.lean", "Utils.lean"]
+        strip_paths = sorted(p for p in strip_paths
+                             if os.path.isfile(os.path.join(REPO, p)))
+    if strip_paths:
+        print(f"[driver] --strip-comments {args.strip_comments}: "
+              f"{len(strip_paths)} file(s) lose their comments in every slot",
+              flush=True)
+
     # ── slots: sealed workspace + config dir + sandbox per job ──
     slots = []
     for i in range(args.jobs):
-        work = make_slot(run_dir, i)
+        work, strip_report = make_slot(run_dir, i, strip_paths)
+        strip_summary = None
+        if strip_paths:
+            # The stripped tree must still build with exactly the baseline's
+            # sorry counts — a strip bug must never masquerade as progress.
+            # This also warms the slot's .lake/build for the changed modules.
+            rc, counts, warm_s = build_sorry_counts(work, args.build_timeout)
+            if rc != 0 or counts != before_counts:
+                sys.exit(f"slot {i}: stripped tree differs from baseline "
+                         f"(build rc={rc}, sorry counts "
+                         f"{'equal' if counts == before_counts else 'differ'}) "
+                         f"— comment strip is not semantics-preserving here")
+            strip_summary = {
+                "scope": args.strip_comments,
+                "files": len(strip_report),
+                "comments": sum(r["comments"] for r in strip_report.values()),
+                "comment_lines": sum(r["comment_lines"]
+                                     for r in strip_report.values()),
+                "bytes_removed": sum(r["bytes_removed"]
+                                     for r in strip_report.values()),
+                "warm_build_s": warm_s,
+                "stripped_tree_sha256": hashlib.sha256("".join(
+                    f"{p}\0{r['sha256_after']}\n"
+                    for p, r in sorted(strip_report.items())).encode()
+                ).hexdigest()}
+            with open(os.path.join(run_dir, f"slot{i}", "strip_report.json"),
+                      "w") as fh:
+                json.dump(strip_report, fh, indent=1, sort_keys=True)
+            print(f"[driver] slot {i}: stripped {strip_summary['comments']} "
+                  f"comments / {strip_summary['comment_lines']} lines in "
+                  f"{strip_summary['files']} files; warm build {warm_s}s, "
+                  f"sorry counts unchanged", flush=True)
         slot = {"i": i, "work": work, "env": env, "prefix": None,
+                "strip": strip_summary,
                 "isolation": dict(isolation,
                                   work=os.path.relpath(work, REPO))}
         if not args.no_isolation:
@@ -1029,17 +1100,33 @@ def process_target(slot, loc, my_counts, my_g1, args, common, lock, state):
             expected = common["expected_manifest"].get(path)
             found = (agentproc.sha256_file(repo_file)
                      if os.path.exists(repo_file) else None)
+            new_text = None
             if found != expected:
                 outcome = "rejected_merge_conflict"
                 detail["merge_conflict"] = {
                     "path": path, "expected_sha256": expected,
                     "found_sha256": found}
+            elif slot.get("strip"):
+                # The slot's file is comment-free; replay the agent's edit
+                # onto the commented operator file (strip_comments.merge_back
+                # checks that the result carries exactly the accepted code).
+                try:
+                    new_text = strip_comments.merge_back(
+                        open(repo_file, encoding="utf-8").read(),
+                        open(os.path.join(work, path), encoding="utf-8").read())
+                except (strip_comments.MergeError, ValueError) as e:
+                    outcome = "rejected_merge_back_failed"
+                    detail["merge_back_failed"] = {"path": path,
+                                                   "error": str(e)[-2000:]}
             else:
+                new_text = open(os.path.join(work, path), encoding="utf-8").read()
+            if new_text is not None:
                 my_counts.clear()
                 my_counts.update(detail.pop("counts_after"))
                 my_g1[path_to_module(path)] = detail.pop("g1_after")
                 slot_commit(work, path, msg)
-                shutil.copyfile(os.path.join(work, path), repo_file)
+                with open(repo_file, "w", encoding="utf-8") as fh:
+                    fh.write(new_text)
                 common["expected_manifest"][path] = agentproc.sha256_file(
                     repo_file)
                 if args.commit:
@@ -1050,6 +1137,13 @@ def process_target(slot, loc, my_counts, my_g1, args, common, lock, state):
             log(f"    MERGE CONFLICT (DEC-19): {path} changed in the "
                 f"operator tree outside accepted merge-backs — job rolled "
                 f"back, nothing copied")
+            mod, new = changed_files(work)
+            rollback(mod, new, work)
+        elif outcome == "rejected_merge_back_failed":
+            log(f"    MERGE-BACK FAILED: the agent's edit to the stripped "
+                f"{path} could not be replayed onto the commented file — job "
+                f"rolled back, nothing copied "
+                f"({detail['merge_back_failed']['error'][:200]})")
             mod, new = changed_files(work)
             rollback(mod, new, work)
     else:
@@ -1065,6 +1159,7 @@ def process_target(slot, loc, my_counts, my_g1, args, common, lock, state):
         "session_ids": session_ids,
         "slot": i,
         "isolation": slot["isolation"],
+        "comment_strip": slot.get("strip"),
         "limits": common["limits"],
         "environment": common["environment"],
         "provenance": prov,

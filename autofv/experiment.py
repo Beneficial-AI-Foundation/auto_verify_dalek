@@ -13,14 +13,17 @@ import hashlib
 import hmac
 import json
 import re
-from types import SimpleNamespace
 from decimal import Decimal, InvalidOperation
 from pathlib import Path
-from typing import Any
+from types import SimpleNamespace
+from typing import Any, TypedDict
 
 from cryptography.exceptions import InvalidSignature
 from cryptography.hazmat.primitives import serialization
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PublicKey
+from langgraph.graph import END, START, StateGraph
+
+from . import probes, verifier, worker
 
 try:
     from harness import agentproc
@@ -476,25 +479,391 @@ def validate_proxy_receipt(
     return amount
 
 
+class _RunState(TypedDict, total=False):
+    run: dict[str, Any]
+    manifest: dict[str, Any]
+    config: dict[str, Any]
+    run_round: Any
+    graph: dict[str, Any]
+    receipts: list[dict[str, Any]]
+    cost: Decimal
+    accepted: dict[str, Any]
+    result: dict[str, Any]
+    verifier_report: dict[str, Any]
+
+
+def _canonical_sha256(value: Any) -> str:
+    return hashlib.sha256(canonical_json_bytes(value)).hexdigest()
+
+
+def _prompt_sha256(run_id: str, request_id: str, role: str) -> str:
+    raw = f"{run_id}\0{request_id}\0{role}\0bounded-v1".encode("utf-8")
+    return hashlib.sha256(raw).hexdigest()
+
+
+def _model_request(
+    state: _RunState,
+    *,
+    request_id: str,
+    role: str,
+    input_hashes: list[str],
+    batch_id: str | None = None,
+) -> tuple[dict[str, Any], dict[str, Any]]:
+    run, config = state["run"], state["config"]
+    sequence = len(state["receipts"]) + 1
+    request = {
+        "schema": "autofv-model-request/v1",
+        "run_id": run["run_id"],
+        "sequence": sequence,
+        "batch_id": batch_id,
+        "request_id": request_id,
+        "role": role,
+        "model_id": config["model"],
+        "input_hashes": sorted(set(input_hashes)),
+        "prompt_sha256": _prompt_sha256(run["run_id"], request_id, role),
+    }
+    runner = state["run_round"]
+    if runner is agentproc.run_round:
+        response, receipt = worker.proxy_round(run, request)
+    else:
+        response, receipt = runner(request)
+    response = _validate_model_response(response, request, run["base_commit"])
+    request_sha256 = _canonical_sha256(request)
+    response_sha256 = _canonical_sha256(response)
+    amount = validate_proxy_receipt(
+        receipt,
+        run_id=run["run_id"],
+        sequence=sequence,
+        request_id=request_id,
+        model_id=config["model"],
+        request_sha256=request_sha256,
+        response_sha256=response_sha256,
+        seen_receipt_sha256={item["receipt_sha256"] for item in state["receipts"]},
+        seen_request_ids={item["request_id"] for item in state["receipts"]},
+    )
+    if receipt["status"] != "ok":
+        raise ContractError("model proxy returned a non-success status")
+    new_cost = state["cost"] + amount
+    if new_cost > config["max_cost_usd"]:
+        raise ContractError("model proxy cost budget exceeded")
+    state["cost"] = new_cost
+    state["receipts"].append(receipt)
+    run["events"].append(f"proxy:{request_id}")
+    return response, receipt
+
+
+def _validate_model_response(
+    response: Any, request: dict[str, Any], base_commit: str
+) -> dict[str, Any]:
+    response = _exact_dict(
+        response,
+        {
+            "schema",
+            "run_id",
+            "sequence",
+            "batch_id",
+            "request_id",
+            "role",
+            "model_id",
+            "input_hashes",
+            "prompt_sha256",
+            "kind",
+            "assigned_path",
+            "base_commit",
+            "statement_fingerprints",
+            "payload",
+            "payload_sha256",
+        },
+        "model response",
+    )
+    linked = {
+        key: request[key]
+        for key in (
+            "run_id",
+            "sequence",
+            "batch_id",
+            "request_id",
+            "role",
+            "model_id",
+            "input_hashes",
+            "prompt_sha256",
+        )
+    }
+    if response["schema"] != "autofv-model-response/v1" or any(
+        response[key] != value for key, value in linked.items()
+    ):
+        raise ContractError("model response request identity mismatch")
+    if response["base_commit"] != base_commit:
+        raise ContractError("model response base commit mismatch")
+    if response["kind"] not in {"scout", "dependency_plan", "statement", "patch"}:
+        raise ContractError("model response kind is unsupported")
+    fingerprints = response["statement_fingerprints"]
+    if (
+        not isinstance(fingerprints, list)
+        or fingerprints != sorted(set(fingerprints))
+        or any(HEX_SHA256.fullmatch(value) is None for value in fingerprints)
+    ):
+        raise ContractError("model response statement fingerprints are invalid")
+    if not isinstance(response["payload"], dict):
+        raise ContractError("model response payload must be an object")
+    payload_sha256 = _sha256(response["payload_sha256"], "model response payload hash")
+    if not hmac.compare_digest(payload_sha256, _canonical_sha256(response["payload"])):
+        raise ContractError("model response payload hash mismatch")
+    payload = response["payload"]
+    if response["kind"] == "statement":
+        if payload.get("schema") != "autofv-statement-candidate/v1":
+            raise ContractError("statement candidate schema mismatch")
+        text = _text(payload.get("text"), "statement candidate text")
+        if payload.get("text_sha256") != hashlib.sha256(text.encode()).hexdigest():
+            raise ContractError("statement candidate text hash mismatch")
+    elif response["kind"] == "patch":
+        if payload.get("schema") != "autofv-candidate-patch/v1":
+            raise ContractError("patch candidate schema mismatch")
+        patch = payload.get("patch")
+        if (
+            not isinstance(patch, str)
+            or not patch
+            or "\r" in patch
+            or "\x00" in patch
+        ):
+            raise ContractError("candidate patch must be canonical UTF-8 text")
+        if payload.get("patch_sha256") != hashlib.sha256(patch.encode()).hexdigest():
+            raise ContractError("candidate patch hash mismatch")
+        if (
+            payload.get("assigned_path") != response["assigned_path"]
+            or payload.get("base_commit") != base_commit
+            or payload.get("statement_fingerprints") != fingerprints
+        ):
+            raise ContractError("candidate patch bindings mismatch")
+    return response
+
+
+def _statement_fingerprint(run: dict[str, Any], graph: dict[str, Any]) -> str:
+    spec = graph["supplied_specs"][graph["frozen_targets"][0]]
+    source = worker.read_project_file(run, graph["source_paths"][spec]).decode("utf-8")
+    name = spec.removeprefix("probe:").rsplit(".", 1)[-1]
+    lines = source.splitlines()
+    start = next(
+        (index for index, line in enumerate(lines) if line.lstrip().startswith(f"theorem {name}")),
+        None,
+    )
+    if start is None:
+        raise ContractError("supplied target statement is missing from its source")
+    statement: list[str] = []
+    for line in lines[start:]:
+        if ":=" in line:
+            statement.append(line.split(":=", 1)[0].rstrip())
+            break
+        statement.append(line)
+    else:
+        raise ContractError("supplied target statement has no theorem body")
+    return hashlib.sha256("\n".join(statement).encode("utf-8")).hexdigest()
+
+
+def _freeze(state: _RunState) -> dict[str, Any]:
+    rust_raw, aeneas_raw = worker.run_probes(state["run"])
+    graph = probes.parse_probe_bytes(state["manifest"], rust_raw, aeneas_raw)
+    state["run"]["events"].append("targets_frozen")
+    return {"graph": graph}
+
+
+def _agent_loop(state: _RunState) -> dict[str, Any]:
+    graph, run, manifest = state["graph"], state["run"], state["manifest"]
+    if len(graph["frozen_targets"]) != 1 or len(graph["proof_batches"]) != 2:
+        raise ContractError("the V1 tracer requires one acyclic diamond target")
+    top_fingerprint = _statement_fingerprint(run, graph)
+    probe_hash = graph["probe_aeneas_sha256"]
+
+    scout, _ = _model_request(
+        state,
+        request_id="scout-001",
+        role="scout",
+        input_hashes=[probe_hash],
+    )
+    dependency, _ = _model_request(
+        state,
+        request_id="dependency-plan-001",
+        role="dependency-planner",
+        input_hashes=[scout["payload_sha256"], probe_hash],
+    )
+    weak_left, _ = _model_request(
+        state,
+        request_id="contract-left-001",
+        role="contract-author",
+        input_hashes=[dependency["payload_sha256"], top_fingerprint],
+    )
+    right, _ = _model_request(
+        state,
+        request_id="contract-right-001",
+        role="contract-author",
+        input_hashes=[dependency["payload_sha256"], top_fingerprint],
+    )
+    strong_left, _ = _model_request(
+        state,
+        request_id="contract-left-review-002",
+        role="contract-reviewer",
+        input_hashes=[weak_left["payload"]["text_sha256"], top_fingerprint],
+    )
+    left_fingerprint = strong_left["payload"]["text_sha256"]
+    right_fingerprint = right["payload"]["text_sha256"]
+
+    proof_left, _ = _model_request(
+        state,
+        request_id="proof-left-001",
+        role="proof-author",
+        batch_id="proof-leaves-001",
+        input_hashes=[left_fingerprint, probe_hash],
+    )
+    accepted = worker.accept_candidate(run, proof_left, manifest)
+    proof_right, _ = _model_request(
+        state,
+        request_id="proof-right-001",
+        role="proof-author",
+        batch_id="proof-leaves-001",
+        input_hashes=[right_fingerprint, probe_hash],
+    )
+    accepted = worker.accept_candidate(run, proof_right, manifest)
+    proof_top, _ = _model_request(
+        state,
+        request_id="proof-top-001",
+        role="proof-author",
+        input_hashes=[
+            left_fingerprint,
+            right_fingerprint,
+            top_fingerprint,
+            proof_left["payload"]["patch_sha256"],
+            proof_right["payload"]["patch_sha256"],
+        ],
+    )
+    accepted = worker.accept_candidate(run, proof_top, manifest)
+    return {
+        "accepted": accepted,
+        "receipts": state["receipts"],
+        "cost": state["cost"],
+    }
+
+
+def _clean_verify(state: _RunState) -> dict[str, Any]:
+    run, graph, accepted = state["run"], state["graph"], state["accepted"]
+    expected = {
+        "snapshot_sha256": run["snapshot_sha256"],
+        "manifest_sha256": run["manifest_sha256"],
+        "probe_rust_sha256": graph["probe_rust_sha256"],
+        "probe_aeneas_sha256": graph["probe_aeneas_sha256"],
+        "image_digest": run["image_digest"],
+        "control_bundle_sha256": run["control_bundle_sha256"],
+        "native_decide_policy_sha256": run["native_decide_policy_sha256"],
+        "accepted_commit": accepted["accepted_commit"],
+        "accepted_tree_sha256": accepted["accepted_tree_sha256"],
+    }
+    report = verifier.validate_report(verifier.verify_run(run, expected), run, expected)
+    run["events"].append("clean_verifier:PASS")
+    return {"verifier_report": report}
+
+
+def _build_graph():
+    graph = StateGraph(_RunState)
+    graph.add_node("freeze", _freeze)
+    graph.add_node("agent", _agent_loop)
+    graph.add_node("verify", _clean_verify)
+    graph.add_edge(START, "freeze")
+    graph.add_edge("freeze", "agent")
+    graph.add_edge("agent", "verify")
+    graph.add_edge("verify", END)
+    return graph.compile()
+
+
+_EXPERIMENT_GRAPH = _build_graph()
+
+
+def _result(
+    run: dict[str, Any], state: _RunState, *, outcome: str, reason: str
+) -> dict[str, Any]:
+    graph = state.get("graph", {})
+    accepted = state.get("accepted", {})
+    report = state.get("verifier_report", {})
+    run["events"].append("result_emitted")
+    return {
+        "schema": "autofv-result/v1",
+        "run_id": run["run_id"],
+        "outcome": outcome,
+        "termination_reason": reason,
+        "frozen_targets": graph.get("frozen_targets", []),
+        "targets_total": len(graph.get("frozen_targets", [])),
+        "targets_verified_final": 1 if outcome == "success" else 0,
+        "internal_specs_accepted": 2 if outcome == "success" else 0,
+        "internal_proofs_accepted": 2 if outcome == "success" else 0,
+        "proxy_requests": len(state.get("receipts", [])),
+        "cost_usd": f"{state.get('cost', Decimal('0')):.6f}",
+        "native_decide_policy": run["native_decide_policy"],
+        "native_decide_policy_sha256": run["native_decide_policy_sha256"],
+        "snapshot_sha256": run["snapshot_sha256"],
+        "manifest_sha256": run["manifest_sha256"],
+        "probe_rust_sha256": graph.get("probe_rust_sha256"),
+        "probe_aeneas_sha256": graph.get("probe_aeneas_sha256"),
+        "graph_sha256": graph.get("graph_sha256"),
+        "image_digest": run["image_digest"],
+        "control_bundle_sha256": run["control_bundle_sha256"],
+        "accepted_commit": accepted.get("accepted_commit"),
+        "accepted_tree_sha256": accepted.get("accepted_tree_sha256"),
+        "verifier_report_sha256": report.get("report_sha256"),
+        "events": list(run["events"]),
+    }
+
+
+def _l0_receipt(run: dict[str, Any], state: _RunState, result: dict[str, Any]) -> dict[str, Any]:
+    body = {
+        "schema": "autofv-evidence-l0/v1",
+        "run_id": run["run_id"],
+        "outcome": result["outcome"],
+        "result_sha256": _canonical_sha256(result),
+        "proxy_receipt_sha256": [
+            item["receipt_sha256"] for item in state.get("receipts", [])
+        ],
+        "events": result["events"],
+    }
+    return {**body, "receipt_sha256": _canonical_sha256(body)}
+
+
 def run_experiment(
     target: str | Path,
     run_config: str | Path,
     *,
     run_round=agentproc.run_round,
 ) -> dict[str, Any]:
-    """Validate the sole experiment intake before any worker or agent action."""
+    """Run the bounded sealed tracer and reduce every post-allocation exit."""
     target_path, manifest = validate_target(target)
-    config_path, config = validate_run_config(run_config)
+    _, config = validate_run_config(run_config)
     lock = load_toolchain_lock()
     policy = validate_native_decide_policy(lock)
-    return {
-        "target": str(target_path),
-        "run_config": str(config_path),
+    run = worker.prepare_run(target_path, manifest, lock)
+    run.update(
+        {
+            "manifest": manifest,
+            "native_decide_policy": policy["selection"],
+            "native_decide_policy_sha256": lock["native_decide_policy_sha256"],
+        }
+    )
+    state: _RunState = {
+        "run": run,
         "manifest": manifest,
         "config": config,
-        "native_decide_policy": policy["selection"],
-        "native_decide_policy_sha256": lock["native_decide_policy_sha256"],
+        "run_round": run_round,
+        "receipts": [],
+        "cost": Decimal("0.000000"),
     }
+    try:
+        state = _EXPERIMENT_GRAPH.invoke(state)
+        result = _result(run, state, outcome="success", reason="all_targets_verified")
+    except (ContractError, probes.ProbeError, worker.WorkerError, verifier.VerifierError) as exc:
+        result = _result(
+            run,
+            state,
+            outcome="failure",
+            reason=type(exc).__name__.removesuffix("Error").lower(),
+        )
+    worker.persist_result(run, result, _l0_receipt(run, state, result))
+    return result
 
 
 def _parser() -> argparse.ArgumentParser:
@@ -510,9 +879,12 @@ def main() -> None:
     parser = _parser()
     args = parser.parse_args()
     try:
-        run_experiment(args.target, args.run_config)
+        result = run_experiment(args.target, args.run_config)
     except ContractError as exc:
         parser.error(str(exc))
+    print(canonical_json_bytes(result).decode("utf-8"))
+    if result["outcome"] != "success":
+        raise SystemExit(1)
 
 
 if __name__ == "__main__":

@@ -476,6 +476,14 @@ class NativeDecidePolicyContractTests(unittest.TestCase):
         )
 
         calls = []
+        fake_run = {
+            "run_id": "native-policy-unit-test",
+            "events": [],
+            "snapshot_sha256": "1" * 64,
+            "manifest_sha256": "2" * 64,
+            "image_digest": "sha256:" + "3" * 64,
+            "control_bundle_sha256": "4" * 64,
+        }
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             target = root / "target"
@@ -500,8 +508,19 @@ class NativeDecidePolicyContractTests(unittest.TestCase):
                     }
                 )
             )
-            with mock.patch.dict(
-                os.environ, {"AUTOFV_NATIVE_DECIDE_POLICY": "forbid_all"}
+            with (
+                mock.patch.dict(
+                    os.environ, {"AUTOFV_NATIVE_DECIDE_POLICY": "forbid_all"}
+                ),
+                mock.patch.object(
+                    experiment.worker, "prepare_run", return_value=fake_run
+                ),
+                mock.patch.object(
+                    experiment._EXPERIMENT_GRAPH,
+                    "invoke",
+                    side_effect=experiment.ContractError("unit boundary"),
+                ),
+                mock.patch.object(experiment.worker, "persist_result"),
             ):
                 result = experiment.run_experiment(
                     target, config, run_round=lambda *a, **k: calls.append((a, k))

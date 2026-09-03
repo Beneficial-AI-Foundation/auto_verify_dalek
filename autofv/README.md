@@ -8,13 +8,12 @@ still in progress. Keep this file and [README.html](README.html) in sync.
 
 ## Status
 
-The focused local contract set passes. One broader native-policy test now
-reaches Lima unexpectedly and fails in restricted environments. No production
-experiment has completed.
+The focused local contract set and all 29 CLI snapshot tests pass without
+contacting Lima. No production experiment has completed.
 
 | Area | Current evidence |
 | --- | --- |
-| Input, policy, image, and receipt contracts | Focused local checks pass; the full CLI suite has one worker-boundary regression |
+| Input, policy, image, and receipt contracts | Focused local checks and all 29 CLI snapshot tests pass |
 | Pinned probe output | Captured from the toolchain image and checked byte-for-byte |
 | Fixed proxy route under `runsc` | Tested against the local deterministic proxy fixture |
 | End-to-end controller flow | Tested with worker, proxy, persistence, and verifier functions replaced by test doubles |
@@ -74,14 +73,13 @@ Run the fast local contracts:
 
 ```bash
 .venv/bin/python -m unittest -v \
+  tests.test_cli_snapshot \
   tests.test_phase1_diamond.TracerTests
 ```
 
-The full `tests.test_cli_snapshot` module is not a local-only check at this
-commit. Its
-`test_launch_exports_hash_bound_policy_without_environment_fallback` test now
-enters `worker.prepare_run(...)` and tries to contact Lima. Fix that boundary
-before adding the module back to the fast command.
+The native-policy launch test replaces worker preparation, graph execution,
+and result persistence. It checks policy binding without contacting Lima; it
+is not VM or full-run evidence.
 
 Show the CLI without starting a worker:
 
@@ -158,7 +156,7 @@ wired into this path.
 
 | Test | What it checks |
 | --- | --- |
-| [`tests/test_cli_snapshot.py`](../tests/test_cli_snapshot.py) | Input schemas, toolchain lock, control bundle, policy, and prepared target. One test currently reaches Lima unexpectedly. |
+| [`tests/test_cli_snapshot.py`](../tests/test_cli_snapshot.py) | Input schemas, toolchain lock, control bundle, policy, and prepared target. Worker preparation is replaced in the native-policy unit test. |
 | [`tests/test_model_proxy_fixture.py`](../tests/test_model_proxy_fixture.py) | Deterministic proxy route, signed fixture receipts, tamper rejection, and a separate `runsc` route smoke test |
 | [`tests/test_phase1_diamond.py`](../tests/test_phase1_diamond.py) | Controller flow with the external boundaries replaced by test doubles |
 | [`tests/test_image_contract.py`](../tests/test_image_contract.py) | Pinned image contents and runtime contract |

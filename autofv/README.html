@@ -1,0 +1,193 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>AutoFV</title>
+  <style>
+    :root {
+      color-scheme: light dark;
+      --bg: #fafafa;
+      --panel: #ffffff;
+      --text: #202124;
+      --muted: #5f6368;
+      --border: #d9dce1;
+      --link: #0759b7;
+      --code: #f0f2f5;
+      --warning: #fff6d8;
+      --warning-border: #bc8200;
+    }
+    @media (prefers-color-scheme: dark) {
+      :root {
+        --bg: #161719;
+        --panel: #202124;
+        --text: #e8eaed;
+        --muted: #bdc1c6;
+        --border: #44474c;
+        --link: #8ab4f8;
+        --code: #292b2f;
+        --warning: #332b16;
+        --warning-border: #e0a92f;
+      }
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      background: var(--bg);
+      color: var(--text);
+      font: 16px/1.55 system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+    }
+    main { max-width: 980px; margin: 0 auto; padding: 3rem 1.25rem 5rem; }
+    h1, h2 { line-height: 1.2; }
+    h1 { margin: 0 0 0.5rem; font-size: 2.4rem; }
+    h2 { margin-top: 2.4rem; border-bottom: 1px solid var(--border); padding-bottom: 0.35rem; }
+    p, li { max-width: 78ch; }
+    a { color: var(--link); }
+    code, pre { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
+    code { background: var(--code); padding: 0.1rem 0.3rem; border-radius: 3px; }
+    pre {
+      overflow-x: auto;
+      background: var(--code);
+      border: 1px solid var(--border);
+      border-radius: 6px;
+      padding: 1rem;
+    }
+    pre code { padding: 0; }
+    table { width: 100%; border-collapse: collapse; margin: 1rem 0; }
+    th, td { border: 1px solid var(--border); padding: 0.55rem 0.7rem; text-align: left; vertical-align: top; }
+    th { background: var(--code); }
+    .meta { color: var(--muted); }
+    .status { background: var(--warning); border-left: 4px solid var(--warning-border); padding: 0.9rem 1rem; }
+    nav { margin: 1.5rem 0; }
+    nav a { margin-right: 1rem; }
+  </style>
+</head>
+<body>
+<main>
+  <!-- Keep this page in sync with README.md. -->
+  <h1>AutoFV</h1>
+  <p>AutoFV is the trusted host-side controller for experiments that ask an agent to recover Lean specifications and proofs inside a sealed Linux worker.</p>
+  <p class="meta">This page describes the code as it exists on 3 September 2026. Phase 1 is still in progress. <a href="README.md">Read the Markdown version</a>.</p>
+
+  <nav aria-label="Page sections">
+    <a href="#status">Status</a>
+    <a href="#setup">Local setup</a>
+    <a href="#command">Experiment command</a>
+    <a href="#changes">Where to change things</a>
+  </nav>
+
+  <h2 id="status">Status</h2>
+  <p class="status">The focused local contract set passes. One broader native-policy test now reaches Lima unexpectedly and fails in restricted environments. No production experiment has completed.</p>
+  <table>
+    <thead><tr><th>Area</th><th>Current evidence</th></tr></thead>
+    <tbody>
+      <tr><td>Input, policy, image, and receipt contracts</td><td>Focused local checks pass; the full CLI suite has one worker-boundary regression</td></tr>
+      <tr><td>Pinned probe output</td><td>Captured from the toolchain image and checked byte-for-byte</td></tr>
+      <tr><td>Fixed proxy route under <code>runsc</code></td><td>Tested against the local deterministic proxy fixture</td></tr>
+      <tr><td>End-to-end controller flow</td><td>Tested with worker, proxy, persistence, and verifier functions replaced by test doubles</td></tr>
+      <tr><td>Provider model call and billed usage</td><td>Not run</td></tr>
+      <tr><td>Full agent worker to clean-verifier experiment</td><td>Not run</td></tr>
+      <tr><td>Malformed probe and graph mutation matrix</td><td>Next task in Plan 01-05</td></tr>
+    </tbody>
+  </table>
+  <p>The current <code>$0.022350</code> result is fixture data. It is the sum of eight handwritten receipt amounts for 2,235 invented tokens at a flat <code>$0.000010</code> per token. It is not provider spend. The fixture uses <code>fixture-model-v1</code>; no API key or provider response takes part in that test. The values live in <a href="../tests/fixtures/model-proxy/diamond-responses.json"><code>tests/fixtures/model-proxy/diamond-responses.json</code></a> and are repeated as expectations in the proxy fixture test.</p>
+  <p>Receipt validation rejects changes to a receipt's run identity, sequence, request hash, response hash, usage, cost, or signature. A valid fixture signature proves that the local fixture has not changed. A production proxy receipt will be needed before <code>cost_usd</code> can mean measured spend.</p>
+
+  <h2>Intended run</h2>
+  <pre><code>trusted host
+  autofv run
+    ├── copy the approved target and control files into a fresh Docker volume
+    ├── run the pinned image with gVisor runsc in the autofv-agent Lima VM
+    ├── retain and validate probe-rust and probe-aeneas output
+    ├── send fixed-shape requests through one trusted proxy route
+    ├── accept one-file candidates only after deterministic checks
+    ├── export the accepted tree to the separate autofv-verifier Lima VM
+    └── write result.json and an L0 evidence receipt</code></pre>
+  <p>The worker must not receive the developer checkout, a container runtime socket, provider credentials, the complete proxy response program, or the hidden verifier reference. The trusted host copies an allowlisted control bundle into the managed volume. Only the accepted source tree crosses into the verifier.</p>
+  <p>The tracer test in <a href="../tests/test_phase1_diamond.py"><code>tests/test_phase1_diamond.py</code></a> exercises the controller order and failure rules with test doubles. It records the orchestration contract. It does not exercise the two VMs or provider path.</p>
+
+  <h2 id="setup">Local setup</h2>
+  <p>AutoFV requires Python 3.12. Use the repository virtual environment and <code>uv</code>; do not install packages into the system Python.</p>
+  <pre><code>uv venv --python 3.12 .venv
+UV_CACHE_DIR=/private/tmp/autofv-uv-cache uv sync</code></pre>
+  <p>Run the fast local contracts:</p>
+  <pre><code>.venv/bin/python -m unittest -v \
+  tests.test_phase1_diamond.TracerTests</code></pre>
+  <p>The full <code>tests.test_cli_snapshot</code> module is not a local-only check at this commit. Its <code>test_launch_exports_hash_bound_policy_without_environment_fallback</code> test now enters <code>worker.prepare_run(...)</code> and tries to contact Lima. Fix that boundary before adding the module back to the fast command.</p>
+  <p>Show the CLI without starting a worker:</p>
+  <pre><code>.venv/bin/python -m autofv.experiment --help</code></pre>
+
+  <h2 id="command">Experiment command</h2>
+  <p>The current CLI form is:</p>
+  <pre><code>.venv/bin/python -m autofv.experiment run \
+  --target "$PWD/tests/fixtures/diamond" \
+  --run-config "$PWD/tests/fixtures/diamond/run.json"</code></pre>
+  <p>It currently expects all of the following:</p>
+  <ul>
+    <li>the <code>autofv-agent</code> and <code>autofv-verifier</code> Lima instances;</li>
+    <li>the pinned image and <code>runsc-hardened</code> runtime in the agent VM;</li>
+    <li><code>AUTOFV_PROXY_BASE</code> in the trusted host process;</li>
+    <li>a run-scoped <code>AUTOFV_RUN_TOKEN</code> in the trusted host process;</li>
+    <li>a proxy that implements the locked <code>POST /v1/autofv/infer</code> contract and signs usage receipts with the pinned key.</li>
+  </ul>
+  <p>The provider credential belongs in the proxy service. Do not put it in this repository, either VM, the container, or either environment variable above. The current repository does not include a production proxy deployment or a provider signing trace, so this command is still an integration target. The key pinned today belongs to the local fixture. A production proxy needs a separate signing key and a corresponding lock update.</p>
+  <p>The CLI prints the result JSON. The current worker also writes <code>result.json</code> and <code>evidence/l0.json</code> under a host temporary run directory. A stable output directory has not been added to the CLI yet.</p>
+
+  <h2>What the result fields mean today</h2>
+  <table>
+    <thead><tr><th>Field</th><th>Meaning in the current diamond tracer</th></tr></thead>
+    <tbody>
+      <tr><td><code>outcome</code></td><td>The controller reached a matching verifier <code>PASS</code></td></tr>
+      <tr><td><code>targets_verified_final</code></td><td>Fixture-specific value: <code>1</code> on success</td></tr>
+      <tr><td><code>internal_specs_accepted</code></td><td>Fixture-specific value: <code>2</code> on success</td></tr>
+      <tr><td><code>internal_proofs_accepted</code></td><td>Fixture-specific value: <code>2</code> on success</td></tr>
+      <tr><td><code>proxy_requests</code></td><td>Number of accepted signed receipts</td></tr>
+      <tr><td><code>cost_usd</code></td><td>Sum of <code>cost.amount</code> from accepted receipts; synthetic for fixture receipts</td></tr>
+      <tr><td>hash fields</td><td>Identities of the snapshot, probes, policy, image, control bundle, accepted tree, and verifier report</td></tr>
+      <tr><td><code>events</code></td><td>Ordered controller transitions, not a provider or VM execution trace by itself</td></tr>
+    </tbody>
+  </table>
+  <p>The three accepted-count fields are currently fixed for the diamond fixture. They do not yet measure an arbitrary target.</p>
+
+  <h2 id="changes">Where to change things</h2>
+  <table>
+    <thead><tr><th>Change</th><th>File</th><th>Notes</th></tr></thead>
+    <tbody>
+      <tr><td>Model name, wall-clock limit, cost ceiling</td><td><a href="../tests/fixtures/diamond/run.json"><code>tests/fixtures/diamond/run.json</code></a></td><td>Per-run input. <code>max_cost_usd</code> stops on signed receipt totals. <code>max_wall_seconds</code> is validated but not enforced yet.</td></tr>
+      <tr><td>Target function, supplied specification, verifier command</td><td><a href="../tests/fixtures/diamond/autofv.json"><code>tests/fixtures/diamond/autofv.json</code></a></td><td>Per-target input. The verifier command is an argv array, not shell text.</td></tr>
+      <tr><td>Image digest, tool versions, proxy route, receipt schema, verifier identity, control-bundle allowlist</td><td><a href="../docker/autofv/toolchain-lock.json"><code>docker/autofv/toolchain-lock.json</code></a></td><td>Trust contract. Update its hashes and contract tests with every change.</td></tr>
+      <tr><td><code>native_decide</code> rule</td><td><code>native_decide_policy</code> in the toolchain lock and <code>evaluate_native_decide_policy(...)</code> in <a href="experiment.py"><code>experiment.py</code></a></td><td>Phase 1 uses <code>allow_audited</code>. The inventory evaluator exists, but the tracer currently validates only the policy selection and hash. Count caps or named-spec allowlists belong behind this one policy function.</td></tr>
+      <tr><td>Probe byte, node, and edge limits; dependency scheduling</td><td><a href="probes.py"><code>probes.py</code></a></td><td>Current limits are 16 MiB, 10,000 nodes, and 100,000 edges.</td></tr>
+      <tr><td>Agent VM name, UID, CPU, memory, PID, temporary filesystem, and Docker arguments</td><td><a href="worker.py"><code>worker.py</code></a></td><td>Current container limits are 2 CPUs, 2 GiB, 256 PIDs, and two 64 MiB temporary filesystems.</td></tr>
+      <tr><td>Candidate scope and acceptance checks</td><td><code>accept_candidate(...)</code> in <a href="worker.py"><code>worker.py</code></a></td><td>It currently checks one-file scope, base and patch hashes, forbidden additions, and <code>lake build</code>.</td></tr>
+      <tr><td>Canonical statement and trust-base implementations</td><td><a href="../harness/gates/StmtCanon.lean"><code>harness/gates/StmtCanon.lean</code></a> and <a href="../harness/gates/g2_trust_base.py"><code>harness/gates/g2_trust_base.py</code></a></td><td>These gates exist in the earlier runner and are locked into the control bundle. The new tracer does not call them yet.</td></tr>
+      <tr><td>Clean verifier command and report binding</td><td><a href="verifier.py"><code>verifier.py</code></a></td><td>A matching report must name a worker distinct from the agent VM.</td></tr>
+    </tbody>
+  </table>
+  <p><code>worker.accept_candidate(...)</code> currently returns the labels <code>statement</code>, <code>native_decide</code>, <code>trust</code>, and <code>kernel</code> after its smaller check set. Treat those labels as planned gate coverage until the dedicated gate implementations are wired into this path.</p>
+
+  <h2>Tests worth reading</h2>
+  <table>
+    <thead><tr><th>Test</th><th>What it checks</th></tr></thead>
+    <tbody>
+      <tr><td><a href="../tests/test_cli_snapshot.py"><code>tests/test_cli_snapshot.py</code></a></td><td>Input schemas, toolchain lock, control bundle, policy, and prepared target. One test currently reaches Lima unexpectedly.</td></tr>
+      <tr><td><a href="../tests/test_model_proxy_fixture.py"><code>tests/test_model_proxy_fixture.py</code></a></td><td>Deterministic proxy route, signed fixture receipts, tamper rejection, and a separate <code>runsc</code> route smoke test</td></tr>
+      <tr><td><a href="../tests/test_phase1_diamond.py"><code>tests/test_phase1_diamond.py</code></a></td><td>Controller flow with the external boundaries replaced by test doubles</td></tr>
+      <tr><td><a href="../tests/test_image_contract.py"><code>tests/test_image_contract.py</code></a></td><td>Pinned image contents and runtime contract</td></tr>
+      <tr><td><a href="../harness/gates/tests/test_g1.py"><code>harness/gates/tests/test_g1.py</code></a></td><td>Canonical Lean statement fingerprinting</td></tr>
+    </tbody>
+  </table>
+  <p>The older runner under <code>harness/</code> remains useful reference code. Its behavior is documented in <a href="../docs/HARNESS-DETAIL.md"><code>docs/HARNESS-DETAIL.md</code></a>. It is not the sealed AutoFV execution path.</p>
+
+  <h2>Rules for updating this guide</h2>
+  <ul>
+    <li>Update <code>README.md</code> and <code>README.html</code> in the same commit.</li>
+    <li>State whether a check used test doubles, a local fixture service, a real VM, or a provider call.</li>
+    <li>Call fixture usage and cost synthetic.</li>
+    <li>Never add a proxy signing key, provider credential, hidden reference, or complete future-response program to the target or worker volume.</li>
+    <li>Do not call a run successful until the accepted tree passes on the separate clean verifier and every bound identity matches.</li>
+  </ul>
+  <p>Phase 1 should next produce one saved run directory containing raw probe bytes, proxy receipts based on provider usage, the accepted source tree, a distinct verifier report, <code>result.json</code>, and <code>evidence/l0.json</code>.</p>
+</main>
+</body>
+</html>

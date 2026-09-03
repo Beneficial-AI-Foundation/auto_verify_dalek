@@ -5,6 +5,10 @@
  src="https://cdn.jsdelivr.net/gh/dalek-cryptography/curve25519-dalek/docs/assets/dalek-logo-clear.png"/>
 </p>
 
+> AutoFV pipeline work is documented in
+> [`autofv/README.md`](autofv/README.md). A matching
+> [`autofv/README.html`](autofv/README.html) is available for HTML preview.
+
 # dalek-lean benchmark — no-proofs snapshot
 
 This repository is a **benchmark snapshot** of the

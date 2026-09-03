@@ -77,11 +77,11 @@
   </nav>
 
   <h2 id="status">Status</h2>
-  <p class="status">The focused local contract set passes. One broader native-policy test now reaches Lima unexpectedly and fails in restricted environments. No production experiment has completed.</p>
+  <p class="status">The focused local contract set and all 29 CLI snapshot tests pass without contacting Lima. No production experiment has completed.</p>
   <table>
     <thead><tr><th>Area</th><th>Current evidence</th></tr></thead>
     <tbody>
-      <tr><td>Input, policy, image, and receipt contracts</td><td>Focused local checks pass; the full CLI suite has one worker-boundary regression</td></tr>
+      <tr><td>Input, policy, image, and receipt contracts</td><td>Focused local checks and all 29 CLI snapshot tests pass</td></tr>
       <tr><td>Pinned probe output</td><td>Captured from the toolchain image and checked byte-for-byte</td></tr>
       <tr><td>Fixed proxy route under <code>runsc</code></td><td>Tested against the local deterministic proxy fixture</td></tr>
       <tr><td>End-to-end controller flow</td><td>Tested with worker, proxy, persistence, and verifier functions replaced by test doubles</td></tr>
@@ -112,8 +112,9 @@
 UV_CACHE_DIR=/private/tmp/autofv-uv-cache uv sync</code></pre>
   <p>Run the fast local contracts:</p>
   <pre><code>.venv/bin/python -m unittest -v \
+  tests.test_cli_snapshot \
   tests.test_phase1_diamond.TracerTests</code></pre>
-  <p>The full <code>tests.test_cli_snapshot</code> module is not a local-only check at this commit. Its <code>test_launch_exports_hash_bound_policy_without_environment_fallback</code> test now enters <code>worker.prepare_run(...)</code> and tries to contact Lima. Fix that boundary before adding the module back to the fast command.</p>
+  <p>The native-policy launch test replaces worker preparation, graph execution, and result persistence. It checks policy binding without contacting Lima; it is not VM or full-run evidence.</p>
   <p>Show the CLI without starting a worker:</p>
   <pre><code>.venv/bin/python -m autofv.experiment --help</code></pre>
 
@@ -170,7 +171,7 @@ UV_CACHE_DIR=/private/tmp/autofv-uv-cache uv sync</code></pre>
   <table>
     <thead><tr><th>Test</th><th>What it checks</th></tr></thead>
     <tbody>
-      <tr><td><a href="../tests/test_cli_snapshot.py"><code>tests/test_cli_snapshot.py</code></a></td><td>Input schemas, toolchain lock, control bundle, policy, and prepared target. One test currently reaches Lima unexpectedly.</td></tr>
+      <tr><td><a href="../tests/test_cli_snapshot.py"><code>tests/test_cli_snapshot.py</code></a></td><td>Input schemas, toolchain lock, control bundle, policy, and prepared target. Worker preparation is replaced in the native-policy unit test.</td></tr>
       <tr><td><a href="../tests/test_model_proxy_fixture.py"><code>tests/test_model_proxy_fixture.py</code></a></td><td>Deterministic proxy route, signed fixture receipts, tamper rejection, and a separate <code>runsc</code> route smoke test</td></tr>
       <tr><td><a href="../tests/test_phase1_diamond.py"><code>tests/test_phase1_diamond.py</code></a></td><td>Controller flow with the external boundaries replaced by test doubles</td></tr>
       <tr><td><a href="../tests/test_image_contract.py"><code>tests/test_image_contract.py</code></a></td><td>Pinned image contents and runtime contract</td></tr>

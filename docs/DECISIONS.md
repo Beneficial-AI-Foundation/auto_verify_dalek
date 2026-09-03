@@ -160,6 +160,58 @@ namespace is sufficient.
 State that training-data contamination is unknown. Do not claim a fully clean
 room unless there is stronger evidence.
 
+### DEC-20 — Which comments does the agent see?
+
+**Status:** ACCEPTED (2026-09-02, Zhang-Liao)
+
+**Question:** Our Lean files carry natural-language specs, proof outlines
+(which internal functions and lemmas to use, which invariants) and `Source:`
+pointers in comments. The Rust sources carry `///` rustdoc. Which of these
+leak the proof and must be hidden in a scored run?
+
+**Decision:** Strip every comment (`/-! -/`, `/-- -/`, `/- -/`, `--`) from
+every hand-written Lean file; leave Aeneas-generated Lean and the Rust
+sources untouched.
+
+- **Hand-written Lean comments go** — `Specs/`, `Math/`, `Aux.lean`,
+  `FunsExternal.lean`, `Utils/`. They were written by the people who wrote
+  the proofs. Target files describe how to prove the statement; `Math/`
+  docstrings say where a lemma is used ("Used in Scalar.reduce,
+  Scalar52.mul") and `--` lines inside finished proofs show the technique.
+  All of it is what the agent is measured on. The theorem statements stay:
+  they are the contract.
+- **Applied as preprocessing, in the checkout itself** (2026-09-02):
+  `harness/strip_comments.py strip --in-place` over the 216 hand-written
+  files — 1,982 comments, 9,233 comment-only lines, ~466 KB. The strip is
+  line-preserving (comment text blanked, newlines kept), so the sorry
+  inventory's `path:line:col` entries are unchanged. `lake build` gives the
+  same 410 sorry declarations before and after; `harness/frozen/
+  frozen_files.sha256` was regenerated for the 14 frozen files that
+  changed, and the G2 trust-base gate passes. The last tree with comments
+  is commit `66753cb`; `strip_comments.py merge <commented> <stripped>` can
+  put the comments back onto any later version of a file. The input tree
+  the agent sees is thus exactly the committed tree (DEC-12 seal), with no
+  per-run transform. `driver.py --strip-comments` remains for trees that
+  still carry comments (default `off`).
+- **Aeneas-generated Lean stays** (`Funs.lean`, `Types.lean`, recognised by
+  the generator banner in the header). Their comments are the banner and
+  `Source: 'src/…' lines a-b` pointers into the Rust code, never proof
+  content. Stripping them would gain nothing and force every slot to
+  recompile the whole project (Lake rebuilds by source hash).
+- **Rust `///` stays.** In CryptoProver's verified dalek fork the `///` lines
+  held informal proof sketches written during verification, so their
+  `--strip-docs` removes them. Our `curve25519-dalek/` is the unmodified
+  upstream crate: its `///` is ordinary rustdoc (what a function computes,
+  representation invariants), with no proof content. It is the code under
+  verification and is given to the agent, as CryptoProver gives the Rust
+  code to its agent.
+
+*Comparison.* CryptoProver's whole-crate proof-only run had a no-hints arm
+(all comments removed) and a with-hints arm (doc comments kept) with the same
+residual; its main synthesis run kept ~5,800 comment lines and reported that
+as a limitation. Our scored arm is the no-hints one. A with-hints arm
+(`--strip-comments off`) is optional and low priority under DEC-13's n = 1.
+
 ### DEC-10 — What counts as success?
 
 **Status:** ACCEPTED (2026-08-26, Zhang-Liao; phase-1 mechanics implemented —

@@ -73,7 +73,7 @@ counterexample witness, harness re-verifies it against the frozen statement)
 
 | ✅ | Can a human tamper mid-run? | DEC-12 tree hashed at run start; input-set change = violation, other change = drift; re-checked per target | implemented |
 | 🟡 | Can the agent peek at answers? | DEC-08 filesystem closed; network deny-listed not blocked; credential in sandbox; no broker | partial (= CryptoProver) |
-| ✅ | Do comments leak the proof? | `--strip-comments targets\|project`: every comment (`/-! -/`, `/-- -/`, `/- -/`, `--`: NL specs, proof sketches, `Source:` pointers) is blanked, line-preserving, in each sealed slot before the baseline commit; the stripped tree must rebuild with identical sorry counts; accepts are replayed onto the commented operator file (`strip_comments.merge_back`, invariant: merged code == accepted code); ledger `comment_strip` records scope, counts and stripped-tree hash. Operator checkout never loses a comment. cf. CryptoProver `strip_specs.py --strip-docs` (drops `///` only) | implemented, default off |
+| ✅ | Do comments leak the proof? | DEC-20. Preprocessing: every comment (`/-! -/`, `/-- -/`, `/- -/`, `--`: NL specs, proof sketches, `Source:` pointers) was blanked, line-preserving, in all 216 hand-written Lean files of the checkout (`harness/strip_comments.py strip --in-place`; Aeneas-generated Funs/Types and Rust untouched). Sorry counts unchanged, frozen hashes regenerated, G2 passes. Last commented tree: commit `66753cb`; `strip_comments.py merge` restores comments onto a proved file. `driver.py --strip-comments` still exists for trees that carry comments. cf. CryptoProver `strip_specs.py --strip-docs` (drops `///` only) | done (2026-09-02) |
 
 TODO: remove the annotations
 

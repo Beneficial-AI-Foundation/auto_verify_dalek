@@ -27,6 +27,10 @@ FIXTURE_RUN_ID = "fixture-diamond-run-0001"
 class WorkerError(RuntimeError):
     """The trusted worker could not preserve its launch contract."""
 
+    def __init__(self, message: str, *, run: dict[str, Any] | None = None):
+        super().__init__(message)
+        self.run = run
+
 
 def _canonical_bytes(value: Any) -> bytes:
     return json.dumps(
@@ -61,13 +65,17 @@ def _tree_files(root: Path) -> Iterable[tuple[str, bytes, int]]:
         yield relative.as_posix(), data, stat.S_IMODE(status.st_mode)
 
 
-def hash_tree(root: str | Path) -> str:
-    """Hash the canonical regular-file view used for the sealed snapshot."""
+def _tree_hash(files: Iterable[tuple[str, bytes, int]]) -> str:
     entries = [
         {"path": name, "sha256": _sha256(data), "size": len(data)}
-        for name, data, _ in _tree_files(Path(root))
+        for name, data, _ in files
     ]
     return _sha256(_canonical_bytes(entries))
+
+
+def hash_tree(root: str | Path) -> str:
+    """Hash the canonical regular-file view used for the sealed snapshot."""
+    return _tree_hash(_tree_files(Path(root)))
 
 
 def _control_manifest(lock: dict[str, Any]) -> tuple[dict[str, Any], list[tuple[str, bytes, int]]]:
@@ -106,11 +114,14 @@ def _add_bytes(archive: tarfile.TarFile, name: str, data: bytes, mode: int) -> N
     archive.addfile(info, io.BytesIO(data))
 
 
-def _seed_archive(target: Path, lock: dict[str, Any]) -> tuple[bytes, dict[str, Any]]:
+def _seed_archive(
+    target: Path, lock: dict[str, Any]
+) -> tuple[bytes, dict[str, Any], str]:
     manifest, control_files = _control_manifest(lock)
+    project_files = list(_tree_files(target))
     stream = io.BytesIO()
     with tarfile.open(fileobj=stream, mode="w") as archive:
-        for name, data, mode in _tree_files(target):
+        for name, data, mode in project_files:
             _add_bytes(archive, f"work/project/{name}", data, mode & 0o755)
         for name, data, mode in control_files:
             _add_bytes(archive, f"autofv-control/{name}", data, mode)
@@ -120,15 +131,18 @@ def _seed_archive(target: Path, lock: dict[str, Any]) -> tuple[bytes, dict[str, 
             _canonical_bytes(manifest) + b"\n",
             0o444,
         )
-    return stream.getvalue(), manifest
+    return stream.getvalue(), manifest, _tree_hash(project_files)
 
 
 def _lima(*argv: str, input_bytes: bytes | None = None) -> subprocess.CompletedProcess[bytes]:
-    completed = subprocess.run(
-        ("limactl", "shell", AGENT_VM, "--", *argv),
-        input=input_bytes,
-        capture_output=True,
-    )
+    try:
+        completed = subprocess.run(
+            ("limactl", "shell", AGENT_VM, "--", *argv),
+            input=input_bytes,
+            capture_output=True,
+        )
+    except OSError as exc:
+        raise WorkerError(f"agent worker launcher failed: {exc}") from exc
     if completed.returncode:
         detail = "\n".join(
             part
@@ -198,38 +212,10 @@ def _git(run: dict[str, Any], *argv: str, input_bytes: bytes | None = None) -> b
 
 def prepare_run(target: Path, manifest: dict[str, Any], lock: dict[str, Any]) -> dict[str, Any]:
     """Copy target/control bytes into a fresh named volume without a bind mount."""
-    archive, control_manifest = _seed_archive(target, lock)
+    archive, control_manifest, snapshot_sha256 = _seed_archive(target, lock)
     run_id = FIXTURE_RUN_ID
     volume = f"autofv-{secrets.token_hex(8)}"
     run_root = Path(tempfile.mkdtemp(prefix=f"{run_id}-"))
-    _lima("true")
-    _docker("volume", "create", volume)
-    seed = (
-        "mkdir -p /volume/work/project /volume/evidence /volume/accepted "
-        "/volume/logs /volume/autofv-control && "
-        "tar -xf - -C /volume && "
-        "chown -R 65532:65532 /volume/work /volume/evidence /volume/accepted /volume/logs && "
-        "chmod -R a-w /volume/autofv-control && chmod 0555 /volume/autofv-control"
-    )
-    _docker(
-        "run",
-        "--rm",
-        "-i",
-        "--pull",
-        "never",
-        "--network",
-        "none",
-        "--user",
-        "0:0",
-        "--mount",
-        f"type=volume,src={volume},dst=/volume,volume-nocopy",
-        lock["image"]["image_digest"],
-        "sh",
-        "-eu",
-        "-c",
-        seed,
-        input_bytes=archive,
-    )
     run = {
         "run_id": run_id,
         "run_root": str(run_root),
@@ -239,13 +225,20 @@ def prepare_run(target: Path, manifest: dict[str, Any], lock: dict[str, Any]) ->
         "agent_worker_id": f"lima:{AGENT_VM}",
         "execution_tier": "sealed_runsc",
         "cost_classification": lock["fixed_proxy"]["cost_classification"],
-        "snapshot_sha256": hash_tree(target),
+        "snapshot_sha256": snapshot_sha256,
         "manifest_sha256": _sha256(_canonical_bytes(manifest)),
         "image_digest": lock["image"]["image_digest"],
         "control_bundle_sha256": control_manifest["bundle_sha256"],
-        "events": ["validated", "target_copied", "control_bundle_verified", "runsc_started"],
+        "events": ["validated"],
         "lock": lock,
     }
+    seed = (
+        "mkdir -p /volume/work/project /volume/evidence /volume/accepted "
+        "/volume/logs /volume/autofv-control && "
+        "tar -xf - -C /volume && "
+        "chown -R 65532:65532 /volume/work /volume/evidence /volume/accepted /volume/logs && "
+        "chmod -R a-w /volume/autofv-control && chmod 0555 /volume/autofv-control"
+    )
     git_env = (
         "-e",
         "GIT_AUTHOR_NAME=AutoFV Fixture",
@@ -260,41 +253,69 @@ def prepare_run(target: Path, manifest: dict[str, Any], lock: dict[str, Any]) ->
         "-e",
         "GIT_COMMITTER_DATE=2000-01-01T00:00:00+00:00",
     )
-    for command in (
-        ("git", "-C", "/volume/work/project", "init", "-q", "--object-format=sha1"),
-        ("git", "-C", "/volume/work/project", "config", "core.autocrlf", "false"),
-        ("git", "-C", "/volume/work/project", "config", "core.filemode", "false"),
-        ("git", "-C", "/volume/work/project", "add", "--all"),
-    ):
-        _docker(*_runtime_argv(lock, volume, *command))
-    _docker(
-        "run",
-        "--rm",
-        "--pull",
-        "never",
-        *git_env,
-        "--runtime",
-        lock["tools"]["runsc"]["runtime_name"],
-        "--read-only",
-        "--network",
-        "none",
-        "--user",
-        AGENT_UID,
-        "--security-opt",
-        "no-new-privileges",
-        "--mount",
-        f"type=volume,src={volume},dst=/volume,volume-nocopy",
-        lock["image"]["image_digest"],
-        "git",
-        "-C",
-        "/volume/work/project",
-        "commit",
-        "-q",
-        "--no-gpg-sign",
-        "-m",
-        "Freeze the prepared diamond baseline",
-    )
-    run["base_commit"] = _git(run, "rev-parse", "HEAD").decode().strip()
+    try:
+        _lima("true")
+        _docker("volume", "create", volume)
+        _docker(
+            "run",
+            "--rm",
+            "-i",
+            "--pull",
+            "never",
+            "--network",
+            "none",
+            "--user",
+            "0:0",
+            "--mount",
+            f"type=volume,src={volume},dst=/volume,volume-nocopy",
+            lock["image"]["image_digest"],
+            "sh",
+            "-eu",
+            "-c",
+            seed,
+            input_bytes=archive,
+        )
+        run["events"].extend(("target_copied", "control_bundle_verified"))
+        for command in (
+            ("git", "-C", "/volume/work/project", "init", "-q", "--object-format=sha1"),
+            ("git", "-C", "/volume/work/project", "config", "core.autocrlf", "false"),
+            ("git", "-C", "/volume/work/project", "config", "core.filemode", "false"),
+            ("git", "-C", "/volume/work/project", "add", "--all"),
+        ):
+            _docker(*_runtime_argv(lock, volume, *command))
+            if "runsc_started" not in run["events"]:
+                run["events"].append("runsc_started")
+        _docker(
+            "run",
+            "--rm",
+            "--pull",
+            "never",
+            *git_env,
+            "--runtime",
+            lock["tools"]["runsc"]["runtime_name"],
+            "--read-only",
+            "--network",
+            "none",
+            "--user",
+            AGENT_UID,
+            "--security-opt",
+            "no-new-privileges",
+            "--mount",
+            f"type=volume,src={volume},dst=/volume,volume-nocopy",
+            lock["image"]["image_digest"],
+            "git",
+            "-C",
+            "/volume/work/project",
+            "commit",
+            "-q",
+            "--no-gpg-sign",
+            "-m",
+            "Freeze the prepared diamond baseline",
+        )
+        run["base_commit"] = _git(run, "rev-parse", "HEAD").decode().strip()
+    except WorkerError as exc:
+        exc.run = run
+        raise
     return run
 
 

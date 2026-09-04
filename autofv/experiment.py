@@ -847,7 +847,14 @@ def run_experiment(
     _, config = validate_run_config(run_config)
     lock = load_toolchain_lock()
     policy = validate_native_decide_policy(lock)
-    run = worker.prepare_run(target_path, manifest, lock)
+    preparation_failure = None
+    try:
+        run = worker.prepare_run(target_path, manifest, lock)
+    except worker.WorkerError as exc:
+        if exc.run is None:
+            raise
+        run = exc.run
+        preparation_failure = exc
     run.update(
         {
             "manifest": manifest,
@@ -864,6 +871,8 @@ def run_experiment(
         "cost": Decimal("0.000000"),
     }
     try:
+        if preparation_failure is not None:
+            raise preparation_failure
         for update in _EXPERIMENT_GRAPH.stream(state, stream_mode="updates"):
             for values in update.values():
                 state.update(values)
@@ -874,7 +883,11 @@ def run_experiment(
             run,
             state,
             outcome="failure",
-            reason=type(exc).__name__.removesuffix("Error").lower(),
+            reason=(
+                "infrastructure_failed"
+                if exc is preparation_failure
+                else type(exc).__name__.removesuffix("Error").lower()
+            ),
         )
     worker.persist_result(run, result, _l0_receipt(run, state, result))
     return result

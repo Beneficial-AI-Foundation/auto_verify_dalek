@@ -87,12 +87,12 @@
       <tr><td>End-to-end controller flow</td><td>One real two-VM run accepted all three source files and received a distinct verifier <code>PASS</code></td></tr>
       <tr><td>Provider model call and billed usage</td><td>Not run</td></tr>
       <tr><td>Full agent worker to clean-verifier fixture</td><td>Passed on 4 September 2026; agent used <code>runsc</code>, verifier used a fresh Docker volume and the pinned image</td></tr>
-      <tr><td>Malformed probe and graph mutation matrix</td><td>Next task in Plan 01-05</td></tr>
+      <tr><td>Malformed probe and graph mutation matrix</td><td>Eight local tests cover malformed bytes, wrong tool identity, incomplete or failed closure data, unsafe paths, deterministic ordering, and cycles</td></tr>
     </tbody>
   </table>
   <p>The current <code>$0.022350</code> result is fixture data. It is the sum of eight handwritten receipt amounts for 2,235 invented tokens at a flat <code>$0.000010</code> per token. It is not provider spend. The fixture uses <code>fixture-model-v1</code>; no API key or provider response takes part in that test. The values live in <a href="../tests/fixtures/model-proxy/diamond-responses.json"><code>tests/fixtures/model-proxy/diamond-responses.json</code></a> and are repeated as expectations in the proxy fixture test.</p>
   <p>Receipt validation rejects changes to a receipt's run identity, sequence, request hash, response hash, usage, cost, or signature. A valid fixture signature proves that the local fixture has not changed. A production proxy receipt will be needed before <code>cost_usd</code> can mean measured spend.</p>
-  <p>The successful run recorded <code>execution_tier: sealed_runsc</code> and <code>cost_classification: synthetic_fixture</code>. It accepted three commits, processed eight receipts, and ended with <code>clean_verifier:PASS</code>. Failures retain completed hashes, accepted-receipt counts and cost, and the last accepted commit.</p>
+  <p>The successful run recorded <code>execution_tier: sealed_runsc</code> and <code>cost_classification: synthetic_fixture</code>. It accepted three commits, processed eight receipts, and ended with <code>clean_verifier:PASS</code>. Failures retain completed hashes, accepted-receipt counts and cost, and the last accepted commit. Probe and allocated-worker launch failures write a non-success result and L0 receipt before exit, without making a model request. Invalid target or run configuration still stops before worker allocation and returns a non-zero CLI status; durable records for those pre-allocation attempts are later Phase 1 work.</p>
 
   <h2>Intended run</h2>
   <pre><code>trusted host
@@ -114,6 +114,7 @@ UV_CACHE_DIR=/private/tmp/autofv-uv-cache uv sync</code></pre>
   <p>Run the fast local contracts:</p>
   <pre><code>.venv/bin/python -m unittest -v \
   tests.test_cli_snapshot \
+  tests.test_probe_graph \
   tests.test_phase1_diamond.TracerTests</code></pre>
   <p>The native-policy launch test replaces worker preparation, graph execution, and result persistence. It checks policy binding without contacting Lima; it is not VM or full-run evidence.</p>
   <p>Show the CLI without starting a worker:</p>
@@ -182,6 +183,7 @@ UV_CACHE_DIR=/private/tmp/autofv-uv-cache uv sync</code></pre>
       <tr><td><a href="../tests/test_cli_snapshot.py"><code>tests/test_cli_snapshot.py</code></a></td><td>Input schemas, toolchain lock, control bundle, policy, and prepared target. Worker preparation is replaced in the native-policy unit test.</td></tr>
       <tr><td><a href="../tests/test_model_proxy_fixture.py"><code>tests/test_model_proxy_fixture.py</code></a></td><td>Deterministic proxy route, signed fixture receipts, tamper rejection, and a separate <code>runsc</code> route smoke test</td></tr>
       <tr><td><a href="../tests/test_phase1_diamond.py"><code>tests/test_phase1_diamond.py</code></a></td><td>Controller flow with test doubles, failure-state retention, worker command construction, and clean-verifier isolation arguments</td></tr>
+      <tr><td><a href="../tests/test_probe_graph.py"><code>tests/test_probe_graph.py</code></a></td><td>Probe schema and closure mutations, deterministic graph direction and scheduling, raw-byte retention, and pre-model failure results</td></tr>
       <tr><td><a href="../tests/test_image_contract.py"><code>tests/test_image_contract.py</code></a></td><td>Pinned image contents and runtime contract</td></tr>
       <tr><td><a href="../harness/gates/tests/test_g1.py"><code>harness/gates/tests/test_g1.py</code></a></td><td>Canonical Lean statement fingerprinting</td></tr>
     </tbody>
@@ -196,7 +198,7 @@ UV_CACHE_DIR=/private/tmp/autofv-uv-cache uv sync</code></pre>
     <li>Never add a proxy signing key, provider credential, hidden reference, or complete future-response program to the target or worker volume.</li>
     <li>Do not call a run successful until the accepted tree passes on the separate clean verifier and every bound identity matches.</li>
   </ul>
-  <p>The next Plan 01-05 task adds malformed-probe and graph failure coverage. Later Phase 1 plans add complete gate receipts, durable proxy and verifier artifacts, and a stable run directory.</p>
+  <p>Later Phase 1 plans add complete gate receipts, durable proxy and verifier artifacts, and a stable run directory.</p>
 </main>
 </body>
 </html>

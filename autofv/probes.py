@@ -5,7 +5,7 @@ from __future__ import annotations
 import hashlib
 import json
 import subprocess
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from typing import Any
 
 
@@ -87,11 +87,27 @@ def _string_list(value: Any, reason: str) -> list[str]:
     return value
 
 
+def _source_path(value: Any, reason: str) -> str:
+    source = _text(value, reason)
+    path = PurePosixPath(source)
+    if (
+        path.is_absolute()
+        or "\\" in source
+        or any(part in {"", ".", ".."} for part in path.parts)
+        or path.as_posix() != source
+    ):
+        raise ProbeError(reason)
+    return source
+
+
 def _selected_lean_atom(name: str, atom: Any) -> dict[str, Any]:
     if not isinstance(atom, dict) or atom.get("language") != "lean":
         raise ProbeError("selected_lean_atom_missing")
     required = {
         "code-path",
+        "code-text",
+        "dependencies",
+        "display-name",
         "is-extraction-artifact",
         "is-hidden",
         "is-ignored",
@@ -111,16 +127,45 @@ def _selected_lean_atom(name: str, atom: Any) -> dict[str, Any]:
         or atom["is-relevant"] is not True
     ):
         raise ProbeError("selected_lean_atom_not_schedulable")
+    if atom["verification-status"] == "failed":
+        raise ProbeError("selected_dependency_failed")
     if atom["verification-status"] not in {
         "verified",
         "transitively-verified",
         "unverified",
     }:
         raise ProbeError("selected_lean_status_invalid")
-    _text(atom["code-path"], "selected_lean_source_missing")
+    _source_path(atom["code-path"], "selected_lean_source_invalid")
+    _text(atom["display-name"], "selected_lean_display_name_missing")
+    lines = atom["code-text"]
+    if (
+        not isinstance(lines, dict)
+        or type(lines.get("lines-start")) is not int
+        or type(lines.get("lines-end")) is not int
+        or lines["lines-start"] <= 0
+        or lines["lines-end"] < lines["lines-start"]
+    ):
+        raise ProbeError("selected_lean_code_range_invalid")
+    _string_list(atom["dependencies"], "selected_dependencies_invalid")
     _string_list(atom["term-dependencies"], "selected_term_dependencies_invalid")
     _string_list(atom["type-dependencies"], "selected_type_dependencies_invalid")
     return atom
+
+
+def _validate_dependency_partition(
+    atom: dict[str, Any], merged_atoms: dict[str, Any]
+) -> None:
+    classified = set(atom["term-dependencies"]) | set(atom["type-dependencies"])
+    for dependency in atom["dependencies"]:
+        candidate = merged_atoms.get(dependency)
+        if (
+            isinstance(candidate, dict)
+            and candidate.get("language") == "lean"
+            and candidate.get("is-in-package") is True
+            and candidate.get("is-relevant") is True
+            and dependency not in classified
+        ):
+            raise ProbeError("selected_dependency_edge_missing")
 
 
 def _topological_orders(
@@ -194,6 +239,7 @@ def parse_probe_bytes(
         if not isinstance(lean_name, str) or not lean_name:
             raise ProbeError("manifest_target_translation_missing")
         lean_atom = _selected_lean_atom(lean_name, merged_atoms.get(lean_name))
+        _validate_dependency_partition(lean_atom, merged_atoms)
         primary_spec = lean_atom.get("primary-spec")
         expected_spec = f"probe:{target['spec']}"
         if primary_spec != expected_spec:
@@ -210,6 +256,7 @@ def parse_probe_bytes(
     while pending:
         name = pending.pop()
         atom = _selected_lean_atom(name, merged_atoms.get(name))
+        _validate_dependency_partition(atom, merged_atoms)
         sources[name] = atom["code-path"]
         for dependency in atom["term-dependencies"]:
             candidate = merged_atoms.get(dependency)
@@ -221,16 +268,25 @@ def parse_probe_bytes(
                 nodes.add(dependency)
                 pending.append(dependency)
         for dependency in atom["type-dependencies"]:
-            if dependency in merged_atoms and merged_atoms[dependency].get("language") == "lean":
-                type_edges.add((name, dependency))
+            candidate = merged_atoms.get(dependency)
+            if not isinstance(candidate, dict) or candidate.get("language") != "lean":
+                raise ProbeError("selected_type_dependency_missing")
+            dependency_atom = _selected_lean_atom(dependency, candidate)
+            sources[dependency] = dependency_atom["code-path"]
+            type_edges.add((name, dependency))
 
     primary_specs = sorted(set(supplied_specs.values()))
     for spec in primary_specs:
         atom = _selected_lean_atom(spec, merged_atoms.get(spec))
+        _validate_dependency_partition(atom, merged_atoms)
         sources[spec] = atom["code-path"]
         for dependency in atom["type-dependencies"]:
-            if dependency in merged_atoms and merged_atoms[dependency].get("language") == "lean":
-                type_edges.add((spec, dependency))
+            candidate = merged_atoms.get(dependency)
+            if not isinstance(candidate, dict) or candidate.get("language") != "lean":
+                raise ProbeError("selected_type_dependency_missing")
+            dependency_atom = _selected_lean_atom(dependency, candidate)
+            sources[dependency] = dependency_atom["code-path"]
+            type_edges.add((spec, dependency))
 
     if len(edges) > MAX_EDGES:
         raise ProbeError("probe_graph_too_large")

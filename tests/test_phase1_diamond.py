@@ -9,7 +9,7 @@ import unittest
 from pathlib import Path
 from unittest import mock
 
-from autofv import experiment, verifier, worker
+from autofv import experiment, probes, verifier, worker
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -89,6 +89,8 @@ class _Seams:
             "evidence_dir": str(self.root / "evidence"),
             "volume": "fixture-volume",
             "agent_worker_id": "agent-worker-fixture",
+            "execution_tier": "simulation",
+            "cost_classification": "synthetic_fixture",
             "snapshot_sha256": snapshot,
             "manifest_sha256": _sha256(experiment.canonical_json_bytes(manifest)),
             "image_digest": lock["image"]["image_digest"],
@@ -172,6 +174,92 @@ class _Seams:
         (evidence / "l0.json").write_bytes(experiment.canonical_json_bytes(receipt) + b"\n")
 
 
+class WorkerBridgeTests(unittest.TestCase):
+    def test_worker_errors_keep_command_stdout_and_stderr(self):
+        completed = subprocess.CompletedProcess(
+            args=("command",),
+            returncode=1,
+            stdout=b"useful compiler diagnostic\n",
+            stderr=b"error: build failed\n",
+        )
+        with mock.patch.object(subprocess, "run", return_value=completed):
+            with self.assertRaisesRegex(
+                worker.WorkerError, "(?s)useful compiler diagnostic.*build failed"
+            ):
+                worker._lima("command")
+
+    def test_runsc_commands_use_the_sealed_project_as_workdir(self):
+        lock = experiment.load_toolchain_lock()
+        argv = worker._runtime_argv(lock, "test-volume", "true")
+
+        self.assertEqual(argv[argv.index("--workdir") + 1], "/volume/work/project")
+        self.assertEqual(argv[argv.index("--pull") + 1], "never")
+
+    def test_bridge_keeps_project_rust_atoms_without_is_relevant(self):
+        manifest = json.loads((TARGET / "autofv.json").read_text())
+        bridge = json.loads(worker._bridge(RUST_PROBE.read_bytes(), manifest))
+
+        self.assertEqual(
+            [item["rust_name"] for item in bridge["functions"]],
+            [
+                "autofv_diamond::left",
+                "autofv_diamond::right",
+                "autofv_diamond::top",
+            ],
+        )
+
+    def test_proxy_requests_bind_the_stable_graph_not_raw_probe_bytes(self):
+        manifest = json.loads((TARGET / "autofv.json").read_text())
+        graph = probes.parse_probe_bytes(
+            manifest, RUST_PROBE.read_bytes(), AENEAS_PROBE.read_bytes()
+        )
+        fixture = json.loads(MODEL_FIXTURE.read_text())
+        requests = {
+            item["request"]["request_id"]: item["request"]
+            for item in fixture["entries"]
+        }
+
+        for request_id in ("scout-001", "proof-left-001", "proof-right-001"):
+            self.assertIn(graph["graph_sha256"], requests[request_id]["input_hashes"])
+            self.assertNotIn(
+                graph["probe_aeneas_sha256"], requests[request_id]["input_hashes"]
+            )
+
+
+class VerifierRuntimeTests(unittest.TestCase):
+    def test_clean_verifier_uses_fresh_volume_and_pinned_image_without_network(self):
+        image = experiment.load_toolchain_lock()["image"]["image_digest"]
+        argv = verifier._runtime_argv(image, "fresh-verifier-volume", "lake", "build")
+
+        self.assertIn("--read-only", argv)
+        self.assertEqual(argv[argv.index("--network") + 1], "none")
+        self.assertEqual(argv[argv.index("--pull") + 1], "never")
+        self.assertIn(
+            "type=volume,src=fresh-verifier-volume,dst=/project,volume-nocopy",
+            argv,
+        )
+        self.assertNotIn("fixture-volume", " ".join(argv))
+        self.assertEqual(argv[-3:], (image, "lake", "build"))
+
+    def test_clean_verifier_start_failure_is_a_verifier_error(self):
+        failed = subprocess.CompletedProcess(
+            args=("limactl", "start", verifier.VERIFIER_VM),
+            returncode=1,
+            stdout=b"verifier boot failed\n",
+            stderr=b"instance unavailable\n",
+        )
+        with (
+            mock.patch.object(subprocess, "run", return_value=failed),
+            mock.patch.object(worker, "export_accepted") as export,
+            self.assertRaisesRegex(
+                verifier.VerifierError,
+                "(?s)verifier boot failed.*instance unavailable",
+            ),
+        ):
+            verifier.verify_run({}, {})
+        export.assert_not_called()
+
+
 class TracerTests(unittest.TestCase):
     def setUp(self):
         self.fixture = json.loads(MODEL_FIXTURE.read_text())
@@ -192,7 +280,10 @@ class TracerTests(unittest.TestCase):
                 )
 
             self.assertEqual(result["schema"], "autofv-result/v1")
+            self.assertEqual(result["execution_tier"], "simulation")
+            self.assertEqual(result["cost_classification"], "synthetic_fixture")
             self.assertEqual((result["outcome"], result["termination_reason"]), ("success", "all_targets_verified"))
+            self.assertIsNone(result["termination_detail"])
             self.assertEqual(result["run_id"], self.fixture["run_id"])
             self.assertEqual(result["frozen_targets"], ["probe:Diamond.top"])
             self.assertEqual(result["targets_total"], 1)
@@ -255,6 +346,21 @@ class TracerTests(unittest.TestCase):
                         TARGET, TARGET / "run.json", run_round=proxy
                     )
                 self.assertNotEqual(result["outcome"], "success")
+                self.assertTrue(result["termination_detail"])
+                self.assertEqual(result["execution_tier"], "simulation")
+                self.assertEqual(result["cost_classification"], "synthetic_fixture")
+                self.assertEqual(result["graph_sha256"], probes.parse_probe_bytes(
+                    json.loads((TARGET / "autofv.json").read_text()),
+                    RUST_PROBE.read_bytes(),
+                    AENEAS_PROBE.read_bytes(),
+                )["graph_sha256"])
+                if mutation == "verifier":
+                    self.assertEqual(result["proxy_requests"], 8)
+                    self.assertEqual(result["cost_usd"], "0.022350")
+                    self.assertEqual(result["accepted_commit"], seams.accepted_commits[-1])
+                else:
+                    self.assertEqual(result["proxy_requests"], 0)
+                    self.assertEqual(result["cost_usd"], "0.000000")
 
 
 if __name__ == "__main__":

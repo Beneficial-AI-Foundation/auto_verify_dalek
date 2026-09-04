@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import secrets
 import subprocess
 from typing import Any
 
@@ -31,6 +32,17 @@ def _sha256(raw: bytes) -> str:
     return hashlib.sha256(raw).hexdigest()
 
 
+def _command_detail(completed: subprocess.CompletedProcess[bytes]) -> str:
+    return "\n".join(
+        part
+        for part in (
+            completed.stdout.decode("utf-8", "replace").strip(),
+            completed.stderr.decode("utf-8", "replace").strip(),
+        )
+        if part
+    )[-4000:]
+
+
 def _shell(*argv: str, input_bytes: bytes | None = None) -> subprocess.CompletedProcess[bytes]:
     completed = subprocess.run(
         ("limactl", "shell", VERIFIER_VM, "--", *argv),
@@ -38,31 +50,94 @@ def _shell(*argv: str, input_bytes: bytes | None = None) -> subprocess.Completed
         capture_output=True,
     )
     if completed.returncode:
-        raise VerifierError("clean verifier command failed")
+        detail = _command_detail(completed)
+        raise VerifierError(f"clean verifier command failed: {detail or argv[0]}")
     return completed
+
+
+def _docker(*argv: str, input_bytes: bytes | None = None) -> subprocess.CompletedProcess[bytes]:
+    return _shell("sudo", "docker", *argv, input_bytes=input_bytes)
+
+
+def _runtime_argv(image: str, volume: str, *command: str) -> tuple[str, ...]:
+    return (
+        "run",
+        "--rm",
+        "--pull",
+        "never",
+        "--read-only",
+        "--network",
+        "none",
+        "--user",
+        worker.AGENT_UID,
+        "--workdir",
+        "/project",
+        "--security-opt",
+        "no-new-privileges",
+        "--pids-limit",
+        "256",
+        "--cpus",
+        "2",
+        "--memory",
+        "2g",
+        "--tmpfs",
+        "/tmp:rw,noexec,nosuid,nodev,size=64m",
+        "--tmpfs",
+        "/home/autofv/.cache:rw,noexec,nosuid,nodev,size=64m",
+        "--mount",
+        f"type=volume,src={volume},dst=/project,volume-nocopy",
+        image,
+        *command,
+    )
 
 
 def verify_run(run: dict[str, Any], expected: dict[str, Any]) -> dict[str, Any]:
     """Verify the exact accepted tree on the dedicated clean worker."""
-    subprocess.run(("limactl", "start", VERIFIER_VM), check=True, capture_output=True)
-    directory = _shell("mktemp", "-d", f"/tmp/autofv-{run['run_id']}.XXXXXX").stdout.decode().strip()
-    if not directory.startswith("/tmp/autofv-"):
-        raise VerifierError("clean verifier returned an unsafe work directory")
+    started = subprocess.run(("limactl", "start", VERIFIER_VM), capture_output=True)
+    if started.returncode:
+        detail = _command_detail(started)
+        raise VerifierError(f"clean verifier failed to start: {detail or VERIFIER_VM}")
+    volume = f"autofv-verify-{secrets.token_hex(8)}"
     archive = worker.export_accepted(run)
-    _shell("tar", "-xf", "-", "-C", directory, input_bytes=archive)
-    verify = run["manifest"]["verify"]
-    completed = _shell(*verify, input_bytes=None) if directory == "." else subprocess.run(
-        ("limactl", "shell", VERIFIER_VM, "--", "env", "-C", directory, *verify),
-        capture_output=True,
-    )
-    verdict = "PASS" if completed.returncode == 0 else "FAIL"
+    if _sha256(archive) != expected["accepted_tree_sha256"]:
+        raise VerifierError("accepted tree archive hash mismatch")
+    _docker("volume", "create", volume)
+    try:
+        _docker(
+            "run",
+            "--rm",
+            "-i",
+            "--pull",
+            "never",
+            "--read-only",
+            "--network",
+            "none",
+            "--user",
+            "0:0",
+            "--security-opt",
+            "no-new-privileges",
+            "--mount",
+            f"type=volume,src={volume},dst=/project,volume-nocopy",
+            run["image_digest"],
+            "sh",
+            "-eu",
+            "-c",
+            "tar -xf - -C /project && chown -R 65532:65532 /project",
+            input_bytes=archive,
+        )
+        _docker(*_runtime_argv(run["image_digest"], volume, *run["manifest"]["verify"]))
+    finally:
+        try:
+            _docker("volume", "rm", volume)
+        except VerifierError:
+            pass
     body = {
         "schema": "autofv-verifier-report/v1",
         "run_id": run["run_id"],
         "agent_worker_id": run["agent_worker_id"],
         "verifier_worker_id": f"lima:{VERIFIER_VM}",
         **expected,
-        "verdict": verdict,
+        "verdict": "PASS",
     }
     return {**body, "report_sha256": _sha256(_canonical_bytes(body))}
 

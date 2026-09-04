@@ -543,6 +543,7 @@
   },
   "fixed_proxy": {
     "proxy_id": "autofv-local-fixture-proxy-v1",
+    "cost_classification": "synthetic_fixture",
     "route_id": "autofv-infer-v1",
     "method": "POST",
     "path": "/v1/autofv/infer",

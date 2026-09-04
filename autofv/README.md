@@ -21,7 +21,7 @@ Model responses and cost were synthetic fixture data. No provider call ran.
 | End-to-end controller flow | One real two-VM run accepted all three source files and received a distinct verifier `PASS` |
 | Provider model call and billed usage | Not run |
 | Full agent worker to clean-verifier fixture | Passed on 4 September 2026; agent used `runsc`, verifier used a fresh Docker volume and the pinned image |
-| Malformed probe and graph mutation matrix | Next task in Plan 01-05 |
+| Malformed probe and graph mutation matrix | Eight local tests cover malformed bytes, wrong tool identity, incomplete or failed closure data, unsafe paths, deterministic ordering, and cycles |
 
 The current `$0.022350` result is fixture data. It is the sum of eight
 handwritten receipt amounts for 2,235 invented tokens at a flat
@@ -40,6 +40,11 @@ The successful run recorded `execution_tier: sealed_runsc` and
 `cost_classification: synthetic_fixture`. It accepted three commits, processed
 eight receipts, and ended with `clean_verifier:PASS`. Failures retain completed
 hashes, accepted-receipt counts and cost, and the last accepted commit.
+Probe and allocated-worker launch failures write a non-success result and L0
+receipt before exit, without making a model request. Invalid target or run
+configuration still stops before worker allocation and returns a non-zero CLI
+status; durable records for those pre-allocation attempts are later Phase 1
+work.
 
 ## Intended run
 
@@ -83,6 +88,7 @@ Run the fast local contracts:
 ```bash
 .venv/bin/python -m unittest -v \
   tests.test_cli_snapshot \
+  tests.test_probe_graph \
   tests.test_phase1_diamond.TracerTests
 ```
 
@@ -184,6 +190,7 @@ planned work. The current candidate receipt names only the checks it runs.
 | [`tests/test_cli_snapshot.py`](../tests/test_cli_snapshot.py) | Input schemas, toolchain lock, control bundle, policy, and prepared target. Worker preparation is replaced in the native-policy unit test. |
 | [`tests/test_model_proxy_fixture.py`](../tests/test_model_proxy_fixture.py) | Deterministic proxy route, signed fixture receipts, tamper rejection, and a separate `runsc` route smoke test |
 | [`tests/test_phase1_diamond.py`](../tests/test_phase1_diamond.py) | Controller flow with test doubles, failure-state retention, worker command construction, and clean-verifier isolation arguments |
+| [`tests/test_probe_graph.py`](../tests/test_probe_graph.py) | Probe schema and closure mutations, deterministic graph direction and scheduling, raw-byte retention, and pre-model failure results |
 | [`tests/test_image_contract.py`](../tests/test_image_contract.py) | Pinned image contents and runtime contract |
 | [`harness/gates/tests/test_g1.py`](../harness/gates/tests/test_g1.py) | Canonical Lean statement fingerprinting |
 
@@ -202,6 +209,5 @@ not the sealed AutoFV execution path.
 - Do not call a run successful until the accepted tree passes on the separate
   clean verifier and every bound identity matches.
 
-The next Plan 01-05 task adds malformed-probe and graph failure coverage. Later
-Phase 1 plans add complete gate receipts, durable proxy and verifier artifacts,
-and a stable run directory.
+Later Phase 1 plans add complete gate receipts, durable proxy and verifier
+artifacts, and a stable run directory.

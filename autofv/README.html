@@ -67,7 +67,7 @@
   <!-- Keep this page in sync with README.md. -->
   <h1>AutoFV</h1>
   <p>AutoFV is the trusted host-side controller for experiments that ask an agent to recover Lean specifications and proofs inside a sealed Linux worker.</p>
-  <p class="meta">This page describes the code as it exists on 3 September 2026. Phase 1 is still in progress. <a href="README.md">Read the Markdown version</a>.</p>
+  <p class="meta">This page describes the code as it exists on 4 September 2026. Phase 1 is still in progress. <a href="README.md">Read the Markdown version</a>.</p>
 
   <nav aria-label="Page sections">
     <a href="#status">Status</a>
@@ -77,21 +77,22 @@
   </nav>
 
   <h2 id="status">Status</h2>
-  <p class="status">The focused local contract set and all 29 CLI snapshot tests pass without contacting Lima. No production experiment has completed.</p>
+  <p class="status">One sealed diamond fixture completed across the dedicated agent and verifier VMs. The agent work ran in the pinned image under <code>runsc</code>; the verifier rebuilt the exact accepted tree in the same image from a fresh no-network volume. Model responses and cost were synthetic fixture data. No provider call ran.</p>
   <table>
     <thead><tr><th>Area</th><th>Current evidence</th></tr></thead>
     <tbody>
       <tr><td>Input, policy, image, and receipt contracts</td><td>Focused local checks and all 29 CLI snapshot tests pass</td></tr>
       <tr><td>Pinned probe output</td><td>Captured from the toolchain image and checked byte-for-byte</td></tr>
       <tr><td>Fixed proxy route under <code>runsc</code></td><td>Tested against the local deterministic proxy fixture</td></tr>
-      <tr><td>End-to-end controller flow</td><td>Tested with worker, proxy, persistence, and verifier functions replaced by test doubles</td></tr>
+      <tr><td>End-to-end controller flow</td><td>One real two-VM run accepted all three source files and received a distinct verifier <code>PASS</code></td></tr>
       <tr><td>Provider model call and billed usage</td><td>Not run</td></tr>
-      <tr><td>Full agent worker to clean-verifier experiment</td><td>Not run</td></tr>
+      <tr><td>Full agent worker to clean-verifier fixture</td><td>Passed on 4 September 2026; agent used <code>runsc</code>, verifier used a fresh Docker volume and the pinned image</td></tr>
       <tr><td>Malformed probe and graph mutation matrix</td><td>Next task in Plan 01-05</td></tr>
     </tbody>
   </table>
   <p>The current <code>$0.022350</code> result is fixture data. It is the sum of eight handwritten receipt amounts for 2,235 invented tokens at a flat <code>$0.000010</code> per token. It is not provider spend. The fixture uses <code>fixture-model-v1</code>; no API key or provider response takes part in that test. The values live in <a href="../tests/fixtures/model-proxy/diamond-responses.json"><code>tests/fixtures/model-proxy/diamond-responses.json</code></a> and are repeated as expectations in the proxy fixture test.</p>
   <p>Receipt validation rejects changes to a receipt's run identity, sequence, request hash, response hash, usage, cost, or signature. A valid fixture signature proves that the local fixture has not changed. A production proxy receipt will be needed before <code>cost_usd</code> can mean measured spend.</p>
+  <p>The successful run recorded <code>execution_tier: sealed_runsc</code> and <code>cost_classification: synthetic_fixture</code>. It accepted three commits, processed eight receipts, and ended with <code>clean_verifier:PASS</code>. Failures retain completed hashes, accepted-receipt counts and cost, and the last accepted commit.</p>
 
   <h2>Intended run</h2>
   <pre><code>trusted host
@@ -104,7 +105,7 @@
     ├── export the accepted tree to the separate autofv-verifier Lima VM
     └── write result.json and an L0 evidence receipt</code></pre>
   <p>The worker must not receive the developer checkout, a container runtime socket, provider credentials, the complete proxy response program, or the hidden verifier reference. The trusted host copies an allowlisted control bundle into the managed volume. Only the accepted source tree crosses into the verifier.</p>
-  <p>The tracer test in <a href="../tests/test_phase1_diamond.py"><code>tests/test_phase1_diamond.py</code></a> exercises the controller order and failure rules with test doubles. It records the orchestration contract. It does not exercise the two VMs or provider path.</p>
+  <p>The local tracer test in <a href="../tests/test_phase1_diamond.py"><code>tests/test_phase1_diamond.py</code></a> exercises the controller order and failure rules with test doubles. It records the orchestration contract and reports <code>execution_tier: simulation</code>. The sealed fixture run exercised both VMs and the local trusted proxy. Neither path called a model provider.</p>
 
   <h2 id="setup">Local setup</h2>
   <p>AutoFV requires Python 3.12. Use the repository virtual environment and <code>uv</code>; do not install packages into the system Python.</p>
@@ -131,14 +132,21 @@ UV_CACHE_DIR=/private/tmp/autofv-uv-cache uv sync</code></pre>
     <li>a run-scoped <code>AUTOFV_RUN_TOKEN</code> in the trusted host process;</li>
     <li>a proxy that implements the locked <code>POST /v1/autofv/infer</code> contract and signs usage receipts with the pinned key.</li>
   </ul>
+  <p>The agent VM must already contain the pinned image and <code>runsc-hardened</code>. The verifier VM must contain Docker and the same pinned image. Verification creates a fresh Docker volume, runs with <code>--network none</code>, and removes that volume when the build ends. Both launchers use <code>--pull never</code>; the verifier does not reuse the agent volume or caches.</p>
   <p>The provider credential belongs in the proxy service. Do not put it in this repository, either VM, the container, or either environment variable above. The current repository does not include a production proxy deployment or a provider signing trace, so this command is still an integration target. The key pinned today belongs to the local fixture. A production proxy needs a separate signing key and a corresponding lock update.</p>
-  <p>The CLI prints the result JSON. The current worker also writes <code>result.json</code> and <code>evidence/l0.json</code> under a host temporary run directory. A stable output directory has not been added to the CLI yet.</p>
+  <p>The CLI prints the result JSON. The current worker also writes <code>result.json</code>, <code>evidence/l0.json</code>, and raw probe files in a host temporary run directory. Find the newest fixture directory and inspect it with:</p>
+  <pre><code>run_dir=$(ls -td "${TMPDIR%/}"/fixture-diamond-run-0001-* | head -1)
+.venv/bin/python -m json.tool "$run_dir/result.json"
+.venv/bin/python -m json.tool "$run_dir/evidence/l0.json"</code></pre>
+  <p>A stable output directory has not been added to the CLI yet. The L0 receipt binds the result and eight proxy receipt hashes; separate receipt and verifier report files arrive in the later evidence phase.</p>
 
   <h2>What the result fields mean today</h2>
   <table>
     <thead><tr><th>Field</th><th>Meaning in the current diamond tracer</th></tr></thead>
     <tbody>
       <tr><td><code>outcome</code></td><td>The controller reached a matching verifier <code>PASS</code></td></tr>
+      <tr><td><code>execution_tier</code></td><td><code>sealed_runsc</code> for the real worker path; <code>simulation</code> when tests replace external boundaries</td></tr>
+      <tr><td><code>cost_classification</code></td><td><code>synthetic_fixture</code> for the current locked proxy fixture</td></tr>
       <tr><td><code>targets_verified_final</code></td><td>Fixture-specific value: <code>1</code> on success</td></tr>
       <tr><td><code>internal_specs_accepted</code></td><td>Fixture-specific value: <code>2</code> on success</td></tr>
       <tr><td><code>internal_proofs_accepted</code></td><td>Fixture-specific value: <code>2</code> on success</td></tr>
@@ -159,13 +167,13 @@ UV_CACHE_DIR=/private/tmp/autofv-uv-cache uv sync</code></pre>
       <tr><td>Image digest, tool versions, proxy route, receipt schema, verifier identity, control-bundle allowlist</td><td><a href="../docker/autofv/toolchain-lock.json"><code>docker/autofv/toolchain-lock.json</code></a></td><td>Trust contract. Update its hashes and contract tests with every change.</td></tr>
       <tr><td><code>native_decide</code> rule</td><td><code>native_decide_policy</code> in the toolchain lock and <code>evaluate_native_decide_policy(...)</code> in <a href="experiment.py"><code>experiment.py</code></a></td><td>Phase 1 uses <code>allow_audited</code>. The inventory evaluator exists, but the tracer currently validates only the policy selection and hash. Count caps or named-spec allowlists belong behind this one policy function.</td></tr>
       <tr><td>Probe byte, node, and edge limits; dependency scheduling</td><td><a href="probes.py"><code>probes.py</code></a></td><td>Current limits are 16 MiB, 10,000 nodes, and 100,000 edges.</td></tr>
-      <tr><td>Agent VM name, UID, CPU, memory, PID, temporary filesystem, and Docker arguments</td><td><a href="worker.py"><code>worker.py</code></a></td><td>Current container limits are 2 CPUs, 2 GiB, 256 PIDs, and two 64 MiB temporary filesystems.</td></tr>
-      <tr><td>Candidate scope and acceptance checks</td><td><code>accept_candidate(...)</code> in <a href="worker.py"><code>worker.py</code></a></td><td>It currently checks one-file scope, base and patch hashes, forbidden additions, and <code>lake build</code>.</td></tr>
+      <tr><td>Agent VM name, UID, CPU, memory, PID, temporary filesystem, and Docker arguments</td><td><a href="worker.py"><code>worker.py</code></a></td><td>Current container limits are 2 CPUs, 2 GiB, 256 PIDs, and two 64 MiB temporary filesystems. Real runs report <code>sealed_runsc</code>.</td></tr>
+      <tr><td>Candidate scope and acceptance checks</td><td><code>accept_candidate(...)</code> in <a href="worker.py"><code>worker.py</code></a></td><td>It currently checks one-file scope, base and patch hashes, patch application, forbidden source markers, and the configured build.</td></tr>
       <tr><td>Canonical statement and trust-base implementations</td><td><a href="../harness/gates/StmtCanon.lean"><code>harness/gates/StmtCanon.lean</code></a> and <a href="../harness/gates/g2_trust_base.py"><code>harness/gates/g2_trust_base.py</code></a></td><td>These gates exist in the earlier runner and are locked into the control bundle. The new tracer does not call them yet.</td></tr>
-      <tr><td>Clean verifier command and report binding</td><td><a href="verifier.py"><code>verifier.py</code></a></td><td>A matching report must name a worker distinct from the agent VM.</td></tr>
+      <tr><td>Clean verifier command and report binding</td><td><a href="verifier.py"><code>verifier.py</code></a></td><td>A matching report must name a worker distinct from the agent VM. The accepted archive hash is checked before extraction into a fresh no-network volume.</td></tr>
     </tbody>
   </table>
-  <p><code>worker.accept_candidate(...)</code> currently returns the labels <code>statement</code>, <code>native_decide</code>, <code>trust</code>, and <code>kernel</code> after its smaller check set. Treat those labels as planned gate coverage until the dedicated gate implementations are wired into this path.</p>
+  <p>Canonical statement, complete <code>native_decide</code>, and trust-base gates are still planned work. The current candidate receipt names only the checks it runs.</p>
 
   <h2>Tests worth reading</h2>
   <table>
@@ -173,7 +181,7 @@ UV_CACHE_DIR=/private/tmp/autofv-uv-cache uv sync</code></pre>
     <tbody>
       <tr><td><a href="../tests/test_cli_snapshot.py"><code>tests/test_cli_snapshot.py</code></a></td><td>Input schemas, toolchain lock, control bundle, policy, and prepared target. Worker preparation is replaced in the native-policy unit test.</td></tr>
       <tr><td><a href="../tests/test_model_proxy_fixture.py"><code>tests/test_model_proxy_fixture.py</code></a></td><td>Deterministic proxy route, signed fixture receipts, tamper rejection, and a separate <code>runsc</code> route smoke test</td></tr>
-      <tr><td><a href="../tests/test_phase1_diamond.py"><code>tests/test_phase1_diamond.py</code></a></td><td>Controller flow with the external boundaries replaced by test doubles</td></tr>
+      <tr><td><a href="../tests/test_phase1_diamond.py"><code>tests/test_phase1_diamond.py</code></a></td><td>Controller flow with test doubles, failure-state retention, worker command construction, and clean-verifier isolation arguments</td></tr>
       <tr><td><a href="../tests/test_image_contract.py"><code>tests/test_image_contract.py</code></a></td><td>Pinned image contents and runtime contract</td></tr>
       <tr><td><a href="../harness/gates/tests/test_g1.py"><code>harness/gates/tests/test_g1.py</code></a></td><td>Canonical Lean statement fingerprinting</td></tr>
     </tbody>
@@ -188,7 +196,7 @@ UV_CACHE_DIR=/private/tmp/autofv-uv-cache uv sync</code></pre>
     <li>Never add a proxy signing key, provider credential, hidden reference, or complete future-response program to the target or worker volume.</li>
     <li>Do not call a run successful until the accepted tree passes on the separate clean verifier and every bound identity matches.</li>
   </ul>
-  <p>Phase 1 should next produce one saved run directory containing raw probe bytes, proxy receipts based on provider usage, the accepted source tree, a distinct verifier report, <code>result.json</code>, and <code>evidence/l0.json</code>.</p>
+  <p>The next Plan 01-05 task adds malformed-probe and graph failure coverage. Later Phase 1 plans add complete gate receipts, durable proxy and verifier artifacts, and a stable run directory.</p>
 </main>
 </body>
 </html>

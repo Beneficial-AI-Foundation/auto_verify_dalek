@@ -152,6 +152,7 @@ class ToolchainContractTests(unittest.TestCase):
         lock = load_lock()
         self.assertEqual(lock["model_client"]["implementation"], "urllib.request")
         proxy = lock["fixed_proxy"]
+        self.assertEqual(proxy["cost_classification"], "synthetic_fixture")
         self.assertEqual((proxy["method"], proxy["path"]), ("POST", "/v1/autofv/infer"))
         self.assertEqual(proxy["base_address_source"], "trusted_launcher")
         self.assertEqual(
@@ -483,6 +484,8 @@ class NativeDecidePolicyContractTests(unittest.TestCase):
             "manifest_sha256": "2" * 64,
             "image_digest": "sha256:" + "3" * 64,
             "control_bundle_sha256": "4" * 64,
+            "execution_tier": "simulation",
+            "cost_classification": "synthetic_fixture",
         }
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
@@ -517,7 +520,7 @@ class NativeDecidePolicyContractTests(unittest.TestCase):
                 ),
                 mock.patch.object(
                     experiment._EXPERIMENT_GRAPH,
-                    "invoke",
+                    "stream",
                     side_effect=experiment.ContractError("unit boundary"),
                 ),
                 mock.patch.object(experiment.worker, "persist_result"),

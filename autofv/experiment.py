@@ -490,6 +490,7 @@ class _RunState(TypedDict, total=False):
     accepted: dict[str, Any]
     result: dict[str, Any]
     verifier_report: dict[str, Any]
+    termination_detail: str
 
 
 def _canonical_sha256(value: Any) -> str:
@@ -672,7 +673,7 @@ def _agent_loop(state: _RunState) -> dict[str, Any]:
     if len(graph["frozen_targets"]) != 1 or len(graph["proof_batches"]) != 2:
         raise ContractError("the V1 tracer requires one acyclic diamond target")
     top_fingerprint = _statement_fingerprint(run, graph)
-    probe_hash = graph["probe_aeneas_sha256"]
+    probe_hash = graph["graph_sha256"]
 
     scout, _ = _model_request(
         state,
@@ -715,6 +716,7 @@ def _agent_loop(state: _RunState) -> dict[str, Any]:
         input_hashes=[left_fingerprint, probe_hash],
     )
     accepted = worker.accept_candidate(run, proof_left, manifest)
+    run["accepted"] = accepted
     proof_right, _ = _model_request(
         state,
         request_id="proof-right-001",
@@ -723,6 +725,7 @@ def _agent_loop(state: _RunState) -> dict[str, Any]:
         input_hashes=[right_fingerprint, probe_hash],
     )
     accepted = worker.accept_candidate(run, proof_right, manifest)
+    run["accepted"] = accepted
     proof_top, _ = _model_request(
         state,
         request_id="proof-top-001",
@@ -736,6 +739,7 @@ def _agent_loop(state: _RunState) -> dict[str, Any]:
         ],
     )
     accepted = worker.accept_candidate(run, proof_top, manifest)
+    run["accepted"] = accepted
     return {
         "accepted": accepted,
         "receipts": state["receipts"],
@@ -780,21 +784,28 @@ def _result(
     run: dict[str, Any], state: _RunState, *, outcome: str, reason: str
 ) -> dict[str, Any]:
     graph = state.get("graph", {})
-    accepted = state.get("accepted", {})
+    accepted = state.get("accepted", run.get("accepted", {}))
     report = state.get("verifier_report", {})
+    cost = sum(
+        (Decimal(item["cost"]["amount"]) for item in state.get("receipts", [])),
+        Decimal("0.000000"),
+    )
     run["events"].append("result_emitted")
     return {
         "schema": "autofv-result/v1",
         "run_id": run["run_id"],
+        "execution_tier": run["execution_tier"],
+        "cost_classification": run["cost_classification"],
         "outcome": outcome,
         "termination_reason": reason,
+        "termination_detail": state.get("termination_detail"),
         "frozen_targets": graph.get("frozen_targets", []),
         "targets_total": len(graph.get("frozen_targets", [])),
         "targets_verified_final": 1 if outcome == "success" else 0,
         "internal_specs_accepted": 2 if outcome == "success" else 0,
         "internal_proofs_accepted": 2 if outcome == "success" else 0,
         "proxy_requests": len(state.get("receipts", [])),
-        "cost_usd": f"{state.get('cost', Decimal('0')):.6f}",
+        "cost_usd": f"{cost:.6f}",
         "native_decide_policy": run["native_decide_policy"],
         "native_decide_policy_sha256": run["native_decide_policy_sha256"],
         "snapshot_sha256": run["snapshot_sha256"],
@@ -853,9 +864,12 @@ def run_experiment(
         "cost": Decimal("0.000000"),
     }
     try:
-        state = _EXPERIMENT_GRAPH.invoke(state)
+        for update in _EXPERIMENT_GRAPH.stream(state, stream_mode="updates"):
+            for values in update.values():
+                state.update(values)
         result = _result(run, state, outcome="success", reason="all_targets_verified")
     except (ContractError, probes.ProbeError, worker.WorkerError, verifier.VerifierError) as exc:
+        state["termination_detail"] = str(exc)[:1000]
         result = _result(
             run,
             state,

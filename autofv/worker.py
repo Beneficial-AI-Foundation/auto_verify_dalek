@@ -130,7 +130,14 @@ def _lima(*argv: str, input_bytes: bytes | None = None) -> subprocess.CompletedP
         capture_output=True,
     )
     if completed.returncode:
-        detail = completed.stderr.decode("utf-8", "replace").strip()
+        detail = "\n".join(
+            part
+            for part in (
+                completed.stdout.decode("utf-8", "replace").strip(),
+                completed.stderr.decode("utf-8", "replace").strip(),
+            )
+            if part
+        )[-4000:]
         raise WorkerError(f"agent worker command failed: {detail or argv[0]}")
     return completed
 
@@ -144,6 +151,8 @@ def _runtime_argv(lock: dict[str, Any], volume: str, *command: str) -> tuple[str
         "run",
         "--rm",
         "-i",
+        "--pull",
+        "never",
         "--runtime",
         lock["tools"]["runsc"]["runtime_name"],
         "--read-only",
@@ -151,6 +160,8 @@ def _runtime_argv(lock: dict[str, Any], volume: str, *command: str) -> tuple[str
         "none",
         "--user",
         AGENT_UID,
+        "--workdir",
+        "/volume/work/project",
         "--security-opt",
         "no-new-privileges",
         "--pids-limit",
@@ -204,6 +215,8 @@ def prepare_run(target: Path, manifest: dict[str, Any], lock: dict[str, Any]) ->
         "run",
         "--rm",
         "-i",
+        "--pull",
+        "never",
         "--network",
         "none",
         "--user",
@@ -224,6 +237,8 @@ def prepare_run(target: Path, manifest: dict[str, Any], lock: dict[str, Any]) ->
         "evidence_dir": str(run_root / "evidence"),
         "volume": volume,
         "agent_worker_id": f"lima:{AGENT_VM}",
+        "execution_tier": "sealed_runsc",
+        "cost_classification": lock["fixed_proxy"]["cost_classification"],
         "snapshot_sha256": hash_tree(target),
         "manifest_sha256": _sha256(_canonical_bytes(manifest)),
         "image_digest": lock["image"]["image_digest"],
@@ -255,6 +270,8 @@ def prepare_run(target: Path, manifest: dict[str, Any], lock: dict[str, Any]) ->
     _docker(
         "run",
         "--rm",
+        "--pull",
+        "never",
         *git_env,
         "--runtime",
         lock["tools"]["runsc"]["runtime_name"],
@@ -286,7 +303,7 @@ def _bridge(rust_raw: bytes, manifest: dict[str, Any]) -> bytes:
     namespace = manifest["targets"][0]["spec"].rsplit(".", 1)[0]
     records = []
     for atom in rust["data"].values():
-        if atom.get("language") != "rust" or atom.get("is-relevant") is not True:
+        if atom.get("language") != "rust" or not atom.get("rust-qualified-name"):
             continue
         lines = atom["code-text"]
         records.append(
@@ -406,8 +423,9 @@ def accept_candidate(
         raise WorkerError("candidate patch hash mismatch")
     if any(marker in patch for marker in ("\n+axiom ", "\n+sorry", "\n+unsafe ")):
         raise WorkerError("candidate violates the trust gate")
-    _git(run, "apply", "--check", "--index", "-", input_bytes=patch.encode())
-    _git(run, "apply", "--index", "-", input_bytes=patch.encode())
+    _git(run, "apply", "--check", "-", input_bytes=patch.encode())
+    _git(run, "apply", "-", input_bytes=patch.encode())
+    _git(run, "add", "--", path)
     verify = manifest["verify"]
     _docker(*_runtime_argv(run["lock"], run["volume"], *verify))
     _docker(
@@ -434,7 +452,14 @@ def accept_candidate(
     return {
         "accepted_commit": commit,
         "accepted_tree_sha256": _sha256(tree),
-        "checks": ["scope", "statement", "native_decide", "trust", "kernel"],
+        "checks": [
+            "assigned_path_scope",
+            "base_commit",
+            "patch_sha256",
+            "patch_applies",
+            "forbidden_source_markers",
+            "configured_build",
+        ],
     }
 
 

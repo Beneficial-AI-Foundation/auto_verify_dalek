@@ -425,6 +425,46 @@ def proxy_round(run: dict[str, Any], request: dict[str, Any]) -> tuple[dict[str,
     return body["response"], body["receipt"]
 
 
+def check_contract_feasibility(
+    run: dict[str, Any], statements: list[str]
+) -> dict[str, Any]:
+    """Try the V1 diamond consumer proof against provisional statements."""
+    source = (
+        "import Diamond.Top\n\n"
+        + "\n".join(f"{statement} := by sorry" for statement in statements)
+        + "\n\nexample (input : Nat) : Diamond.top input = input * 3 + 1 := by\n"
+        "  rw [Diamond.top, Diamond.left_spec, Diamond.right_spec]\n"
+        "  simp [Nat.succ_eq_add_one, Nat.mul_succ, Nat.add_assoc, "
+        "Nat.add_comm, Nat.add_left_comm]\n"
+    )
+    completed = _docker(
+        *_runtime_argv(
+            run["lock"],
+            run["volume"],
+            "sh",
+            "-c",
+            "lake env lean --stdin 2>&1; code=$?; "
+            "printf '\\nAUTOFV_FEASIBILITY_EXIT=%s\\n' \"$code\"",
+        ),
+        input_bytes=source.encode("utf-8"),
+    )
+    marker = b"\nAUTOFV_FEASIBILITY_EXIT="
+    if marker not in completed.stdout:
+        raise WorkerError("provisional consumer check returned no exit marker")
+    diagnostic, raw_status = completed.stdout.rsplit(marker, 1)
+    try:
+        exit_code = int(raw_status.strip())
+    except ValueError as exc:
+        raise WorkerError("provisional consumer check returned an invalid status") from exc
+    text = diagnostic.decode("utf-8", "replace")[-4000:]
+    return {
+        "status": "passed" if exit_code == 0 else "failed",
+        "reason": None if exit_code == 0 else "consumer_proof_failed",
+        "diagnostic_sha256": _sha256(diagnostic),
+        "diagnostic": text,
+    }
+
+
 def accept_candidate(
     run: dict[str, Any], candidate: dict[str, Any], manifest: dict[str, Any]
 ) -> dict[str, Any]:

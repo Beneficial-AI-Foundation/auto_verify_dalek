@@ -47,6 +47,10 @@ class ContractError(ValueError):
     """Input or trusted-contract data failed closed."""
 
 
+class ContractInconclusive(ContractError):
+    """The bounded provisional consumer proof could not freeze contracts."""
+
+
 def canonical_json_bytes(value: Any) -> bytes:
     """Canonical UTF-8 JSON for schema-constrained, float-free envelopes."""
     try:
@@ -485,6 +489,7 @@ class _RunState(TypedDict, total=False):
     config: dict[str, Any]
     run_round: Any
     graph: dict[str, Any]
+    contracts: dict[str, Any]
     receipts: list[dict[str, Any]]
     cost: Decimal
     accepted: dict[str, Any]
@@ -661,6 +666,140 @@ def _statement_fingerprint(run: dict[str, Any], graph: dict[str, Any]) -> str:
     return hashlib.sha256("\n".join(statement).encode("utf-8")).hexdigest()
 
 
+def _statement_record(response: dict[str, Any], policy_sha256: str) -> dict[str, Any]:
+    payload = response["payload"]
+    text = payload["text"]
+    return {
+        "declaration": payload["declaration"],
+        "kind": "theorem",
+        "canon": text,
+        "canonical_sha256": _canonical_sha256({"kind": "theorem", "canon": text}),
+        "model_fingerprint": payload["text_sha256"],
+        "consumer_fingerprints": [
+            value
+            for value in response["statement_fingerprints"]
+            if value != payload["text_sha256"]
+        ],
+        "native_decide_policy_sha256": policy_sha256,
+        "status": "provisional",
+    }
+
+
+def _candidate_binding_is_current(
+    fingerprints: list[str],
+    policy_sha256: str,
+    current_fingerprints: list[str],
+    current_policy_sha256: str,
+) -> bool:
+    """Return whether candidate inputs are a non-empty subset of current truth."""
+    return (
+        bool(fingerprints)
+        and fingerprints == sorted(set(fingerprints))
+        and set(fingerprints) <= set(current_fingerprints)
+        and hmac.compare_digest(policy_sha256, current_policy_sha256)
+    )
+
+
+def _repair_contracts(
+    state: _RunState,
+    dependency: dict[str, Any],
+    top_fingerprint: str,
+) -> dict[str, Any]:
+    """Run the bounded weak-draft, consumer-check, review, and freeze sequence."""
+    run = state["run"]
+    policy_sha256 = run["native_decide_policy_sha256"]
+    contracts = {
+        "attempts": [],
+        "provisional": {},
+        "frozen": {},
+        "frozen_fingerprints": [],
+        "invalidated_fingerprints": [],
+        "feasibility": [],
+    }
+    state["contracts"] = contracts
+
+    weak_left, _ = _model_request(
+        state,
+        request_id="contract-left-001",
+        role="contract-author",
+        input_hashes=[dependency["payload_sha256"], top_fingerprint],
+    )
+    right, _ = _model_request(
+        state,
+        request_id="contract-right-001",
+        role="contract-author",
+        input_hashes=[dependency["payload_sha256"], top_fingerprint],
+    )
+    weak_record = _statement_record(weak_left, policy_sha256)
+    right_record = _statement_record(right, policy_sha256)
+    contracts["attempts"].extend((weak_record, right_record))
+    contracts["provisional"] = {
+        weak_record["declaration"]: weak_record,
+        right_record["declaration"]: right_record,
+    }
+    run["events"].extend(
+        (
+            f"contract_draft:{weak_record['declaration']}",
+            f"contract_draft:{right_record['declaration']}",
+            "provisional_contracts_applied",
+        )
+    )
+
+    feasibility = worker.check_contract_feasibility(
+        run, [weak_record["canon"], right_record["canon"]]
+    )
+    contracts["feasibility"].append(feasibility)
+    run["events"].append(f"provisional_consumer:{feasibility['status']}")
+    if feasibility["status"] != "failed":
+        raise ContractError("fixture weak contract unexpectedly passed consumer proof")
+
+    strong_left, _ = _model_request(
+        state,
+        request_id="contract-left-review-002",
+        role="contract-reviewer",
+        input_hashes=[weak_record["model_fingerprint"], top_fingerprint],
+    )
+    strong_record = _statement_record(strong_left, policy_sha256)
+    if (
+        strong_record["declaration"] != weak_record["declaration"]
+        or strong_record["model_fingerprint"] == weak_record["model_fingerprint"]
+    ):
+        raise ContractError("contract review did not replace the weak statement")
+    contracts["attempts"].append(strong_record)
+    contracts["invalidated_fingerprints"].append(weak_record["model_fingerprint"])
+    contracts["provisional"][strong_record["declaration"]] = strong_record
+    run["events"].extend(
+        (
+            f"contract_review:{strong_record['declaration']}",
+            f"statement_invalidated:{weak_record['model_fingerprint']}",
+        )
+    )
+
+    feasibility = worker.check_contract_feasibility(
+        run, [strong_record["canon"], right_record["canon"]]
+    )
+    contracts["feasibility"].append(feasibility)
+    run["events"].append(f"provisional_consumer:{feasibility['status']}")
+    if feasibility["status"] != "passed":
+        run["events"].append("contract_inconclusive")
+        raise ContractInconclusive(feasibility["diagnostic"])
+
+    contracts["frozen"] = {
+        record["declaration"]: {**record, "status": "frozen"}
+        for record in (strong_record, right_record)
+    }
+    contracts["provisional"] = {}
+    contracts["frozen_fingerprints"] = sorted(
+        [
+            top_fingerprint,
+            strong_record["model_fingerprint"],
+            right_record["model_fingerprint"],
+        ]
+    )
+    run["events"].append("statements_frozen")
+    return contracts
+
+
 def _freeze(state: _RunState) -> dict[str, Any]:
     rust_raw, aeneas_raw = worker.run_probes(state["run"])
     graph = probes.parse_probe_bytes(state["manifest"], rust_raw, aeneas_raw)
@@ -687,26 +826,9 @@ def _agent_loop(state: _RunState) -> dict[str, Any]:
         role="dependency-planner",
         input_hashes=[scout["payload_sha256"], probe_hash],
     )
-    weak_left, _ = _model_request(
-        state,
-        request_id="contract-left-001",
-        role="contract-author",
-        input_hashes=[dependency["payload_sha256"], top_fingerprint],
-    )
-    right, _ = _model_request(
-        state,
-        request_id="contract-right-001",
-        role="contract-author",
-        input_hashes=[dependency["payload_sha256"], top_fingerprint],
-    )
-    strong_left, _ = _model_request(
-        state,
-        request_id="contract-left-review-002",
-        role="contract-reviewer",
-        input_hashes=[weak_left["payload"]["text_sha256"], top_fingerprint],
-    )
-    left_fingerprint = strong_left["payload"]["text_sha256"]
-    right_fingerprint = right["payload"]["text_sha256"]
+    contracts = _repair_contracts(state, dependency, top_fingerprint)
+    left_fingerprint = contracts["frozen"]["Diamond.left_spec"]["model_fingerprint"]
+    right_fingerprint = contracts["frozen"]["Diamond.right_spec"]["model_fingerprint"]
 
     proof_left, _ = _model_request(
         state,
@@ -742,6 +864,7 @@ def _agent_loop(state: _RunState) -> dict[str, Any]:
     run["accepted"] = accepted
     return {
         "accepted": accepted,
+        "contracts": contracts,
         "receipts": state["receipts"],
         "cost": state["cost"],
     }
@@ -886,6 +1009,8 @@ def run_experiment(
             reason=(
                 "infrastructure_failed"
                 if exc is preparation_failure
+                else "contract_inconclusive"
+                if isinstance(exc, ContractInconclusive)
                 else type(exc).__name__.removesuffix("Error").lower()
             ),
         )

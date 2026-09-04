@@ -47,6 +47,7 @@ class _Seams:
         self.fixture = fixture
         self.project = root / "work" / "diamond"
         self.accepted_commits = []
+        self.feasibility_calls = 0
 
     def prepare(self, target, manifest, lock):
         shutil.copytree(target, self.project)
@@ -113,6 +114,17 @@ class _Seams:
         (evidence / "probe-aeneas.json").write_bytes(aeneas)
         run["events"].extend(("probe_rust", "probe_aeneas"))
         return rust, aeneas
+
+    def check_contract_feasibility(self, run, statements):
+        self.feasibility_calls += 1
+        passed = self.feasibility_calls == 2
+        detail = "consumer proof compiled" if passed else "left equality is unavailable"
+        return {
+            "status": "passed" if passed else "failed",
+            "reason": None if passed else "consumer_proof_failed",
+            "diagnostic_sha256": _sha256(detail.encode()),
+            "diagnostic": detail,
+        }
 
     def accept(self, run, candidate, manifest):
         patch = candidate["payload"]["patch"]
@@ -271,6 +283,11 @@ class TracerTests(unittest.TestCase):
             with (
                 mock.patch.object(worker, "prepare_run", seams.prepare),
                 mock.patch.object(worker, "run_probes", seams.run_probes),
+                mock.patch.object(
+                    worker,
+                    "check_contract_feasibility",
+                    seams.check_contract_feasibility,
+                ),
                 mock.patch.object(worker, "accept_candidate", seams.accept),
                 mock.patch.object(worker, "persist_result", seams.persist),
                 mock.patch.object(verifier, "verify_run", seams.verify),
@@ -338,6 +355,11 @@ class TracerTests(unittest.TestCase):
                 with (
                     mock.patch.object(worker, "prepare_run", seams.prepare),
                     mock.patch.object(worker, "run_probes", seams.run_probes),
+                    mock.patch.object(
+                        worker,
+                        "check_contract_feasibility",
+                        seams.check_contract_feasibility,
+                    ),
                     mock.patch.object(worker, "accept_candidate", seams.accept),
                     mock.patch.object(worker, "persist_result", seams.persist),
                     mock.patch.object(verifier, "verify_run", verify),

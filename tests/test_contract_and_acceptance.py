@@ -1,11 +1,13 @@
 import copy
 import hashlib
 import json
+import tempfile
 import unittest
 from pathlib import Path
 from unittest import mock
 
-from autofv import experiment, worker
+from autofv import experiment, verifier, worker
+from tests.test_phase1_diamond import TARGET, _FixtureProxy, _Seams
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -125,6 +127,42 @@ class ContractRepairTests(unittest.TestCase):
 
         self.assertEqual(state["run"]["accepted"], accepted_before)
         self.assertNotIn("statements_frozen", state["run"]["events"])
+
+    def test_inconclusive_run_persists_partial_evidence_without_verification(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            seams = _Seams(Path(tmp), FIXTURE)
+            proxy = _FixtureProxy(FIXTURE)
+            checks = iter(
+                (
+                    _feasibility("failed", "weak bound"),
+                    _feasibility("failed", "review still insufficient"),
+                )
+            )
+            with (
+                mock.patch.object(worker, "prepare_run", seams.prepare),
+                mock.patch.object(worker, "run_probes", seams.run_probes),
+                mock.patch.object(
+                    worker,
+                    "check_contract_feasibility",
+                    side_effect=lambda *args: next(checks),
+                ),
+                mock.patch.object(worker, "accept_candidate") as accept,
+                mock.patch.object(worker, "persist_result", seams.persist),
+                mock.patch.object(verifier, "verify_run") as verify,
+            ):
+                result = experiment.run_experiment(
+                    TARGET, TARGET / "run.json", run_round=proxy
+                )
+
+            self.assertEqual(result["outcome"], "failure")
+            self.assertEqual(result["termination_reason"], "contract_inconclusive")
+            self.assertEqual(result["proxy_requests"], 5)
+            self.assertEqual(result["cost_usd"], "0.012000")
+            self.assertIn("contract_inconclusive", result["events"])
+            self.assertTrue((Path(tmp) / "result.json").is_file())
+            self.assertTrue((Path(tmp) / "evidence/l0.json").is_file())
+            accept.assert_not_called()
+            verify.assert_not_called()
 
     def test_old_fingerprint_or_policy_cannot_bind_candidate_work(self):
         current = sorted([LEFT, RIGHT, TOP])

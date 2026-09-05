@@ -223,7 +223,7 @@ def _run_with_limit(root: Path, *, max_wall_seconds=300, max_cost_usd="1.000000"
     proxy = _FixtureProxy(FIXTURE)
     patches = (
         mock.patch.object(worker, "prepare_run", seams.prepare),
-        mock.patch.object(worker, "run_probes", seams.run_probes),
+        mock.patch.object(worker, "run_probes", side_effect=seams.run_probes),
         mock.patch.object(
             worker, "check_contract_feasibility", seams.check_contract_feasibility
         ),
@@ -284,22 +284,27 @@ class BudgetTests(unittest.TestCase):
             self.assertTrue((root / "result.json").is_file())
 
     def test_clean_verifier_pass_wins_when_budget_expires_during_verification(self):
-        state = _checkpoint_state(Path(tempfile.mkdtemp()))
-        state["graph"] = {
-            "probe_rust_sha256": "4" * 64,
-            "probe_aeneas_sha256": "5" * 64,
-        }
-        state["wall_started_monotonic_ns"] = 0
-        state["wall_seconds_used"] = Decimal("0.900000")
-        state["finalization_reserve_seconds"] = Decimal("0.100000")
-        expected_report = {"verdict": "PASS", "report_sha256": "6" * 64}
+        with tempfile.TemporaryDirectory() as tmp:
+            state = _checkpoint_state(Path(tmp))
+            state["graph"] = {
+                "probe_rust_sha256": "4" * 64,
+                "probe_aeneas_sha256": "5" * 64,
+            }
+            state["wall_started_monotonic_ns"] = 0
+            state["wall_seconds_used"] = Decimal("0.900000")
+            state["finalization_reserve_seconds"] = Decimal("0.100000")
+            expected_report = {"verdict": "PASS", "report_sha256": "6" * 64}
 
-        with (
-            mock.patch.object(verifier, "verify_run", return_value=expected_report),
-            mock.patch.object(verifier, "validate_report", return_value=expected_report),
-            mock.patch.object(experiment.time, "monotonic_ns", return_value=2_000_000_000),
-        ):
-            update = experiment._clean_verify(state)
+            with (
+                mock.patch.object(verifier, "verify_run", return_value=expected_report),
+                mock.patch.object(
+                    verifier, "validate_report", return_value=expected_report
+                ),
+                mock.patch.object(
+                    experiment.time, "monotonic_ns", return_value=2_000_000_000
+                ),
+            ):
+                update = experiment._clean_verify(state)
 
         self.assertEqual(update["verifier_report"]["verdict"], "PASS")
         self.assertEqual(state["verifier_report"]["verdict"], "PASS")

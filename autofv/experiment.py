@@ -55,6 +55,21 @@ class ContractInconclusive(ContractError):
     """The bounded provisional consumer proof could not freeze contracts."""
 
 
+class BudgetExhausted(ContractError):
+    """A run-wide wall or authenticated-cost limit stopped new work."""
+
+    def __init__(self, kind: str, limit: Decimal, used: Decimal):
+        self.kind = kind
+        self.detail = {
+            "kind": kind,
+            "limit": f"{limit:.6f}",
+            "used": f"{used:.6f}",
+        }
+        super().__init__(
+            f"{kind} budget stopped new work: used={used:.6f}, limit={limit:.6f}"
+        )
+
+
 CHECKPOINT_SCHEMA = "autofv-checkpoint/v1"
 CHECKPOINT_RUN_FIELDS = (
     "run_id",
@@ -92,6 +107,8 @@ CHECKPOINT_STATE_FIELDS = (
     "model_exchanges",
     "inflight_transition",
     "receipt_rejections",
+    "wall_seconds_used",
+    "finalization_reserve_seconds",
 )
 
 
@@ -182,7 +199,12 @@ def validate_run_config(path: str | Path) -> tuple[Path, dict[str, Any]]:
     if type(config["max_wall_seconds"]) is not int or config["max_wall_seconds"] <= 0:
         raise ContractError("max_wall_seconds must be a positive integer")
     cost = config["max_cost_usd"]
-    if isinstance(cost, bool) or not isinstance(cost, (int, Decimal)):
+    if (
+        isinstance(cost, bool)
+        or not isinstance(cost, (int, Decimal, str))
+        or isinstance(cost, str)
+        and DECIMAL_USD.fullmatch(cost) is None
+    ):
         raise ContractError("max_cost_usd must be a positive decimal number")
     try:
         cost = Decimal(cost)
@@ -539,18 +561,63 @@ class _RunState(TypedDict, total=False):
     accepted: dict[str, Any]
     result: dict[str, Any]
     verifier_report: dict[str, Any]
-    termination_detail: str
+    termination_detail: str | dict[str, str]
     lanes: list[dict[str, Any]]
     lane_intervals: dict[str, dict[str, int]]
     candidate_receipts: list[dict[str, Any]]
     processed_candidate_sha256: list[str]
     accepted_sequence: list[dict[str, Any]]
     accepted_nodes: list[str]
+    receipt_rejections: list[dict[str, Any]]
+    wall_seconds_used: Decimal
+    finalization_reserve_seconds: Decimal
+    wall_started_monotonic_ns: int
     _accept_lock: Any
 
 
 def _canonical_sha256(value: Any) -> str:
     return hashlib.sha256(canonical_json_bytes(value)).hexdigest()
+
+
+def _finalization_reserve(config: dict[str, Any]) -> Decimal:
+    return min(Decimal("5.000000"), Decimal(config["max_wall_seconds"]) / 10)
+
+
+def _charge_wall(state: _RunState) -> Decimal:
+    now = time.monotonic_ns()
+    started = state.get("wall_started_monotonic_ns")
+    state["wall_started_monotonic_ns"] = now
+    used = Decimal(state.get("wall_seconds_used", Decimal("0.000000")))
+    if started is not None:
+        if now < started:
+            raise ContractError("monotonic clock moved backwards")
+        used += Decimal(now - started) / Decimal(1_000_000_000)
+    state["wall_seconds_used"] = used
+    return used
+
+
+def _check_wall_budget(state: _RunState) -> None:
+    used = _charge_wall(state)
+    config = state.get("config", {})
+    if "max_wall_seconds" not in config:
+        return
+    limit = Decimal(config["max_wall_seconds"])
+    reserve = Decimal(
+        state.get("finalization_reserve_seconds", _finalization_reserve(config))
+    )
+    if used >= limit - reserve:
+        raise BudgetExhausted("wall_seconds", limit, used)
+
+
+def _check_budget(state: _RunState) -> None:
+    _check_wall_budget(state)
+    config = state.get("config", {})
+    if "max_cost_usd" not in config:
+        return
+    cost = Decimal(state.get("cost", Decimal("0.000000")))
+    limit = Decimal(config["max_cost_usd"])
+    if cost >= limit:
+        raise BudgetExhausted("cost_usd", limit, cost)
 
 
 def _checkpoint_value(value: Any) -> Any:
@@ -761,6 +828,14 @@ def _restore_checkpoint(
             "config": config,
             "run_round": run_round,
             "cost": Decimal(checkpoint["cost_usd_used"]),
+            "wall_seconds_used": Decimal(
+                state.get("wall_seconds_used", "0.000000")
+            ),
+            "finalization_reserve_seconds": Decimal(
+                state.get(
+                    "finalization_reserve_seconds", _finalization_reserve(config)
+                )
+            ),
             "checkpoint_sequence": checkpoint["checkpoint_sequence"],
             "_accept_lock": threading.Lock(),
         }
@@ -814,12 +889,15 @@ def _event_once(run: dict[str, Any], event: str) -> None:
 
 
 def _external_call(state: _RunState, transition: str, call) -> Any:
+    _check_budget(state)
     _checkpoint_if_enabled(state, f"{transition}:before")
     try:
         value = call()
     except Exception:
+        _charge_wall(state)
         _checkpoint_if_enabled(state, f"{transition}:failed")
         raise
+    _charge_wall(state)
     _checkpoint_if_enabled(state, f"{transition}:after")
     return value
 
@@ -856,13 +934,21 @@ def _invoke_model(
     state: _RunState, request: dict[str, Any], *, checkpoint: bool = True
 ) -> tuple[dict[str, Any], dict[str, Any]]:
     if checkpoint:
+        _check_budget(state)
         _checkpoint_if_enabled(state, f"model:{request['request_id']}:before")
     runner = state["run_round"]
-    if runner is agentproc.run_round:
-        exchange = worker.proxy_round(state["run"], request)
-    else:
-        exchange = runner(request)
+    try:
+        if runner is agentproc.run_round:
+            exchange = worker.proxy_round(state["run"], request)
+        else:
+            exchange = runner(request)
+    except Exception:
+        if checkpoint:
+            _charge_wall(state)
+            _checkpoint_if_enabled(state, f"model:{request['request_id']}:failed")
+        raise
     if checkpoint:
+        _charge_wall(state)
         state.setdefault("pending_model_exchanges", {})[request["request_id"]] = {
             "request": request,
             "response": exchange[0],
@@ -877,33 +963,69 @@ def _accept_model_exchange(
     request: dict[str, Any],
     response: dict[str, Any],
     receipt: dict[str, Any],
+    *,
+    enforce_budget: bool = True,
 ) -> tuple[dict[str, Any], dict[str, Any]]:
     run, config = state["run"], state["config"]
     response = _validate_model_response(response, request, run["base_commit"])
     request_sha256 = _canonical_sha256(request)
     response_sha256 = _canonical_sha256(response)
-    amount = validate_proxy_receipt(
-        receipt,
-        run_id=run["run_id"],
-        sequence=request["sequence"],
-        request_id=request["request_id"],
-        model_id=config["model"],
-        request_sha256=request_sha256,
-        response_sha256=response_sha256,
-        seen_receipt_sha256={item["receipt_sha256"] for item in state["receipts"]},
-        seen_request_ids={item["request_id"] for item in state["receipts"]},
-    )
-    if receipt["status"] != "ok":
-        raise ContractError("model proxy returned a non-success status")
+    try:
+        amount = validate_proxy_receipt(
+            receipt,
+            run_id=run["run_id"],
+            sequence=request["sequence"],
+            request_id=request["request_id"],
+            model_id=config["model"],
+            request_sha256=request_sha256,
+            response_sha256=response_sha256,
+            seen_receipt_sha256={
+                item["receipt_sha256"] for item in state["receipts"]
+            },
+            seen_request_ids={item["request_id"] for item in state["receipts"]},
+        )
+        if request["sequence"] != len(state["receipts"]) + 1:
+            raise ContractError("proxy receipt sequence is not next for this run")
+    except ContractError as exc:
+        try:
+            payload_sha256 = _canonical_sha256(receipt)
+        except ContractError:
+            payload_sha256 = hashlib.sha256(
+                f"noncanonical:{type(receipt).__name__}".encode()
+            ).hexdigest()
+        state.setdefault("receipt_rejections", []).append(
+            {
+                "request_id": request.get("request_id"),
+                "sequence": request.get("sequence"),
+                "receipt_payload_sha256": payload_sha256,
+                "reason": str(exc)[:1000],
+            }
+        )
+        _checkpoint_if_enabled(state, f"receipt:{request.get('request_id')}:rejected")
+        raise
+
+    request = json.loads(canonical_json_bytes(request))
+    response = json.loads(canonical_json_bytes(response))
+    receipt = json.loads(canonical_json_bytes(receipt))
     new_cost = state["cost"] + amount
-    if new_cost > config["max_cost_usd"]:
-        raise ContractError("model proxy cost budget exceeded")
     state["cost"] = new_cost
     state["receipts"].append(receipt)
     exchange = {"request": request, "response": response, "receipt": receipt}
     state.setdefault("model_exchanges", {})[request["request_id"]] = exchange
     state.setdefault("pending_model_exchanges", {}).pop(request["request_id"], None)
     _event_once(run, f"proxy:{request['request_id']}")
+    if enforce_budget and new_cost > config["max_cost_usd"]:
+        _checkpoint_if_enabled(state, "budget:cost_usd")
+        raise BudgetExhausted("cost_usd", config["max_cost_usd"], new_cost)
+    if receipt["status"] != "ok":
+        _checkpoint_if_enabled(state, f"model:{request['request_id']}:rejected")
+        raise ContractError("model proxy returned a non-success status")
+    if enforce_budget:
+        try:
+            _check_wall_budget(state)
+        except BudgetExhausted:
+            _checkpoint_if_enabled(state, "budget:wall_seconds")
+            raise
     _checkpoint_if_enabled(state, f"model:{request['request_id']}:accepted")
     return response, receipt
 
@@ -989,20 +1111,27 @@ def _parallel_model_requests(
         if previous is not None:
             raw[index] = (previous["response"], previous["receipt"], 0, 0)
     if missing:
+        _check_budget(state)
         _checkpoint_if_enabled(state, "model:proof-leaves:before")
-        if len(missing) == 1:
-            index, request = missing[0]
-            raw[index] = invoke(request)
-        else:
-            with ThreadPoolExecutor(
-                max_workers=len(missing), thread_name_prefix="autofv-proof-lane"
-            ) as pool:
-                futures = [
-                    (index, request, pool.submit(invoke, request))
-                    for index, request in missing
-                ]
-                for index, _request, future in futures:
-                    raw[index] = future.result()
+        try:
+            if len(missing) == 1:
+                index, request = missing[0]
+                raw[index] = invoke(request)
+            else:
+                with ThreadPoolExecutor(
+                    max_workers=len(missing), thread_name_prefix="autofv-proof-lane"
+                ) as pool:
+                    futures = [
+                        (index, request, pool.submit(invoke, request))
+                        for index, request in missing
+                    ]
+                    for index, _request, future in futures:
+                        raw[index] = future.result()
+        except Exception:
+            _charge_wall(state)
+            _checkpoint_if_enabled(state, "model:proof-leaves:failed")
+            raise
+        _charge_wall(state)
         for index, request in missing:
             response, receipt, _, _ = raw[index]
             state["pending_model_exchanges"][request["request_id"]] = {
@@ -1028,7 +1157,19 @@ def _parallel_model_requests(
     for request, (response, receipt, _, _) in zip(envelopes, raw, strict=True):
         if request["request_id"] in state["model_exchanges"]:
             continue
-        _accept_model_exchange(state, request, response, receipt)
+        _accept_model_exchange(
+            state, request, response, receipt, enforce_budget=False
+        )
+    if state["cost"] > state["config"]["max_cost_usd"]:
+        _checkpoint_if_enabled(state, "budget:cost_usd")
+        raise BudgetExhausted(
+            "cost_usd", state["config"]["max_cost_usd"], state["cost"]
+        )
+    try:
+        _check_wall_budget(state)
+    except BudgetExhausted:
+        _checkpoint_if_enabled(state, "budget:wall_seconds")
+        raise
     exchanges = [
         (
             state["model_exchanges"][request["request_id"]]["response"],
@@ -1450,11 +1591,12 @@ def _checkpoint_candidate(
             "base_commit": candidate["base_commit"],
             "previous_accepted_commit": current["accepted_commit"],
         }
-        _checkpoint_if_enabled(
-            state, f"candidate:{candidate['request_id']}:apply-build:before"
-        )
         try:
-            accepted = worker.accept_candidate(state["run"], response, manifest)
+            accepted = _external_call(
+                state,
+                f"candidate:{candidate['request_id']}:apply-build",
+                lambda: worker.accept_candidate(state["run"], response, manifest),
+            )
         except worker.WorkerError as exc:
             return reject(str(exc)[:1000], requeue=stale)
         if accepted.get("accepted_commit") == current["accepted_commit"]:
@@ -1494,7 +1636,7 @@ def _checkpoint_candidate(
         )
         state.pop("inflight_transition", None)
         _checkpoint_if_enabled(
-            state, f"candidate:{candidate['request_id']}:apply-build:after"
+            state, f"candidate:{candidate['request_id']}:accepted"
         )
         return receipt
 
@@ -1612,14 +1754,15 @@ def _repair_contracts(
 def _freeze(state: _RunState) -> dict[str, Any]:
     if state.get("graph"):
         return {"graph": state["graph"]}
-    _checkpoint_if_enabled(state, "probe:before")
-    rust_raw, aeneas_raw = worker.run_probes(state["run"])
+    rust_raw, aeneas_raw = _external_call(
+        state, "probe", lambda: worker.run_probes(state["run"])
+    )
     graph = probes.parse_probe_bytes(state["manifest"], rust_raw, aeneas_raw)
     state["graph"] = graph
     for name in ("probe_rust_sha256", "probe_aeneas_sha256", "graph_sha256"):
         state["run"][name] = graph[name]
     _event_once(state["run"], "targets_frozen")
-    _checkpoint_if_enabled(state, "probe:after")
+    _checkpoint_if_enabled(state, "probe:parsed")
     return {"graph": graph}
 
 
@@ -1627,7 +1770,11 @@ def _agent_loop(state: _RunState) -> dict[str, Any]:
     graph, run, manifest = state["graph"], state["run"], state["manifest"]
     if len(graph["frozen_targets"]) != 1 or len(graph["proof_batches"]) != 2:
         raise ContractError("the V1 tracer requires one acyclic diamond target")
-    top_fingerprint = _statement_fingerprint(run, graph)
+    top_fingerprint = _external_call(
+        state,
+        "source:read-top-statement",
+        lambda: _statement_fingerprint(run, graph),
+    )
     probe_hash = graph["graph_sha256"]
 
     scout, _ = _model_request(
@@ -1827,8 +1974,17 @@ def _clean_verify(state: _RunState) -> dict[str, Any]:
         "accepted_commit": accepted["accepted_commit"],
         "accepted_tree_sha256": accepted["accepted_tree_sha256"],
     }
+    _check_budget(state)
     _checkpoint_if_enabled(state, "verifier:before")
-    report = verifier.validate_report(verifier.verify_run(run, expected), run, expected)
+    try:
+        report = verifier.validate_report(
+            verifier.verify_run(run, expected), run, expected
+        )
+    except Exception:
+        _charge_wall(state)
+        _checkpoint_if_enabled(state, "verifier:failed")
+        raise
+    _charge_wall(state)
     state["verifier_report"] = report
     _event_once(run, "clean_verifier:PASS")
     _checkpoint_if_enabled(state, "verifier:after")
@@ -1854,8 +2010,13 @@ def _result(
     run: dict[str, Any], state: _RunState, *, outcome: str, reason: str
 ) -> dict[str, Any]:
     graph = state.get("graph", {})
+    wall = _charge_wall(state)
     accepted = state.get("accepted", run.get("accepted", {}))
     report = state.get("verifier_report", {})
+    frozen_contracts = state.get("contracts", {}).get("frozen", {})
+    internal_nodes = set(state.get("accepted_nodes", [])) - set(
+        graph.get("frozen_targets", [])
+    )
     cost = sum(
         (Decimal(item["cost"]["amount"]) for item in state.get("receipts", [])),
         Decimal("0.000000"),
@@ -1872,10 +2033,15 @@ def _result(
         "frozen_targets": graph.get("frozen_targets", []),
         "targets_total": len(graph.get("frozen_targets", [])),
         "targets_verified_final": 1 if outcome == "success" else 0,
-        "internal_specs_accepted": 2 if outcome == "success" else 0,
-        "internal_proofs_accepted": 2 if outcome == "success" else 0,
+        "internal_specs_accepted": len(frozen_contracts),
+        "internal_proofs_accepted": len(internal_nodes),
         "proxy_requests": len(state.get("receipts", [])),
         "cost_usd": f"{cost:.6f}",
+        "wall_seconds": f"{wall:.6f}",
+        "finalization_reserve_seconds": (
+            f"{state.get('finalization_reserve_seconds', Decimal('0')):.6f}"
+        ),
+        "receipt_rejections": state.get("receipt_rejections", []),
         "native_decide_policy": run["native_decide_policy"],
         "native_decide_policy_sha256": run["native_decide_policy_sha256"],
         "snapshot_sha256": run["snapshot_sha256"],
@@ -1950,6 +2116,7 @@ def run_experiment(
     _, config = validate_run_config(run_config)
     lock = load_toolchain_lock()
     policy = validate_native_decide_policy(lock)
+    wall_started = time.monotonic_ns()
     preparation_failure = None
     if resume_from is not None:
         resume_root = _absolute_path(resume_from, "resume root", directory=True)
@@ -1994,10 +2161,24 @@ def run_experiment(
             "working": dict(accepted),
             "pending_model_exchanges": {},
             "model_exchanges": {},
+            "receipt_rejections": [],
+            "wall_seconds_used": Decimal("0.000000"),
+            "finalization_reserve_seconds": _finalization_reserve(config),
         }
+    state["wall_started_monotonic_ns"] = wall_started
+    state.setdefault("receipt_rejections", [])
+    state.setdefault("wall_seconds_used", Decimal("0.000000"))
+    state.setdefault("finalization_reserve_seconds", _finalization_reserve(config))
+    _charge_wall(state)
     state["checkpoint_enabled"] = bool(run.get("run_root"))
     if resume_from is None:
         _checkpoint_if_enabled(state, "run:prepared")
+    elif state.get("result"):
+        result = state["result"]
+        _checkpoint_if_enabled(state, "result:before-export")
+        worker.persist_result(run, result, _l0_receipt(run, state, result))
+        _checkpoint_if_enabled(state, "result:after-export")
+        return result
     try:
         if preparation_failure is not None:
             raise preparation_failure
@@ -2005,6 +2186,18 @@ def run_experiment(
             for values in update.values():
                 state.update(values)
         result = _result(run, state, outcome="success", reason="all_targets_verified")
+    except BudgetExhausted as exc:
+        state["termination_detail"] = exc.detail
+        result = _result(
+            run,
+            state,
+            outcome="budget_exhausted",
+            reason=(
+                "cost_budget_exhausted"
+                if exc.kind == "cost_usd"
+                else "wall_budget_exhausted"
+            ),
+        )
     except (ContractError, probes.ProbeError, worker.WorkerError, verifier.VerifierError) as exc:
         state["termination_detail"] = str(exc)[:1000]
         result = _result(

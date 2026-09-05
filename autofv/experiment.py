@@ -569,14 +569,36 @@ class _RunState(TypedDict, total=False):
     accepted_sequence: list[dict[str, Any]]
     accepted_nodes: list[str]
     receipt_rejections: list[dict[str, Any]]
+    working: dict[str, Any]
+    pending_model_exchanges: dict[str, dict[str, Any]]
+    model_exchanges: dict[str, dict[str, Any]]
+    inflight_transition: dict[str, Any]
     wall_seconds_used: Decimal
     finalization_reserve_seconds: Decimal
     wall_started_monotonic_ns: int
+    checkpoint_sequence: int
+    checkpoint_enabled: bool
+    recovery_source: str
     _accept_lock: Any
 
 
 def _canonical_sha256(value: Any) -> str:
     return hashlib.sha256(canonical_json_bytes(value)).hexdigest()
+
+
+def _node_update(state: _RunState, **values: Any) -> dict[str, Any]:
+    """Return mutable runtime channels that LangGraph does not infer from mutation."""
+    for name in (
+        "checkpoint_sequence",
+        "wall_seconds_used",
+        "wall_started_monotonic_ns",
+        "pending_model_exchanges",
+        "model_exchanges",
+        "receipt_rejections",
+    ):
+        if name in state:
+            values[name] = state[name]
+    return values
 
 
 def _finalization_reserve(config: dict[str, Any]) -> Decimal:
@@ -820,6 +842,7 @@ def _restore_checkpoint(
     """Reattach trusted runtime objects and recover working state or accepted Git."""
     run = dict(checkpoint["run"])
     run["lock"] = lock
+    run["manifest"] = manifest
     state: _RunState = dict(checkpoint["state"])
     state.update(
         {
@@ -1038,19 +1061,25 @@ def _model_request(
     input_hashes: list[str],
     batch_id: str | None = None,
 ) -> tuple[dict[str, Any], dict[str, Any]]:
+    completed = state.setdefault("model_exchanges", {}).get(request_id)
+    pending = state.setdefault("pending_model_exchanges", {}).get(request_id)
+    stored = completed or pending
+    try:
+        stored_sequence = stored["request"]["sequence"] if stored is not None else None
+    except (KeyError, TypeError) as exc:
+        raise ContractError(f"stored model request is invalid: {request_id}") from exc
     request = _model_envelope(
         state,
         request_id=request_id,
         role=role,
         input_hashes=input_hashes,
         batch_id=batch_id,
+        sequence=stored_sequence,
     )
-    completed = state.setdefault("model_exchanges", {}).get(request_id)
     if completed is not None:
         if completed.get("request") != request:
             raise ContractError(f"resumed model request changed: {request_id}")
         return completed["response"], completed["receipt"]
-    pending = state.setdefault("pending_model_exchanges", {}).get(request_id)
     if pending is not None:
         if pending.get("request") != request:
             raise ContractError(f"pending model request changed: {request_id}")
@@ -1753,7 +1782,7 @@ def _repair_contracts(
 
 def _freeze(state: _RunState) -> dict[str, Any]:
     if state.get("graph"):
-        return {"graph": state["graph"]}
+        return _node_update(state, graph=state["graph"])
     rust_raw, aeneas_raw = _external_call(
         state, "probe", lambda: worker.run_probes(state["run"])
     )
@@ -1763,7 +1792,7 @@ def _freeze(state: _RunState) -> dict[str, Any]:
         state["run"][name] = graph[name]
     _event_once(state["run"], "targets_frozen")
     _checkpoint_if_enabled(state, "probe:parsed")
-    return {"graph": graph}
+    return _node_update(state, graph=graph)
 
 
 def _agent_loop(state: _RunState) -> dict[str, Any]:
@@ -1875,7 +1904,7 @@ def _agent_loop(state: _RunState) -> dict[str, Any]:
 
     top_batch = graph["proof_batches"][1]
     if set(top_batch) <= set(state["accepted_nodes"]):
-        return {
+        return _node_update(state, **{
             "accepted": state["accepted"],
             "contracts": contracts,
             "receipts": state["receipts"],
@@ -1886,7 +1915,7 @@ def _agent_loop(state: _RunState) -> dict[str, Any]:
             "processed_candidate_sha256": state["processed_candidate_sha256"],
             "accepted_sequence": state["accepted_sequence"],
             "accepted_nodes": state["accepted_nodes"],
-        }
+        })
     ready = _proof_ready_nodes(graph, set(state["accepted_nodes"]))
     if ready != top_batch:
         raise ContractError("top proof became ready before both leaves were accepted")
@@ -1945,7 +1974,7 @@ def _agent_loop(state: _RunState) -> dict[str, Any]:
             f"top candidate was {transition['status']}: {transition['reason']}"
         )
     accepted = state["accepted"]
-    return {
+    return _node_update(state, **{
         "accepted": accepted,
         "contracts": contracts,
         "receipts": state["receipts"],
@@ -1956,12 +1985,12 @@ def _agent_loop(state: _RunState) -> dict[str, Any]:
         "processed_candidate_sha256": state["processed_candidate_sha256"],
         "accepted_sequence": state["accepted_sequence"],
         "accepted_nodes": state["accepted_nodes"],
-    }
+    })
 
 
 def _clean_verify(state: _RunState) -> dict[str, Any]:
     if state.get("verifier_report", {}).get("verdict") == "PASS":
-        return {"verifier_report": state["verifier_report"]}
+        return _node_update(state, verifier_report=state["verifier_report"])
     run, graph, accepted = state["run"], state["graph"], state["accepted"]
     expected = {
         "snapshot_sha256": run["snapshot_sha256"],
@@ -1988,7 +2017,7 @@ def _clean_verify(state: _RunState) -> dict[str, Any]:
     state["verifier_report"] = report
     _event_once(run, "clean_verifier:PASS")
     _checkpoint_if_enabled(state, "verifier:after")
-    return {"verifier_report": report}
+    return _node_update(state, verifier_report=report)
 
 
 def _build_graph():

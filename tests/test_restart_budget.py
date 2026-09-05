@@ -69,6 +69,33 @@ def _checkpoint_state(root: Path) -> dict:
 
 
 class RestartTests(unittest.TestCase):
+    def test_completed_model_exchange_reuses_its_original_sequence(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            state = _checkpoint_state(Path(tmp))
+            entry = copy.deepcopy(ENTRIES["scout-001"])
+            state["receipts"] = [entry["receipt"]]
+            state["cost"] = Decimal(entry["receipt"]["cost"]["amount"])
+            state["model_exchanges"] = {
+                "scout-001": {
+                    "request": entry["request"],
+                    "response": entry["response"],
+                    "receipt": entry["receipt"],
+                }
+            }
+            state["pending_model_exchanges"] = {}
+            state["run_round"] = mock.Mock(side_effect=AssertionError("replayed"))
+
+            response, receipt = experiment._model_request(
+                state,
+                request_id="scout-001",
+                role="scout",
+                input_hashes=entry["request"]["input_hashes"],
+            )
+
+            self.assertEqual(response, entry["response"])
+            self.assertEqual(receipt, entry["receipt"])
+            state["run_round"].assert_not_called()
+
     def test_loader_uses_highest_valid_sequence_not_name_or_mtime(self):
         with tempfile.TemporaryDirectory() as tmp:
             state = _checkpoint_state(Path(tmp))
@@ -154,6 +181,7 @@ class RestartTests(unittest.TestCase):
                 )
 
             self.assertEqual(resumed["recovery_source"], "working")
+            self.assertEqual(resumed["run"]["manifest"], state["manifest"])
             self.assertEqual(resumed["processed_candidate_sha256"], ["4" * 64])
             self.assertEqual(len(resumed["accepted_sequence"]), 1)
             self.assertEqual(resumed["lanes"][0]["status"], "interrupted")
@@ -235,6 +263,30 @@ def _run_with_limit(root: Path, *, max_wall_seconds=300, max_cost_usd="1.000000"
 
 
 class BudgetTests(unittest.TestCase):
+    def test_graph_carries_latest_checkpoint_and_exchange_state_between_nodes(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            config, _seams, proxy, patches = _run_with_limit(root)
+            with (
+                patches[0],
+                patches[1],
+                patches[2],
+                patches[3],
+                patches[4],
+                patches[5],
+            ):
+                result = experiment.run_experiment(TARGET, config, run_round=proxy)
+
+            checkpoints = [
+                json.loads(path.read_text(encoding="utf-8"))
+                for path in (root / "checkpoints").glob("*.json")
+            ]
+            latest = max(checkpoints, key=lambda item: item["checkpoint_sequence"])
+            self.assertEqual(result["outcome"], "success")
+            self.assertEqual(len(latest["state"]["receipts"]), 8)
+            self.assertEqual(len(latest["state"]["model_exchanges"]), 8)
+            self.assertEqual(latest["transition"], "result:after-export")
+
     def test_tiny_authenticated_cost_limit_is_partial_not_failure(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)

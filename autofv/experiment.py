@@ -13,8 +13,11 @@ import hashlib
 import hmac
 import json
 import re
+import threading
+import time
+from concurrent.futures import ThreadPoolExecutor
 from decimal import Decimal, InvalidOperation
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from types import SimpleNamespace
 from typing import Any, TypedDict
 
@@ -496,6 +499,13 @@ class _RunState(TypedDict, total=False):
     result: dict[str, Any]
     verifier_report: dict[str, Any]
     termination_detail: str
+    lanes: list[dict[str, Any]]
+    lane_intervals: dict[str, dict[str, int]]
+    candidate_receipts: list[dict[str, Any]]
+    processed_candidate_sha256: list[str]
+    accepted_sequence: list[dict[str, Any]]
+    accepted_nodes: list[str]
+    _accept_lock: Any
 
 
 def _canonical_sha256(value: Any) -> str:
@@ -507,20 +517,20 @@ def _prompt_sha256(run_id: str, request_id: str, role: str) -> str:
     return hashlib.sha256(raw).hexdigest()
 
 
-def _model_request(
+def _model_envelope(
     state: _RunState,
     *,
     request_id: str,
     role: str,
     input_hashes: list[str],
     batch_id: str | None = None,
-) -> tuple[dict[str, Any], dict[str, Any]]:
+    sequence: int | None = None,
+) -> dict[str, Any]:
     run, config = state["run"], state["config"]
-    sequence = len(state["receipts"]) + 1
-    request = {
+    return {
         "schema": "autofv-model-request/v1",
         "run_id": run["run_id"],
-        "sequence": sequence,
+        "sequence": sequence if sequence is not None else len(state["receipts"]) + 1,
         "batch_id": batch_id,
         "request_id": request_id,
         "role": role,
@@ -528,19 +538,32 @@ def _model_request(
         "input_hashes": sorted(set(input_hashes)),
         "prompt_sha256": _prompt_sha256(run["run_id"], request_id, role),
     }
+
+
+def _invoke_model(
+    state: _RunState, request: dict[str, Any]
+) -> tuple[dict[str, Any], dict[str, Any]]:
     runner = state["run_round"]
     if runner is agentproc.run_round:
-        response, receipt = worker.proxy_round(run, request)
-    else:
-        response, receipt = runner(request)
+        return worker.proxy_round(state["run"], request)
+    return runner(request)
+
+
+def _accept_model_exchange(
+    state: _RunState,
+    request: dict[str, Any],
+    response: dict[str, Any],
+    receipt: dict[str, Any],
+) -> tuple[dict[str, Any], dict[str, Any]]:
+    run, config = state["run"], state["config"]
     response = _validate_model_response(response, request, run["base_commit"])
     request_sha256 = _canonical_sha256(request)
     response_sha256 = _canonical_sha256(response)
     amount = validate_proxy_receipt(
         receipt,
         run_id=run["run_id"],
-        sequence=sequence,
-        request_id=request_id,
+        sequence=request["sequence"],
+        request_id=request["request_id"],
         model_id=config["model"],
         request_sha256=request_sha256,
         response_sha256=response_sha256,
@@ -554,8 +577,71 @@ def _model_request(
         raise ContractError("model proxy cost budget exceeded")
     state["cost"] = new_cost
     state["receipts"].append(receipt)
-    run["events"].append(f"proxy:{request_id}")
+    run["events"].append(f"proxy:{request['request_id']}")
     return response, receipt
+
+
+def _model_request(
+    state: _RunState,
+    *,
+    request_id: str,
+    role: str,
+    input_hashes: list[str],
+    batch_id: str | None = None,
+) -> tuple[dict[str, Any], dict[str, Any]]:
+    request = _model_envelope(
+        state,
+        request_id=request_id,
+        role=role,
+        input_hashes=input_hashes,
+        batch_id=batch_id,
+    )
+    return _accept_model_exchange(state, request, *_invoke_model(state, request))
+
+
+def _parallel_model_requests(
+    state: _RunState, requests: list[dict[str, Any]]
+) -> list[tuple[dict[str, Any], dict[str, Any]]]:
+    """Run one proof frontier concurrently and account for it serially."""
+    if len(requests) < 2:
+        raise ContractError("a parallel proof frontier needs at least two lanes")
+    first_sequence = len(state["receipts"]) + 1
+    envelopes = [
+        _model_envelope(state, sequence=first_sequence + index, **spec)
+        for index, spec in enumerate(requests)
+    ]
+    start_barrier = threading.Barrier(len(envelopes))
+
+    def invoke(request):
+        started = time.monotonic_ns()
+        start_barrier.wait()
+        response, receipt = _invoke_model(state, request)
+        return response, receipt, started, time.monotonic_ns()
+
+    with ThreadPoolExecutor(
+        max_workers=len(envelopes), thread_name_prefix="autofv-proof-lane"
+    ) as pool:
+        futures = [pool.submit(invoke, request) for request in envelopes]
+        raw = [future.result() for future in futures]
+
+    intervals = {
+        request["request_id"]: {
+            "started_monotonic_ns": item[2],
+            "finished_monotonic_ns": item[3],
+        }
+        for request, item in zip(envelopes, raw, strict=True)
+    }
+    if max(item["started_monotonic_ns"] for item in intervals.values()) >= min(
+        item["finished_monotonic_ns"] for item in intervals.values()
+    ):
+        raise ContractError("parallel proof lanes did not overlap")
+    state.setdefault("lane_intervals", {}).update(intervals)
+    accepted = [
+        _accept_model_exchange(state, request, response, receipt)
+        for request, (response, receipt, _, _) in zip(envelopes, raw, strict=True)
+    ]
+    state["run"]["events"].append("proof_lanes:overlapped")
+    return accepted
 
 
 def _validate_model_response(
@@ -693,11 +779,287 @@ def _candidate_binding_is_current(
 ) -> bool:
     """Return whether candidate inputs are a non-empty subset of current truth."""
     return (
-        bool(fingerprints)
+        isinstance(fingerprints, list)
+        and bool(fingerprints)
+        and all(isinstance(value, str) for value in fingerprints)
         and fingerprints == sorted(set(fingerprints))
+        and isinstance(current_fingerprints, list)
+        and all(isinstance(value, str) for value in current_fingerprints)
         and set(fingerprints) <= set(current_fingerprints)
+        and isinstance(policy_sha256, str)
+        and isinstance(current_policy_sha256, str)
         and hmac.compare_digest(policy_sha256, current_policy_sha256)
     )
+
+
+def _lane_descriptors(
+    run: dict[str, Any],
+    graph: dict[str, Any],
+    nodes: list[str],
+    *,
+    base_commit: str | None = None,
+) -> list[dict[str, Any]]:
+    """Describe private one-file lanes without granting canonical-tree access."""
+    root = (
+        str(Path(run["run_root"]) / "lanes")
+        if Path(run.get("project_dir", "/volume/work/project")).is_dir()
+        else "/volume/lanes"
+    )
+    base = base_commit or run.get("accepted", {}).get(
+        "accepted_commit", run["base_commit"]
+    )
+    lanes = []
+    assigned = set()
+    for node in nodes:
+        leaf = node.rsplit(".", 1)[-1].lower()
+        if re.fullmatch(r"[a-z0-9-]+", leaf) is None:
+            raise ContractError("proof node cannot form a safe lane identity")
+        path = graph["source_paths"].get(node)
+        pure = PurePosixPath(path) if isinstance(path, str) else None
+        if (
+            pure is None
+            or pure.is_absolute()
+            or ".." in pure.parts
+            or pure.suffix != ".lean"
+            or path in assigned
+        ):
+            raise ContractError("proof lane must own one distinct safe Lean path")
+        assigned.add(path)
+        request_id = f"proof-{leaf}-001"
+        lane_root = f"{root}/{request_id}"
+        lanes.append(
+            {
+                "schema": "autofv-proof-lane/v1",
+                "lane_id": request_id,
+                "request_id": request_id,
+                "node": node,
+                "base_commit": base,
+                "assigned_path": path,
+                "worktree_path": f"{lane_root}/work",
+                "cache_path": f"{lane_root}/cache",
+                "result_path": f"{lane_root}/result/candidate.json",
+            }
+        )
+    return lanes
+
+
+def _candidate_record(
+    response: dict[str, Any], lane: dict[str, Any], policy_sha256: str
+) -> dict[str, Any]:
+    """Bind an untrusted lane response to its frozen inputs and private path."""
+    if response.get("kind") != "patch":
+        raise ContractError("proof lane returned a non-patch result")
+    payload = response.get("payload", {})
+    patch = payload.get("patch")
+    path = lane.get("assigned_path")
+    if (
+        response.get("request_id") != lane.get("request_id")
+        or response.get("assigned_path") != path
+        or payload.get("assigned_path") != path
+        or payload.get("base_commit") != response.get("base_commit")
+        or not isinstance(patch, str)
+        or not patch.startswith(f"diff --git a/{path} b/{path}\n")
+        or patch.count("diff --git ") != 1
+        or payload.get("patch_sha256") != hashlib.sha256(patch.encode()).hexdigest()
+    ):
+        raise ContractError("proof lane result escaped its assignment")
+    local_gate = {
+        "schema": "autofv-lane-gate-receipt/v1",
+        "lane_id": lane["lane_id"],
+        "request_id": lane["request_id"],
+        "assigned_path": path,
+        "source_base_commit": response["base_commit"],
+        "checked_base_commit": lane["base_commit"],
+        "patch_sha256": payload["patch_sha256"],
+        "statement_fingerprints": response["statement_fingerprints"],
+        "native_decide_policy_sha256": policy_sha256,
+        "status": "passed",
+        "checks": [
+            "assigned_path_scope",
+            "patch_sha256",
+            "statement_fingerprint_binding",
+            "native_decide_policy_binding",
+        ],
+    }
+    body = {
+        "schema": "autofv-candidate/v1",
+        "lane_id": lane["lane_id"],
+        "request_id": lane["request_id"],
+        "node": lane["node"],
+        "base_commit": response["base_commit"],
+        "checked_base_commit": lane["base_commit"],
+        "assigned_path": lane["assigned_path"],
+        "worktree_path": lane["worktree_path"],
+        "cache_path": lane["cache_path"],
+        "result_path": lane["result_path"],
+        "patch_sha256": payload.get("patch_sha256"),
+        "statement_fingerprints": response.get("statement_fingerprints"),
+        "native_decide_policy_sha256": policy_sha256,
+        "native_decide_inventory_delta": [],
+        "local_gate_receipt": local_gate,
+        "local_gate_receipt_sha256": _canonical_sha256(local_gate),
+        "result_sha256": _canonical_sha256(response),
+    }
+    return {
+        **body,
+        "candidate_sha256": _canonical_sha256(body),
+        "response": response,
+    }
+
+
+def _proof_ready_nodes(graph: dict[str, Any], accepted_nodes: set[str]) -> list[str]:
+    dependencies = {node: set() for node in graph["selected_nodes"]}
+    for consumer, dependency in graph["term_dependencies"]:
+        dependencies[consumer].add(dependency)
+    return sorted(
+        node
+        for node, required in dependencies.items()
+        if node not in accepted_nodes and required <= accepted_nodes
+    )
+
+
+def _checkpoint_candidate(
+    state: _RunState,
+    candidate: dict[str, Any],
+    manifest: dict[str, Any],
+) -> dict[str, Any]:
+    """Deduplicate and gate one candidate under the sole canonical writer."""
+    lock = state.setdefault("_accept_lock", threading.Lock())
+    with lock:
+        response = candidate.get("response")
+        body = {
+            key: value
+            for key, value in candidate.items()
+            if key not in {"candidate_sha256", "response"}
+        }
+        digest = _sha256(candidate.get("candidate_sha256"), "candidate hash")
+        if not hmac.compare_digest(digest, _canonical_sha256(body)):
+            raise ContractError("candidate hash mismatch")
+        processed = state.setdefault("processed_candidate_sha256", [])
+        current = state.get("accepted") or state["run"].get("accepted") or {
+            "accepted_commit": state["run"]["base_commit"]
+        }
+        if digest in processed:
+            return {
+                "status": "duplicate",
+                "reason": "candidate_already_processed",
+                "candidate_sha256": digest,
+                "accepted_commit": current["accepted_commit"],
+            }
+        processed.append(digest)
+
+        def reject(reason: str, *, requeue: bool = False) -> dict[str, Any]:
+            status = "requeue" if requeue else "rejected"
+            receipt = {
+                "candidate_sha256": digest,
+                "node": candidate.get("node"),
+                "status": status,
+                "reason": reason,
+                "accepted_commit": current["accepted_commit"],
+            }
+            state.setdefault("candidate_receipts", []).append(receipt)
+            state["run"]["events"].append(
+                f"candidate_{status}:{candidate.get('request_id')}"
+            )
+            return receipt
+
+        if not isinstance(response, dict) or response.get("kind") != "patch":
+            return reject("candidate_result_invalid")
+        local_gate = candidate.get("local_gate_receipt")
+        if (
+            not isinstance(local_gate, dict)
+            or local_gate.get("status") != "passed"
+            or candidate.get("local_gate_receipt_sha256")
+            != _canonical_sha256(local_gate)
+            or local_gate.get("request_id") != candidate.get("request_id")
+            or local_gate.get("assigned_path") != candidate.get("assigned_path")
+            or local_gate.get("source_base_commit") != candidate.get("base_commit")
+            or local_gate.get("checked_base_commit")
+            != candidate.get("checked_base_commit")
+            or local_gate.get("native_decide_policy_sha256")
+            != candidate.get("native_decide_policy_sha256")
+        ):
+            return reject("candidate_local_gate_mismatch")
+        payload = response.get("payload", {})
+        path = candidate.get("assigned_path")
+        patch = payload.get("patch")
+        pure = PurePosixPath(path) if isinstance(path, str) else None
+        if (
+            pure is None
+            or pure.is_absolute()
+            or ".." in pure.parts
+            or not isinstance(patch, str)
+            or response.get("request_id") != candidate.get("request_id")
+            or response.get("assigned_path") != path
+            or payload.get("assigned_path") != path
+            or response.get("base_commit") != candidate.get("base_commit")
+            or payload.get("base_commit") != candidate.get("base_commit")
+            or candidate.get("patch_sha256") != payload.get("patch_sha256")
+            or not patch.startswith(f"diff --git a/{path} b/{path}\n")
+            or patch.count("diff --git ") != 1
+        ):
+            return reject("candidate_scope_mismatch")
+        if not hmac.compare_digest(
+            candidate.get("result_sha256", ""), _canonical_sha256(response)
+        ):
+            return reject("candidate_result_mismatch")
+        frozen = state["contracts"]["frozen_fingerprints"]
+        if not _candidate_binding_is_current(
+            candidate.get("statement_fingerprints"),
+            candidate.get("native_decide_policy_sha256", ""),
+            frozen,
+            state["run"]["native_decide_policy_sha256"],
+        ):
+            reason = (
+                "candidate_policy_mismatch"
+                if candidate.get("native_decide_policy_sha256")
+                != state["run"]["native_decide_policy_sha256"]
+                else "candidate_fingerprint_mismatch"
+            )
+            return reject(reason)
+        if not isinstance(candidate.get("native_decide_inventory_delta"), list):
+            return reject("candidate_native_decide_inventory_invalid")
+
+        stale = candidate["base_commit"] != current["accepted_commit"]
+        try:
+            accepted = worker.accept_candidate(state["run"], response, manifest)
+        except worker.WorkerError as exc:
+            return reject(str(exc)[:1000], requeue=stale)
+        if accepted.get("accepted_commit") == current["accepted_commit"]:
+            return reject("candidate_did_not_advance")
+
+        status = "accepted_reverified" if stale else "accepted"
+        transition = {
+            "sequence": len(state.setdefault("accepted_sequence", [])) + 1,
+            "candidate_sha256": digest,
+            "node": candidate["node"],
+            "status": status,
+            "base_commit": candidate["base_commit"],
+            "previous_accepted_commit": current["accepted_commit"],
+            "accepted_commit": accepted["accepted_commit"],
+        }
+        transition["transition_sha256"] = _canonical_sha256(transition)
+        state["accepted_sequence"].append(transition)
+        state["accepted"] = accepted
+        state["run"]["accepted"] = accepted
+        accepted_nodes = state.setdefault("accepted_nodes", [])
+        if candidate["node"] not in accepted_nodes:
+            accepted_nodes.append(candidate["node"])
+        receipt = {
+            "candidate_sha256": digest,
+            "node": candidate["node"],
+            "status": status,
+            "reason": None,
+            "local_gate_receipt_sha256": candidate[
+                "local_gate_receipt_sha256"
+            ],
+            "accepted_commit": accepted["accepted_commit"],
+        }
+        state.setdefault("candidate_receipts", []).append(receipt)
+        state["run"]["events"].append(
+            f"candidate_{status}:{candidate['request_id']}"
+        )
+        return receipt
 
 
 def _repair_contracts(
@@ -827,27 +1189,59 @@ def _agent_loop(state: _RunState) -> dict[str, Any]:
         input_hashes=[scout["payload_sha256"], probe_hash],
     )
     contracts = _repair_contracts(state, dependency, top_fingerprint)
+    leaf_nodes = graph["proof_batches"][0]
+    if _proof_ready_nodes(graph, set()) != leaf_nodes:
+        raise ContractError("the V1 leaf proof frontier is inconsistent")
+    lanes = _lane_descriptors(run, graph, leaf_nodes)
+    worker.prepare_lanes(run, lanes)
+    for key, value in (
+        ("lanes", lanes),
+        ("lane_intervals", {}),
+        ("candidate_receipts", []),
+        ("processed_candidate_sha256", []),
+        ("accepted_sequence", []),
+        ("accepted_nodes", []),
+    ):
+        state[key] = value
+        run[key] = value
+    exchanges = _parallel_model_requests(
+        state,
+        [
+            {
+                "request_id": lane["request_id"],
+                "role": "proof-author",
+                "batch_id": "proof-leaves-001",
+                "input_hashes": [
+                    contracts["frozen"][
+                        f"{lane['node'].removeprefix('probe:')}_spec"
+                    ]["model_fingerprint"],
+                    probe_hash,
+                ],
+            }
+            for lane in lanes
+        ],
+    )
+    leaf_patches = []
+    for lane, (response, _) in zip(lanes, exchanges, strict=True):
+        candidate = _candidate_record(
+            response, lane, run["native_decide_policy_sha256"]
+        )
+        worker.persist_lane_result(
+            run, lane, {key: value for key, value in candidate.items() if key != "response"}
+        )
+        transition = _checkpoint_candidate(state, candidate, manifest)
+        if not transition["status"].startswith("accepted"):
+            raise ContractError(
+                f"leaf candidate {lane['request_id']} was {transition['status']}: "
+                f"{transition['reason']}"
+            )
+        leaf_patches.append(response["payload"]["patch_sha256"])
+
+    ready = _proof_ready_nodes(graph, set(state["accepted_nodes"]))
+    if ready != graph["proof_batches"][1]:
+        raise ContractError("top proof became ready before both leaves were accepted")
     left_fingerprint = contracts["frozen"]["Diamond.left_spec"]["model_fingerprint"]
     right_fingerprint = contracts["frozen"]["Diamond.right_spec"]["model_fingerprint"]
-
-    proof_left, _ = _model_request(
-        state,
-        request_id="proof-left-001",
-        role="proof-author",
-        batch_id="proof-leaves-001",
-        input_hashes=[left_fingerprint, probe_hash],
-    )
-    accepted = worker.accept_candidate(run, proof_left, manifest)
-    run["accepted"] = accepted
-    proof_right, _ = _model_request(
-        state,
-        request_id="proof-right-001",
-        role="proof-author",
-        batch_id="proof-leaves-001",
-        input_hashes=[right_fingerprint, probe_hash],
-    )
-    accepted = worker.accept_candidate(run, proof_right, manifest)
-    run["accepted"] = accepted
     proof_top, _ = _model_request(
         state,
         request_id="proof-top-001",
@@ -856,17 +1250,37 @@ def _agent_loop(state: _RunState) -> dict[str, Any]:
             left_fingerprint,
             right_fingerprint,
             top_fingerprint,
-            proof_left["payload"]["patch_sha256"],
-            proof_right["payload"]["patch_sha256"],
+            *leaf_patches,
         ],
     )
-    accepted = worker.accept_candidate(run, proof_top, manifest)
-    run["accepted"] = accepted
+    top_lane = _lane_descriptors(run, graph, ready)[0]
+    worker.prepare_lanes(run, [top_lane])
+    state["lanes"].append(top_lane)
+    top_candidate = _candidate_record(
+        proof_top, top_lane, run["native_decide_policy_sha256"]
+    )
+    worker.persist_lane_result(
+        run,
+        top_lane,
+        {key: value for key, value in top_candidate.items() if key != "response"},
+    )
+    transition = _checkpoint_candidate(state, top_candidate, manifest)
+    if not transition["status"].startswith("accepted"):
+        raise ContractError(
+            f"top candidate was {transition['status']}: {transition['reason']}"
+        )
+    accepted = state["accepted"]
     return {
         "accepted": accepted,
         "contracts": contracts,
         "receipts": state["receipts"],
         "cost": state["cost"],
+        "lanes": lanes,
+        "lane_intervals": state["lane_intervals"],
+        "candidate_receipts": state["candidate_receipts"],
+        "processed_candidate_sha256": state["processed_candidate_sha256"],
+        "accepted_sequence": state["accepted_sequence"],
+        "accepted_nodes": state["accepted_nodes"],
     }
 
 
@@ -940,6 +1354,20 @@ def _result(
         "control_bundle_sha256": run["control_bundle_sha256"],
         "accepted_commit": accepted.get("accepted_commit"),
         "accepted_tree_sha256": accepted.get("accepted_tree_sha256"),
+        "lanes": state.get("lanes", run.get("lanes", [])),
+        "lane_intervals": state.get(
+            "lane_intervals", run.get("lane_intervals", {})
+        ),
+        "candidate_receipts": state.get(
+            "candidate_receipts", run.get("candidate_receipts", [])
+        ),
+        "processed_candidate_sha256": state.get(
+            "processed_candidate_sha256",
+            run.get("processed_candidate_sha256", []),
+        ),
+        "accepted_sequence": state.get(
+            "accepted_sequence", run.get("accepted_sequence", [])
+        ),
         "verifier_report_sha256": report.get("report_sha256"),
         "events": list(run["events"]),
     }

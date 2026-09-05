@@ -312,7 +312,22 @@ class TracerTests(unittest.TestCase):
             self.assertEqual(result["native_decide_policy"], "allow_audited")
             self.assertEqual(result["accepted_commit"], seams.accepted_commits[-1])
             self.assertEqual(len(seams.accepted_commits), 3)
-            self.assertEqual(proxy.seen, [entry["request"]["request_id"] for entry in self.fixture["entries"]])
+            expected_requests = [
+                entry["request"]["request_id"] for entry in self.fixture["entries"]
+            ]
+            self.assertEqual(proxy.seen[:5], expected_requests[:5])
+            self.assertEqual(set(proxy.seen[5:7]), set(expected_requests[5:7]))
+            self.assertEqual(proxy.seen[7:], expected_requests[7:])
+            self.assertEqual(
+                [item["status"] for item in result["accepted_sequence"]],
+                ["accepted", "accepted_reverified", "accepted_reverified"],
+            )
+            self.assertEqual(len(result["processed_candidate_sha256"]), 3)
+            lane_results = sorted(Path(tmp).glob("lanes/*/result/candidate.json"))
+            self.assertEqual(len(lane_results), 3)
+            self.assertTrue(
+                all('"patch":' not in path.read_text() for path in lane_results)
+            )
             self.assertEqual(
                 result["events"][:8],
                 [

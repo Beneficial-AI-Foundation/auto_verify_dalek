@@ -3,7 +3,7 @@
 AutoFV is the trusted host-side controller for experiments that ask an agent
 to recover Lean specifications and proofs inside a sealed Linux worker.
 
-This page describes the code as it exists on 4 September 2026. Phase 1 is
+This page describes the code as it exists on 5 September 2026. Phase 1 is
 still in progress. Keep this file and [README.html](README.html) in sync.
 
 ## Status
@@ -18,7 +18,7 @@ Model responses and cost were synthetic fixture data. No provider call ran.
 | Input, policy, image, and receipt contracts | Focused local checks and all 29 CLI snapshot tests pass |
 | Pinned probe output | Captured from the toolchain image and checked byte-for-byte |
 | Fixed proxy route under `runsc` | Tested against the local deterministic proxy fixture |
-| End-to-end controller flow | One real two-VM run accepted all three source files and received a distinct verifier `PASS` |
+| End-to-end controller flow | One real two-VM run overlapped both leaf requests, accepted all three source files serially, and received a distinct verifier `PASS` |
 | Provider model call and billed usage | Not run |
 | Full agent worker to clean-verifier fixture | Passed on 4 September 2026; agent used `runsc`, verifier used a fresh Docker volume and the pinned image |
 | Malformed probe and graph mutation matrix | Eight local tests cover malformed bytes, wrong tool identity, incomplete or failed closure data, unsafe paths, deterministic ordering, and cycles |
@@ -37,9 +37,12 @@ signature proves that the local fixture has not changed. A production proxy
 receipt will be needed before `cost_usd` can mean measured spend.
 
 The successful run recorded `execution_tier: sealed_runsc` and
-`cost_classification: synthetic_fixture`. It accepted three commits, processed
-eight receipts, and ended with `clean_verifier:PASS`. Failures retain completed
-hashes, accepted-receipt counts and cost, and the last accepted commit.
+`cost_classification: synthetic_fixture`. It created separate worktrees, caches,
+and result paths for the two leaves, overlapped their proxy calls, then accepted
+the left, stale right, and stale top patches one at a time. Stale patches were
+applied and rebuilt against the latest accepted tree. It processed eight
+receipts and ended with `clean_verifier:PASS`. Failures retain completed hashes,
+accepted-receipt counts and cost, and the last accepted commit.
 Probe and allocated-worker launch failures write a non-success result and L0
 receipt before exit, without making a model request. Invalid target or run
 configuration still stops before worker allocation and returns a non-zero CLI
@@ -54,8 +57,9 @@ trusted host
     ├── copy the approved target and control files into a fresh Docker volume
     ├── run the pinned image with gVisor runsc in the autofv-agent Lima VM
     ├── retain and validate probe-rust and probe-aeneas output
-    ├── send fixed-shape requests through one trusted proxy route
-    ├── accept one-file candidates only after deterministic checks
+    ├── create private one-file worktrees for each proof-ready leaf
+    ├── overlap both fixed-shape leaf requests through one trusted proxy route
+    ├── checkpoint returned patches serially against the latest accepted tree
     ├── export the accepted tree to the separate autofv-verifier Lima VM
     └── write result.json and an L0 evidence receipt
 ```
@@ -73,6 +77,13 @@ orchestration contract and reports `execution_tier: simulation`. The sealed
 fixture run exercised both VMs and the local trusted proxy. Neither path called
 a model provider.
 
+The current deterministic proxy returns patch text; no shell-capable model
+process edits a lane worktree yet. Each lane writes a hash-only preflight receipt
+covering scope, patch identity, statement fingerprints, and the selected policy
+hash. That is not a local kernel proof. The controller applies each patch to the
+canonical tree and runs the configured Lean build before committing it; the
+separate clean verifier rebuild remains the only success authority.
+
 ## Local setup
 
 AutoFV requires Python 3.12. Use the repository virtual environment and `uv`;
@@ -89,6 +100,8 @@ Run the fast local contracts:
 .venv/bin/python -m unittest -v \
   tests.test_cli_snapshot \
   tests.test_probe_graph \
+  tests.test_contract_and_acceptance \
+  tests.test_parallel_lanes \
   tests.test_phase1_diamond.TracerTests
 ```
 
@@ -160,6 +173,9 @@ report files arrive in the later evidence phase.
 | `internal_proofs_accepted` | Fixture-specific value: `2` on success |
 | `proxy_requests` | Number of accepted signed receipts |
 | `cost_usd` | Sum of `cost.amount` from accepted receipts; synthetic for fixture receipts |
+| `lanes` and `lane_intervals` | Private path assignments and monotonic timing evidence for the proof lanes |
+| `candidate_receipts` | Scope/fingerprint/policy preflight identity and the serial checkpoint outcome; it is not a clean-verifier report |
+| `accepted_sequence` | The only ordered transitions that advanced the canonical commit; stale candidates are marked `accepted_reverified` |
 | hash fields | Identities of the snapshot, probes, policy, image, control bundle, accepted tree, and verifier report |
 | `events` | Ordered controller transitions, not a provider or VM execution trace by itself |
 
@@ -173,10 +189,11 @@ They do not yet measure an arbitrary target.
 | Model name, wall-clock limit, cost ceiling | [`tests/fixtures/diamond/run.json`](../tests/fixtures/diamond/run.json) | Per-run input. `max_cost_usd` stops on signed receipt totals. `max_wall_seconds` is validated but not enforced yet. |
 | Target function, supplied specification, verifier command | [`tests/fixtures/diamond/autofv.json`](../tests/fixtures/diamond/autofv.json) | Per-target input. The verifier command is an argv array, not shell text. |
 | Image digest, tool versions, proxy route, receipt schema, verifier identity, control-bundle allowlist | [`docker/autofv/toolchain-lock.json`](../docker/autofv/toolchain-lock.json) | Trust contract. Update its hashes and contract tests with every change. |
-| `native_decide` rule | `native_decide_policy` in the toolchain lock and `evaluate_native_decide_policy(...)` in [`experiment.py`](experiment.py) | Phase 1 uses `allow_audited`. The inventory evaluator exists, but the tracer currently validates only the policy selection and hash. Count caps or named-spec allowlists belong behind this one policy function. |
+| `native_decide` rule | `native_decide_policy` in the toolchain lock and `evaluate_native_decide_policy(...)` in [`experiment.py`](experiment.py) | Phase 1 uses `allow_audited`. Candidates bind the selected policy hash; the clean verifier does not yet recompute the complete use inventory. Count caps or named-spec allowlists belong behind this one policy function. |
 | Probe byte, node, and edge limits; dependency scheduling | [`probes.py`](probes.py) | Current limits are 16 MiB, 10,000 nodes, and 100,000 edges. |
+| Proof readiness, lane overlap, candidate replay, serial checkpointing | [`experiment.py`](experiment.py) | Uses the probe term graph and Python's standard thread pool. There is no separate scheduler module. |
 | Agent VM name, UID, CPU, memory, PID, temporary filesystem, and Docker arguments | [`worker.py`](worker.py) | Current container limits are 2 CPUs, 2 GiB, 256 PIDs, and two 64 MiB temporary filesystems. Real runs report `sealed_runsc`. |
-| Candidate scope and acceptance checks | `accept_candidate(...)` in [`worker.py`](worker.py) | It currently checks one-file scope, base and patch hashes, patch application, forbidden source markers, and the configured build. |
+| Candidate scope and acceptance checks | `accept_candidate(...)` in [`worker.py`](worker.py) | It checks one-file scope, base and patch hashes, patch application, forbidden source markers, and the configured build. A failed post-apply check reverses and restages the patch before returning. |
 | Canonical statement and trust-base implementations | [`../harness/gates/StmtCanon.lean`](../harness/gates/StmtCanon.lean) and [`../harness/gates/g2_trust_base.py`](../harness/gates/g2_trust_base.py) | These gates exist in the earlier runner and are locked into the control bundle. The new tracer does not call them yet. |
 | Clean verifier command and report binding | [`verifier.py`](verifier.py) | A matching report must name a worker distinct from the agent VM. The accepted archive hash is checked before extraction into a fresh no-network volume. |
 
@@ -189,6 +206,7 @@ planned work. The current candidate receipt names only the checks it runs.
 | --- | --- |
 | [`tests/test_cli_snapshot.py`](../tests/test_cli_snapshot.py) | Input schemas, toolchain lock, control bundle, policy, and prepared target. Worker preparation is replaced in the native-policy unit test. |
 | [`tests/test_model_proxy_fixture.py`](../tests/test_model_proxy_fixture.py) | Deterministic proxy route, signed fixture receipts, tamper rejection, and a separate `runsc` route smoke test |
+| [`tests/test_parallel_lanes.py`](../tests/test_parallel_lanes.py) | Barrier-backed leaf overlap, private paths, scope and policy rejection, stale re-verification, replay idempotency, and top-proof readiness |
 | [`tests/test_phase1_diamond.py`](../tests/test_phase1_diamond.py) | Controller flow with test doubles, failure-state retention, worker command construction, and clean-verifier isolation arguments |
 | [`tests/test_probe_graph.py`](../tests/test_probe_graph.py) | Probe schema and closure mutations, deterministic graph direction and scheduling, raw-byte retention, and pre-model failure results |
 | [`tests/test_image_contract.py`](../tests/test_image_contract.py) | Pinned image contents and runtime contract |

@@ -88,11 +88,15 @@
       <tr><td>Provider model call and billed usage</td><td>Not run</td></tr>
       <tr><td>Full agent worker to clean-verifier fixture</td><td>Passed on 4 September 2026; agent used <code>runsc</code>, verifier used a fresh Docker volume and the pinned image</td></tr>
       <tr><td>Malformed probe and graph mutation matrix</td><td>Eight local tests cover malformed bytes, wrong tool identity, incomplete or failed closure data, unsafe paths, deterministic ordering, and cycles</td></tr>
+      <tr><td>Restart and budget handling</td><td>Twelve local tests cover atomic checkpoints, compatible recovery, exact signed costs, wall limits, and receipt rejection. A real forced interruption resumed the same agent volume and completed with eight proxy requests received exactly once.</td></tr>
     </tbody>
   </table>
   <p>The current <code>$0.022350</code> result is fixture data. It is the sum of eight handwritten receipt amounts for 2,235 invented tokens at a flat <code>$0.000010</code> per token. It is not provider spend. The fixture uses <code>fixture-model-v1</code>; no API key or provider response takes part in that test. The values live in <a href="../tests/fixtures/model-proxy/diamond-responses.json"><code>tests/fixtures/model-proxy/diamond-responses.json</code></a> and are repeated as expectations in the proxy fixture test.</p>
   <p>Receipt validation rejects changes to a receipt's run identity, sequence, request hash, response hash, usage, cost, or signature. A valid fixture signature proves that the local fixture has not changed. A production proxy receipt will be needed before <code>cost_usd</code> can mean measured spend.</p>
-  <p>The successful run recorded <code>execution_tier: sealed_runsc</code> and <code>cost_classification: synthetic_fixture</code>. It created separate worktrees, caches, and result paths for the two leaves, overlapped their proxy calls, then accepted the left, stale right, and stale top patches one at a time. Stale patches were applied and rebuilt against the latest accepted tree. It processed eight receipts and ended with <code>clean_verifier:PASS</code>. Failures retain completed hashes, accepted-receipt counts and cost, and the last accepted commit. Probe and allocated-worker launch failures write a non-success result and L0 receipt before exit, without making a model request. Invalid target or run configuration still stops before worker allocation and returns a non-zero CLI status; durable records for those pre-allocation attempts are later Phase 1 work.</p>
+  <p>The successful run recorded <code>execution_tier: sealed_runsc</code> and <code>cost_classification: synthetic_fixture</code>. It created separate worktrees, caches, and result paths for the two leaves, overlapped their proxy calls, then accepted the left, stale right, and stale top patches one at a time. Stale patches were applied and rebuilt against the latest accepted tree. It processed eight receipts and ended with <code>clean_verifier:PASS</code>. Failures retain completed hashes, accepted-receipt counts and cost, and the last accepted commit.</p>
+  <p>The controller writes canonical, hash-checked checkpoints around model, probe, build, apply, verifier, and result-export transitions. On restart it selects the highest complete compatible sequence, checks the current Git tree, and falls back to the exact accepted commit when the working tree changed. The Git tree stays in the named agent volume; checkpoint JSON stays in the host run directory.</p>
+  <p><code>max_wall_seconds</code> uses monotonic controller time and keeps up to five seconds, or ten percent of a smaller budget, for final result persistence. <code>max_cost_usd</code> changes only when a unique signed proxy receipt matches the current run, request, response, model, route, currency, and sequence. A limit produces <code>budget_exhausted</code> with partial counts and retained state. Rejected receipts leave cost unchanged and appear as hash-only evidence.</p>
+  <p>Probe and allocated-worker launch failures write a non-success result and L0 receipt before exit, without making a model request. Invalid target or run configuration still stops before worker allocation and returns a non-zero CLI status; durable records for those pre-allocation attempts are later Phase 1 work.</p>
 
   <h2>Intended run</h2>
   <pre><code>trusted host
@@ -119,6 +123,7 @@ UV_CACHE_DIR=/private/tmp/autofv-uv-cache uv sync</code></pre>
   tests.test_probe_graph \
   tests.test_contract_and_acceptance \
   tests.test_parallel_lanes \
+  tests.test_restart_budget \
   tests.test_phase1_diamond.TracerTests</code></pre>
   <p>The native-policy launch test replaces worker preparation, graph execution, and result persistence. It checks policy binding without contacting Lima; it is not VM or full-run evidence.</p>
   <p>Show the CLI without starting a worker:</p>
@@ -144,12 +149,17 @@ UV_CACHE_DIR=/private/tmp/autofv-uv-cache uv sync</code></pre>
 .venv/bin/python -m json.tool "$run_dir/result.json"
 .venv/bin/python -m json.tool "$run_dir/evidence/l0.json"</code></pre>
   <p>A stable output directory has not been added to the CLI yet. The L0 receipt binds the result and eight proxy receipt hashes; separate receipt and verifier report files arrive in the later evidence phase.</p>
+  <p>Restart is currently a Python controller seam, not a CLI flag:</p>
+  <pre><code>from autofv.experiment import run_experiment
+
+result = run_experiment(target, run_config, resume_from=run_dir)</code></pre>
+  <p><code>resume_from</code> must name the existing host run directory. Its checkpoint binds the target snapshot, manifest, toolchain, image, control bundle, <code>native_decide</code> policy, run configuration, and named agent volume.</p>
 
   <h2>What the result fields mean today</h2>
   <table>
     <thead><tr><th>Field</th><th>Meaning in the current diamond tracer</th></tr></thead>
     <tbody>
-      <tr><td><code>outcome</code></td><td>The controller reached a matching verifier <code>PASS</code></td></tr>
+      <tr><td><code>outcome</code></td><td><code>success</code> after a matching verifier <code>PASS</code>, <code>budget_exhausted</code> for a wall/cost stop, or <code>failure</code> for another reduced error</td></tr>
       <tr><td><code>execution_tier</code></td><td><code>sealed_runsc</code> for the real worker path; <code>simulation</code> when tests replace external boundaries</td></tr>
       <tr><td><code>cost_classification</code></td><td><code>synthetic_fixture</code> for the current locked proxy fixture</td></tr>
       <tr><td><code>targets_verified_final</code></td><td>Fixture-specific value: <code>1</code> on success</td></tr>
@@ -157,6 +167,8 @@ UV_CACHE_DIR=/private/tmp/autofv-uv-cache uv sync</code></pre>
       <tr><td><code>internal_proofs_accepted</code></td><td>Fixture-specific value: <code>2</code> on success</td></tr>
       <tr><td><code>proxy_requests</code></td><td>Number of accepted signed receipts</td></tr>
       <tr><td><code>cost_usd</code></td><td>Sum of <code>cost.amount</code> from accepted receipts; synthetic for fixture receipts</td></tr>
+      <tr><td><code>wall_seconds</code> and <code>finalization_reserve_seconds</code></td><td>Monotonic controller time charged to the run and the portion held back for writing its final records</td></tr>
+      <tr><td><code>receipt_rejections</code></td><td>Request identity, sequence, rejection reason, and hash of a rejected receipt payload; never the raw rejected receipt</td></tr>
       <tr><td><code>lanes</code> and <code>lane_intervals</code></td><td>Private path assignments and monotonic timing evidence for the proof lanes</td></tr>
       <tr><td><code>candidate_receipts</code></td><td>Scope/fingerprint/policy preflight identity and the serial checkpoint outcome; it is not a clean-verifier report</td></tr>
       <tr><td><code>accepted_sequence</code></td><td>The only ordered transitions that advanced the canonical commit; stale candidates are marked <code>accepted_reverified</code></td></tr>
@@ -164,13 +176,13 @@ UV_CACHE_DIR=/private/tmp/autofv-uv-cache uv sync</code></pre>
       <tr><td><code>events</code></td><td>Ordered controller transitions, not a provider or VM execution trace by itself</td></tr>
     </tbody>
   </table>
-  <p>The three accepted-count fields are currently fixed for the diamond fixture. They do not yet measure an arbitrary target.</p>
+  <p>The accepted-count fields are derived from frozen contracts, accepted internal nodes, and the final verifier result. The surrounding tracer still supports only the Phase 1 diamond.</p>
 
   <h2 id="changes">Where to change things</h2>
   <table>
     <thead><tr><th>Change</th><th>File</th><th>Notes</th></tr></thead>
     <tbody>
-      <tr><td>Model name, wall-clock limit, cost ceiling</td><td><a href="../tests/fixtures/diamond/run.json"><code>tests/fixtures/diamond/run.json</code></a></td><td>Per-run input. <code>max_cost_usd</code> stops on signed receipt totals. <code>max_wall_seconds</code> is validated but not enforced yet.</td></tr>
+      <tr><td>Model name, wall-clock limit, cost ceiling</td><td><a href="../tests/fixtures/diamond/run.json"><code>tests/fixtures/diamond/run.json</code></a></td><td>Per-run input. <code>max_cost_usd</code> stops on authenticated receipt totals; <code>max_wall_seconds</code> stops new model and gate work while reserving finalization time.</td></tr>
       <tr><td>Target function, supplied specification, verifier command</td><td><a href="../tests/fixtures/diamond/autofv.json"><code>tests/fixtures/diamond/autofv.json</code></a></td><td>Per-target input. The verifier command is an argv array, not shell text.</td></tr>
       <tr><td>Image digest, tool versions, proxy route, receipt schema, verifier identity, control-bundle allowlist</td><td><a href="../docker/autofv/toolchain-lock.json"><code>docker/autofv/toolchain-lock.json</code></a></td><td>Trust contract. Update its hashes and contract tests with every change.</td></tr>
       <tr><td><code>native_decide</code> rule</td><td><code>native_decide_policy</code> in the toolchain lock and <code>evaluate_native_decide_policy(...)</code> in <a href="experiment.py"><code>experiment.py</code></a></td><td>Phase 1 uses <code>allow_audited</code>. Candidates bind the selected policy hash; the clean verifier does not yet recompute the complete use inventory. Count caps or named-spec allowlists belong behind this one policy function.</td></tr>
@@ -191,6 +203,7 @@ UV_CACHE_DIR=/private/tmp/autofv-uv-cache uv sync</code></pre>
       <tr><td><a href="../tests/test_cli_snapshot.py"><code>tests/test_cli_snapshot.py</code></a></td><td>Input schemas, toolchain lock, control bundle, policy, and prepared target. Worker preparation is replaced in the native-policy unit test.</td></tr>
       <tr><td><a href="../tests/test_model_proxy_fixture.py"><code>tests/test_model_proxy_fixture.py</code></a></td><td>Deterministic proxy route, signed fixture receipts, tamper rejection, and a separate <code>runsc</code> route smoke test</td></tr>
       <tr><td><a href="../tests/test_parallel_lanes.py"><code>tests/test_parallel_lanes.py</code></a></td><td>Barrier-backed leaf overlap, private paths, scope and policy rejection, stale re-verification, replay idempotency, and top-proof readiness</td></tr>
+      <tr><td><a href="../tests/test_restart_budget.py"><code>tests/test_restart_budget.py</code></a></td><td>Atomic checkpoint selection, working/accepted recovery, graph-state replay, wall/cost exhaustion, exact fixture totals, and rejected-receipt evidence</td></tr>
       <tr><td><a href="../tests/test_phase1_diamond.py"><code>tests/test_phase1_diamond.py</code></a></td><td>Controller flow with test doubles, failure-state retention, worker command construction, and clean-verifier isolation arguments</td></tr>
       <tr><td><a href="../tests/test_probe_graph.py"><code>tests/test_probe_graph.py</code></a></td><td>Probe schema and closure mutations, deterministic graph direction and scheduling, raw-byte retention, and pre-model failure results</td></tr>
       <tr><td><a href="../tests/test_image_contract.py"><code>tests/test_image_contract.py</code></a></td><td>Pinned image contents and runtime contract</td></tr>

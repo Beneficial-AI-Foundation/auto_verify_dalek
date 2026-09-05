@@ -12,6 +12,7 @@ import binascii
 import hashlib
 import hmac
 import json
+import os
 import re
 import threading
 import time
@@ -52,6 +53,46 @@ class ContractError(ValueError):
 
 class ContractInconclusive(ContractError):
     """The bounded provisional consumer proof could not freeze contracts."""
+
+
+CHECKPOINT_SCHEMA = "autofv-checkpoint/v1"
+CHECKPOINT_RUN_FIELDS = (
+    "run_id",
+    "run_root",
+    "project_dir",
+    "evidence_dir",
+    "volume",
+    "agent_worker_id",
+    "execution_tier",
+    "cost_classification",
+    "snapshot_sha256",
+    "manifest_sha256",
+    "image_digest",
+    "control_bundle_sha256",
+    "native_decide_policy",
+    "native_decide_policy_sha256",
+    "base_commit",
+    "events",
+)
+CHECKPOINT_STATE_FIELDS = (
+    "graph",
+    "contracts",
+    "receipts",
+    "accepted",
+    "working",
+    "result",
+    "verifier_report",
+    "lanes",
+    "lane_intervals",
+    "candidate_receipts",
+    "processed_candidate_sha256",
+    "accepted_sequence",
+    "accepted_nodes",
+    "pending_model_exchanges",
+    "model_exchanges",
+    "inflight_transition",
+    "receipt_rejections",
+)
 
 
 def canonical_json_bytes(value: Any) -> bytes:
@@ -512,6 +553,277 @@ def _canonical_sha256(value: Any) -> str:
     return hashlib.sha256(canonical_json_bytes(value)).hexdigest()
 
 
+def _checkpoint_value(value: Any) -> Any:
+    if isinstance(value, Decimal):
+        return f"{value:.6f}"
+    if isinstance(value, Path):
+        return str(value)
+    if isinstance(value, dict):
+        return {str(key): _checkpoint_value(item) for key, item in value.items()}
+    if isinstance(value, (list, tuple)):
+        return [_checkpoint_value(item) for item in value]
+    if value is None or isinstance(value, (str, int, bool)):
+        return value
+    raise ContractError(f"checkpoint value is not serializable: {type(value).__name__}")
+
+
+def _checkpoint_identities(run: dict[str, Any]) -> dict[str, Any]:
+    identities = {
+        name: run[name]
+        for name in (
+            "run_id",
+            "snapshot_sha256",
+            "manifest_sha256",
+            "image_digest",
+            "control_bundle_sha256",
+            "native_decide_policy_sha256",
+            "volume",
+            "base_commit",
+        )
+        if name in run
+    }
+    lock = run.get("lock")
+    if isinstance(lock, dict):
+        identities["toolchain_lock_sha256"] = _canonical_sha256(lock)
+    for name in ("probe_rust_sha256", "probe_aeneas_sha256", "graph_sha256"):
+        if name in run:
+            identities[name] = run[name]
+    return identities
+
+
+def _checkpoint_config_sha256(config: dict[str, Any]) -> str:
+    return _canonical_sha256(_checkpoint_value(config))
+
+
+def _checkpoint_payload(state: _RunState, transition: str, sequence: int) -> dict[str, Any]:
+    run = state["run"]
+    identities = _checkpoint_identities(run)
+    identities["run_config_sha256"] = _checkpoint_config_sha256(state["config"])
+    graph = state.get("graph", {})
+    for name in ("probe_rust_sha256", "probe_aeneas_sha256", "graph_sha256"):
+        if name in graph:
+            identities[name] = graph[name]
+    body = {
+        "schema": CHECKPOINT_SCHEMA,
+        "complete": True,
+        "checkpoint_sequence": sequence,
+        "event_sequence": sequence,
+        "event_id": f"checkpoint-{sequence:08d}",
+        "transition": _text(transition, "checkpoint transition"),
+        "identities": identities,
+        "run": {
+            name: _checkpoint_value(run[name])
+            for name in CHECKPOINT_RUN_FIELDS
+            if name in run
+        },
+        "state": {
+            name: _checkpoint_value(state[name])
+            for name in CHECKPOINT_STATE_FIELDS
+            if name in state
+        },
+        "cost_usd_used": f"{state.get('cost', Decimal('0.000000')):.6f}",
+    }
+    return {**body, "content_sha256": _canonical_sha256(body)}
+
+
+def _write_checkpoint(state: _RunState, transition: str) -> Path:
+    """Durably replace one complete checkpoint without trusting directory order."""
+    sequence = int(state.get("checkpoint_sequence", 0)) + 1
+    state["checkpoint_sequence"] = sequence
+    payload = _checkpoint_payload(state, transition, sequence)
+    directory = Path(state["run"]["run_root"]) / "checkpoints"
+    directory.mkdir(parents=True, exist_ok=True)
+    destination = directory / f"{sequence:08d}.json"
+    temporary = directory / f".{sequence:08d}.tmp"
+    with temporary.open("wb") as output:
+        output.write(canonical_json_bytes(payload) + b"\n")
+        output.flush()
+        os.fsync(output.fileno())
+    os.replace(temporary, destination)
+    directory_fd = os.open(directory, os.O_RDONLY)
+    try:
+        os.fsync(directory_fd)
+    finally:
+        os.close(directory_fd)
+    return destination
+
+
+def _valid_checkpoint(
+    value: Any, expected_identities: dict[str, Any]
+) -> dict[str, Any] | None:
+    if not isinstance(value, dict):
+        return None
+    if set(value) != {
+        "schema",
+        "complete",
+        "checkpoint_sequence",
+        "event_sequence",
+        "event_id",
+        "transition",
+        "identities",
+        "run",
+        "state",
+        "cost_usd_used",
+        "content_sha256",
+    }:
+        return None
+    content_hash = value.get("content_sha256")
+    body = {key: item for key, item in value.items() if key != "content_sha256"}
+    if (
+        value.get("schema") != CHECKPOINT_SCHEMA
+        or value.get("complete") is not True
+        or type(value.get("checkpoint_sequence")) is not int
+        or value["checkpoint_sequence"] <= 0
+        or value.get("event_sequence") != value["checkpoint_sequence"]
+        or value.get("event_id")
+        != f"checkpoint-{value['checkpoint_sequence']:08d}"
+        or not isinstance(content_hash, str)
+        or not hmac.compare_digest(content_hash, _canonical_sha256(body))
+        or not isinstance(value.get("identities"), dict)
+        or not isinstance(value.get("run"), dict)
+        or not isinstance(value.get("state"), dict)
+        or not isinstance(value.get("cost_usd_used"), str)
+        or DECIMAL_USD.fullmatch(value["cost_usd_used"]) is None
+    ):
+        return None
+    identities, run = value["identities"], value["run"]
+    if any(
+        identities.get(name) != run.get(name)
+        for name in (
+            "run_id",
+            "snapshot_sha256",
+            "manifest_sha256",
+            "image_digest",
+            "control_bundle_sha256",
+            "native_decide_policy_sha256",
+            "volume",
+            "base_commit",
+        )
+    ):
+        return None
+    if any(value["identities"].get(key) != item for key, item in expected_identities.items()):
+        return None
+    return value
+
+
+def _load_checkpoint(
+    run_root: str | Path, expected_identities: dict[str, Any]
+) -> dict[str, Any]:
+    valid: dict[int, dict[str, Any]] = {}
+    for path in (Path(run_root) / "checkpoints").glob("*.json"):
+        try:
+            candidate = _valid_checkpoint(_read_json(path, "checkpoint"), expected_identities)
+        except ContractError:
+            continue
+        if candidate is None:
+            continue
+        try:
+            checkpoint_root = Path(candidate["run"]["run_root"]).resolve(strict=True)
+        except (KeyError, OSError, TypeError):
+            continue
+        if checkpoint_root != Path(run_root).resolve(strict=True):
+            continue
+        sequence = candidate["checkpoint_sequence"]
+        previous = valid.get(sequence)
+        if previous is not None and previous["content_sha256"] != candidate["content_sha256"]:
+            raise ContractError(f"conflicting checkpoint sequence {sequence}")
+        valid[sequence] = candidate
+    if not valid:
+        raise ContractError("no complete hash-valid compatible checkpoint")
+    return valid[max(valid)]
+
+
+def _resume_record_matches(observed: dict[str, Any], expected: dict[str, Any]) -> bool:
+    return bool(
+        observed.get("valid")
+        and observed.get("accepted_commit") == expected.get("accepted_commit")
+        and observed.get("accepted_tree_sha256")
+        == expected.get("accepted_tree_sha256")
+    )
+
+
+def _restore_checkpoint(
+    checkpoint: dict[str, Any],
+    *,
+    manifest: dict[str, Any],
+    config: dict[str, Any],
+    lock: dict[str, Any],
+    run_round: Any,
+) -> _RunState:
+    """Reattach trusted runtime objects and recover working state or accepted Git."""
+    run = dict(checkpoint["run"])
+    run["lock"] = lock
+    state: _RunState = dict(checkpoint["state"])
+    state.update(
+        {
+            "run": run,
+            "manifest": manifest,
+            "config": config,
+            "run_round": run_round,
+            "cost": Decimal(checkpoint["cost_usd_used"]),
+            "checkpoint_sequence": checkpoint["checkpoint_sequence"],
+            "_accept_lock": threading.Lock(),
+        }
+    )
+    accepted = state.get("accepted")
+    working = state.get("working") or accepted
+    observed = worker.inspect_resume_state(run, manifest)
+    inflight = state.pop("inflight_transition", None)
+    if isinstance(inflight, dict) and inflight.get("kind") == "candidate_accept":
+        digest = inflight.get("candidate_sha256")
+        processed = state.setdefault("processed_candidate_sha256", [])
+        if digest in processed:
+            processed.remove(digest)
+        for lane in state.get("lanes", []):
+            if lane.get("node") == inflight.get("node"):
+                lane["status"] = "interrupted"
+                lane["requeueable"] = True
+    if isinstance(working, dict) and _resume_record_matches(observed, working):
+        source = "working"
+    else:
+        if not isinstance(accepted, dict) or not {
+            "accepted_commit",
+            "accepted_tree_sha256",
+        } <= accepted.keys():
+            raise ContractError("checkpoint has no restorable accepted state")
+        observed = worker.restore_accepted(run, accepted, manifest)
+        if not _resume_record_matches(observed, accepted):
+            raise ContractError("restored accepted state did not match checkpoint")
+        state["working"] = dict(accepted)
+        source = "accepted"
+    for lane in state.get("lanes", []):
+        if lane.get("status") in {"preparing", "running"}:
+            lane["status"] = "interrupted"
+            lane["requeueable"] = True
+    state["recovery_source"] = source
+    event = f"resumed:{source}"
+    if event not in run.setdefault("events", []):
+        run["events"].append(event)
+    _write_checkpoint(state, event)
+    return state
+
+
+def _checkpoint_if_enabled(state: _RunState, transition: str) -> None:
+    if state.get("checkpoint_enabled"):
+        _write_checkpoint(state, transition)
+
+
+def _event_once(run: dict[str, Any], event: str) -> None:
+    if event not in run.setdefault("events", []):
+        run["events"].append(event)
+
+
+def _external_call(state: _RunState, transition: str, call) -> Any:
+    _checkpoint_if_enabled(state, f"{transition}:before")
+    try:
+        value = call()
+    except Exception:
+        _checkpoint_if_enabled(state, f"{transition}:failed")
+        raise
+    _checkpoint_if_enabled(state, f"{transition}:after")
+    return value
+
+
 def _prompt_sha256(run_id: str, request_id: str, role: str) -> str:
     raw = f"{run_id}\0{request_id}\0{role}\0bounded-v1".encode("utf-8")
     return hashlib.sha256(raw).hexdigest()
@@ -541,12 +853,23 @@ def _model_envelope(
 
 
 def _invoke_model(
-    state: _RunState, request: dict[str, Any]
+    state: _RunState, request: dict[str, Any], *, checkpoint: bool = True
 ) -> tuple[dict[str, Any], dict[str, Any]]:
+    if checkpoint:
+        _checkpoint_if_enabled(state, f"model:{request['request_id']}:before")
     runner = state["run_round"]
     if runner is agentproc.run_round:
-        return worker.proxy_round(state["run"], request)
-    return runner(request)
+        exchange = worker.proxy_round(state["run"], request)
+    else:
+        exchange = runner(request)
+    if checkpoint:
+        state.setdefault("pending_model_exchanges", {})[request["request_id"]] = {
+            "request": request,
+            "response": exchange[0],
+            "receipt": exchange[1],
+        }
+        _checkpoint_if_enabled(state, f"model:{request['request_id']}:after")
+    return exchange
 
 
 def _accept_model_exchange(
@@ -577,7 +900,11 @@ def _accept_model_exchange(
         raise ContractError("model proxy cost budget exceeded")
     state["cost"] = new_cost
     state["receipts"].append(receipt)
-    run["events"].append(f"proxy:{request['request_id']}")
+    exchange = {"request": request, "response": response, "receipt": receipt}
+    state.setdefault("model_exchanges", {})[request["request_id"]] = exchange
+    state.setdefault("pending_model_exchanges", {}).pop(request["request_id"], None)
+    _event_once(run, f"proxy:{request['request_id']}")
+    _checkpoint_if_enabled(state, f"model:{request['request_id']}:accepted")
     return response, receipt
 
 
@@ -596,6 +923,18 @@ def _model_request(
         input_hashes=input_hashes,
         batch_id=batch_id,
     )
+    completed = state.setdefault("model_exchanges", {}).get(request_id)
+    if completed is not None:
+        if completed.get("request") != request:
+            raise ContractError(f"resumed model request changed: {request_id}")
+        return completed["response"], completed["receipt"]
+    pending = state.setdefault("pending_model_exchanges", {}).get(request_id)
+    if pending is not None:
+        if pending.get("request") != request:
+            raise ContractError(f"pending model request changed: {request_id}")
+        return _accept_model_exchange(
+            state, request, pending.get("response"), pending.get("receipt")
+        )
     return _accept_model_exchange(state, request, *_invoke_model(state, request))
 
 
@@ -605,24 +944,73 @@ def _parallel_model_requests(
     """Run one proof frontier concurrently and account for it serially."""
     if len(requests) < 2:
         raise ContractError("a parallel proof frontier needs at least two lanes")
-    first_sequence = len(state["receipts"]) + 1
-    envelopes = [
-        _model_envelope(state, sequence=first_sequence + index, **spec)
-        for index, spec in enumerate(requests)
+    stored = {
+        **state.setdefault("model_exchanges", {}),
+        **state.setdefault("pending_model_exchanges", {}),
+    }
+    used_sequences = [
+        exchange["request"]["sequence"]
+        for exchange in stored.values()
+        if isinstance(exchange, dict) and isinstance(exchange.get("request"), dict)
+    ] + [item["sequence"] for item in state["receipts"]]
+    next_sequence = max(used_sequences, default=0) + 1
+    envelopes = []
+    for spec in requests:
+        previous = stored.get(spec["request_id"])
+        sequence = (
+            previous["request"]["sequence"] if previous is not None else next_sequence
+        )
+        envelope = _model_envelope(state, sequence=sequence, **spec)
+        if previous is not None and previous.get("request") != envelope:
+            raise ContractError(f"resumed model request changed: {spec['request_id']}")
+        if previous is None:
+            next_sequence += 1
+        envelopes.append(envelope)
+
+    missing = [
+        (index, request)
+        for index, request in enumerate(envelopes)
+        if request["request_id"] not in stored
     ]
-    start_barrier = threading.Barrier(len(envelopes))
+    start_barrier = threading.Barrier(len(missing)) if len(missing) > 1 else None
 
     def invoke(request):
         started = time.monotonic_ns()
-        start_barrier.wait()
-        response, receipt = _invoke_model(state, request)
+        if start_barrier is not None:
+            start_barrier.wait()
+        response, receipt = _invoke_model(state, request, checkpoint=False)
         return response, receipt, started, time.monotonic_ns()
 
-    with ThreadPoolExecutor(
-        max_workers=len(envelopes), thread_name_prefix="autofv-proof-lane"
-    ) as pool:
-        futures = [pool.submit(invoke, request) for request in envelopes]
-        raw = [future.result() for future in futures]
+    raw: list[tuple[dict[str, Any], dict[str, Any], int, int] | None] = [
+        None
+    ] * len(envelopes)
+    for index, request in enumerate(envelopes):
+        previous = stored.get(request["request_id"])
+        if previous is not None:
+            raw[index] = (previous["response"], previous["receipt"], 0, 0)
+    if missing:
+        _checkpoint_if_enabled(state, "model:proof-leaves:before")
+        if len(missing) == 1:
+            index, request = missing[0]
+            raw[index] = invoke(request)
+        else:
+            with ThreadPoolExecutor(
+                max_workers=len(missing), thread_name_prefix="autofv-proof-lane"
+            ) as pool:
+                futures = [
+                    (index, request, pool.submit(invoke, request))
+                    for index, request in missing
+                ]
+                for index, _request, future in futures:
+                    raw[index] = future.result()
+        for index, request in missing:
+            response, receipt, _, _ = raw[index]
+            state["pending_model_exchanges"][request["request_id"]] = {
+                "request": request,
+                "response": response,
+                "receipt": receipt,
+            }
+            _checkpoint_if_enabled(state, f"model:{request['request_id']}:after")
 
     intervals = {
         request["request_id"]: {
@@ -630,18 +1018,30 @@ def _parallel_model_requests(
             "finished_monotonic_ns": item[3],
         }
         for request, item in zip(envelopes, raw, strict=True)
+        if item is not None and item[2]
     }
-    if max(item["started_monotonic_ns"] for item in intervals.values()) >= min(
-        item["finished_monotonic_ns"] for item in intervals.values()
-    ):
+    if len(missing) > 1 and max(
+        item["started_monotonic_ns"] for item in intervals.values()
+    ) >= min(item["finished_monotonic_ns"] for item in intervals.values()):
         raise ContractError("parallel proof lanes did not overlap")
     state.setdefault("lane_intervals", {}).update(intervals)
-    accepted = [
+    for request, (response, receipt, _, _) in zip(envelopes, raw, strict=True):
+        if request["request_id"] in state["model_exchanges"]:
+            continue
         _accept_model_exchange(state, request, response, receipt)
-        for request, (response, receipt, _, _) in zip(envelopes, raw, strict=True)
+    exchanges = [
+        (
+            state["model_exchanges"][request["request_id"]]["response"],
+            state["model_exchanges"][request["request_id"]]["receipt"],
+        )
+        for request in envelopes
     ]
-    state["run"]["events"].append("proof_lanes:overlapped")
-    return accepted
+    if len(missing) > 1:
+        _event_once(state["run"], "proof_lanes:overlapped")
+    elif missing:
+        _event_once(state["run"], "proof_lanes:resumed")
+    _checkpoint_if_enabled(state, "model:proof-leaves:accepted")
+    return exchanges
 
 
 def _validate_model_response(
@@ -843,6 +1243,23 @@ def _lane_descriptors(
     return lanes
 
 
+def _worker_lane(lane: dict[str, Any]) -> dict[str, Any]:
+    return {
+        key: lane[key]
+        for key in (
+            "schema",
+            "lane_id",
+            "request_id",
+            "node",
+            "base_commit",
+            "assigned_path",
+            "worktree_path",
+            "cache_path",
+            "result_path",
+        )
+    }
+
+
 def _candidate_record(
     response: dict[str, Any], lane: dict[str, Any], policy_sha256: str
 ) -> dict[str, Any]:
@@ -961,6 +1378,10 @@ def _checkpoint_candidate(
             state["run"]["events"].append(
                 f"candidate_{status}:{candidate.get('request_id')}"
             )
+            state.pop("inflight_transition", None)
+            _checkpoint_if_enabled(
+                state, f"candidate:{candidate.get('request_id')}:{status}"
+            )
             return receipt
 
         if not isinstance(response, dict) or response.get("kind") != "patch":
@@ -1021,6 +1442,17 @@ def _checkpoint_candidate(
             return reject("candidate_native_decide_inventory_invalid")
 
         stale = candidate["base_commit"] != current["accepted_commit"]
+        state["inflight_transition"] = {
+            "kind": "candidate_accept",
+            "candidate_sha256": digest,
+            "request_id": candidate["request_id"],
+            "node": candidate["node"],
+            "base_commit": candidate["base_commit"],
+            "previous_accepted_commit": current["accepted_commit"],
+        }
+        _checkpoint_if_enabled(
+            state, f"candidate:{candidate['request_id']}:apply-build:before"
+        )
         try:
             accepted = worker.accept_candidate(state["run"], response, manifest)
         except worker.WorkerError as exc:
@@ -1041,6 +1473,7 @@ def _checkpoint_candidate(
         transition["transition_sha256"] = _canonical_sha256(transition)
         state["accepted_sequence"].append(transition)
         state["accepted"] = accepted
+        state["working"] = dict(accepted)
         state["run"]["accepted"] = accepted
         accepted_nodes = state.setdefault("accepted_nodes", [])
         if candidate["node"] not in accepted_nodes:
@@ -1059,6 +1492,10 @@ def _checkpoint_candidate(
         state["run"]["events"].append(
             f"candidate_{status}:{candidate['request_id']}"
         )
+        state.pop("inflight_transition", None)
+        _checkpoint_if_enabled(
+            state, f"candidate:{candidate['request_id']}:apply-build:after"
+        )
         return receipt
 
 
@@ -1069,6 +1506,9 @@ def _repair_contracts(
 ) -> dict[str, Any]:
     """Run the bounded weak-draft, consumer-check, review, and freeze sequence."""
     run = state["run"]
+    previous = state.get("contracts")
+    if isinstance(previous, dict) and previous.get("frozen_fingerprints"):
+        return previous
     policy_sha256 = run["native_decide_policy_sha256"]
     contracts = {
         "attempts": [],
@@ -1099,19 +1539,22 @@ def _repair_contracts(
         weak_record["declaration"]: weak_record,
         right_record["declaration"]: right_record,
     }
-    run["events"].extend(
-        (
-            f"contract_draft:{weak_record['declaration']}",
-            f"contract_draft:{right_record['declaration']}",
-            "provisional_contracts_applied",
-        )
-    )
+    for event in (
+        f"contract_draft:{weak_record['declaration']}",
+        f"contract_draft:{right_record['declaration']}",
+        "provisional_contracts_applied",
+    ):
+        _event_once(run, event)
 
-    feasibility = worker.check_contract_feasibility(
-        run, [weak_record["canon"], right_record["canon"]]
+    feasibility = _external_call(
+        state,
+        "build:provisional-consumer-weak",
+        lambda: worker.check_contract_feasibility(
+            run, [weak_record["canon"], right_record["canon"]]
+        ),
     )
     contracts["feasibility"].append(feasibility)
-    run["events"].append(f"provisional_consumer:{feasibility['status']}")
+    _event_once(run, f"provisional_consumer:{feasibility['status']}")
     if feasibility["status"] != "failed":
         raise ContractError("fixture weak contract unexpectedly passed consumer proof")
 
@@ -1130,20 +1573,23 @@ def _repair_contracts(
     contracts["attempts"].append(strong_record)
     contracts["invalidated_fingerprints"].append(weak_record["model_fingerprint"])
     contracts["provisional"][strong_record["declaration"]] = strong_record
-    run["events"].extend(
-        (
-            f"contract_review:{strong_record['declaration']}",
-            f"statement_invalidated:{weak_record['model_fingerprint']}",
-        )
-    )
+    for event in (
+        f"contract_review:{strong_record['declaration']}",
+        f"statement_invalidated:{weak_record['model_fingerprint']}",
+    ):
+        _event_once(run, event)
 
-    feasibility = worker.check_contract_feasibility(
-        run, [strong_record["canon"], right_record["canon"]]
+    feasibility = _external_call(
+        state,
+        "build:provisional-consumer-strong",
+        lambda: worker.check_contract_feasibility(
+            run, [strong_record["canon"], right_record["canon"]]
+        ),
     )
     contracts["feasibility"].append(feasibility)
-    run["events"].append(f"provisional_consumer:{feasibility['status']}")
+    _event_once(run, f"provisional_consumer:{feasibility['status']}")
     if feasibility["status"] != "passed":
-        run["events"].append("contract_inconclusive")
+        _event_once(run, "contract_inconclusive")
         raise ContractInconclusive(feasibility["diagnostic"])
 
     contracts["frozen"] = {
@@ -1158,14 +1604,22 @@ def _repair_contracts(
             right_record["model_fingerprint"],
         ]
     )
-    run["events"].append("statements_frozen")
+    _event_once(run, "statements_frozen")
+    _checkpoint_if_enabled(state, "contracts:frozen")
     return contracts
 
 
 def _freeze(state: _RunState) -> dict[str, Any]:
+    if state.get("graph"):
+        return {"graph": state["graph"]}
+    _checkpoint_if_enabled(state, "probe:before")
     rust_raw, aeneas_raw = worker.run_probes(state["run"])
     graph = probes.parse_probe_bytes(state["manifest"], rust_raw, aeneas_raw)
-    state["run"]["events"].append("targets_frozen")
+    state["graph"] = graph
+    for name in ("probe_rust_sha256", "probe_aeneas_sha256", "graph_sha256"):
+        state["run"][name] = graph[name]
+    _event_once(state["run"], "targets_frozen")
+    _checkpoint_if_enabled(state, "probe:after")
     return {"graph": graph}
 
 
@@ -1192,18 +1646,36 @@ def _agent_loop(state: _RunState) -> dict[str, Any]:
     leaf_nodes = graph["proof_batches"][0]
     if _proof_ready_nodes(graph, set()) != leaf_nodes:
         raise ContractError("the V1 leaf proof frontier is inconsistent")
-    lanes = _lane_descriptors(run, graph, leaf_nodes)
-    worker.prepare_lanes(run, lanes)
-    for key, value in (
-        ("lanes", lanes),
-        ("lane_intervals", {}),
-        ("candidate_receipts", []),
-        ("processed_candidate_sha256", []),
-        ("accepted_sequence", []),
-        ("accepted_nodes", []),
+    lanes = state.setdefault("lanes", [])
+    existing_lane_ids = {lane["lane_id"] for lane in lanes}
+    new_lanes = [
+        {**lane, "status": "preparing"}
+        for lane in _lane_descriptors(run, graph, leaf_nodes)
+        if lane["lane_id"] not in existing_lane_ids
+    ]
+    if new_lanes:
+        lanes.extend(new_lanes)
+        _external_call(
+            state,
+            "lanes:prepare-leaves",
+            lambda: worker.prepare_lanes(
+                run,
+                [_worker_lane(lane) for lane in new_lanes],
+            ),
+        )
+        for lane in new_lanes:
+            lane["status"] = "running"
+    leaf_lanes = [lane for lane in lanes if lane["node"] in leaf_nodes]
+    for key in (
+        "lane_intervals",
+        "candidate_receipts",
+        "processed_candidate_sha256",
+        "accepted_sequence",
+        "accepted_nodes",
     ):
-        state[key] = value
+        value = state.setdefault(key, {} if key == "lane_intervals" else [])
         run[key] = value
+    run["lanes"] = lanes
     exchanges = _parallel_model_requests(
         state,
         [
@@ -1218,27 +1690,58 @@ def _agent_loop(state: _RunState) -> dict[str, Any]:
                     probe_hash,
                 ],
             }
-            for lane in lanes
+            for lane in leaf_lanes
         ],
     )
     leaf_patches = []
-    for lane, (response, _) in zip(lanes, exchanges, strict=True):
+    for lane, (response, _) in zip(leaf_lanes, exchanges, strict=True):
         candidate = _candidate_record(
             response, lane, run["native_decide_policy_sha256"]
         )
-        worker.persist_lane_result(
-            run, lane, {key: value for key, value in candidate.items() if key != "response"}
-        )
+        if candidate["candidate_sha256"] not in state["processed_candidate_sha256"]:
+            _external_call(
+                state,
+                f"lane:{lane['lane_id']}:persist",
+                lambda candidate=candidate, lane=lane: worker.persist_lane_result(
+                    run,
+                    lane,
+                    {
+                        key: value
+                        for key, value in candidate.items()
+                        if key != "response"
+                    },
+                ),
+            )
         transition = _checkpoint_candidate(state, candidate, manifest)
-        if not transition["status"].startswith("accepted"):
+        if transition["status"].startswith("accepted") or (
+            transition["status"] == "duplicate"
+            and lane["node"] in state["accepted_nodes"]
+        ):
+            lane["status"] = "accepted"
+            lane["requeueable"] = False
+        else:
             raise ContractError(
                 f"leaf candidate {lane['request_id']} was {transition['status']}: "
                 f"{transition['reason']}"
             )
         leaf_patches.append(response["payload"]["patch_sha256"])
 
+    top_batch = graph["proof_batches"][1]
+    if set(top_batch) <= set(state["accepted_nodes"]):
+        return {
+            "accepted": state["accepted"],
+            "contracts": contracts,
+            "receipts": state["receipts"],
+            "cost": state["cost"],
+            "lanes": lanes,
+            "lane_intervals": state["lane_intervals"],
+            "candidate_receipts": state["candidate_receipts"],
+            "processed_candidate_sha256": state["processed_candidate_sha256"],
+            "accepted_sequence": state["accepted_sequence"],
+            "accepted_nodes": state["accepted_nodes"],
+        }
     ready = _proof_ready_nodes(graph, set(state["accepted_nodes"]))
-    if ready != graph["proof_batches"][1]:
+    if ready != top_batch:
         raise ContractError("top proof became ready before both leaves were accepted")
     left_fingerprint = contracts["frozen"]["Diamond.left_spec"]["model_fingerprint"]
     right_fingerprint = contracts["frozen"]["Diamond.right_spec"]["model_fingerprint"]
@@ -1253,19 +1756,44 @@ def _agent_loop(state: _RunState) -> dict[str, Any]:
             *leaf_patches,
         ],
     )
-    top_lane = _lane_descriptors(run, graph, ready)[0]
-    worker.prepare_lanes(run, [top_lane])
-    state["lanes"].append(top_lane)
+    desired_top = _lane_descriptors(run, graph, ready)[0]
+    top_lane = next(
+        (lane for lane in lanes if lane["lane_id"] == desired_top["lane_id"]), None
+    )
+    if top_lane is None:
+        top_lane = {**desired_top, "status": "preparing"}
+        lanes.append(top_lane)
+        _external_call(
+            state,
+            "lanes:prepare-top",
+            lambda: worker.prepare_lanes(run, [_worker_lane(top_lane)]),
+        )
+        top_lane["status"] = "running"
     top_candidate = _candidate_record(
         proof_top, top_lane, run["native_decide_policy_sha256"]
     )
-    worker.persist_lane_result(
-        run,
-        top_lane,
-        {key: value for key, value in top_candidate.items() if key != "response"},
-    )
+    if top_candidate["candidate_sha256"] not in state["processed_candidate_sha256"]:
+        _external_call(
+            state,
+            f"lane:{top_lane['lane_id']}:persist",
+            lambda: worker.persist_lane_result(
+                run,
+                top_lane,
+                {
+                    key: value
+                    for key, value in top_candidate.items()
+                    if key != "response"
+                },
+            ),
+        )
     transition = _checkpoint_candidate(state, top_candidate, manifest)
-    if not transition["status"].startswith("accepted"):
+    if transition["status"].startswith("accepted") or (
+        transition["status"] == "duplicate"
+        and top_lane["node"] in state["accepted_nodes"]
+    ):
+        top_lane["status"] = "accepted"
+        top_lane["requeueable"] = False
+    else:
         raise ContractError(
             f"top candidate was {transition['status']}: {transition['reason']}"
         )
@@ -1285,6 +1813,8 @@ def _agent_loop(state: _RunState) -> dict[str, Any]:
 
 
 def _clean_verify(state: _RunState) -> dict[str, Any]:
+    if state.get("verifier_report", {}).get("verdict") == "PASS":
+        return {"verifier_report": state["verifier_report"]}
     run, graph, accepted = state["run"], state["graph"], state["accepted"]
     expected = {
         "snapshot_sha256": run["snapshot_sha256"],
@@ -1297,8 +1827,11 @@ def _clean_verify(state: _RunState) -> dict[str, Any]:
         "accepted_commit": accepted["accepted_commit"],
         "accepted_tree_sha256": accepted["accepted_tree_sha256"],
     }
+    _checkpoint_if_enabled(state, "verifier:before")
     report = verifier.validate_report(verifier.verify_run(run, expected), run, expected)
-    run["events"].append("clean_verifier:PASS")
+    state["verifier_report"] = report
+    _event_once(run, "clean_verifier:PASS")
+    _checkpoint_if_enabled(state, "verifier:after")
     return {"verifier_report": report}
 
 
@@ -1327,7 +1860,7 @@ def _result(
         (Decimal(item["cost"]["amount"]) for item in state.get("receipts", [])),
         Decimal("0.000000"),
     )
-    run["events"].append("result_emitted")
+    _event_once(run, "result_emitted")
     return {
         "schema": "autofv-result/v1",
         "run_id": run["run_id"],
@@ -1387,11 +1920,30 @@ def _l0_receipt(run: dict[str, Any], state: _RunState, result: dict[str, Any]) -
     return {**body, "receipt_sha256": _canonical_sha256(body)}
 
 
+def _resume_identities(
+    target: Path,
+    manifest: dict[str, Any],
+    config: dict[str, Any],
+    lock: dict[str, Any],
+) -> dict[str, Any]:
+    control_manifest, _ = worker._control_manifest(lock)
+    return {
+        "snapshot_sha256": worker.hash_tree(target),
+        "manifest_sha256": _canonical_sha256(manifest),
+        "image_digest": lock["image"]["image_digest"],
+        "control_bundle_sha256": control_manifest["bundle_sha256"],
+        "native_decide_policy_sha256": lock["native_decide_policy_sha256"],
+        "toolchain_lock_sha256": _canonical_sha256(lock),
+        "run_config_sha256": _checkpoint_config_sha256(config),
+    }
+
+
 def run_experiment(
     target: str | Path,
     run_config: str | Path,
     *,
     run_round=agentproc.run_round,
+    resume_from: str | Path | None = None,
 ) -> dict[str, Any]:
     """Run the bounded sealed tracer and reduce every post-allocation exit."""
     target_path, manifest = validate_target(target)
@@ -1399,28 +1951,53 @@ def run_experiment(
     lock = load_toolchain_lock()
     policy = validate_native_decide_policy(lock)
     preparation_failure = None
-    try:
-        run = worker.prepare_run(target_path, manifest, lock)
-    except worker.WorkerError as exc:
-        if exc.run is None:
-            raise
-        run = exc.run
-        preparation_failure = exc
-    run.update(
-        {
+    if resume_from is not None:
+        resume_root = _absolute_path(resume_from, "resume root", directory=True)
+        checkpoint = _load_checkpoint(
+            resume_root,
+            _resume_identities(target_path, manifest, config, lock),
+        )
+        state = _restore_checkpoint(
+            checkpoint,
+            manifest=manifest,
+            config=config,
+            lock=lock,
+            run_round=run_round,
+        )
+        run = state["run"]
+    else:
+        try:
+            run = worker.prepare_run(target_path, manifest, lock)
+        except worker.WorkerError as exc:
+            if exc.run is None:
+                raise
+            run = exc.run
+            preparation_failure = exc
+        run.update(
+            {
+                "manifest": manifest,
+                "native_decide_policy": policy["selection"],
+                "native_decide_policy_sha256": lock[
+                    "native_decide_policy_sha256"
+                ],
+            }
+        )
+        accepted = run.get("accepted") or {"accepted_commit": run.get("base_commit")}
+        state = {
+            "run": run,
             "manifest": manifest,
-            "native_decide_policy": policy["selection"],
-            "native_decide_policy_sha256": lock["native_decide_policy_sha256"],
+            "config": config,
+            "run_round": run_round,
+            "receipts": [],
+            "cost": Decimal("0.000000"),
+            "accepted": accepted,
+            "working": dict(accepted),
+            "pending_model_exchanges": {},
+            "model_exchanges": {},
         }
-    )
-    state: _RunState = {
-        "run": run,
-        "manifest": manifest,
-        "config": config,
-        "run_round": run_round,
-        "receipts": [],
-        "cost": Decimal("0.000000"),
-    }
+    state["checkpoint_enabled"] = bool(run.get("run_root"))
+    if resume_from is None:
+        _checkpoint_if_enabled(state, "run:prepared")
     try:
         if preparation_failure is not None:
             raise preparation_failure
@@ -1442,7 +2019,10 @@ def run_experiment(
                 else type(exc).__name__.removesuffix("Error").lower()
             ),
         )
+    state["result"] = result
+    _checkpoint_if_enabled(state, "result:before-export")
     worker.persist_result(run, result, _l0_receipt(run, state, result))
+    _checkpoint_if_enabled(state, "result:after-export")
     return result
 
 

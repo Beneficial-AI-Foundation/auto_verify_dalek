@@ -6,6 +6,7 @@ import hashlib
 import io
 import json
 import os
+import re
 import secrets
 import stat
 import subprocess
@@ -314,6 +315,13 @@ def prepare_run(target: Path, manifest: dict[str, Any], lock: dict[str, Any]) ->
             "Freeze the prepared diamond baseline",
         )
         run["base_commit"] = _git(run, "rev-parse", "HEAD").decode().strip()
+        run["accepted"] = {
+            "accepted_commit": run["base_commit"],
+            "accepted_tree_sha256": _sha256(
+                _git(run, "archive", "--format=tar", "HEAD")
+            ),
+            "checks": ["sealed_baseline"],
+        }
     except WorkerError as exc:
         exc.run = run
         raise
@@ -645,6 +653,45 @@ def persist_result(run: dict[str, Any], result: dict[str, Any], receipt: dict[st
 def export_accepted(run: dict[str, Any]) -> bytes:
     """Return the exact accepted Git tree, without worker caches or metadata."""
     return _git(run, "archive", "--format=tar", "HEAD")
+
+
+def inspect_resume_state(
+    run: dict[str, Any], manifest: dict[str, Any]
+) -> dict[str, Any]:
+    """Verify the managed Git HEAD before the controller trusts resumed state."""
+    try:
+        status = _git(run, "status", "--porcelain").decode().strip()
+        if status:
+            return {"valid": False, "dirty": True, "reason": "working tree changed"}
+        _docker(*_runtime_argv(run["lock"], run["volume"], *manifest["verify"]))
+        commit = _git(run, "rev-parse", "HEAD").decode().strip()
+        tree = _git(run, "archive", "--format=tar", "HEAD")
+    except WorkerError as exc:
+        return {"valid": False, "dirty": None, "reason": str(exc)[:1000]}
+    return {
+        "valid": True,
+        "dirty": False,
+        "accepted_commit": commit,
+        "accepted_tree_sha256": _sha256(tree),
+    }
+
+
+def restore_accepted(
+    run: dict[str, Any], accepted: dict[str, Any], manifest: dict[str, Any]
+) -> dict[str, Any]:
+    """Restore only the disposable managed project to an exact accepted commit."""
+    commit = accepted.get("accepted_commit")
+    tree_sha256 = accepted.get("accepted_tree_sha256")
+    if (
+        not isinstance(commit, str)
+        or re.fullmatch(r"[0-9a-f]{40}", commit) is None
+        or not isinstance(tree_sha256, str)
+        or re.fullmatch(r"[0-9a-f]{64}", tree_sha256) is None
+    ):
+        raise WorkerError("accepted checkpoint identity is invalid")
+    _git(run, "reset", "--hard", commit)
+    _git(run, "clean", "-ffd")
+    return inspect_resume_state(run, manifest)
 
 
 def read_project_file(run: dict[str, Any], relative_path: str) -> bytes:

@@ -234,9 +234,10 @@ def prepare_run(target: Path, manifest: dict[str, Any], lock: dict[str, Any]) ->
     }
     seed = (
         "mkdir -p /volume/work/project /volume/evidence /volume/accepted "
-        "/volume/logs /volume/autofv-control && "
+        "/volume/logs /volume/lanes /volume/autofv-control && "
         "tar -xf - -C /volume && "
-        "chown -R 65532:65532 /volume/work /volume/evidence /volume/accepted /volume/logs && "
+        "chown -R 65532:65532 /volume/work /volume/evidence /volume/accepted "
+        "/volume/logs /volume/lanes && "
         "chmod -R a-w /volume/autofv-control && chmod 0555 /volume/autofv-control"
     )
     git_env = (
@@ -338,6 +339,106 @@ def _bridge(rust_raw: bytes, manifest: dict[str, Any]) -> bytes:
             }
         )
     return _canonical_bytes({"functions": sorted(records, key=lambda item: item["lean_name"])}) + b"\n"
+
+
+def prepare_lanes(run: dict[str, Any], lanes: list[dict[str, Any]]) -> None:
+    """Create private worktrees and mutable paths serially from one base."""
+    if not lanes:
+        raise WorkerError("proof lane list is empty")
+    keys = {
+        "schema",
+        "lane_id",
+        "request_id",
+        "node",
+        "base_commit",
+        "assigned_path",
+        "worktree_path",
+        "cache_path",
+        "result_path",
+    }
+    bases = {lane.get("base_commit") for lane in lanes}
+    if len(bases) != 1:
+        raise WorkerError("proof lanes must share one accepted base")
+    mutable = [
+        lane[field]
+        for lane in lanes
+        for field in ("worktree_path", "cache_path", "result_path")
+    ]
+    if len(mutable) != len(set(mutable)):
+        raise WorkerError("proof lanes share mutable state")
+
+    project = Path(run["project_dir"])
+    local = project.is_dir()
+    local_root = (Path(run["run_root"]) / "lanes").resolve() if local else None
+    for lane in lanes:
+        if set(lane) != keys or lane["schema"] != "autofv-proof-lane/v1":
+            raise WorkerError("proof lane descriptor is invalid")
+        worktree = lane["worktree_path"]
+        cache = lane["cache_path"]
+        result_parent = str(PurePosixPath(lane["result_path"]).parent)
+        if local:
+            paths = [Path(worktree), Path(cache), Path(lane["result_path"])]
+            if any(not path.resolve().is_relative_to(local_root) for path in paths):
+                raise WorkerError("proof lane path escapes the run")
+            Path(cache).mkdir(parents=True)
+            Path(lane["result_path"]).parent.mkdir(parents=True)
+            completed = subprocess.run(
+                ("git", "worktree", "add", "--detach", worktree, lane["base_commit"]),
+                cwd=project,
+                capture_output=True,
+                text=True,
+            )
+            if completed.returncode:
+                raise WorkerError(
+                    f"proof lane worktree failed: {(completed.stdout + completed.stderr)[-2000:]}"
+                )
+        else:
+            prefix = f"/volume/lanes/{lane['lane_id']}/"
+            if not all(
+                value.startswith(prefix)
+                for value in (worktree, cache, lane["result_path"])
+            ):
+                raise WorkerError("proof lane path escapes the managed volume")
+            _docker(
+                *_runtime_argv(
+                    run["lock"], run["volume"], "mkdir", "-p", cache, result_parent
+                )
+            )
+            _git(run, "worktree", "add", "--detach", worktree, lane["base_commit"])
+    run["events"].append("proof_lanes:prepared")
+
+
+def persist_lane_result(
+    run: dict[str, Any], lane: dict[str, Any], result: dict[str, Any]
+) -> None:
+    """Write one hash-only lane result without exposing its candidate patch."""
+    raw = _canonical_bytes(result) + b"\n"
+    path = lane["result_path"]
+    project = Path(run["project_dir"])
+    if project.is_dir():
+        destination = Path(path)
+        root = (Path(run["run_root"]) / "lanes" / lane["lane_id"]).resolve()
+        if not destination.resolve().is_relative_to(root):
+            raise WorkerError("proof lane result path escapes the run")
+        temporary = destination.with_suffix(destination.suffix + ".tmp")
+        temporary.write_bytes(raw)
+        os.replace(temporary, destination)
+        return
+    if not path.startswith(f"/volume/lanes/{lane['lane_id']}/"):
+        raise WorkerError("proof lane result path escapes the managed volume")
+    _docker(
+        *_runtime_argv(
+            run["lock"],
+            run["volume"],
+            "sh",
+            "-eu",
+            "-c",
+            'temporary="$1.tmp"; cat > "$temporary"; mv "$temporary" "$1"',
+            "sh",
+            path,
+        ),
+        input_bytes=raw,
+    )
 
 
 def run_probes(run: dict[str, Any]) -> tuple[bytes, bytes]:
@@ -484,29 +585,35 @@ def accept_candidate(
         raise WorkerError("candidate patch hash mismatch")
     if any(marker in patch for marker in ("\n+axiom ", "\n+sorry", "\n+unsafe ")):
         raise WorkerError("candidate violates the trust gate")
-    _git(run, "apply", "--check", "-", input_bytes=patch.encode())
-    _git(run, "apply", "-", input_bytes=patch.encode())
+    raw_patch = patch.encode()
+    _git(run, "apply", "--check", "-", input_bytes=raw_patch)
+    _git(run, "apply", "-", input_bytes=raw_patch)
     _git(run, "add", "--", path)
-    verify = manifest["verify"]
-    _docker(*_runtime_argv(run["lock"], run["volume"], *verify))
-    _docker(
-        *_runtime_argv(
-            run["lock"],
-            run["volume"],
-            "git",
-            "-C",
-            "/volume/work/project",
-            "-c",
-            "user.name=AutoFV",
-            "-c",
-            "user.email=autofv@invalid",
-            "commit",
-            "-q",
-            "--no-gpg-sign",
-            "-m",
-            candidate["request_id"],
+    try:
+        verify = manifest["verify"]
+        _docker(*_runtime_argv(run["lock"], run["volume"], *verify))
+        _docker(
+            *_runtime_argv(
+                run["lock"],
+                run["volume"],
+                "git",
+                "-C",
+                "/volume/work/project",
+                "-c",
+                "user.name=AutoFV",
+                "-c",
+                "user.email=autofv@invalid",
+                "commit",
+                "-q",
+                "--no-gpg-sign",
+                "-m",
+                candidate["request_id"],
+            )
         )
-    )
+    except WorkerError:
+        _git(run, "apply", "--reverse", "-", input_bytes=raw_patch)
+        _git(run, "add", "--", path)
+        raise
     commit = _git(run, "rev-parse", "HEAD").decode().strip()
     tree = _git(run, "archive", "--format=tar", "HEAD")
     run["events"].append(f"accepted:{path}")

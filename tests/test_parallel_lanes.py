@@ -32,14 +32,16 @@ def _graph():
 
 def _state(run_round=None):
     first_five = [copy.deepcopy(entry["receipt"]) for entry in FIXTURE["entries"][:5]]
+    accepted = {"accepted_commit": FIXTURE["git"]["base_commit"]}
     return {
         "run": {
             "run_id": FIXTURE["run_id"],
             "base_commit": FIXTURE["git"]["base_commit"],
             "native_decide_policy_sha256": POLICY,
             "events": [],
-            "accepted": {"accepted_commit": FIXTURE["git"]["base_commit"]},
+            "accepted": copy.deepcopy(accepted),
         },
+        "accepted": accepted,
         "config": {
             "model": FIXTURE["model_id"],
             "max_cost_usd": Decimal("1.000000"),

@@ -1,0 +1,72 @@
+{
+  "schema": "autofv-linux-isolation-fixture/v1",
+  "denied": [
+    {
+      "id": "external_dns",
+      "kind": "dns",
+      "host": "example.com",
+      "port": 443
+    },
+    {
+      "id": "literal_ipv4",
+      "kind": "ipv4",
+      "host": "1.1.1.1",
+      "port": 443
+    },
+    {
+      "id": "literal_ipv6",
+      "kind": "ipv6",
+      "host": "2606:4700:4700::1111",
+      "port": 443
+    },
+    {
+      "id": "link_local_metadata",
+      "kind": "ipv4",
+      "host": "169.254.169.254",
+      "port": 80
+    }
+  ],
+  "fixed_proxy": {
+    "method": "POST",
+    "path": "/v1/autofv/infer"
+  },
+  "rejected_proxy": [
+    {
+      "id": "connect_tunnel",
+      "method": "CONNECT",
+      "path": "/v1/autofv/infer"
+    },
+    {
+      "id": "caller_upstream",
+      "method": "POST",
+      "path": "/v1/autofv/infer",
+      "header": "X-AutoFV-Upstream-Host"
+    },
+    {
+      "id": "caller_authorization",
+      "method": "POST",
+      "path": "/v1/autofv/infer",
+      "header": "Authorization"
+    },
+    {
+      "id": "provider_admin",
+      "method": "POST",
+      "path": "/v1/models"
+    },
+    {
+      "id": "file_transfer",
+      "method": "POST",
+      "path": "/v1/files"
+    },
+    {
+      "id": "batch_jobs",
+      "method": "POST",
+      "path": "/v1/batches"
+    },
+    {
+      "id": "unclassified_surface",
+      "method": "POST",
+      "path": "/v1/unknown"
+    }
+  ]
+}

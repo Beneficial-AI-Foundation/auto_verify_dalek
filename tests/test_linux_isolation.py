@@ -109,33 +109,87 @@ class LinuxIsolationTests(unittest.TestCase):
         self.assertEqual(audit["stripped_run_credentials"], 1)
 
     def test_claim_collision_and_export_before_disposal(self) -> None:
+        for interrupted in (False, True):
+            with self.subTest(interrupted=interrupted), tempfile.TemporaryDirectory() as tmp:
+                with mock.patch.object(worker.tempfile, "mkdtemp", return_value=tmp):
+                    run = worker.prepare_run(TARGET, self.manifest, LOCK)
+                disposed = False
+                try:
+                    with self.assertRaisesRegex(worker.WorkerError, "already claimed"):
+                        worker.claim_worker(
+                            {
+                                **run,
+                                "run_id": "second-run",
+                                "volume": f"{run['volume']}-collision",
+                            }
+                        )
+
+                    export = worker.export_run(run, interrupted=interrupted)
+                    disposal = worker.dispose_run(run, interrupted=interrupted)
+                    disposed = True
+                finally:
+                    if not disposed:
+                        worker.dispose_run(run, interrupted=True)
+
+                self.assertEqual(export["schema"], "autofv-export/v1")
+                self.assertTrue(export["verified_before_disposal"])
+                self.assertEqual(disposal["schema"], "autofv-disposal/v1")
+                self.assertEqual(
+                    disposal["export_manifest_sha256"], export["manifest_sha256"]
+                )
+                self.assertEqual(disposal["interrupted"], interrupted)
+                self.assertLess(export["sequence"], disposal["sequence"])
+                if interrupted:
+                    try:
+                        observed = worker.inspect_resume_state(run, self.manifest)
+                        self.assertTrue(observed["valid"])
+                        self.assertEqual(
+                            observed["accepted_commit"], run["accepted"]["accepted_commit"]
+                        )
+                    finally:
+                        worker.dispose_run(run, interrupted=True)
+
+    def test_export_rejects_symlinked_host_artifacts(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
-            with mock.patch.object(worker.tempfile, "mkdtemp", return_value=tmp):
-                run = worker.prepare_run(TARGET, self.manifest, LOCK)
-            disposed = False
-            try:
-                with self.assertRaisesRegex(worker.WorkerError, "already claimed"):
-                    worker.claim_worker(
-                        {
-                            **run,
-                            "run_id": "second-run",
-                            "volume": f"{run['volume']}-collision",
-                        }
-                    )
+            root = Path(tmp)
+            (root / "evidence").mkdir()
+            (root / "elsewhere").mkdir()
+            (root / "evidence/linked-directory").symlink_to(
+                root / "elsewhere", target_is_directory=True
+            )
+            with self.assertRaisesRegex(worker.WorkerError, "not a regular file"):
+                worker._host_artifacts({"run_root": tmp})
 
-                export = worker.export_run(run, interrupted=True)
-                disposal = worker.dispose_run(run, interrupted=True)
-                disposed = True
-            finally:
-                if not disposed:
-                    worker.dispose_run(run, interrupted=True)
+    def test_preparation_and_export_failures_release_owned_resources(self) -> None:
+        _, control_manifest, snapshot_sha256 = worker._seed_archive(TARGET, LOCK)
+        with mock.patch.object(
+            worker,
+            "_seed_archive",
+            return_value=(b"not a tar archive", control_manifest, snapshot_sha256),
+        ):
+            with self.assertRaises(worker.WorkerError) as raised:
+                worker.prepare_run(TARGET, self.manifest, LOCK)
+        failed_run = raised.exception.run
+        self.assertIsNotNone(failed_run)
+        self.assertTrue(failed_run["resources_disposed"])
 
-            self.assertEqual(export["schema"], "autofv-export/v1")
-            self.assertTrue(export["verified_before_disposal"])
-            self.assertEqual(disposal["schema"], "autofv-disposal/v1")
-            self.assertEqual(disposal["export_manifest_sha256"], export["manifest_sha256"])
-            self.assertTrue(disposal["interrupted"])
-            self.assertLess(export["sequence"], disposal["sequence"])
+        run = worker.prepare_run(TARGET, self.manifest, LOCK)
+        try:
+            worker._docker(
+                *worker._runtime_argv(
+                    LOCK,
+                    run["volume"],
+                    "sh",
+                    "-c",
+                    "printf rejected > unexpected.txt",
+                )
+            )
+            with self.assertRaisesRegex(worker.WorkerError, "not exportable"):
+                worker.dispose_run(run, interrupted=True)
+            self.assertTrue(run["resources_disposed"])
+        finally:
+            if not run.get("resources_disposed"):
+                worker._cleanup_owned_resources(run)
 
 
 if __name__ == "__main__":

@@ -145,6 +145,24 @@ class LinuxIsolationTests(unittest.TestCase):
                         )
 
                     export = worker.export_run(run, interrupted=interrupted)
+                    if interrupted:
+                        worker._docker(
+                            *worker._runtime_argv(
+                                LOCK,
+                                run["volume"],
+                                "sh",
+                                "-c",
+                                "printf '\n-- changed after export\n' >> Diamond/Left.lean",
+                            )
+                        )
+                        with self.assertRaisesRegex(
+                            worker.WorkerError, "changed after export"
+                        ):
+                            worker.dispose_run(run, interrupted=True)
+                        self.assertIsNotNone(
+                            worker.inspect_lima_instance(worker.AGENT_VM)
+                        )
+                        worker._git(run, "reset", "--hard", run["accepted"]["accepted_commit"])
                     disposal = worker.dispose_run(run, interrupted=interrupted)
                     disposed = True
                 finally:

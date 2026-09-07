@@ -19,14 +19,16 @@ from typing import Any, Iterable
 
 
 ROOT = Path(__file__).resolve().parents[1]
-AGENT_VM = "autofv-agent"
+AGENT_TEMPLATE_VM = "autofv-agent-template"
+AGENT_VM = "autofv-agent-run"
 AGENT_UID = "65532:65532"
 SKIP_PARTS = frozenset({".git", ".lake", "target", "__pycache__"})
 SKIP_NAMES = frozenset({"Cargo.lock", "functions.json"})
-FIXTURE_RUN_ID = "fixture-diamond-run-0001"
 CLAIM_CONTAINER = "autofv-worker-claim"
 RELAY_PORT = 8080
 RESOURCE_LABEL = "org.autofv"
+OUTPUT_CHAIN = "AUTOFV-OUTPUT"
+FORWARD_CHAIN = "AUTOFV-FORWARD"
 SHA256 = re.compile(r"[0-9a-f]{64}")
 
 _RELAY_PROGRAM = r"""
@@ -94,6 +96,229 @@ class WorkerError(RuntimeError):
     def __init__(self, message: str, *, run: dict[str, Any] | None = None):
         super().__init__(message)
         self.run = run
+
+
+def _limactl(
+    *argv: str,
+    input_bytes: bytes | None = None,
+    check: bool = True,
+) -> subprocess.CompletedProcess[bytes]:
+    try:
+        completed = subprocess.run(
+            ("limactl", *argv),
+            input=input_bytes,
+            capture_output=True,
+        )
+    except OSError as exc:
+        raise WorkerError(f"Lima lifecycle command failed: {exc}") from exc
+    if check and completed.returncode:
+        detail = "\n".join(
+            part
+            for part in (
+                completed.stdout.decode("utf-8", "replace").strip(),
+                completed.stderr.decode("utf-8", "replace").strip(),
+            )
+            if part
+        )[-4000:]
+        raise WorkerError(f"Lima lifecycle command failed: {detail or argv[0]}")
+    return completed
+
+
+def inspect_lima_instance(name: str) -> dict[str, Any] | None:
+    """Return one exact Lima instance record, or None when it does not exist."""
+    completed = _limactl("list", "--json", name, check=False)
+    if completed.returncode:
+        detail = (completed.stderr + completed.stdout).decode("utf-8", "replace")
+        if "unmatched instances" in detail.lower():
+            return None
+        raise WorkerError(f"Lima instance inventory failed: {detail.strip()[-4000:]}")
+    try:
+        value = json.loads(completed.stdout)
+    except (UnicodeError, json.JSONDecodeError) as exc:
+        raise WorkerError("Lima instance inventory is invalid") from exc
+    if not isinstance(value, dict) or value.get("name") != name:
+        raise WorkerError("Lima instance inventory is incomplete")
+    return value
+
+
+def _new_run_id() -> str:
+    run_id = os.environ.get("AUTOFV_RUN_ID") or f"autofv-{secrets.token_hex(16)}"
+    if re.fullmatch(r"[a-z0-9][a-z0-9._-]{0,127}", run_id) is None:
+        raise WorkerError("trusted run identity is invalid")
+    return run_id
+
+
+def _firewall(
+    tool: str, *argv: str, check: bool = True
+) -> subprocess.CompletedProcess[bytes]:
+    return _lima("sudo", tool, *argv, check=check)
+
+
+def _replace_firewall_chain(
+    tool: str, parent: str, chain: str, rules: tuple[tuple[str, ...], ...]
+) -> None:
+    while _firewall(tool, "-C", parent, "-j", chain, check=False).returncode == 0:
+        _firewall(tool, "-D", parent, "-j", chain)
+    if _firewall(tool, "-S", chain, check=False).returncode == 0:
+        _firewall(tool, "-F", chain)
+    else:
+        _firewall(tool, "-N", chain)
+    for rule in rules:
+        _firewall(tool, "-A", chain, *rule)
+    _firewall(tool, "-I", parent, "1", "-j", chain)
+
+
+def _firewall_snapshot(
+    ipv4_allows: tuple[tuple[str, ...], ...] = (),
+) -> dict[str, Any]:
+    common_output = (
+        ("-o", "lo", "-j", "ACCEPT"),
+        ("-m", "conntrack", "--ctstate", "ESTABLISHED,RELATED", "-j", "ACCEPT"),
+        ("-j", "REJECT"),
+    )
+    common_forward = (
+        ("-m", "conntrack", "--ctstate", "ESTABLISHED,RELATED", "-j", "ACCEPT"),
+        *(ipv4_allows),
+        ("-j", "REJECT"),
+    )
+    evidence: dict[str, Any] = {}
+    families = (
+        ("iptables", common_forward),
+        ("ip6tables", common_forward[:1] + common_forward[-1:]),
+    )
+    for tool, allows in families:
+        expected = {OUTPUT_CHAIN: common_output, FORWARD_CHAIN: allows}
+        for parent, chain in (("OUTPUT", OUTPUT_CHAIN), ("DOCKER-USER", FORWARD_CHAIN)):
+            parent_rules = _firewall(tool, "-S", parent).stdout.decode().splitlines()
+            if not parent_rules or parent_rules[1:2] != [f"-A {parent} -j {chain}"]:
+                raise WorkerError(f"{tool} {parent} deny gate is not first")
+            chain_rules = _firewall(tool, "-S", chain).stdout.decode().splitlines()
+            observed = [
+                line for line in chain_rules if line.startswith(f"-A {chain} ")
+            ]
+            if len(observed) != len(expected[chain]):
+                raise WorkerError(f"{tool} {chain} rule count mismatch")
+            for rule in expected[chain]:
+                if _firewall(tool, "-C", chain, *rule, check=False).returncode:
+                    raise WorkerError(f"{tool} {chain} rule mismatch")
+        raw = _firewall(tool.replace("tables", "tables-save"), "-t", "filter").stdout
+        evidence[tool] = {"filter_sha256": _sha256(raw)}
+    return evidence
+
+
+def _install_worker_firewall() -> None:
+    _lima("sudo", "modprobe", "br_netfilter")
+    _lima(
+        "sudo",
+        "sysctl",
+        "-qw",
+        "net.bridge.bridge-nf-call-iptables=1",
+        "net.bridge.bridge-nf-call-ip6tables=1",
+    )
+    output = (
+        ("-o", "lo", "-j", "ACCEPT"),
+        ("-m", "conntrack", "--ctstate", "ESTABLISHED,RELATED", "-j", "ACCEPT"),
+        ("-j", "REJECT"),
+    )
+    forward = (
+        ("-m", "conntrack", "--ctstate", "ESTABLISHED,RELATED", "-j", "ACCEPT"),
+        ("-j", "REJECT"),
+    )
+    for tool in ("iptables", "ip6tables"):
+        _replace_firewall_chain(tool, "OUTPUT", OUTPUT_CHAIN, output)
+        _replace_firewall_chain(tool, "DOCKER-USER", FORWARD_CHAIN, forward)
+    _firewall_snapshot()
+
+
+def _create_worker(run: dict[str, Any]) -> None:
+    if inspect_lima_instance(AGENT_VM) is not None:
+        raise WorkerError("worker is already claimed by another run")
+    template = inspect_lima_instance(AGENT_TEMPLATE_VM)
+    if template is None:
+        raise WorkerError("pristine worker template is missing")
+    config = template.get("config") or {}
+    if (
+        template.get("status") != "Stopped"
+        or config.get("plain") is not True
+        or config.get("mounts") not in (None, [])
+        or (config.get("ssh") or {}).get("forwardAgent") is not False
+    ):
+        raise WorkerError("pristine worker template contract mismatch")
+    _limactl(
+        "clone",
+        "--start",
+        "--mount-none",
+        "--set",
+        ".hostResolver.enabled = false",
+        "--set",
+        ".propagateProxyEnv = false",
+        "--set",
+        ".ssh.forwardAgent = false",
+        AGENT_TEMPLATE_VM,
+        AGENT_VM,
+    )
+    try:
+        hostname = _lima("hostname").stdout.decode("ascii", "replace").strip()
+        if re.fullmatch(r"[a-z0-9][a-z0-9.-]{0,252}", hostname) is None:
+            raise WorkerError("disposable worker hostname is invalid")
+        hosts = _lima("cat", "/etc/hosts").stdout.decode("utf-8", "replace")
+        if not any(hostname in line.split() for line in hosts.splitlines()):
+            _lima(
+                "sudo",
+                "sh",
+                "-c",
+                "umask 022; cat >> /etc/hosts",
+                input_bytes=f"127.0.1.1 {hostname}\n".encode("ascii"),
+            )
+        _lima(
+            "sudo",
+            "sh",
+            "-c",
+            "umask 022; cat > /etc/autofv-run-id",
+            input_bytes=(run["run_id"] + "\n").encode("utf-8"),
+        )
+        _install_worker_firewall()
+    except WorkerError as exc:
+        _limactl("stop", AGENT_VM, check=False)
+        _limactl("delete", AGENT_VM, check=False)
+        if inspect_lima_instance(AGENT_VM) is not None:
+            raise WorkerError(
+                f"{exc}; failed to remove incomplete disposable worker", run=run
+            ) from exc
+        raise
+    run["worker_created"] = True
+    run["firewall_installed"] = True
+    run["events"].append("worker_created")
+
+
+def _owned_worker(run: dict[str, Any]) -> dict[str, Any] | None:
+    instance = inspect_lima_instance(AGENT_VM)
+    if instance is None:
+        return None
+    if instance.get("status") == "Stopped":
+        _limactl("start", AGENT_VM)
+        _install_worker_firewall()
+        run["firewall_installed"] = True
+        run.pop("proxy_firewall", None)
+        instance = inspect_lima_instance(AGENT_VM)
+    if instance is None or instance.get("status") != "Running":
+        raise WorkerError("disposable worker is not running", run=run)
+    assignment = _lima("cat", "/etc/autofv-run-id").stdout.decode().strip()
+    if assignment != run["run_id"]:
+        raise WorkerError("disposable worker belongs to another run", run=run)
+    return instance
+
+
+def _destroy_worker(run: dict[str, Any]) -> None:
+    instance = _owned_worker(run)
+    if instance is None:
+        run["worker_disposed"] = True
+        return
+    _limactl("stop", AGENT_VM)
+    _limactl("delete", AGENT_VM)
+    if inspect_lima_instance(AGENT_VM) is not None:
+        raise WorkerError("disposable worker still exists after deletion", run=run)
+    run["worker_disposed"] = True
 
 
 def _canonical_bytes(value: Any) -> bytes:
@@ -314,18 +539,14 @@ def _resource_inventory() -> dict[str, list[dict[str, Any]] | list[str]]:
         except (UnicodeError, json.JSONDecodeError) as exc:
             raise WorkerError("Docker container inventory is incomplete") from exc
         name = item.get("Names")
-        if not isinstance(name, str) or not name.startswith("autofv-"):
-            raise WorkerError("worker contains an unrelated Docker workload")
-        if item.get("State") == "running":
-            raise WorkerError("worker contains a running Docker workload")
+        if not isinstance(name, str):
+            raise WorkerError("Docker container inventory is incomplete")
         containers.append({"name": name, "state": item.get("State")})
 
     volumes = []
     output = _docker("volume", "ls", "--format", "{{.Name}}").stdout
     for raw in output.splitlines():
         name = raw.decode("utf-8", "strict")
-        if not name.startswith("autofv-"):
-            raise WorkerError("worker contains an unrelated Docker volume")
         volumes.append(name)
 
     networks = []
@@ -338,8 +559,8 @@ def _resource_inventory() -> dict[str, list[dict[str, Any]] | list[str]]:
         name = item.get("Name")
         if name in {"bridge", "host", "none"}:
             continue
-        if not isinstance(name, str) or not name.startswith("autofv-"):
-            raise WorkerError("worker contains an unrelated Docker network")
+        if not isinstance(name, str):
+            raise WorkerError("Docker network inventory is incomplete")
         networks.append(name)
     return {
         "containers": sorted(containers, key=lambda item: item["name"]),
@@ -348,7 +569,7 @@ def _resource_inventory() -> dict[str, list[dict[str, Any]] | list[str]]:
     }
 
 
-def inspect_worker(lock: dict[str, Any]) -> dict[str, Any]:
+def inspect_worker(lock: dict[str, Any], *, run_id: str) -> dict[str, Any]:
     """Fail closed unless the supplied worker matches the locked Linux boundary."""
     image = lock.get("image", {}).get("image_digest")
     if not isinstance(image, str) or re.fullmatch(r"sha256:[0-9a-f]{64}", image) is None:
@@ -370,21 +591,50 @@ def inspect_worker(lock: dict[str, Any]) -> dict[str, Any]:
     except (KeyError, OSError, WorkerError) as exc:
         raise WorkerError(f"control bundle contract mismatch: {exc}") from exc
 
+    instance = inspect_lima_instance(AGENT_VM)
+    config = (instance or {}).get("config") or {}
+    if (
+        instance is None
+        or instance.get("status") != "Running"
+        or config.get("plain") is not True
+        or config.get("mounts") not in (None, [])
+        or config.get("propagateProxyEnv") is not False
+        or (config.get("hostResolver") or {}).get("enabled") is not False
+        or (config.get("ssh") or {}).get("forwardAgent") is not False
+    ):
+        raise WorkerError("disposable Lima worker configuration mismatch")
+
     platform = _lima("uname", "-s").stdout.decode().strip().lower()
     kernel = _lima("uname", "-r").stdout.decode().strip()
     machine_id = _lima("cat", "/etc/machine-id").stdout.decode().strip()
     docker_version = _docker("version", "--format", "{{.Server.Version}}").stdout.decode().strip()
     runsc_version = _lima("runsc", "--version").stdout.decode().strip()
+    firewall_backend = _json_output(
+        _docker("info", "--format", "{{json .FirewallBackend}}"),
+        "Docker firewall backend",
+    )
+    bridge_filters = {
+        family: _lima("sysctl", "-n", key).stdout.decode().strip()
+        for family, key in (
+            ("ipv4", "net.bridge.bridge-nf-call-iptables"),
+            ("ipv6", "net.bridge.bridge-nf-call-ip6tables"),
+        )
+    }
     if platform != "linux":
         raise WorkerError("worker platform is not Linux")
     if kernel != lock["tools"]["kernel"]["pin"]:
         raise WorkerError("worker kernel identity mismatch")
     if not re.fullmatch(r"[0-9a-f]{32}", machine_id):
         raise WorkerError("worker machine identity is missing")
+    assignment = _lima("cat", "/etc/autofv-run-id").stdout.decode().strip()
+    if assignment != run_id:
+        raise WorkerError("worker run identity mismatch")
     if docker_version != lock["tools"]["docker"]["observed_version"].removeprefix("Docker "):
         raise WorkerError("Docker identity mismatch")
     if lock["tools"]["runsc"]["pin"] not in runsc_version:
         raise WorkerError("runsc version mismatch")
+    if firewall_backend.get("Driver") != "iptables" or set(bridge_filters.values()) != {"1"}:
+        raise WorkerError("Docker traffic does not cross the worker firewall")
 
     runtimes = _json_output(
         _docker("info", "--format", "{{json .Runtimes}}"), "Docker runtime"
@@ -408,6 +658,15 @@ def inspect_worker(lock: dict[str, Any]) -> dict[str, Any]:
         or any(labels.get(key) != value for key, value in expected_labels.items())
     ):
         raise WorkerError("locked image identity mismatch")
+    image_ids = sorted(
+        set(
+            _docker("image", "ls", "--all", "--no-trunc", "--quiet")
+            .stdout.decode()
+            .splitlines()
+        )
+    )
+    if image_ids != [image]:
+        raise WorkerError("disposable worker contains an unrelated image")
 
     environment_names = sorted(
         _lima("sh", "-c", "env | cut -d= -f1 | sort").stdout.decode().splitlines()
@@ -430,16 +689,25 @@ def inspect_worker(lock: dict[str, Any]) -> dict[str, Any]:
         raise WorkerError("worker contains a host checkout mount")
 
     resources = _resource_inventory()
+    if any(resources.values()):
+        raise WorkerError("disposable worker is not empty")
+    firewall = _firewall_snapshot()
     body = {
         "schema": "autofv-worker-inventory/v1",
+        "run_id": run_id,
+        "lima_instance": AGENT_VM,
         "platform": platform,
         "kernel": kernel,
         "machine_id": machine_id,
         "docker_version": docker_version,
+        "docker_firewall_backend": firewall_backend["Driver"],
+        "bridge_netfilter": bridge_filters,
+        "firewall": firewall,
         "runsc_version": runsc_version.splitlines()[0],
         "runtime": runtime["runtime_name"],
         "runtime_args": runtime["runtime_args"],
         "image_digest": image,
+        "image_ids": image_ids,
         "image_user": observed_image["Config"]["User"],
         "image_labels": {key: labels[key] for key in sorted(expected_labels)},
         "control_bundle_sha256": control_manifest["bundle_sha256"],
@@ -516,12 +784,13 @@ def claim_worker(run: dict[str, Any]) -> None:
 
 
 def lima_host_address() -> str:
-    """Return Lima's fixed host-gateway address without using container DNS."""
-    output = _lima("getent", "ahostsv4", "host.lima.internal").stdout.decode()
+    """Return the local VM gateway without relying on guest DNS."""
+    output = _lima("ip", "-4", "route", "show", "default").stdout.decode()
     try:
-        address = output.split()[0]
+        fields = output.split()
+        address = fields[fields.index("via") + 1]
         ipaddress.IPv4Address(address)
-    except (IndexError, ipaddress.AddressValueError) as exc:
+    except (ValueError, IndexError, ipaddress.AddressValueError) as exc:
         raise WorkerError("Lima host address is unavailable") from exc
     return address
 
@@ -529,7 +798,7 @@ def lima_host_address() -> str:
 def prepare_run(target: Path, manifest: dict[str, Any], lock: dict[str, Any]) -> dict[str, Any]:
     """Copy target/control bytes into a fresh named volume without a bind mount."""
     archive, control_manifest, snapshot_sha256 = _seed_archive(target, lock)
-    run_id = FIXTURE_RUN_ID
+    run_id = _new_run_id()
     volume = f"autofv-{secrets.token_hex(8)}"
     run_root = Path(tempfile.mkdtemp(prefix=f"{run_id}-"))
     run = {
@@ -572,9 +841,11 @@ def prepare_run(target: Path, manifest: dict[str, Any], lock: dict[str, Any]) ->
         "-e",
         "GIT_COMMITTER_DATE=2000-01-01T00:00:00+00:00",
     )
-    claimed = False
+    worker_created = False
     try:
-        inventory = inspect_worker(lock)
+        _create_worker(run)
+        worker_created = True
+        inventory = inspect_worker(lock, run_id=run_id)
         run["worker_inventory"] = inventory
         run["worker_inventory_sha256"] = inventory["inventory_sha256"]
         run["agent_worker_id"] = f"lima:{AGENT_VM}:{inventory['machine_id']}"
@@ -584,7 +855,6 @@ def prepare_run(target: Path, manifest: dict[str, Any], lock: dict[str, Any]) ->
             _canonical_bytes(inventory) + b"\n"
         )
         claim_worker(run)
-        claimed = True
         if _docker("volume", "inspect", volume, check=False).returncode == 0:
             raise WorkerError("run volume identity already exists")
         _docker("volume", "create", *_labels(run, "volume"), volume)
@@ -655,9 +925,9 @@ def prepare_run(target: Path, manifest: dict[str, Any], lock: dict[str, Any]) ->
             "checks": ["sealed_baseline"],
         }
     except WorkerError as exc:
-        if claimed:
+        if worker_created:
             try:
-                _cleanup_owned_resources(run)
+                _destroy_worker(run)
             except WorkerError as cleanup_exc:
                 raise WorkerError(
                     f"{exc}; preparation cleanup failed: {cleanup_exc}", run=run
@@ -956,6 +1226,89 @@ def _proxy_resources(run: dict[str, Any]) -> tuple[str, str]:
     return f"{run['volume']}-network", f"{run['volume']}-relay"
 
 
+def _proxy_endpoint(base: str) -> tuple[str, int]:
+    parsed = urllib.parse.urlsplit(base)
+    try:
+        address = str(ipaddress.IPv4Address(parsed.hostname or ""))
+        port = parsed.port or (443 if parsed.scheme == "https" else 80)
+    except (ValueError, ipaddress.AddressValueError) as exc:
+        raise WorkerError("trusted proxy must use one literal IPv4 endpoint") from exc
+    if (
+        parsed.scheme not in {"http", "https"}
+        or parsed.username
+        or parsed.password
+        or parsed.query
+        or parsed.fragment
+        or parsed.path not in {"", "/"}
+        or not 1 <= port <= 65535
+    ):
+        raise WorkerError("trusted proxy base address is invalid")
+    return address, port
+
+
+def _configure_proxy_firewall(
+    run: dict[str, Any], network: str, relay: str
+) -> dict[str, Any]:
+    base = os.environ.get("AUTOFV_PROXY_BASE") or run.get("proxy_base")
+    if not isinstance(base, str):
+        raise WorkerError("trusted proxy identity is not configured")
+    upstream_address, upstream_port = _proxy_endpoint(base)
+    networks = _json_output(_docker("network", "inspect", network), "proxy network")
+    relays = _json_output(_docker("container", "inspect", relay), "proxy relay")
+    try:
+        network_id = networks[0]["Id"]
+        internal_address = relays[0]["NetworkSettings"]["Networks"][network]["IPAddress"]
+        bridge_address = relays[0]["NetworkSettings"]["Networks"]["bridge"]["IPAddress"]
+        ipaddress.IPv4Address(internal_address)
+        ipaddress.IPv4Address(bridge_address)
+    except (KeyError, IndexError, ipaddress.AddressValueError) as exc:
+        raise WorkerError("proxy relay network identity is incomplete") from exc
+    identity = {
+        "base": base.rstrip("/"),
+        "network_id": network_id,
+        "internal_address": internal_address,
+        "bridge_address": bridge_address,
+        "upstream_address": upstream_address,
+        "upstream_port": upstream_port,
+    }
+    if run.get("proxy_firewall") not in (None, identity):
+        raise WorkerError("trusted proxy endpoint changed during the run")
+    allows = (
+        (
+            "-i",
+            f"br-{network_id[:12]}",
+            "-d",
+            f"{internal_address}/32",
+            "-p",
+            "tcp",
+            "--dport",
+            str(RELAY_PORT),
+            "-j",
+            "ACCEPT",
+        ),
+        (
+            "-s",
+            f"{bridge_address}/32",
+            "-d",
+            f"{upstream_address}/32",
+            "-p",
+            "tcp",
+            "--dport",
+            str(upstream_port),
+            "-j",
+            "ACCEPT",
+        ),
+    )
+    if run.get("proxy_firewall") is None:
+        _firewall_snapshot()
+        for position, rule in enumerate(allows, start=2):
+            _firewall("iptables", "-I", FORWARD_CHAIN, str(position), *rule)
+    snapshot = _firewall_snapshot(allows)
+    run["proxy_base"] = identity["base"]
+    run["proxy_firewall"] = identity
+    return {**identity, "rules": snapshot}
+
+
 def _ensure_proxy_relay(run: dict[str, Any]) -> tuple[str, str]:
     network, relay = _proxy_resources(run)
     if _resource_matches("network", network, run) and _resource_matches(
@@ -963,23 +1316,14 @@ def _ensure_proxy_relay(run: dict[str, Any]) -> tuple[str, str]:
     ):
         values = _json_output(_docker("container", "inspect", relay), "proxy relay")
         address = values[0]["NetworkSettings"]["Networks"][network]["IPAddress"]
+        _configure_proxy_firewall(run, network, relay)
         return network, address
 
     base = os.environ.get("AUTOFV_PROXY_BASE")
     token = os.environ.get("AUTOFV_RUN_TOKEN")
     if not base or not token:
         raise WorkerError("trusted proxy identity is not configured")
-    parsed = urllib.parse.urlsplit(base)
-    if (
-        parsed.scheme not in {"http", "https"}
-        or not parsed.hostname
-        or parsed.username
-        or parsed.password
-        or parsed.query
-        or parsed.fragment
-        or parsed.path not in {"", "/"}
-    ):
-        raise WorkerError("trusted proxy base address is invalid")
+    _proxy_endpoint(base)
 
     if _docker("network", "inspect", network, check=False).returncode == 0:
         raise WorkerError("proxy network identity already exists")
@@ -1031,6 +1375,7 @@ def _ensure_proxy_relay(run: dict[str, Any]) -> tuple[str, str]:
         ipaddress.IPv4Address(address)
     except (KeyError, IndexError, ipaddress.AddressValueError) as exc:
         raise WorkerError("proxy relay address is unavailable") from exc
+    _configure_proxy_firewall(run, network, relay)
     run["proxy_network"] = network
     run["proxy_relay"] = relay
     run["events"].append("fixed_proxy_relay_started")
@@ -1110,28 +1455,35 @@ def run_egress_matrix(
         "print(json.dumps({'blocked':blocked,'reason':reason},sort_keys=True,separators=(',',':')))\n"
         "raise SystemExit(0 if blocked else 23)"
     )
-    observed = []
-    for case in denied:
-        if set(case) != {"id", "kind", "host", "port"}:
-            raise WorkerError("egress case fields mismatch")
-        completed = _docker(
-            *_runtime_argv(
-                run["lock"],
-                run["volume"],
-                "python",
+    layers = {}
+    for layer in ("worker_denied", "container_denied"):
+        observed = []
+        for case in denied:
+            if set(case) != {"id", "kind", "host", "port"}:
+                raise WorkerError("egress case fields mismatch")
+            argv = (
+                "python3",
                 "-c",
                 probe,
                 case["kind"],
                 case["host"],
                 str(case["port"]),
-                network=network,
-            ),
-            check=False,
-        )
-        value = _json_output(completed, f"egress case {case['id']}")
-        if completed.returncode != 0 or value.get("blocked") is not True:
-            raise WorkerError(f"external policy allowed {case['id']}")
-        observed.append({"id": case["id"], **value})
+            )
+            completed = (
+                _lima(*argv, check=False)
+                if layer == "worker_denied"
+                else _docker(
+                    *_runtime_argv(
+                        run["lock"], run["volume"], *argv, network=network
+                    ),
+                    check=False,
+                )
+            )
+            value = _json_output(completed, f"egress case {case['id']}")
+            if completed.returncode != 0 or value.get("blocked") is not True:
+                raise WorkerError(f"external policy allowed {case['id']} at {layer}")
+            observed.append({"id": case["id"], **value})
+        layers[layer] = observed
 
     response, receipt = proxy_round(run, request)
     network_values = _json_output(
@@ -1139,9 +1491,12 @@ def run_egress_matrix(
     )
     policy = {
         "schema": "autofv-egress-policy/v1",
-        "enforcer": "docker-internal-network-with-fixed-relay",
+        "enforcer": "worker-firewall-and-docker-internal-network",
         "network_id": network_values[0].get("Id"),
         "internal": network_values[0].get("Internal"),
+        "firewall": _configure_proxy_firewall(
+            run, network, _proxy_resources(run)[1]
+        ),
         "fixture_sha256": _sha256(_canonical_bytes(fixture)),
     }
     if policy["internal"] is not True or not policy["network_id"]:
@@ -1150,7 +1505,7 @@ def run_egress_matrix(
         "schema": "autofv-egress-evidence/v1",
         "run_id": run["run_id"],
         "policy": {**policy, "policy_sha256": _sha256(_canonical_bytes(policy))},
-        "denied": observed,
+        **layers,
         "fixed_proxy": {
             "status": "ok",
             "request_id": response.get("request_id"),
@@ -1160,7 +1515,7 @@ def run_egress_matrix(
     evidence = {**body, "evidence_sha256": _sha256(_canonical_bytes(body))}
     path = Path(run["evidence_dir"])
     path.mkdir(parents=True, exist_ok=True)
-    (path / "egress.json").write_bytes(_canonical_bytes(evidence) + b"\n")
+    _atomic_write(path / "egress.json", _canonical_bytes(evidence) + b"\n")
     run["egress_policy_sha256"] = evidence["policy"]["policy_sha256"]
     run["events"].append("egress_matrix_passed")
     return evidence
@@ -1275,11 +1630,8 @@ def persist_result(run: dict[str, Any], result: dict[str, Any], receipt: dict[st
     """Atomically persist the public result and initial L0 receipt."""
     root = Path(run["run_root"])
     evidence = root / "evidence"
-    evidence.mkdir(parents=True, exist_ok=True)
     for path, value in ((root / "result.json", result), (evidence / "l0.json", receipt)):
-        temporary = path.with_suffix(path.suffix + ".tmp")
-        temporary.write_bytes(_canonical_bytes(value) + b"\n")
-        os.replace(temporary, path)
+        _atomic_write(path, _canonical_bytes(value) + b"\n")
     if run.get("execution_tier") == "sealed_runsc" and run.get("base_commit"):
         dispose_run(run)
 
@@ -1297,14 +1649,17 @@ def _atomic_write(path: Path, raw: bytes) -> None:
 def _safe_tar(raw: bytes, label: str) -> None:
     try:
         with tarfile.open(fileobj=io.BytesIO(raw), mode="r:*") as archive:
+            seen = set()
             for member in archive.getmembers():
                 path = PurePosixPath(member.name)
                 if (
-                    path.is_absolute()
+                    member.name in seen
+                    or path.is_absolute()
                     or any(part in {"", ".", ".."} for part in path.parts)
                     or not (member.isfile() or member.isdir())
                 ):
                     raise WorkerError(f"{label} contains an unsafe member")
+                seen.add(member.name)
     except tarfile.TarError as exc:
         raise WorkerError(f"{label} is not a valid archive") from exc
 
@@ -1369,30 +1724,73 @@ def _finalization_sequence(run: dict[str, Any]) -> int:
     return sequence
 
 
+def _untracked_archive(run: dict[str, Any], names: list[str]) -> bytes:
+    if not names:
+        stream = io.BytesIO()
+        with tarfile.open(fileobj=stream, mode="w"):
+            pass
+        return stream.getvalue()
+    raw_names = b"".join(name.encode("utf-8") + b"\0" for name in names)
+    return _docker(
+        *_runtime_argv(
+            run["lock"],
+            run["volume"],
+            "tar",
+            "--create",
+            "--file=-",
+            "--null",
+            "--verbatim-files-from",
+            "--files-from=-",
+        ),
+        input_bytes=raw_names,
+    ).stdout
+
+
+def _export_artifacts(run: dict[str, Any]) -> dict[str, bytes]:
+    untracked = _git(run, "ls-files", "--others", "--exclude-standard", "-z")
+    untracked_names = []
+    for raw_name in filter(None, untracked.split(b"\0")):
+        name = raw_name.decode("utf-8", "strict")
+        path = PurePosixPath(name)
+        if path.is_absolute() or any(part in {"", ".", ".."} for part in path.parts):
+            raise WorkerError(f"untracked working artifact path is unsafe: {name}")
+        if any(part in SKIP_PARTS for part in path.parts) or path.name in SKIP_NAMES | {
+            "lake-manifest.json"
+        }:
+            continue
+        untracked_names.append(name)
+
+    accepted_tar = export_accepted(run)
+    _safe_tar(accepted_tar, "accepted tree")
+    accepted = run.get("accepted") or {}
+    accepted_commit = _git(run, "rev-parse", "HEAD").decode().strip()
+    if accepted_commit != accepted.get("accepted_commit"):
+        raise WorkerError("accepted commit mismatch during export")
+    if _sha256(accepted_tar) != accepted.get("accepted_tree_sha256"):
+        raise WorkerError("accepted tree mismatch during export")
+    untracked_tar = _untracked_archive(run, untracked_names)
+    _safe_tar(untracked_tar, "untracked working tree")
+    return {
+        "accepted/tree.tar": accepted_tar,
+        "accepted/repository.bundle": _git(run, "bundle", "create", "-", "HEAD"),
+        "accepted/commit.txt": (accepted_commit + "\n").encode("ascii"),
+        "working/changes.patch": _git(run, "diff", "--binary", "HEAD"),
+        "working/untracked.tar": untracked_tar,
+        **_host_artifacts(run),
+    }
+
+
 def export_run(run: dict[str, Any], *, interrupted: bool = False) -> dict[str, Any]:
     """Export the exact accepted repository and bounded working delta."""
     existing = run.get("export_receipt")
     if isinstance(existing, dict):
-        return existing
-    untracked = _git(run, "ls-files", "--others", "--exclude-standard", "-z")
-    for raw_name in filter(None, untracked.split(b"\0")):
-        name = raw_name.decode("utf-8", "strict")
-        path = PurePosixPath(name)
-        if not (
-            any(part in SKIP_PARTS for part in path.parts)
-            or path.name in SKIP_NAMES | {"lake-manifest.json"}
-        ):
-            raise WorkerError(f"untracked working artifact is not exportable: {name}")
-
-    accepted_tar = export_accepted(run)
-    _safe_tar(accepted_tar, "accepted tree")
-    artifacts = {
-        "accepted/tree.tar": accepted_tar,
-        "accepted/repository.bundle": _git(run, "bundle", "create", "-", "HEAD"),
-        "accepted/commit.txt": _git(run, "rev-parse", "HEAD"),
-        "working/changes.patch": _git(run, "diff", "--binary", "HEAD"),
-        **_host_artifacts(run),
-    }
+        verified, stored = _load_verified_export(run)
+        if verified != existing:
+            raise WorkerError("export receipt changed after verification")
+        if not run.get("worker_disposed") and _export_artifacts(run) != stored:
+            raise WorkerError("working state changed after export")
+        return verified
+    artifacts = _export_artifacts(run)
     markers = run.get("artifact_scan_markers", ())
     scan = scan_artifacts(artifacts, markers)
     export_root = Path(run["run_root"]) / "export"
@@ -1424,51 +1822,104 @@ def export_run(run: dict[str, Any], *, interrupted: bool = False) -> dict[str, A
     }
     receipt = {**body, "manifest_sha256": _sha256(_canonical_bytes(body))}
     _atomic_write(export_root / "manifest.json", _canonical_bytes(receipt) + b"\n")
-    if _sha256(_canonical_bytes(body)) != receipt["manifest_sha256"]:
+    verified, _ = _load_verified_export(run)
+    if verified != receipt:
         raise WorkerError("export manifest verification failed")
     run["export_receipt"] = receipt
     run["events"].append("artifacts_exported")
     return receipt
 
 
-def _remove_owned(kind: str, name: str, run: dict[str, Any]) -> None:
-    noun = "container" if kind in {"claim", "relay"} else kind
-    present = _docker(noun, "inspect", name, check=False)
-    if present.returncode:
-        return
-    if not _resource_matches(kind, name, run):
-        raise WorkerError(f"refusing to remove unowned {kind} resource")
-    if noun == "container":
-        _docker("container", "rm", "--force", name)
-    else:
-        _docker(noun, "rm", name)
+def _load_verified_export(run: dict[str, Any]) -> tuple[dict[str, Any], dict[str, bytes]]:
+    export_root = Path(run["run_root"]) / "export"
+    try:
+        manifest = json.loads((export_root / "manifest.json").read_bytes())
+    except (OSError, json.JSONDecodeError) as exc:
+        raise WorkerError("disposed run has no valid export manifest") from exc
+    body = {key: value for key, value in manifest.items() if key != "manifest_sha256"}
+    identities = {
+        "run_id": run["run_id"],
+        "volume": run["volume"],
+        "image_digest": run["image_digest"],
+        "control_bundle_sha256": run.get("control_bundle_sha256"),
+        "native_decide_policy_sha256": run.get("native_decide_policy_sha256"),
+    }
+    if (
+        manifest.get("schema") != "autofv-export/v1"
+        or any(manifest.get(key) != value for key, value in identities.items())
+        or manifest.get("manifest_sha256") != _sha256(_canonical_bytes(body))
+        or manifest.get("verified_before_disposal") is not True
+        or not isinstance(manifest.get("entries"), list)
+    ):
+        raise WorkerError("disposed run export identity mismatch")
 
+    artifacts = {}
+    for entry in manifest["entries"]:
+        if not isinstance(entry, dict) or set(entry) != {"path", "sha256", "size"}:
+            raise WorkerError("disposed run export entry is invalid")
+        name = entry.get("path")
+        if not isinstance(name, str):
+            raise WorkerError("disposed run export path is invalid")
+        path = PurePosixPath(name)
+        if (
+            path.is_absolute()
+            or any(part in {"", ".", ".."} for part in path.parts)
+            or name in artifacts
+        ):
+            raise WorkerError("disposed run export path is unsafe")
+        try:
+            raw = export_root.joinpath(*path.parts).read_bytes()
+        except OSError as exc:
+            raise WorkerError("disposed run export is incomplete") from exc
+        if len(raw) != entry["size"] or _sha256(raw) != entry["sha256"]:
+            raise WorkerError("disposed run export hash mismatch")
+        artifacts[name] = raw
 
-def _cleanup_owned_resources(run: dict[str, Any]) -> dict[str, Any]:
-    network, relay = _proxy_resources(run)
-    _remove_owned("relay", relay, run)
-    _remove_owned("network", network, run)
-    _remove_owned("volume", run["volume"], run)
-    _remove_owned("claim", CLAIM_CONTAINER, run)
-    run["resources_disposed"] = True
-    observed = _resource_inventory()
-    expected = run.get("worker_inventory", {}).get("resources")
-    if expected is not None and observed != expected:
-        raise WorkerError("worker did not return to its pre-run resource inventory")
-    return observed
+    required = {
+        "accepted/tree.tar",
+        "accepted/repository.bundle",
+        "accepted/commit.txt",
+        "working/changes.patch",
+        "working/untracked.tar",
+    }
+    if not required.issubset(artifacts):
+        raise WorkerError("disposed run export is incomplete")
+    _safe_tar(artifacts["accepted/tree.tar"], "restored accepted tree")
+    _safe_tar(artifacts["working/untracked.tar"], "restored untracked tree")
+    accepted = run.get("accepted") or {}
+    try:
+        commit = artifacts["accepted/commit.txt"].decode("ascii").strip()
+    except UnicodeError as exc:
+        raise WorkerError("disposed run accepted commit is invalid") from exc
+    if commit != accepted.get("accepted_commit"):
+        raise WorkerError("disposed run accepted commit mismatch")
+    if _sha256(artifacts["accepted/tree.tar"]) != accepted.get(
+        "accepted_tree_sha256"
+    ):
+        raise WorkerError("disposed run accepted tree mismatch")
+
+    scan = scan_artifacts(artifacts, run.get("artifact_scan_markers", ()))
+    try:
+        recorded_scan = (export_root / "artifact-scan.json").read_bytes()
+    except OSError as exc:
+        raise WorkerError("disposed run artifact scan is missing") from exc
+    if (
+        recorded_scan != _canonical_bytes(scan) + b"\n"
+        or manifest.get("scan_sha256") != scan["scan_sha256"]
+    ):
+        raise WorkerError("disposed run artifact scan mismatch")
+    return manifest, artifacts
 
 
 def dispose_run(run: dict[str, Any], *, interrupted: bool = False) -> dict[str, Any]:
-    """Verify export, remove only run-owned resources, and prove baseline reset."""
+    """Verify export, then destroy the exact disposable Linux worker."""
     existing = run.get("disposal_receipt")
     if isinstance(existing, dict):
         return existing
-    if run.get("resources_disposed"):
-        raise WorkerError("run resources are already disposed", run=run)
-    try:
-        exported = export_run(run, interrupted=interrupted)
-    finally:
-        observed = _cleanup_owned_resources(run)
+    if run.get("worker_disposed"):
+        raise WorkerError("run worker is already disposed", run=run)
+    exported = export_run(run, interrupted=interrupted)
+    _destroy_worker(run)
     body = {
         "schema": "autofv-disposal/v1",
         "run_id": run["run_id"],
@@ -1477,9 +1928,11 @@ def dispose_run(run: dict[str, Any], *, interrupted: bool = False) -> dict[str, 
         "interrupted": bool(interrupted),
         "sequence": _finalization_sequence(run),
         "export_manifest_sha256": exported["manifest_sha256"],
-        "resource_inventory_sha256": _sha256(_canonical_bytes(observed)),
+        "worker_absent": inspect_lima_instance(AGENT_VM) is None,
         "run_resources_absent": True,
     }
+    if body["worker_absent"] is not True:
+        raise WorkerError("disposable worker still exists after disposal", run=run)
     receipt = {**body, "disposal_sha256": _sha256(_canonical_bytes(body))}
     _atomic_write(
         Path(run["run_root"]) / "disposal.json",
@@ -1496,107 +1949,110 @@ def export_accepted(run: dict[str, Any]) -> bytes:
 
 
 def _restore_export(run: dict[str, Any]) -> None:
-    export_root = Path(run["run_root"]) / "export"
-    try:
-        manifest = json.loads((export_root / "manifest.json").read_bytes())
-    except (OSError, json.JSONDecodeError) as exc:
-        raise WorkerError("disposed run has no valid export manifest") from exc
-    body = {key: value for key, value in manifest.items() if key != "manifest_sha256"}
-    if (
-        manifest.get("schema") != "autofv-export/v1"
-        or manifest.get("run_id") != run["run_id"]
-        or manifest.get("volume") != run["volume"]
-        or manifest.get("image_digest") != run["image_digest"]
-        or manifest.get("manifest_sha256") != _sha256(_canonical_bytes(body))
-        or manifest.get("verified_before_disposal") is not True
-    ):
-        raise WorkerError("disposed run export identity mismatch")
+    manifest, artifacts = _load_verified_export(run)
     run.pop("export_receipt", None)
     run.pop("disposal_receipt", None)
+    for key in ("proxy_firewall", "proxy_network", "proxy_relay"):
+        run.pop(key, None)
     run["finalization_sequence"] = int(manifest.get("sequence", 0))
-    artifacts = {}
-    for entry in manifest.get("entries", []):
-        if not isinstance(entry, dict) or set(entry) != {"path", "sha256", "size"}:
-            raise WorkerError("disposed run export entry is invalid")
-        path = PurePosixPath(entry["path"])
-        if path.is_absolute() or any(part in {"", ".", ".."} for part in path.parts):
-            raise WorkerError("disposed run export path is unsafe")
-        raw = (export_root.joinpath(*path.parts)).read_bytes()
-        if len(raw) != entry["size"] or _sha256(raw) != entry["sha256"]:
-            raise WorkerError("disposed run export hash mismatch")
-        artifacts[path.as_posix()] = raw
-    required = {
-        "accepted/tree.tar",
-        "accepted/repository.bundle",
-        "accepted/commit.txt",
-        "working/changes.patch",
-    }
-    if not required.issubset(artifacts):
-        raise WorkerError("disposed run export is incomplete")
-    _safe_tar(artifacts["accepted/tree.tar"], "restored accepted tree")
-    scan_artifacts(artifacts, run.get("artifact_scan_markers", ()))
     control_manifest, control_files = _control_manifest(run["lock"])
     if control_manifest["bundle_sha256"] != run.get("control_bundle_sha256"):
         raise WorkerError("restored control bundle identity mismatch")
 
-    inventory = inspect_worker(run["lock"])
-    run["worker_inventory"] = inventory
-    run["worker_inventory_sha256"] = inventory["inventory_sha256"]
-    claim_worker(run)
-    if _docker("volume", "inspect", run["volume"], check=False).returncode == 0:
-        raise WorkerError("disposed run volume was unexpectedly reused")
-    _docker("volume", "create", *_labels(run, "volume"), run["volume"])
-    run["resources_disposed"] = False
-    seed = io.BytesIO()
-    with tarfile.open(fileobj=seed, mode="w") as archive:
-        _add_bytes(archive, "tree.tar", artifacts["accepted/tree.tar"], 0o444)
-        _add_bytes(
-            archive,
-            "repository.bundle",
-            artifacts["accepted/repository.bundle"],
-            0o444,
+    existing_worker = _owned_worker(run)
+    if existing_worker is not None:
+        _destroy_worker(run)
+
+    run["worker_disposed"] = False
+    worker_created = False
+    try:
+        _create_worker(run)
+        worker_created = True
+        inventory = inspect_worker(run["lock"], run_id=run["run_id"])
+        run["worker_inventory"] = inventory
+        run["worker_inventory_sha256"] = inventory["inventory_sha256"]
+        run["agent_worker_id"] = f"lima:{AGENT_VM}:{inventory['machine_id']}"
+        claim_worker(run)
+        if _docker("volume", "inspect", run["volume"], check=False).returncode == 0:
+            raise WorkerError("disposed run volume was unexpectedly reused")
+        _docker("volume", "create", *_labels(run, "volume"), run["volume"])
+        seed = io.BytesIO()
+        with tarfile.open(fileobj=seed, mode="w") as archive:
+            _add_bytes(archive, "tree.tar", artifacts["accepted/tree.tar"], 0o444)
+            _add_bytes(
+                archive,
+                "repository.bundle",
+                artifacts["accepted/repository.bundle"],
+                0o444,
+            )
+            _add_bytes(
+                archive,
+                "changes.patch",
+                artifacts["working/changes.patch"],
+                0o444,
+            )
+            _add_bytes(
+                archive,
+                "untracked.tar",
+                artifacts["working/untracked.tar"],
+                0o444,
+            )
+            for name, raw, mode in control_files:
+                _add_bytes(archive, f"control/{name}", raw, mode)
+            _add_bytes(
+                archive,
+                "control/manifest.json",
+                _canonical_bytes(control_manifest) + b"\n",
+                0o444,
+            )
+        command = (
+            "mkdir -p /volume/recovery /volume/work/project /volume/evidence "
+            "/volume/accepted /volume/logs /volume/lanes /volume/autofv-control && "
+            "tar -xf - -C /volume/recovery && "
+            "cp -a /volume/recovery/control/. /volume/autofv-control/ && "
+            "chmod -R a-w /volume/autofv-control && chmod 0555 /volume/autofv-control && "
+            "git -C /volume/work/project init -q --object-format=sha1 && "
+            "git -C /volume/work/project fetch -q /volume/recovery/repository.bundle HEAD && "
+            "git -C /volume/work/project checkout -q --detach FETCH_HEAD && "
+            "git -C /volume/work/project config core.autocrlf false && "
+            "git -C /volume/work/project config core.filemode false && "
+            "if test -s /volume/recovery/changes.patch; then "
+            "git -C /volume/work/project apply --binary /volume/recovery/changes.patch; fi && "
+            "tar -xf /volume/recovery/untracked.tar -C /volume/work/project && "
+            "chown -R 65532:65532 /volume/work /volume/evidence /volume/accepted "
+            "/volume/logs /volume/lanes"
         )
-        for name, raw, mode in control_files:
-            _add_bytes(archive, f"control/{name}", raw, mode)
-        _add_bytes(
-            archive,
-            "control/manifest.json",
-            _canonical_bytes(control_manifest) + b"\n",
-            0o444,
+        _docker(
+            "run",
+            "--rm",
+            "-i",
+            "--pull",
+            "never",
+            "--network",
+            "none",
+            "--user",
+            "0:0",
+            "--mount",
+            f"type=volume,src={run['volume']},dst=/volume,volume-nocopy",
+            run["image_digest"],
+            "sh",
+            "-eu",
+            "-c",
+            command,
+            input_bytes=seed.getvalue(),
         )
-    command = (
-        "mkdir -p /volume/recovery /volume/work/project /volume/evidence "
-        "/volume/accepted /volume/logs /volume/lanes /volume/autofv-control && "
-        "tar -xf - -C /volume/recovery && "
-        "cp -a /volume/recovery/control/. /volume/autofv-control/ && "
-        "chmod -R a-w /volume/autofv-control && chmod 0555 /volume/autofv-control && "
-        "git -C /volume/work/project init -q --object-format=sha1 && "
-        "git -C /volume/work/project fetch -q /volume/recovery/repository.bundle HEAD && "
-        "git -C /volume/work/project checkout -q --detach FETCH_HEAD && "
-        "git -C /volume/work/project config core.autocrlf false && "
-        "git -C /volume/work/project config core.filemode false && "
-        "chown -R 65532:65532 /volume/work /volume/evidence /volume/accepted "
-        "/volume/logs /volume/lanes"
-    )
-    _docker(
-        "run",
-        "--rm",
-        "-i",
-        "--pull",
-        "never",
-        "--network",
-        "none",
-        "--user",
-        "0:0",
-        "--mount",
-        f"type=volume,src={run['volume']},dst=/volume,volume-nocopy",
-        run["image_digest"],
-        "sh",
-        "-eu",
-        "-c",
-        command,
-        input_bytes=seed.getvalue(),
-    )
+        _git(run, "bundle", "verify", "/volume/recovery/repository.bundle")
+        restored_commit = _git(run, "rev-parse", "HEAD").decode().strip()
+        restored_tree = _git(run, "archive", "--format=tar", "HEAD")
+        if (
+            restored_commit != run["accepted"]["accepted_commit"]
+            or _sha256(restored_tree) != run["accepted"]["accepted_tree_sha256"]
+        ):
+            raise WorkerError("restored accepted state mismatch")
+    except WorkerError:
+        if worker_created:
+            _destroy_worker(run)
+        raise
     run["events"].append("export_restored")
 
 
@@ -1605,11 +2061,12 @@ def inspect_resume_state(
 ) -> dict[str, Any]:
     """Verify the managed Git HEAD before the controller trusts resumed state."""
     try:
-        if _docker("volume", "inspect", run["volume"], check=False).returncode:
+        instance = _owned_worker(run)
+        if instance is None:
+            _restore_export(run)
+        elif _docker("volume", "inspect", run["volume"], check=False).returncode:
             _restore_export(run)
         status = _git(run, "status", "--porcelain").decode().strip()
-        if status:
-            return {"valid": False, "dirty": True, "reason": "working tree changed"}
         _docker(*_runtime_argv(run["lock"], run["volume"], *manifest["verify"]))
         commit = _git(run, "rev-parse", "HEAD").decode().strip()
         tree = _git(run, "archive", "--format=tar", "HEAD")
@@ -1617,7 +2074,7 @@ def inspect_resume_state(
         return {"valid": False, "dirty": None, "reason": str(exc)[:1000]}
     return {
         "valid": True,
-        "dirty": False,
+        "dirty": bool(status),
         "accepted_commit": commit,
         "accepted_tree_sha256": _sha256(tree),
     }

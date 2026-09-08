@@ -6,6 +6,7 @@ import json
 import os
 import subprocess
 import tempfile
+import time
 import unittest
 import urllib.parse
 from decimal import Decimal
@@ -326,6 +327,7 @@ class ProxyAccountingTests(unittest.TestCase):
         return {
             "run_id": FIRST_REQUEST["run_id"],
             "run_root": root,
+            "volume": "fixture-volume",
             "lock": copy.deepcopy(LOCK),
             "image_digest": LOCK["image"]["image_digest"],
             "control_bundle_sha256": LOCK["controller_delivery"]["bundle_sha256"],
@@ -367,42 +369,119 @@ class ProxyAccountingTests(unittest.TestCase):
             with self.assertRaisesRegex(worker.WorkerError, "policy"):
                 worker._validate_proxy_request(run, FIRST_REQUEST)
 
+            worker._bind_proxy_client_identity(run, "first-run-scoped-token")
+            with self.assertRaisesRegex(worker.WorkerError, "client identity"):
+                worker._bind_proxy_client_identity(run, "replacement-token")
+
     def test_proxy_transport_failure_is_explicit_hash_only_evidence(self) -> None:
+        cases = (
+            ("authentication_error", 401),
+            ("rate_limited", 429),
+            ("timeout", 504),
+            ("upstream_error", 502),
+            ("malformed_response", None),
+        )
+        for classification, status_code in cases:
+            with self.subTest(
+                classification=classification
+            ), tempfile.TemporaryDirectory() as tmp:
+                run = self.proxy_run(tmp)
+                stdout = (
+                    b"not-json"
+                    if classification == "malformed_response"
+                    else experiment.canonical_json_bytes(
+                        {
+                            "proxy_error": {
+                                "classification": classification,
+                                "status_code": status_code,
+                            }
+                        }
+                    )
+                )
+                completed = subprocess.CompletedProcess(
+                    ("docker", "run"),
+                    0,
+                    stdout=stdout,
+                    stderr=b"synthetic-provider-secret-must-not-be-retained",
+                )
+                with (
+                    mock.patch.object(
+                        worker,
+                        "_ensure_proxy_relay",
+                        return_value=("net", "10.0.0.2"),
+                    ),
+                    mock.patch.object(worker, "_docker", return_value=completed),
+                    self.assertRaisesRegex(worker.WorkerError, classification),
+                ):
+                    worker.proxy_round(run, FIRST_REQUEST)
+
+                records = list(
+                    (Path(tmp) / "evidence" / "proxy-errors").glob("*.json")
+                )
+                self.assertEqual(len(records), 1)
+                raw = records[0].read_bytes()
+                self.assertNotIn(b"synthetic-provider-secret", raw)
+                record = json.loads(raw)
+                body = {
+                    key: value
+                    for key, value in record.items()
+                    if key != "error_sha256"
+                }
+                self.assertEqual(record["classification"], classification)
+                self.assertEqual(record["status_code"], status_code)
+                self.assertEqual(record["run_id"], FIRST_REQUEST["run_id"])
+                self.assertEqual(record["request_id"], FIRST_REQUEST["request_id"])
+                self.assertEqual(
+                    record["error_sha256"],
+                    hashlib.sha256(experiment.canonical_json_bytes(body)).hexdigest(),
+                )
+
+    def test_invalid_receipt_never_enters_pending_or_checkpoint_state(self) -> None:
+        entry = copy.deepcopy(MODEL_FIXTURE["entries"][0])
+        secret = "synthetic-provider-secret-in-invalid-receipt"
+        entry["receipt"]["authorization"] = secret
         with tempfile.TemporaryDirectory() as tmp:
             run = self.proxy_run(tmp)
-            failure = {
-                "proxy_error": {
-                    "classification": "timeout",
-                    "status_code": 504,
-                }
+            run["base_commit"] = MODEL_FIXTURE["git"]["base_commit"]
+            state = {
+                "run": run,
+                "config": {
+                    "model": MODEL_FIXTURE["model_id"],
+                    "max_cost_usd": Decimal("1.000000"),
+                    "max_wall_seconds": 300,
+                },
+                "run_round": lambda _request: (entry["response"], entry["receipt"]),
+                "receipts": [],
+                "cost": Decimal("0.000000"),
+                "receipt_rejections": [],
+                "pending_model_exchanges": {},
+                "model_exchanges": {},
+                "checkpoint_enabled": False,
             }
-            completed = subprocess.CompletedProcess(
-                ("docker", "run"),
-                0,
-                stdout=experiment.canonical_json_bytes(failure),
-                stderr=b"synthetic-provider-secret-must-not-be-retained",
-            )
-            with (
-                mock.patch.object(worker, "_ensure_proxy_relay", return_value=("net", "10.0.0.2")),
-                mock.patch.object(worker, "_docker", return_value=completed),
-                self.assertRaisesRegex(worker.WorkerError, "timeout"),
-            ):
-                worker.proxy_round(run, FIRST_REQUEST)
+            with self.assertRaises(experiment.ContractError):
+                experiment._model_request(
+                    state,
+                    request_id=entry["request"]["request_id"],
+                    role=entry["request"]["role"],
+                    input_hashes=entry["request"]["input_hashes"],
+                )
 
-            records = list((Path(tmp) / "evidence" / "proxy-errors").glob("*.json"))
-            self.assertEqual(len(records), 1)
-            raw = records[0].read_bytes()
-            self.assertNotIn(b"synthetic-provider-secret", raw)
-            record = json.loads(raw)
-            body = {key: value for key, value in record.items() if key != "error_sha256"}
-            self.assertEqual(record["classification"], "timeout")
-            self.assertEqual(record["status_code"], 504)
-            self.assertEqual(record["run_id"], FIRST_REQUEST["run_id"])
-            self.assertEqual(record["request_id"], FIRST_REQUEST["request_id"])
-            self.assertEqual(
-                record["error_sha256"],
-                hashlib.sha256(experiment.canonical_json_bytes(body)).hexdigest(),
+            self.assertEqual(state["pending_model_exchanges"], {})
+            self.assertEqual(state["receipts"], [])
+            self.assertEqual(state["cost"], Decimal("0.000000"))
+            retained = {
+                key: state[key]
+                for key in (
+                    "pending_model_exchanges",
+                    "model_exchanges",
+                    "receipts",
+                    "receipt_rejections",
+                )
+            }
+            self.assertNotIn(
+                secret.encode(), experiment.canonical_json_bytes(retained)
             )
+            self.assertEqual(len(state["receipt_rejections"]), 1)
 
     def test_real_proxy_policy_accounting_and_retained_surface_scans(self) -> None:
         provider_marker = "synthetic-provider-secret-never-forward"
@@ -411,24 +490,30 @@ class ProxyAccountingTests(unittest.TestCase):
         run = None
         with _trusted_proxy(MODEL_FIXTURE, LOCK["fixed_proxy"]) as (
             base_url,
-            _,
+            program,
             audit,
         ):
+            audit["provider_credential"] = provider_marker
             port = urllib.parse.urlsplit(base_url).port
-            proxy_base = f"http://{worker.lima_host_address()}:{port}"
             with mock.patch.dict(
                 os.environ,
-                {"AUTOFV_PROXY_BASE": proxy_base, "AUTOFV_RUN_TOKEN": RUN_TOKEN},
+                {"AUTOFV_RUN_ID": FIRST_REQUEST["run_id"]},
                 clear=False,
             ):
+                run = worker.prepare_run(TARGET, self.manifest, LOCK)
+            try:
+                proxy_base = f"http://{worker.lima_host_address()}:{port}"
                 with mock.patch.dict(
                     os.environ,
-                    {"AUTOFV_RUN_ID": FIRST_REQUEST["run_id"]},
+                    {"AUTOFV_PROXY_BASE": proxy_base, "AUTOFV_RUN_TOKEN": RUN_TOKEN},
                     clear=False,
                 ):
-                    run = worker.prepare_run(TARGET, self.manifest, LOCK)
-                try:
-                    policy = worker.run_proxy_policy_matrix(run, self.fixture)
+                    with mock.patch.object(
+                        worker,
+                        "_RELAY_PROGRAM",
+                        worker._RELAY_PROGRAM.replace("timeout=30", "timeout=1"),
+                    ):
+                        policy = worker.run_proxy_policy_matrix(run, self.fixture)
                     state = {
                         "run": run,
                         "config": {
@@ -461,6 +546,7 @@ class ProxyAccountingTests(unittest.TestCase):
                     self.assertEqual(result["cost_usd"], "0.022350")
                     self.assertEqual(audit["stripped_run_credentials"], 8)
                     self.assertEqual(audit["forwarded_headers"], [{}] * 8)
+                    self.assertEqual(audit["provider_credential"], provider_marker)
                     self.assertRegex(run["proxy_client_identity_sha256"], r"^[0-9a-f]{64}$")
 
                     run["artifact_scan_markers"] = (provider_marker, fixture_marker)
@@ -516,25 +602,54 @@ class ProxyAccountingTests(unittest.TestCase):
                         "export",
                     ):
                         self.assertIn(surface, str(leaked.exception))
-                finally:
-                    if run is not None and worker.inspect_lima_instance(worker.AGENT_VM):
-                        worker._git(run, "clean", "-ffd")
-                        worker._docker(
-                            *worker._runtime_argv(
-                                LOCK,
-                                run["volume"],
-                                "rm",
-                                "-f",
-                                "/volume/logs/agent.log",
-                                "/volume/evidence/transcript.jsonl",
-                            )
+
+                    timeout_request = copy.deepcopy(FIRST_REQUEST)
+                    timeout_request["sequence"] = 9
+                    timeout_request["request_id"] = "timeout-probe"
+                    timeout_request["prompt_sha256"] = hashlib.sha256(
+                        (
+                            f"{timeout_request['run_id']}\0timeout-probe\0"
+                            f"{timeout_request['role']}\0bounded-v1"
+                        ).encode("utf-8")
+                    ).hexdigest()
+                    original_invoke = program.invoke
+
+                    def delayed_failure(_request):
+                        time.sleep(2)
+                        raise ValueError("delayed synthetic upstream failure")
+
+                    program.invoke = delayed_failure
+                    try:
+                        with self.assertRaisesRegex(worker.WorkerError, "timeout"):
+                            worker.proxy_round(run, timeout_request)
+                    finally:
+                        program.invoke = original_invoke
+                    errors = [
+                        json.loads(path.read_bytes())
+                        for path in (
+                            Path(run["run_root"]) / "evidence" / "proxy-errors"
+                        ).glob("*.json")
+                    ]
+                    self.assertEqual(errors[-1]["classification"], "timeout")
+            finally:
+                if run is not None and worker.inspect_lima_instance(worker.AGENT_VM):
+                    worker._git(run, "clean", "-ffd")
+                    worker._docker(
+                        *worker._runtime_argv(
+                            LOCK,
+                            run["volume"],
+                            "rm",
+                            "-f",
+                            "/volume/logs/agent.log",
+                            "/volume/evidence/transcript.jsonl",
                         )
-                        run.pop("synthetic_state", None)
-                        result_path = Path(run["run_root"]) / "result.json"
-                        if result_path.exists():
-                            result_path.unlink()
-                        run["artifact_scan_markers"] = (provider_marker, fixture_marker)
-                        worker.dispose_run(run, interrupted=True)
+                    )
+                    run.pop("synthetic_state", None)
+                    result_path = Path(run["run_root"]) / "result.json"
+                    if result_path.exists():
+                        result_path.unlink()
+                    run["artifact_scan_markers"] = (provider_marker, fixture_marker)
+                    worker.dispose_run(run, interrupted=True)
 
         self.assertIsNotNone(run)
         self.assertIsNone(worker.inspect_lima_instance(worker.AGENT_VM))

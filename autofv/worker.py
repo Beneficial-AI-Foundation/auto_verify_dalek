@@ -30,10 +30,33 @@ RESOURCE_LABEL = "org.autofv"
 OUTPUT_CHAIN = "AUTOFV-OUTPUT"
 FORWARD_CHAIN = "AUTOFV-FORWARD"
 SHA256 = re.compile(r"[0-9a-f]{64}")
+PROXY_REQUEST_FIELDS = frozenset(
+    {
+        "schema",
+        "run_id",
+        "sequence",
+        "batch_id",
+        "request_id",
+        "role",
+        "model_id",
+        "input_hashes",
+        "prompt_sha256",
+    }
+)
+SCANNED_SURFACES = (
+    "environment",
+    "filesystem",
+    "log",
+    "transcript",
+    "state",
+    "result",
+    "export",
+)
 
 _RELAY_PROGRAM = r"""
 import http.server
 import os
+import socket
 import urllib.error
 import urllib.request
 
@@ -71,9 +94,18 @@ class Handler(http.server.BaseHTTPRequestHandler):
                 },
             )
             with urllib.request.urlopen(request, timeout=30) as reply:
-                self.send_value(reply.status, reply.read())
+                response = reply.read(1_000_001)
+                if len(response) > 1_000_000:
+                    self.send_value(502, b'{"error":"fixed proxy response too large"}')
+                else:
+                    self.send_value(reply.status, response)
         except urllib.error.HTTPError as error:
-            self.send_value(error.code, error.read())
+            self.send_value(error.code, b'{"error":"fixed proxy rejected"}')
+        except (TimeoutError, socket.timeout):
+            self.send_value(504, b'{"error":"fixed proxy timeout"}')
+        except urllib.error.URLError as error:
+            status = 504 if isinstance(error.reason, (TimeoutError, socket.timeout)) else 502
+            self.send_value(status, b'{"error":"fixed proxy unavailable"}')
         except Exception:
             self.send_value(502, b'{"error":"fixed proxy failed"}')
 
@@ -87,6 +119,163 @@ class Handler(http.server.BaseHTTPRequestHandler):
         return
 
 http.server.ThreadingHTTPServer(("0.0.0.0", 8080), Handler).serve_forever()
+"""
+
+_PROXY_CLIENT_PROGRAM = r"""
+import json
+import sys
+import urllib.error
+import urllib.request
+
+raw = sys.stdin.buffer.read(1_000_001)
+if not 0 < len(raw) <= 1_000_000:
+    raise SystemExit(22)
+request = urllib.request.Request(
+    sys.argv[1], data=raw, method="POST", headers={"Content-Type": "application/json"}
+)
+try:
+    with urllib.request.urlopen(request, timeout=30) as reply:
+        output = reply.read(1_000_001)
+        if len(output) > 1_000_000:
+            output = (
+                b'{"proxy_error":{"classification":"malformed_response",'
+                b'"status_code":null}}'
+            )
+except urllib.error.HTTPError as error:
+    classification = {
+        401: "authentication_error",
+        403: "authentication_error",
+        408: "timeout",
+        429: "rate_limited",
+        504: "timeout",
+    }.get(error.code, "upstream_error")
+    output = json.dumps(
+        {"proxy_error": {"classification": classification, "status_code": error.code}},
+        sort_keys=True,
+        separators=(",", ":"),
+    ).encode()
+except urllib.error.URLError as error:
+    classification = "timeout" if isinstance(error.reason, TimeoutError) else "upstream_error"
+    output = json.dumps(
+        {"proxy_error": {"classification": classification, "status_code": None}},
+        sort_keys=True,
+        separators=(",", ":"),
+    ).encode()
+except TimeoutError:
+    output = b'{"proxy_error":{"classification":"timeout","status_code":null}}'
+sys.stdout.buffer.write(output)
+"""
+
+_PROXY_POLICY_CLIENT_PROGRAM = r"""
+import http.client
+import json
+import sys
+
+host = sys.argv[1]
+port = int(sys.argv[2])
+method = sys.argv[3]
+path = sys.argv[4]
+header = sys.argv[5]
+raw = sys.stdin.buffer.read(1_000_001)
+headers = {"Content-Type": "application/json"}
+if header:
+    headers[header] = "caller-controlled"
+connection = http.client.HTTPConnection(host, port, timeout=5)
+connection.request(method, path, body=raw, headers=headers)
+reply = connection.getresponse()
+reply.read()
+blocked = not 200 <= reply.status < 300
+print(
+    json.dumps(
+        {"blocked": blocked, "status": reply.status},
+        sort_keys=True,
+        separators=(",", ":"),
+    )
+)
+raise SystemExit(0 if blocked else 23)
+"""
+
+_VOLUME_SCAN_PROGRAM = r"""
+import hashlib
+import json
+import os
+import stat
+import sys
+
+request = json.load(sys.stdin)
+markers = [bytes.fromhex(value) for value in request["markers"]]
+overlap = max(map(len, markers), default=1) - 1
+roots = (
+    ("/volume/work", "filesystem"),
+    ("/volume/accepted", "filesystem"),
+    ("/volume/autofv-control", "filesystem"),
+    ("/volume/logs", "log"),
+    ("/volume/evidence", "transcript"),
+    ("/volume/lanes", "state"),
+)
+hits = set()
+receipts = []
+
+def failed(error):
+    raise error
+
+for root, surface in roots:
+    manifest = hashlib.sha256()
+    file_count = byte_count = 0
+    for current, directories, names in os.walk(root, topdown=True, onerror=failed):
+        directories.sort()
+        names.sort()
+        for name in names:
+            path = os.path.join(current, name)
+            relative = os.path.relpath(path, root)
+            encoded_path = relative.encode("utf-8", "surrogateescape")
+            if any(marker in encoded_path for marker in markers):
+                hits.add(surface)
+            before = os.lstat(path)
+            if not stat.S_ISREG(before.st_mode):
+                entry = json.dumps([relative, "non-regular"], ensure_ascii=True)
+                manifest.update(entry.encode() + b"\n")
+                continue
+            digest = hashlib.sha256()
+            tail = b""
+            size = 0
+            with open(path, "rb") as source:
+                while chunk := source.read(1024 * 1024):
+                    size += len(chunk)
+                    digest.update(chunk)
+                    sample = tail + chunk
+                    if any(marker in sample for marker in markers):
+                        hits.add(surface)
+                    tail = sample[-overlap:] if overlap else b""
+            after = os.lstat(path)
+            identity = ("st_mode", "st_ino", "st_size", "st_mtime_ns")
+            if any(getattr(before, field) != getattr(after, field) for field in identity):
+                raise RuntimeError("worker file changed during retained-state scan")
+            file_count += 1
+            byte_count += size
+            entry = json.dumps([relative, size, digest.hexdigest()], ensure_ascii=True)
+            manifest.update(entry.encode() + b"\n")
+    receipts.append(
+        {
+            "root": root,
+            "surface": surface,
+            "files": file_count,
+            "bytes": byte_count,
+            "manifest_sha256": manifest.hexdigest(),
+        }
+    )
+print(
+    json.dumps(
+        {
+            "schema": "autofv-worker-filesystem-scan/v1",
+            "roots": receipts,
+            "hit_surfaces": sorted(hits),
+            "clean": not hits,
+        },
+        sort_keys=True,
+        separators=(",", ":"),
+    )
+)
 """
 
 
@@ -816,6 +1005,7 @@ def prepare_run(target: Path, manifest: dict[str, Any], lock: dict[str, Any]) ->
         "control_bundle_sha256": control_manifest["bundle_sha256"],
         "native_decide_policy": lock["native_decide_policy"]["selection"],
         "native_decide_policy_sha256": lock["native_decide_policy_sha256"],
+        "fixed_proxy_sha256": _sha256(_canonical_bytes(lock["fixed_proxy"])),
         "events": ["validated"],
         "lock": lock,
     }
@@ -1247,6 +1437,155 @@ def _proxy_endpoint(base: str) -> tuple[str, int]:
     return address, port
 
 
+def _validate_proxy_request(run: dict[str, Any], request: Any) -> str:
+    """Reject any model call not produced by the fixed request envelope."""
+    route = run.get("lock", {}).get("fixed_proxy")
+    if not isinstance(route, dict):
+        raise WorkerError("fixed proxy policy is missing")
+    observed_policy = _sha256(_canonical_bytes(route))
+    bound_policy = run.setdefault("fixed_proxy_sha256", observed_policy)
+    if not isinstance(bound_policy, str) or not secrets.compare_digest(
+        bound_policy, observed_policy
+    ):
+        raise WorkerError("fixed proxy policy changed during the run")
+    if route.get("method") != "POST" or not isinstance(route.get("path"), str):
+        raise WorkerError("fixed proxy policy is invalid")
+    if not isinstance(request, dict) or set(request) != PROXY_REQUEST_FIELDS:
+        raise WorkerError("fixed proxy request fields mismatch")
+    if request["schema"] != "autofv-model-request/v1" or request["run_id"] != run.get(
+        "run_id"
+    ):
+        raise WorkerError("fixed proxy request identity mismatch")
+    if type(request["sequence"]) is not int or request["sequence"] <= 0:
+        raise WorkerError("fixed proxy request sequence is invalid")
+    if request["batch_id"] is not None and (
+        not isinstance(request["batch_id"], str) or not request["batch_id"]
+    ):
+        raise WorkerError("fixed proxy request batch identity is invalid")
+    for field in ("request_id", "role", "model_id"):
+        if not isinstance(request[field], str) or not request[field]:
+            raise WorkerError(f"fixed proxy request {field} is invalid")
+    model_id = run.get("proxy_model_id")
+    if model_id is not None and model_id != request["model_id"]:
+        raise WorkerError("fixed proxy request model identity mismatch")
+    expected_prompt = _sha256(
+        (
+            f"{run['run_id']}\0{request['request_id']}\0{request['role']}\0bounded-v1"
+        ).encode("utf-8")
+    )
+    hashes = request["input_hashes"]
+    if (
+        not isinstance(hashes, list)
+        or any(not isinstance(value, str) for value in hashes)
+        or hashes != sorted(set(hashes))
+        or any(SHA256.fullmatch(value) is None for value in hashes)
+        or not isinstance(request["prompt_sha256"], str)
+        or SHA256.fullmatch(request["prompt_sha256"]) is None
+        or not secrets.compare_digest(request["prompt_sha256"], expected_prompt)
+    ):
+        raise WorkerError("fixed proxy request hashes are invalid")
+    run.setdefault("proxy_model_id", request["model_id"])
+    return _sha256(_canonical_bytes(request))
+
+
+def _bind_proxy_client_identity(run: dict[str, Any], token: str) -> str:
+    digest = _sha256(token.encode("utf-8"))
+    bound = run.setdefault("proxy_client_identity_sha256", digest)
+    if not isinstance(bound, str) or not secrets.compare_digest(bound, digest):
+        raise WorkerError("trusted proxy client identity changed during the run")
+    return digest
+
+
+def _record_proxy_policy(run: dict[str, Any]) -> dict[str, Any]:
+    route = run["lock"]["fixed_proxy"]
+    body = {
+        "schema": "autofv-fixed-proxy-policy/v1",
+        "run_id": run["run_id"],
+        "proxy_id": route["proxy_id"],
+        "route_id": route["route_id"],
+        "method": route["method"],
+        "path": route["path"],
+        "auth_scope": "run-scoped-fixed-inference",
+        "provider_authorization_location": route["provider_authorization_location"],
+        "proxy_endpoint_sha256": _sha256(run["proxy_base"].encode("utf-8")),
+        "proxy_client_identity_sha256": run["proxy_client_identity_sha256"],
+        "receipt_schema_sha256": _sha256(_canonical_bytes(route["receipt_schema"])),
+        "fixed_proxy_sha256": run["fixed_proxy_sha256"],
+        "image_digest": run["image_digest"],
+        "control_bundle_sha256": run["control_bundle_sha256"],
+        "native_decide_policy_sha256": run["native_decide_policy_sha256"],
+        "worker_inventory_sha256": run.get("worker_inventory_sha256"),
+    }
+    receipt = {**body, "policy_sha256": _sha256(_canonical_bytes(body))}
+    existing = run.get("proxy_policy_sha256")
+    if existing not in (None, receipt["policy_sha256"]):
+        raise WorkerError("fixed proxy policy evidence changed during the run")
+    _atomic_write(
+        Path(run["evidence_dir"]) / "fixed-proxy-policy.json",
+        _canonical_bytes(receipt) + b"\n",
+    )
+    run["proxy_policy_sha256"] = receipt["policy_sha256"]
+    if "fixed_proxy_policy_bound" not in run["events"]:
+        run["events"].append("fixed_proxy_policy_bound")
+    return receipt
+
+
+def _record_proxy_error(
+    run: dict[str, Any],
+    request: dict[str, Any],
+    request_sha256: str,
+    classification: str,
+    status_code: int | None,
+    detail: bytes | str,
+) -> dict[str, Any]:
+    allowed = set(run["lock"]["fixed_proxy"]["receipt_schema"]["status_values"]) - {
+        "ok"
+    }
+    if classification not in allowed:
+        raise WorkerError("fixed proxy error classification is invalid")
+    if status_code is not None and (
+        type(status_code) is not int or not 100 <= status_code <= 599
+    ):
+        raise WorkerError("fixed proxy error status is invalid")
+    if isinstance(detail, str):
+        raw_detail = detail.encode("utf-8", "replace")
+    elif isinstance(detail, bytes):
+        raw_detail = detail
+    else:
+        raise WorkerError("fixed proxy error detail is invalid")
+    route = run["lock"]["fixed_proxy"]
+    body = {
+        "schema": "autofv-proxy-error/v1",
+        "run_id": run["run_id"],
+        "proxy_id": route["proxy_id"],
+        "route_id": route["route_id"],
+        "sequence": request["sequence"],
+        "request_id": request["request_id"],
+        "model_id": request["model_id"],
+        "request_sha256": request_sha256,
+        "classification": classification,
+        "status_code": status_code,
+        "detail_sha256": _sha256(raw_detail),
+        "fixed_proxy_sha256": run.get("fixed_proxy_sha256"),
+        "proxy_policy_sha256": run.get("proxy_policy_sha256"),
+        "proxy_client_identity_sha256": run.get("proxy_client_identity_sha256"),
+        "image_digest": run.get("image_digest"),
+        "control_bundle_sha256": run.get("control_bundle_sha256"),
+        "native_decide_policy_sha256": run.get("native_decide_policy_sha256"),
+        "worker_inventory_sha256": run.get("worker_inventory_sha256"),
+    }
+    receipt = {**body, "error_sha256": _sha256(_canonical_bytes(body))}
+    name = f"{request['sequence']:08d}-{_sha256(request['request_id'].encode())[:16]}.json"
+    _atomic_write(
+        Path(run["run_root"]) / "evidence" / "proxy-errors" / name,
+        _canonical_bytes(receipt) + b"\n",
+    )
+    event = f"proxy_error:{classification}"
+    if event not in run["events"]:
+        run["events"].append(event)
+    return receipt
+
+
 def _configure_proxy_firewall(
     run: dict[str, Any], network: str, relay: str
 ) -> dict[str, Any]:
@@ -1301,10 +1640,15 @@ def _configure_proxy_firewall(
         ),
     )
     if run.get("proxy_firewall") is None:
-        _firewall_snapshot()
-        for position, rule in enumerate(allows, start=2):
-            _firewall("iptables", "-I", FORWARD_CHAIN, str(position), *rule)
-    snapshot = _firewall_snapshot(allows)
+        try:
+            snapshot = _firewall_snapshot(allows)
+        except WorkerError:
+            _firewall_snapshot()
+            for position, rule in enumerate(allows, start=2):
+                _firewall("iptables", "-I", FORWARD_CHAIN, str(position), *rule)
+            snapshot = _firewall_snapshot(allows)
+    else:
+        snapshot = _firewall_snapshot(allows)
     run["proxy_base"] = identity["base"]
     run["proxy_firewall"] = identity
     return {**identity, "rules": snapshot}
@@ -1312,19 +1656,31 @@ def _configure_proxy_firewall(
 
 def _ensure_proxy_relay(run: dict[str, Any]) -> tuple[str, str]:
     network, relay = _proxy_resources(run)
+    base = os.environ.get("AUTOFV_PROXY_BASE") or run.get("proxy_base")
+    token = os.environ.get("AUTOFV_RUN_TOKEN")
+    if not isinstance(base, str) or not token:
+        raise WorkerError("trusted proxy identity is not configured")
+    _proxy_endpoint(base)
+    _bind_proxy_client_identity(run, token)
+
     if _resource_matches("network", network, run) and _resource_matches(
         "relay", relay, run
     ):
         values = _json_output(_docker("container", "inspect", relay), "proxy relay")
+        expected_environment = {
+            f"AUTOFV_PROXY_BASE={base.rstrip('/')}",
+            f"AUTOFV_PROXY_PATH={run['lock']['fixed_proxy']['path']}",
+            f"AUTOFV_RUN_TOKEN={token}",
+        }
+        environment = set(values[0].get("Config", {}).get("Env") or [])
+        if not expected_environment.issubset(environment):
+            raise WorkerError("trusted proxy relay identity mismatch")
         address = values[0]["NetworkSettings"]["Networks"][network]["IPAddress"]
         _configure_proxy_firewall(run, network, relay)
+        run["proxy_network"] = network
+        run["proxy_relay"] = relay
+        _record_proxy_policy(run)
         return network, address
-
-    base = os.environ.get("AUTOFV_PROXY_BASE")
-    token = os.environ.get("AUTOFV_RUN_TOKEN")
-    if not base or not token:
-        raise WorkerError("trusted proxy identity is not configured")
-    _proxy_endpoint(base)
 
     if _docker("network", "inspect", network, check=False).returncode == 0:
         raise WorkerError("proxy network identity already exists")
@@ -1380,31 +1736,30 @@ def _ensure_proxy_relay(run: dict[str, Any]) -> tuple[str, str]:
     run["proxy_network"] = network
     run["proxy_relay"] = relay
     run["events"].append("fixed_proxy_relay_started")
+    _record_proxy_policy(run)
     return network, address
 
 
-def proxy_round(run: dict[str, Any], request: dict[str, Any]) -> tuple[dict[str, Any], dict[str, Any]]:
+def proxy_round(
+    run: dict[str, Any], request: dict[str, Any]
+) -> tuple[dict[str, Any], dict[str, Any]]:
     """Call only the launcher-selected fixed route from the runsc worker."""
+    request_sha256 = _validate_proxy_request(run, request)
     route = run["lock"]["fixed_proxy"]
-    if route["method"] != "POST" or request.get("run_id") != run["run_id"]:
-        raise WorkerError("fixed proxy request identity mismatch")
-    network, address = _ensure_proxy_relay(run)
-    client = (
-        "import json,sys,time,urllib.request;"
-        "raw=sys.stdin.buffer.read(1000001);"
-        "assert 0<len(raw)<=1000000;"
-        "req=urllib.request.Request(sys.argv[1],data=raw,method='POST',"
-        "headers={'Content-Type':'application/json'});"
-        "reply=urllib.request.urlopen(req,timeout=30);"
-        "sys.stdout.buffer.write(reply.read())"
-    )
+    try:
+        network, address = _ensure_proxy_relay(run)
+    except WorkerError as exc:
+        _record_proxy_error(
+            run, request, request_sha256, "upstream_error", None, str(exc)
+        )
+        raise WorkerError("fixed proxy upstream_error", run=run) from exc
     completed = _docker(
         *_runtime_argv(
             run["lock"],
             run["volume"],
             "python",
             "-c",
-            client,
+            _PROXY_CLIENT_PROGRAM,
             f"http://{address}:{RELAY_PORT}{route['path']}",
             network=network,
         ),
@@ -1412,12 +1767,145 @@ def proxy_round(run: dict[str, Any], request: dict[str, Any]) -> tuple[dict[str,
         check=False,
     )
     if completed.returncode:
-        detail = completed.stderr.decode("utf-8", "replace")[-1000:]
-        raise WorkerError(f"fixed proxy request failed: {detail}".rstrip())
-    body = _json_output(completed, "fixed proxy response")
+        _record_proxy_error(
+            run,
+            request,
+            request_sha256,
+            "upstream_error",
+            None,
+            completed.stdout + completed.stderr,
+        )
+        raise WorkerError("fixed proxy upstream_error", run=run)
+    try:
+        body = _json_output(completed, "fixed proxy response")
+    except WorkerError as exc:
+        _record_proxy_error(
+            run,
+            request,
+            request_sha256,
+            "malformed_response",
+            None,
+            completed.stdout + completed.stderr,
+        )
+        raise WorkerError("fixed proxy malformed_response", run=run) from exc
+    if isinstance(body, dict) and set(body) == {"proxy_error"}:
+        error = body["proxy_error"]
+        if not isinstance(error, dict) or set(error) != {"classification", "status_code"}:
+            classification, status_code = "malformed_response", None
+        else:
+            classification, status_code = error["classification"], error["status_code"]
+            allowed = set(route["receipt_schema"]["status_values"]) - {"ok"}
+            if classification not in allowed or (
+                status_code is not None
+                and (type(status_code) is not int or not 100 <= status_code <= 599)
+            ):
+                classification, status_code = "malformed_response", None
+        _record_proxy_error(
+            run,
+            request,
+            request_sha256,
+            classification,
+            status_code,
+            completed.stdout + completed.stderr,
+        )
+        raise WorkerError(f"fixed proxy {classification}", run=run)
     if not isinstance(body, dict) or set(body) != {"response", "receipt"}:
-        raise WorkerError("fixed proxy returned an invalid envelope")
+        _record_proxy_error(
+            run,
+            request,
+            request_sha256,
+            "malformed_response",
+            None,
+            completed.stdout + completed.stderr,
+        )
+        raise WorkerError("fixed proxy malformed_response", run=run)
     return body["response"], body["receipt"]
+
+
+def run_proxy_policy_matrix(
+    run: dict[str, Any], fixture: dict[str, Any]
+) -> dict[str, Any]:
+    """Prove that the worker-visible relay exposes only fixed inference."""
+    cases = fixture.get("rejected_proxy")
+    expected_ids = [
+        "connect_tunnel",
+        "caller_upstream",
+        "caller_authorization",
+        "provider_admin",
+        "file_transfer",
+        "batch_jobs",
+        "unclassified_surface",
+    ]
+    if (
+        not isinstance(cases, list)
+        or any(not isinstance(case, dict) for case in cases)
+        or [case.get("id") for case in cases] != expected_ids
+    ):
+        raise WorkerError("proxy policy fixture cases mismatch")
+    network, address = _ensure_proxy_relay(run)
+    observed = []
+    for case in cases:
+        expected_fields = {"id", "method", "path"} | (
+            {"header"}
+            if case["id"] in {"caller_upstream", "caller_authorization"}
+            else set()
+        )
+        if set(case) != expected_fields:
+            raise WorkerError(f"proxy policy case fields mismatch: {case.get('id')}")
+        completed = _docker(
+            *_runtime_argv(
+                run["lock"],
+                run["volume"],
+                "python",
+                "-c",
+                _PROXY_POLICY_CLIENT_PROGRAM,
+                address,
+                str(RELAY_PORT),
+                case["method"],
+                case["path"],
+                case.get("header", ""),
+                network=network,
+            ),
+            input_bytes=_canonical_bytes(
+                {
+                    "schema": "autofv-model-request/v1",
+                    "run_id": run["run_id"],
+                    "sequence": 1,
+                    "batch_id": None,
+                    "request_id": "policy-probe",
+                    "role": "policy-probe",
+                    "model_id": "policy-probe",
+                    "input_hashes": [],
+                    "prompt_sha256": "0" * 64,
+                }
+            ),
+            check=False,
+        )
+        value = _json_output(completed, f"proxy policy case {case['id']}")
+        if (
+            completed.returncode != 0
+            or not isinstance(value, dict)
+            or set(value) != {"blocked", "status"}
+            or value["blocked"] is not True
+            or type(value["status"]) is not int
+        ):
+            raise WorkerError(f"fixed proxy allowed {case['id']}")
+        observed.append({"id": case["id"], **value})
+
+    body = {
+        "schema": "autofv-proxy-policy-matrix/v1",
+        "run_id": run["run_id"],
+        "proxy_policy_sha256": run["proxy_policy_sha256"],
+        "fixture_sha256": _sha256(_canonical_bytes(fixture)),
+        "rejected": observed,
+    }
+    receipt = {**body, "matrix_sha256": _sha256(_canonical_bytes(body))}
+    _atomic_write(
+        Path(run["evidence_dir"]) / "proxy-policy-matrix.json",
+        _canonical_bytes(receipt) + b"\n",
+    )
+    run["events"].append("proxy_policy_matrix_passed")
+    return receipt
 
 
 def run_egress_matrix(
@@ -1665,10 +2153,7 @@ def _safe_tar(raw: bytes, label: str) -> None:
         raise WorkerError(f"{label} is not a valid archive") from exc
 
 
-def scan_artifacts(
-    artifacts: dict[str, bytes], markers: Iterable[bytes | str] = ()
-) -> dict[str, Any]:
-    """Reject provider secrets, fixture programs, and hidden references."""
+def _forbidden_markers(markers: Iterable[bytes | str]) -> tuple[bytes, ...]:
     forbidden = [
         b"tests/fixtures/model-proxy/diamond-responses.json",
         b"diamond-responses.json",
@@ -1676,14 +2161,37 @@ def scan_artifacts(
         b"tests/fixtures/diamond-reference",
     ]
     for marker in markers:
-        raw = marker.encode("utf-8") if isinstance(marker, str) else marker
+        if isinstance(marker, str):
+            raw = marker.encode("utf-8")
+        elif isinstance(marker, bytes):
+            raw = marker
+        else:
+            raise WorkerError("artifact scan marker must be bytes or text")
         if not raw:
             raise WorkerError("artifact scan marker must not be empty")
         forbidden.append(raw)
+    return tuple(dict.fromkeys(forbidden))
+
+
+def _marker_hits(
+    artifacts: dict[str, bytes], forbidden: tuple[bytes, ...]
+) -> bool:
     for name, raw in artifacts.items():
-        for marker in forbidden:
-            if marker in raw:
-                raise WorkerError(f"forbidden material found in export artifact {name}")
+        if not isinstance(name, str) or not isinstance(raw, bytes):
+            raise WorkerError("artifact scan input is invalid")
+        encoded_name = name.encode("utf-8", "surrogateescape")
+        if any(marker in encoded_name or marker in raw for marker in forbidden):
+            return True
+    return False
+
+
+def scan_artifacts(
+    artifacts: dict[str, bytes], markers: Iterable[bytes | str] = ()
+) -> dict[str, Any]:
+    """Reject provider secrets, fixture programs, and hidden references."""
+    forbidden = _forbidden_markers(markers)
+    if _marker_hits(artifacts, forbidden):
+        raise WorkerError("forbidden material found in export artifacts")
     body = {
         "schema": "autofv-artifact-scan/v1",
         "artifacts": sorted(artifacts),
@@ -1691,6 +2199,162 @@ def scan_artifacts(
             name: _sha256(raw) for name, raw in sorted(artifacts.items())
         },
         "marker_count": len(forbidden),
+        "clean": True,
+    }
+    return {**body, "scan_sha256": _sha256(_canonical_bytes(body))}
+
+
+def _worker_environment_artifacts(run: dict[str, Any]) -> dict[str, bytes]:
+    artifacts = {"lima": _lima("env").stdout}
+    names = [CLAIM_CONTAINER]
+    if run.get("proxy_relay"):
+        names.append(run["proxy_relay"])
+    for name in names:
+        values = _json_output(
+            _docker("container", "inspect", name), f"worker environment {name}"
+        )
+        try:
+            environment = values[0]["Config"]["Env"] or []
+        except (KeyError, IndexError, TypeError) as exc:
+            raise WorkerError("worker container environment is incomplete") from exc
+        if not isinstance(environment, list) or any(
+            not isinstance(value, str) for value in environment
+        ):
+            raise WorkerError("worker container environment is invalid")
+        artifacts[name] = "\n".join(sorted(environment)).encode("utf-8")
+    return artifacts
+
+
+def _scan_worker_volume(
+    run: dict[str, Any], forbidden: tuple[bytes, ...]
+) -> dict[str, Any]:
+    completed = _docker(
+        *_runtime_argv(
+            run["lock"],
+            run["volume"],
+            "python",
+            "-c",
+            _VOLUME_SCAN_PROGRAM,
+        ),
+        input_bytes=_canonical_bytes({"markers": [marker.hex() for marker in forbidden]}),
+    )
+    value = _json_output(completed, "worker filesystem scan")
+    if not isinstance(value, dict) or set(value) != {
+        "schema",
+        "roots",
+        "hit_surfaces",
+        "clean",
+    }:
+        raise WorkerError("worker filesystem scan receipt is invalid")
+    expected_roots = [
+        ("/volume/work", "filesystem"),
+        ("/volume/accepted", "filesystem"),
+        ("/volume/autofv-control", "filesystem"),
+        ("/volume/logs", "log"),
+        ("/volume/evidence", "transcript"),
+        ("/volume/lanes", "state"),
+    ]
+    roots = value["roots"]
+    if (
+        value["schema"] != "autofv-worker-filesystem-scan/v1"
+        or not isinstance(roots, list)
+        or any(not isinstance(item, dict) for item in roots)
+        or [(item.get("root"), item.get("surface")) for item in roots]
+        != expected_roots
+        or not isinstance(value["hit_surfaces"], list)
+        or value["hit_surfaces"] != sorted(set(value["hit_surfaces"]))
+        or any(surface not in SCANNED_SURFACES for surface in value["hit_surfaces"])
+        or type(value["clean"]) is not bool
+        or value["clean"] != (not value["hit_surfaces"])
+    ):
+        raise WorkerError("worker filesystem scan receipt mismatch")
+    for item in roots:
+        if (
+            not isinstance(item, dict)
+            or set(item) != {
+                "root",
+                "surface",
+                "files",
+                "bytes",
+                "manifest_sha256",
+            }
+            or type(item["files"]) is not int
+            or item["files"] < 0
+            or type(item["bytes"]) is not int
+            or item["bytes"] < 0
+            or not isinstance(item["manifest_sha256"], str)
+            or SHA256.fullmatch(item["manifest_sha256"]) is None
+        ):
+            raise WorkerError("worker filesystem scan root receipt is invalid")
+    body = dict(value)
+    return {**body, "scan_sha256": _sha256(_canonical_bytes(body))}
+
+
+def _host_surface(name: str) -> str:
+    lowered = name.lower()
+    if name == "result.json":
+        return "result"
+    if "transcript" in lowered:
+        return "transcript"
+    if "log" in lowered:
+        return "log"
+    if name.startswith("checkpoints/"):
+        return "state"
+    return "filesystem"
+
+
+def scan_retained_state(
+    run: dict[str, Any],
+    artifacts: dict[str, bytes],
+    markers: Iterable[bytes | str] = (),
+) -> dict[str, Any]:
+    """Scan every retained worker and export surface before destruction."""
+    forbidden = _forbidden_markers(markers)
+    hits: set[str] = set()
+
+    environment = _worker_environment_artifacts(run)
+    if _marker_hits(environment, forbidden):
+        hits.add("environment")
+
+    filesystem = _scan_worker_volume(run, forbidden)
+    hits.update(filesystem["hit_surfaces"])
+
+    state = {key: value for key, value in run.items() if key != "artifact_scan_markers"}
+    try:
+        state_raw = _canonical_bytes(state)
+    except (TypeError, ValueError) as exc:
+        raise WorkerError("controller run state is not canonical JSON") from exc
+    if _marker_hits({"run.json": state_raw}, forbidden):
+        hits.add("state")
+
+    host = _host_artifacts(run)
+    for name, raw in host.items():
+        if _marker_hits({name: raw}, forbidden):
+            hits.add(_host_surface(name))
+    if _marker_hits(artifacts, forbidden):
+        hits.add("export")
+
+    if hits:
+        ordered = [surface for surface in SCANNED_SURFACES if surface in hits]
+        raise WorkerError(
+            "forbidden material found in retained surfaces: " + ", ".join(ordered)
+        )
+
+    export = scan_artifacts(artifacts, markers)
+    body = {
+        "schema": "autofv-retained-state-scan/v1",
+        "run_id": run["run_id"],
+        "scanned_surfaces": list(SCANNED_SURFACES),
+        "marker_count": len(forbidden),
+        "environment_sha256": {
+            name: _sha256(raw) for name, raw in sorted(environment.items())
+        },
+        "worker_filesystem": filesystem,
+        "controller_state_sha256": _sha256(state_raw),
+        "host_artifact_sha256": {
+            name: _sha256(raw) for name, raw in sorted(host.items())
+        },
+        "export": export,
         "clean": True,
     }
     return {**body, "scan_sha256": _sha256(_canonical_bytes(body))}
@@ -1793,7 +2457,7 @@ def export_run(run: dict[str, Any], *, interrupted: bool = False) -> dict[str, A
         return verified
     artifacts = _export_artifacts(run)
     markers = run.get("artifact_scan_markers", ())
-    scan = scan_artifacts(artifacts, markers)
+    scan = scan_retained_state(run, artifacts, markers)
     export_root = Path(run["run_root"]) / "export"
     for name, raw in artifacts.items():
         _atomic_write(export_root / name, raw)
@@ -1813,6 +2477,9 @@ def export_run(run: dict[str, Any], *, interrupted: bool = False) -> dict[str, A
         "image_digest": run["image_digest"],
         "control_bundle_sha256": run.get("control_bundle_sha256"),
         "native_decide_policy_sha256": run.get("native_decide_policy_sha256"),
+        "fixed_proxy_sha256": run.get("fixed_proxy_sha256"),
+        "proxy_policy_sha256": run.get("proxy_policy_sha256"),
+        "proxy_client_identity_sha256": run.get("proxy_client_identity_sha256"),
         "worker_inventory_sha256": run.get("worker_inventory_sha256"),
         "egress_policy_sha256": run.get("egress_policy_sha256"),
         "interrupted": bool(interrupted),
@@ -1844,6 +2511,9 @@ def _load_verified_export(run: dict[str, Any]) -> tuple[dict[str, Any], dict[str
         "image_digest": run["image_digest"],
         "control_bundle_sha256": run.get("control_bundle_sha256"),
         "native_decide_policy_sha256": run.get("native_decide_policy_sha256"),
+        "fixed_proxy_sha256": run.get("fixed_proxy_sha256"),
+        "proxy_policy_sha256": run.get("proxy_policy_sha256"),
+        "proxy_client_identity_sha256": run.get("proxy_client_identity_sha256"),
     }
     if (
         manifest.get("schema") != "autofv-export/v1"
@@ -1899,13 +2569,22 @@ def _load_verified_export(run: dict[str, Any]) -> tuple[dict[str, Any], dict[str
     ):
         raise WorkerError("disposed run accepted tree mismatch")
 
-    scan = scan_artifacts(artifacts, run.get("artifact_scan_markers", ()))
+    export_scan = scan_artifacts(artifacts, run.get("artifact_scan_markers", ()))
     try:
         recorded_scan = (export_root / "artifact-scan.json").read_bytes()
-    except OSError as exc:
+        scan = json.loads(recorded_scan)
+    except (OSError, json.JSONDecodeError) as exc:
         raise WorkerError("disposed run artifact scan is missing") from exc
+    if not isinstance(scan, dict) or "scan_sha256" not in scan:
+        raise WorkerError("disposed run artifact scan is invalid")
+    scan_body = {key: value for key, value in scan.items() if key != "scan_sha256"}
     if (
         recorded_scan != _canonical_bytes(scan) + b"\n"
+        or scan.get("schema") != "autofv-retained-state-scan/v1"
+        or scan.get("clean") is not True
+        or scan.get("scanned_surfaces") != list(SCANNED_SURFACES)
+        or scan.get("export") != export_scan
+        or scan.get("scan_sha256") != _sha256(_canonical_bytes(scan_body))
         or manifest.get("scan_sha256") != scan["scan_sha256"]
     ):
         raise WorkerError("disposed run artifact scan mismatch")
@@ -1953,7 +2632,12 @@ def _restore_export(run: dict[str, Any]) -> None:
     manifest, artifacts = _load_verified_export(run)
     run.pop("export_receipt", None)
     run.pop("disposal_receipt", None)
-    for key in ("proxy_firewall", "proxy_network", "proxy_relay"):
+    for key in (
+        "proxy_firewall",
+        "proxy_network",
+        "proxy_relay",
+        "proxy_policy_sha256",
+    ):
         run.pop(key, None)
     run["finalization_sequence"] = int(manifest.get("sequence", 0))
     control_manifest, control_files = _control_manifest(run["lock"])

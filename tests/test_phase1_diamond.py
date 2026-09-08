@@ -174,7 +174,23 @@ class _Seams:
             "run_id": run["run_id"],
             "agent_worker_id": run["agent_worker_id"],
             "verifier_worker_id": "verifier-worker-fixture",
+            "toolchain_lock_sha256": "2" * 64,
+            "bundle_sha256": "3" * 64,
+            "reference_sha256": "4" * 64,
             **expected,
+            "checks": {"fixture": True},
+            "failures": [],
+            "native_decide_uses": [],
+            "compiler_assumptions": verifier.compiler_assumptions(
+                experiment.load_toolchain_lock()
+            ),
+            "meaning": {
+                "reference_integrity": True,
+                "statement_equivalence": True,
+                "non_vacuity": True,
+                "broken_implementation_rejected": True,
+            },
+            "evidence_level": "L4",
             "verdict": "PASS",
         }
         return {**body, "report_sha256": _sha256(experiment.canonical_json_bytes(body))}

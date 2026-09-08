@@ -640,7 +640,11 @@
     "allowed_members": [
       ".verilib/sorry_inventory.json",
       "autofv/__init__.py",
+      "autofv/contracts.py",
+      "autofv/diamond.py",
       "autofv/experiment.py",
+      "autofv/model.py",
+      "autofv/run_state.py",
       "docker/autofv/toolchain-lock.json",
       "harness/agentproc.py",
       "harness/frozen/external_axioms.json",

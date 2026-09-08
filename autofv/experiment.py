@@ -2215,6 +2215,9 @@ def run_experiment(
             for values in update.values():
                 state.update(values)
         result = _result(run, state, outcome="success", reason="all_targets_verified")
+    except KeyboardInterrupt:
+        state["termination_detail"] = "controller interrupted"
+        result = _result(run, state, outcome="failure", reason="interrupted")
     except BudgetExhausted as exc:
         state["termination_detail"] = exc.detail
         result = _result(

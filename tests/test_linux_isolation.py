@@ -263,6 +263,19 @@ class LinuxIsolationTests(unittest.TestCase):
             with self.assertRaisesRegex(worker.WorkerError, "not a regular file"):
                 worker._host_artifacts({"run_root": tmp})
 
+    def test_interrupted_result_marks_disposal(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            run = {
+                "run_root": tmp,
+                "execution_tier": "sealed_runsc",
+                "base_commit": "1" * 40,
+            }
+            result = {"termination_reason": "interrupted"}
+            with mock.patch.object(worker, "dispose_run") as dispose:
+                worker.persist_result(run, result, {})
+
+            dispose.assert_called_once_with(run, interrupted=True)
+
     def test_preparation_failure_destroys_worker_but_export_failure_retains_it(self) -> None:
         _, control_manifest, snapshot_sha256 = worker._seed_archive(TARGET, LOCK)
         with mock.patch.object(

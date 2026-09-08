@@ -278,7 +278,7 @@ def _create_worker(run: dict[str, Any]) -> None:
             input_bytes=(run["run_id"] + "\n").encode("utf-8"),
         )
         _install_worker_firewall()
-    except WorkerError as exc:
+    except BaseException as exc:
         _limactl("stop", AGENT_VM, check=False)
         _limactl("delete", AGENT_VM, check=False)
         if inspect_lima_instance(AGENT_VM) is not None:
@@ -924,7 +924,7 @@ def prepare_run(target: Path, manifest: dict[str, Any], lock: dict[str, Any]) ->
             ),
             "checks": ["sealed_baseline"],
         }
-    except WorkerError as exc:
+    except BaseException as exc:
         if worker_created:
             try:
                 _destroy_worker(run)
@@ -932,7 +932,8 @@ def prepare_run(target: Path, manifest: dict[str, Any], lock: dict[str, Any]) ->
                 raise WorkerError(
                     f"{exc}; preparation cleanup failed: {cleanup_exc}", run=run
                 ) from exc
-        exc.run = run
+        if isinstance(exc, WorkerError):
+            exc.run = run
         raise
     return run
 
@@ -1605,7 +1606,7 @@ def accept_candidate(
                 candidate["request_id"],
             )
         )
-    except WorkerError:
+    except BaseException:
         _git(run, "apply", "--reverse", "-", input_bytes=raw_patch)
         _git(run, "add", "--", path)
         raise
@@ -1633,7 +1634,7 @@ def persist_result(run: dict[str, Any], result: dict[str, Any], receipt: dict[st
     for path, value in ((root / "result.json", result), (evidence / "l0.json", receipt)):
         _atomic_write(path, _canonical_bytes(value) + b"\n")
     if run.get("execution_tier") == "sealed_runsc" and run.get("base_commit"):
-        dispose_run(run)
+        dispose_run(run, interrupted=result.get("termination_reason") == "interrupted")
 
 
 def _atomic_write(path: Path, raw: bytes) -> None:
@@ -2049,7 +2050,7 @@ def _restore_export(run: dict[str, Any]) -> None:
             or _sha256(restored_tree) != run["accepted"]["accepted_tree_sha256"]
         ):
             raise WorkerError("restored accepted state mismatch")
-    except WorkerError:
+    except BaseException:
         if worker_created:
             _destroy_worker(run)
         raise

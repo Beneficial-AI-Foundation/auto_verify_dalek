@@ -86,6 +86,16 @@ CHECKPOINT_RUN_FIELDS = (
     "control_bundle_sha256",
     "native_decide_policy",
     "native_decide_policy_sha256",
+    "worker_inventory_sha256",
+    "fixed_proxy_sha256",
+    "proxy_model_id",
+    "proxy_base",
+    "proxy_firewall",
+    "proxy_network",
+    "proxy_relay",
+    "proxy_client_identity_sha256",
+    "proxy_policy_sha256",
+    "egress_policy_sha256",
     "base_commit",
     "events",
 )
@@ -953,6 +963,65 @@ def _model_envelope(
     }
 
 
+def _validate_model_exchange(
+    state: _RunState,
+    request: dict[str, Any],
+    response: Any,
+    receipt: Any,
+    *,
+    enforce_sequence: bool,
+) -> tuple[dict[str, Any], dict[str, Any], Decimal]:
+    run, config = state["run"], state["config"]
+    response = _validate_model_response(response, request, run["base_commit"])
+    amount = validate_proxy_receipt(
+        receipt,
+        run_id=run["run_id"],
+        sequence=request["sequence"],
+        request_id=request["request_id"],
+        model_id=config["model"],
+        request_sha256=_canonical_sha256(request),
+        response_sha256=_canonical_sha256(response),
+        seen_receipt_sha256={item["receipt_sha256"] for item in state["receipts"]},
+        seen_request_ids={item["request_id"] for item in state["receipts"]},
+    )
+    if enforce_sequence and request["sequence"] != len(state["receipts"]) + 1:
+        raise ContractError("proxy receipt sequence is not next for this run")
+    return (
+        json.loads(canonical_json_bytes(response)),
+        json.loads(canonical_json_bytes(receipt)),
+        amount,
+    )
+
+
+def _record_model_rejection(
+    state: _RunState,
+    request: dict[str, Any],
+    receipt: Any,
+    error: ContractError,
+    *,
+    checkpoint: bool,
+) -> None:
+    try:
+        payload_sha256 = _canonical_sha256(receipt)
+    except ContractError:
+        payload_sha256 = hashlib.sha256(
+            f"noncanonical:{type(receipt).__name__}".encode()
+        ).hexdigest()
+    state.setdefault("pending_model_exchanges", {}).pop(
+        request.get("request_id"), None
+    )
+    state.setdefault("receipt_rejections", []).append(
+        {
+            "request_id": request.get("request_id"),
+            "sequence": request.get("sequence"),
+            "receipt_payload_sha256": payload_sha256,
+            "reason": str(error)[:1000],
+        }
+    )
+    if checkpoint:
+        _checkpoint_if_enabled(state, f"receipt:{request.get('request_id')}:rejected")
+
+
 def _invoke_model(
     state: _RunState, request: dict[str, Any], *, checkpoint: bool = True
 ) -> tuple[dict[str, Any], dict[str, Any]]:
@@ -970,15 +1039,30 @@ def _invoke_model(
             _charge_wall(state)
             _checkpoint_if_enabled(state, f"model:{request['request_id']}:failed")
         raise
+    try:
+        response, receipt, _ = _validate_model_exchange(
+            state,
+            request,
+            exchange[0],
+            exchange[1],
+            enforce_sequence=False,
+        )
+    except ContractError as exc:
+        if checkpoint:
+            _charge_wall(state)
+        _record_model_rejection(
+            state, request, exchange[1], exc, checkpoint=checkpoint
+        )
+        raise
     if checkpoint:
         _charge_wall(state)
         state.setdefault("pending_model_exchanges", {})[request["request_id"]] = {
             "request": request,
-            "response": exchange[0],
-            "receipt": exchange[1],
+            "response": response,
+            "receipt": receipt,
         }
         _checkpoint_if_enabled(state, f"model:{request['request_id']}:after")
-    return exchange
+    return response, receipt
 
 
 def _accept_model_exchange(
@@ -989,47 +1073,20 @@ def _accept_model_exchange(
     *,
     enforce_budget: bool = True,
 ) -> tuple[dict[str, Any], dict[str, Any]]:
-    run, config = state["run"], state["config"]
-    response = _validate_model_response(response, request, run["base_commit"])
-    request_sha256 = _canonical_sha256(request)
-    response_sha256 = _canonical_sha256(response)
     try:
-        amount = validate_proxy_receipt(
+        response, receipt, amount = _validate_model_exchange(
+            state,
+            request,
+            response,
             receipt,
-            run_id=run["run_id"],
-            sequence=request["sequence"],
-            request_id=request["request_id"],
-            model_id=config["model"],
-            request_sha256=request_sha256,
-            response_sha256=response_sha256,
-            seen_receipt_sha256={
-                item["receipt_sha256"] for item in state["receipts"]
-            },
-            seen_request_ids={item["request_id"] for item in state["receipts"]},
+            enforce_sequence=True,
         )
-        if request["sequence"] != len(state["receipts"]) + 1:
-            raise ContractError("proxy receipt sequence is not next for this run")
     except ContractError as exc:
-        try:
-            payload_sha256 = _canonical_sha256(receipt)
-        except ContractError:
-            payload_sha256 = hashlib.sha256(
-                f"noncanonical:{type(receipt).__name__}".encode()
-            ).hexdigest()
-        state.setdefault("receipt_rejections", []).append(
-            {
-                "request_id": request.get("request_id"),
-                "sequence": request.get("sequence"),
-                "receipt_payload_sha256": payload_sha256,
-                "reason": str(exc)[:1000],
-            }
-        )
-        _checkpoint_if_enabled(state, f"receipt:{request.get('request_id')}:rejected")
+        _record_model_rejection(state, request, receipt, exc, checkpoint=True)
         raise
 
     request = json.loads(canonical_json_bytes(request))
-    response = json.loads(canonical_json_bytes(response))
-    receipt = json.loads(canonical_json_bytes(receipt))
+    run, config = state["run"], state["config"]
     new_cost = state["cost"] + amount
     state["cost"] = new_cost
     state["receipts"].append(receipt)

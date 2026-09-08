@@ -2,12 +2,13 @@ import copy
 import hashlib
 import io
 import json
+import subprocess
 import tarfile
 import unittest
 from pathlib import Path
 from unittest import mock
 
-from autofv import experiment, probes, verifier
+from autofv import experiment, probes, verifier, verifier_bundle, worker
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -118,7 +119,9 @@ def _invocation(bundle, state=None):
         "probe_aeneas_sha256": graph["probe_aeneas_sha256"],
         "graph_sha256": graph["graph_sha256"],
         "image_digest": lock["image"]["image_digest"],
-        "control_bundle_sha256": lock["controller_delivery"]["bundle_sha256"],
+        "control_bundle_sha256": worker._control_manifest(lock)[0][
+            "bundle_sha256"
+        ],
         "native_decide_policy_sha256": lock["native_decide_policy_sha256"],
         "toolchain_lock_sha256": _sha256(_canonical(lock)),
         "accepted_commit": "2" * 40,
@@ -133,6 +136,7 @@ def _observed(state=None):
     graph = state["graph"]
     return {
         "verifier_worker_id": "lima:autofv-verifier:verifier-machine",
+        "snapshot_sha256": "0" * 64,
         "accepted_commit": "2" * 40,
         "accepted_tree_sha256": "3" * 64,
         "image_digest": experiment.load_toolchain_lock()["image"]["image_digest"],
@@ -233,7 +237,7 @@ class BundleIntakeTests(unittest.TestCase):
         changed[member_index] = (changed[member_index][0], b"{}")
         cases.append(("member_hash_mismatch", _raw_tar(changed), None))
 
-        with mock.patch.object(verifier, "MAX_MEMBER_BYTES", 8):
+        with mock.patch.object(verifier_bundle, "MAX_MEMBER_BYTES", 8):
             report = self._verify(self.bundle)
         self.assertIn("member_too_large", report["failures"])
 
@@ -282,6 +286,7 @@ class CleanStateMutationTests(unittest.TestCase):
                 self.assertIn(reason, report["failures"])
 
         observed_cases = {
+            "snapshot_mismatch": {"snapshot_sha256": "f" * 64},
             "accepted_commit_mismatch": {"accepted_commit": "f" * 40},
             "accepted_tree_mismatch": {"accepted_tree_sha256": "f" * 64},
             "verifier_worker_mismatch": {"verifier_worker_id": "wrong-worker"},
@@ -363,6 +368,68 @@ class ReportAuthorityTests(unittest.TestCase):
         same_worker["report_sha256"] = _sha256(_canonical(body))
         with self.assertRaisesRegex(verifier.VerifierError, "distinct"):
             verifier.validate_report(same_worker, run, invocation)
+
+
+class VerifyRunWiringTests(unittest.TestCase):
+    def test_verify_run_binds_bundle_reference_worker_and_invocation(self):
+        state = _state()
+        bundle = verifier.build_bundle(_members(state))
+        invocation = _invocation(bundle, state)
+        run = {
+            "run_id": invocation["run_id"],
+            "agent_worker_id": invocation["agent_worker_id"],
+            "image_digest": invocation["image_digest"],
+            "manifest": json.loads((TARGET / "autofv.json").read_text()),
+            "lock": experiment.load_toolchain_lock(),
+            "accepted": {"accepted_commit": invocation["accepted_commit"]},
+            "verification_state": state,
+        }
+        expected = {
+            key: invocation[key]
+            for key in (
+                "invocation_id",
+                "snapshot_sha256",
+                "manifest_sha256",
+                "probe_rust_sha256",
+                "probe_aeneas_sha256",
+                "graph_sha256",
+                "image_digest",
+                "control_bundle_sha256",
+                "native_decide_policy_sha256",
+                "accepted_commit",
+                "accepted_tree_sha256",
+            )
+        }
+        started = subprocess.CompletedProcess(
+            args=("limactl", "start", verifier.VERIFIER_VM),
+            returncode=0,
+            stdout=b"",
+            stderr=b"",
+        )
+        machine = subprocess.CompletedProcess(
+            args=("cat", "/etc/machine-id"),
+            returncode=0,
+            stdout=b"verifier-machine\n",
+            stderr=b"",
+        )
+        with (
+            mock.patch.object(verifier.subprocess, "run", return_value=started),
+            mock.patch.object(verifier, "_shell", return_value=machine),
+            mock.patch.object(verifier, "_run_bundle", return_value=bundle),
+            mock.patch.object(
+                verifier, "_clean_worker_checks", return_value=_observed(state)
+            ) as clean,
+        ):
+            report = verifier.verify_run(run, expected)
+
+        self.assertEqual(report["verdict"], "PASS")
+        self.assertEqual(report["invocation_id"], invocation["invocation_id"])
+        self.assertEqual(
+            report["verifier_worker_id"], invocation["verifier_worker_id"]
+        )
+        self.assertEqual(report["bundle_sha256"], _sha256(bundle))
+        self.assertEqual(report["reference_sha256"], _sha256(REFERENCE.read_bytes()))
+        clean.assert_called_once()
 
 
 if __name__ == "__main__":

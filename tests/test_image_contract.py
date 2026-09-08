@@ -791,6 +791,16 @@ class ControlBundleBoundaryTests(unittest.TestCase):
         )
         validate_control_bundle_manifest(ROOT, manifest, contract)
 
+    def test_split_experiment_modules_remain_in_the_control_bundle(self):
+        members = set(load_lock()["controller_delivery"]["allowed_members"])
+        moved_experiment_code = {
+            "autofv/contracts.py",
+            "autofv/diamond.py",
+            "autofv/model.py",
+            "autofv/run_state.py",
+        }
+        self.assertTrue(moved_experiment_code <= members)
+
     def test_rejects_noncanonical_duplicate_and_out_of_allowlist_members(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)

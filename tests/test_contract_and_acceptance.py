@@ -6,7 +6,7 @@ import unittest
 from pathlib import Path
 from unittest import mock
 
-from autofv import experiment, verifier, worker
+from autofv import diamond, experiment, verifier, worker
 from tests.test_phase1_diamond import TARGET, _FixtureProxy, _Seams
 
 
@@ -63,7 +63,7 @@ class ContractRepairTests(unittest.TestCase):
         dependency = ENTRIES["dependency-plan-001"]["response"]
 
         with (
-            mock.patch.object(experiment, "_model_request", side_effect=_responses()),
+            mock.patch.object(diamond, "_model_request", side_effect=_responses()),
             mock.patch.object(
                 worker,
                 "check_contract_feasibility",
@@ -109,7 +109,7 @@ class ContractRepairTests(unittest.TestCase):
         dependency = ENTRIES["dependency-plan-001"]["response"]
 
         with (
-            mock.patch.object(experiment, "_model_request", side_effect=_responses()),
+            mock.patch.object(diamond, "_model_request", side_effect=_responses()),
             mock.patch.object(
                 worker,
                 "check_contract_feasibility",

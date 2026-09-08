@@ -399,6 +399,27 @@ class TracerTests(unittest.TestCase):
                     self.assertEqual(result["proxy_requests"], 0)
                     self.assertEqual(result["cost_usd"], "0.000000")
 
+    def test_controller_interrupt_persists_an_explicit_failure(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            seams = _Seams(Path(tmp), self.fixture)
+            with (
+                mock.patch.object(worker, "prepare_run", seams.prepare),
+                mock.patch.object(worker, "persist_result", seams.persist),
+                mock.patch.object(
+                    experiment._EXPERIMENT_GRAPH,
+                    "stream",
+                    side_effect=KeyboardInterrupt,
+                ),
+            ):
+                result = experiment.run_experiment(
+                    TARGET, TARGET / "run.json", run_round=lambda request: request
+                )
+
+            self.assertEqual(result["outcome"], "failure")
+            self.assertEqual(result["termination_reason"], "interrupted")
+            self.assertEqual(result["termination_detail"], "controller interrupted")
+            self.assertTrue((Path(tmp) / "result.json").is_file())
+
 
 if __name__ == "__main__":
     unittest.main()

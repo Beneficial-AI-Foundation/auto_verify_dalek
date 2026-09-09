@@ -7,7 +7,7 @@ from decimal import Decimal
 from pathlib import Path
 from unittest import mock
 
-from autofv import experiment, verifier, worker
+from autofv import experiment, results, verifier, worker
 from tests.test_phase1_diamond import MODEL_FIXTURE, TARGET, _FixtureProxy, _Seams
 
 
@@ -233,6 +233,129 @@ class RestartTests(unittest.TestCase):
                     run_round=state["run_round"],
                 )
 
+    def test_failed_sealed_recovery_disposes_the_recreated_worker(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            state = _checkpoint_state(Path(tmp))
+            state["run"]["execution_tier"] = "sealed_runsc"
+            experiment._write_checkpoint(state, "build:before")
+            loaded = experiment._load_checkpoint(
+                Path(tmp), experiment._checkpoint_identities(state["run"])
+            )
+            with (
+                mock.patch.object(
+                    worker,
+                    "inspect_resume_state",
+                    return_value={"valid": False, "reason": "recreated worker drift"},
+                ),
+                mock.patch.object(
+                    worker,
+                    "restore_accepted",
+                    return_value={"valid": False, "reason": "accepted restore drift"},
+                ),
+                mock.patch.object(worker, "dispose_run") as dispose,
+                self.assertRaisesRegex(experiment.ContractError, "did not match"),
+            ):
+                experiment._restore_checkpoint(
+                    loaded,
+                    manifest=state["manifest"],
+                    config=state["config"],
+                    lock=LOCK,
+                    run_round=state["run_round"],
+                )
+
+            dispose.assert_called_once()
+            self.assertTrue(dispose.call_args.kwargs["interrupted"])
+
+    def test_failed_recovery_forces_destruction_when_export_cleanup_fails(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            state = _checkpoint_state(Path(tmp))
+            state["run"]["execution_tier"] = "sealed_runsc"
+            experiment._write_checkpoint(state, "build:before")
+            loaded = experiment._load_checkpoint(
+                Path(tmp), experiment._checkpoint_identities(state["run"])
+            )
+            with (
+                mock.patch.object(
+                    worker,
+                    "inspect_resume_state",
+                    return_value={"valid": False},
+                ),
+                mock.patch.object(
+                    worker,
+                    "restore_accepted",
+                    return_value={"valid": False},
+                ),
+                mock.patch.object(
+                    worker, "dispose_run", side_effect=worker.WorkerError("export failed")
+                ),
+                mock.patch.object(worker, "_destroy_worker") as destroy,
+                self.assertRaisesRegex(
+                    experiment.ContractError, "after forced worker destruction"
+                ),
+            ):
+                experiment._restore_checkpoint(
+                    loaded,
+                    manifest=state["manifest"],
+                    config=state["config"],
+                    lock=LOCK,
+                    run_round=state["run_round"],
+                )
+
+            destroy.assert_called_once()
+
+    def test_recreated_worker_invalidates_old_verifier_evidence(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            state = _checkpoint_state(root)
+            state["verifier_report"] = {
+                "agent_worker_id": "agent-worker-fixture",
+                "report_sha256": "f" * 64,
+                "verdict": "PASS",
+            }
+            state["verifier_invocation_id"] = "verify-old"
+            for relative in (
+                "evidence/verifier.json",
+                "evidence/l0/build.json",
+                "evidence/l0/replay.json",
+            ):
+                path = root / relative
+                path.parent.mkdir(parents=True, exist_ok=True)
+                path.write_text("{}\n")
+            experiment._write_checkpoint(state, "result:before-export")
+            loaded = experiment._load_checkpoint(
+                root, experiment._checkpoint_identities(state["run"])
+            )
+
+            def recreate(run, _manifest):
+                run["agent_worker_id"] = "agent-worker-recreated"
+                return {**state["working"], "valid": True, "dirty": False}
+
+            with mock.patch.object(
+                worker, "inspect_resume_state", side_effect=recreate
+            ):
+                resumed = experiment._restore_checkpoint(
+                    loaded,
+                    manifest=state["manifest"],
+                    config=state["config"],
+                    lock=LOCK,
+                    run_round=state["run_round"],
+                )
+
+            self.assertNotIn("verifier_report", resumed)
+            self.assertNotIn("verifier_invocation_id", resumed)
+            self.assertIn(
+                "verifier_invalidated:worker_recreated", resumed["run"]["events"]
+            )
+            history = root / "evidence" / "history" / ("f" * 64)
+            self.assertEqual(
+                sorted(path.name for path in history.iterdir()),
+                ["build.json", "replay.json", "verifier.json"],
+            )
+            latest = experiment._load_checkpoint(
+                root, experiment._checkpoint_identities(resumed["run"])
+            )
+            self.assertNotIn("verifier_report", latest["state"])
+
 
 def _run_with_limit(root: Path, *, max_wall_seconds=300, max_cost_usd="1.000000"):
     config = root / "run.json"
@@ -256,7 +379,7 @@ def _run_with_limit(root: Path, *, max_wall_seconds=300, max_cost_usd="1.000000"
             worker, "check_contract_feasibility", seams.check_contract_feasibility
         ),
         mock.patch.object(worker, "accept_candidate", seams.accept),
-        mock.patch.object(worker, "persist_result", seams.persist),
+        mock.patch.object(results, "persist_attempt", seams.persist),
         mock.patch.object(verifier, "verify_run", seams.verify),
     )
     return config, seams, proxy, patches

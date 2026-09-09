@@ -12,7 +12,7 @@ from decimal import Decimal
 from pathlib import Path
 from unittest import mock
 
-from autofv import experiment
+from autofv import experiment, results
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -214,8 +214,15 @@ class ToolchainContractTests(unittest.TestCase):
                     }
                 )
             )
-            with self.assertRaises(experiment.ContractError):
-                experiment.run_experiment(target, config, run_round=launcher)
+            with mock.patch.dict(
+                os.environ,
+                {"AUTOFV_ATTEMPT_LEDGER": str(root / "attempts.jsonl")},
+            ):
+                result = experiment.run_experiment(
+                    target, config, run_round=launcher
+                )
+            self.assertEqual(result["outcome"], "invalid_config")
+            self.assertEqual(result["termination_reason"], "run_config_invalid")
         self.assertEqual(calls, [])
 
     def test_duplicate_json_keys_and_symlinked_manifest_fail_closed(self):
@@ -489,6 +496,8 @@ class NativeDecidePolicyContractTests(unittest.TestCase):
         }
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
+            fake_run["run_root"] = str(root)
+            fake_run["evidence_dir"] = str(root / "evidence")
             target = root / "target"
             target.mkdir()
             (target / "autofv.json").write_text(
@@ -523,7 +532,7 @@ class NativeDecidePolicyContractTests(unittest.TestCase):
                     "stream",
                     side_effect=experiment.ContractError("unit boundary"),
                 ),
-                mock.patch.object(experiment.worker, "persist_result"),
+                mock.patch.object(results, "persist_attempt"),
             ):
                 result = experiment.run_experiment(
                     target, config, run_round=lambda *a, **k: calls.append((a, k))

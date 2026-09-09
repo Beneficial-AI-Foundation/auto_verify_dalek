@@ -6,7 +6,7 @@ import unittest
 from pathlib import Path
 from unittest import mock
 
-from autofv import diamond, experiment, verifier, worker
+from autofv import diamond, experiment, results, verifier, worker
 from tests.test_phase1_diamond import TARGET, _FixtureProxy, _Seams
 
 
@@ -147,14 +147,14 @@ class ContractRepairTests(unittest.TestCase):
                     side_effect=lambda *args: next(checks),
                 ),
                 mock.patch.object(worker, "accept_candidate") as accept,
-                mock.patch.object(worker, "persist_result", seams.persist),
+                mock.patch.object(results, "persist_attempt", seams.persist),
                 mock.patch.object(verifier, "verify_run") as verify,
             ):
                 result = experiment.run_experiment(
                     TARGET, TARGET / "run.json", run_round=proxy
                 )
 
-            self.assertEqual(result["outcome"], "failure")
+            self.assertEqual(result["outcome"], "contract_inconclusive")
             self.assertEqual(result["termination_reason"], "contract_inconclusive")
             self.assertEqual(result["proxy_requests"], 5)
             self.assertEqual(result["cost_usd"], "0.012000")

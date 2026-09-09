@@ -15,6 +15,7 @@ from .verifier_bundle import (
     INVOCATION_FIELDS,
     MAX_MEMBER_BYTES,
     VerifierError,
+    VerifierInfrastructureError,
     _canonical_bytes,
     _safe_path,
     _sha256,
@@ -31,6 +32,8 @@ REFERENCE_PATH = (
     / "diamond-reference"
     / "reference.json"
 )
+
+
 def _command_detail(completed: subprocess.CompletedProcess[bytes]) -> str:
     return "\n".join(
         part
@@ -50,7 +53,9 @@ def _shell(*argv: str, input_bytes: bytes | None = None) -> subprocess.Completed
     )
     if completed.returncode:
         detail = _command_detail(completed)
-        raise VerifierError(f"clean verifier command failed: {detail or argv[0]}")
+        raise VerifierInfrastructureError(
+            f"clean verifier command failed: {detail or argv[0]}"
+        )
     return completed
 
 
@@ -495,6 +500,7 @@ def _clean_worker_checks(
                 runtime=runtime,
             )
         )
+        baseline_holes, _, _ = _source_audit(base_archive, state["graph"], [])
         holes, trust_passed, observed_uses = _source_audit(
             archive, state["graph"], state["native_decide_uses"]
         )
@@ -529,6 +535,8 @@ def _clean_worker_checks(
             "native_decide_uses": observed_uses,
             "compiler_assumptions": compiler_assumptions(lock),
             "meaning": meaning,
+            "sorry_count_before": len(baseline_holes),
+            "sorry_count_after": len(holes),
         }
     finally:
         try:
@@ -546,19 +554,21 @@ def verify_run(
     started = subprocess.run(("limactl", "start", VERIFIER_VM), capture_output=True)
     if started.returncode:
         detail = _command_detail(started)
-        raise VerifierError(f"clean verifier failed to start: {detail or VERIFIER_VM}")
+        raise VerifierInfrastructureError(
+            f"clean verifier failed to start: {detail or VERIFIER_VM}"
+        )
     machine_id = _shell("cat", "/etc/machine-id").stdout.decode().strip()
     verifier_worker_id = f"lima:{VERIFIER_VM}:{machine_id}"
     if not machine_id or verifier_worker_id == run.get("agent_worker_id"):
-        raise VerifierError("clean verifier worker is not distinct")
+        raise VerifierInfrastructureError("clean verifier worker is not distinct")
     state = verification_state or run.get("verification_state")
     if not isinstance(state, dict):
-        raise VerifierError("clean verifier state is missing")
+        raise VerifierInfrastructureError("clean verifier state is missing")
     bundle = _run_bundle(run, state)
     try:
         reference_bytes = REFERENCE_PATH.read_bytes()
     except OSError as exc:
-        raise VerifierError("clean verifier reference is missing") from exc
+        raise VerifierInfrastructureError("clean verifier reference is missing") from exc
     lock = run["lock"]
     invocation = {
         "schema": "autofv-verifier-invocation/v1",
@@ -604,6 +614,8 @@ def validate_report(
             "native_decide_uses",
             "compiler_assumptions",
             "meaning",
+            "sorry_count_before",
+            "sorry_count_after",
             "evidence_level",
             "verdict",
             "report_sha256",
@@ -633,6 +645,9 @@ def validate_report(
             or not isinstance(report.get("checks"), dict)
             or not report["checks"]
             or any(value is not True for value in report["checks"].values())
+            or type(report.get("sorry_count_before")) is not int
+            or report["sorry_count_before"] < 0
+            or report.get("sorry_count_after") != 0
         ):
             raise VerifierError("clean verifier did not pass")
         body = {key: value for key, value in report.items() if key != "report_sha256"}

@@ -11,7 +11,7 @@ from decimal import Decimal
 from pathlib import Path
 from typing import Any, TypedDict
 
-from . import worker
+from . import results, worker
 from .contracts import (
     BudgetExhausted,
     ContractError,
@@ -23,6 +23,8 @@ from .contracts import (
 
 CHECKPOINT_SCHEMA = "autofv-checkpoint/v1"
 CHECKPOINT_RUN_FIELDS = (
+    "attempt_id",
+    "attempt_ledger",
     "run_id",
     "run_root",
     "project_dir",
@@ -37,7 +39,9 @@ CHECKPOINT_RUN_FIELDS = (
     "control_bundle_sha256",
     "native_decide_policy",
     "native_decide_policy_sha256",
+    "worker_inventory",
     "worker_inventory_sha256",
+    "scored_container_receipt",
     "fixed_proxy_sha256",
     "proxy_model_id",
     "proxy_base",
@@ -46,7 +50,13 @@ CHECKPOINT_RUN_FIELDS = (
     "proxy_relay",
     "proxy_client_identity_sha256",
     "proxy_policy_sha256",
+    "proxy_policy_receipt",
+    "upstream_policy_sha256",
     "egress_policy_sha256",
+    "egress_receipt",
+    "artifact_scan_receipt",
+    "export_receipt",
+    "disposal_receipt",
     "base_commit",
     "events",
 )
@@ -69,6 +79,8 @@ CHECKPOINT_STATE_FIELDS = (
     "model_exchanges",
     "inflight_transition",
     "receipt_rejections",
+    "compiler_assumptions",
+    "l0_receipt",
     "wall_seconds_used",
     "finalization_reserve_seconds",
 )
@@ -94,6 +106,8 @@ class _RunState(TypedDict, total=False):
     accepted_sequence: list[dict[str, Any]]
     accepted_nodes: list[str]
     receipt_rejections: list[dict[str, Any]]
+    compiler_assumptions: list[dict[str, str]]
+    l0_receipt: dict[str, Any]
     working: dict[str, Any]
     pending_model_exchanges: dict[str, dict[str, Any]]
     model_exchanges: dict[str, dict[str, Any]]
@@ -185,6 +199,8 @@ def _checkpoint_identities(run: dict[str, Any]) -> dict[str, Any]:
     identities = {
         name: run[name]
         for name in (
+            "attempt_id",
+            "attempt_ledger",
             "run_id",
             "snapshot_sha256",
             "manifest_sha256",
@@ -304,6 +320,8 @@ def _valid_checkpoint(
     if any(
         identities.get(name) != run.get(name)
         for name in (
+            "attempt_id",
+            "attempt_ledger",
             "run_id",
             "snapshot_sha256",
             "manifest_sha256",
@@ -356,38 +374,11 @@ def _resume_record_matches(observed: dict[str, Any], expected: dict[str, Any]) -
     )
 
 
-def _restore_checkpoint(
-    checkpoint: dict[str, Any],
-    *,
+def _recover_checkpoint_state(
+    state: _RunState,
+    run: dict[str, Any],
     manifest: dict[str, Any],
-    config: dict[str, Any],
-    lock: dict[str, Any],
-    run_round: Any,
 ) -> _RunState:
-    """Reattach trusted runtime objects and recover working state or accepted Git."""
-    run = dict(checkpoint["run"])
-    run["lock"] = lock
-    run["manifest"] = manifest
-    state: _RunState = dict(checkpoint["state"])
-    state.update(
-        {
-            "run": run,
-            "manifest": manifest,
-            "config": config,
-            "run_round": run_round,
-            "cost": Decimal(checkpoint["cost_usd_used"]),
-            "wall_seconds_used": Decimal(
-                state.get("wall_seconds_used", "0.000000")
-            ),
-            "finalization_reserve_seconds": Decimal(
-                state.get(
-                    "finalization_reserve_seconds", _finalization_reserve(config)
-                )
-            ),
-            "checkpoint_sequence": checkpoint["checkpoint_sequence"],
-            "_accept_lock": threading.Lock(),
-        }
-    )
     accepted = state.get("accepted")
     working = state.get("working") or accepted
     observed = worker.inspect_resume_state(run, manifest)
@@ -424,6 +415,73 @@ def _restore_checkpoint(
         run["events"].append(event)
     _write_checkpoint(state, event)
     return state
+
+
+def _restore_checkpoint(
+    checkpoint: dict[str, Any],
+    *,
+    manifest: dict[str, Any],
+    config: dict[str, Any],
+    lock: dict[str, Any],
+    run_round: Any,
+) -> _RunState:
+    """Reattach trusted runtime objects and recover working state or accepted Git."""
+    run = dict(checkpoint["run"])
+    run["lock"] = lock
+    run["manifest"] = manifest
+    state: _RunState = dict(checkpoint["state"])
+    state.update(
+        {
+            "run": run,
+            "manifest": manifest,
+            "config": config,
+            "run_round": run_round,
+            "cost": Decimal(checkpoint["cost_usd_used"]),
+            "wall_seconds_used": Decimal(
+                state.get("wall_seconds_used", "0.000000")
+            ),
+            "finalization_reserve_seconds": Decimal(
+                state.get(
+                    "finalization_reserve_seconds", _finalization_reserve(config)
+                )
+            ),
+            "checkpoint_sequence": checkpoint["checkpoint_sequence"],
+            "_accept_lock": threading.Lock(),
+        }
+    )
+    if isinstance(state.get("result"), dict):
+        state["recovery_source"] = "terminal"
+        return state
+    previous_agent_worker_id = run.get("agent_worker_id")
+    try:
+        recovered = _recover_checkpoint_state(state, run, manifest)
+        if run.get("agent_worker_id") != previous_agent_worker_id:
+            results.invalidate_verifier_evidence(run, recovered)
+            _write_checkpoint(recovered, "verifier_invalidated:worker_recreated")
+        return recovered
+    except BaseException as exc:
+        if (
+            run.get("execution_tier") == "sealed_runsc"
+            and not run.get("worker_disposed")
+        ):
+            cleanup_error = None
+            try:
+                worker.dispose_run(run, interrupted=True)
+            except BaseException as cleanup_exc:
+                cleanup_error = cleanup_exc
+                try:
+                    worker._destroy_worker(run)
+                except BaseException as destroy_exc:
+                    raise ContractError(
+                        "resume failed and forced worker destruction failed: "
+                        f"{destroy_exc}"
+                    ) from exc
+            if cleanup_error is not None:
+                raise ContractError(
+                    "resume failed after forced worker destruction: "
+                    f"{cleanup_error}"
+                ) from exc
+        raise
 
 
 def _checkpoint_if_enabled(state: _RunState, transition: str) -> None:

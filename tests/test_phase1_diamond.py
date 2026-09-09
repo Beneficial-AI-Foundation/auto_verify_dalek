@@ -9,7 +9,7 @@ import unittest
 from pathlib import Path
 from unittest import mock
 
-from autofv import experiment, probes, verifier, worker
+from autofv import experiment, probes, results, verifier, worker
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -190,6 +190,8 @@ class _Seams:
                 "non_vacuity": True,
                 "broken_implementation_rejected": True,
             },
+            "sorry_count_before": 1,
+            "sorry_count_after": 0,
             "evidence_level": "L4",
             "verdict": "PASS",
         }
@@ -280,7 +282,7 @@ class VerifierRuntimeTests(unittest.TestCase):
             mock.patch.object(subprocess, "run", return_value=failed),
             mock.patch.object(worker, "export_accepted") as export,
             self.assertRaisesRegex(
-                verifier.VerifierError,
+                verifier.VerifierInfrastructureError,
                 "(?s)verifier boot failed.*instance unavailable",
             ),
         ):
@@ -305,7 +307,7 @@ class TracerTests(unittest.TestCase):
                     seams.check_contract_feasibility,
                 ),
                 mock.patch.object(worker, "accept_candidate", seams.accept),
-                mock.patch.object(worker, "persist_result", seams.persist),
+                mock.patch.object(results, "persist_attempt", seams.persist),
                 mock.patch.object(verifier, "verify_run", seams.verify),
             ):
                 result = experiment.run_experiment(
@@ -392,7 +394,7 @@ class TracerTests(unittest.TestCase):
                         seams.check_contract_feasibility,
                     ),
                     mock.patch.object(worker, "accept_candidate", seams.accept),
-                    mock.patch.object(worker, "persist_result", seams.persist),
+                    mock.patch.object(results, "persist_attempt", seams.persist),
                     mock.patch.object(verifier, "verify_run", verify),
                 ):
                     result = experiment.run_experiment(
@@ -420,7 +422,7 @@ class TracerTests(unittest.TestCase):
             seams = _Seams(Path(tmp), self.fixture)
             with (
                 mock.patch.object(worker, "prepare_run", seams.prepare),
-                mock.patch.object(worker, "persist_result", seams.persist),
+                mock.patch.object(results, "persist_attempt", seams.persist),
                 mock.patch.object(
                     experiment._EXPERIMENT_GRAPH,
                     "stream",
@@ -431,10 +433,34 @@ class TracerTests(unittest.TestCase):
                     TARGET, TARGET / "run.json", run_round=lambda request: request
                 )
 
-            self.assertEqual(result["outcome"], "failure")
+            self.assertEqual(result["outcome"], "infrastructure_failed")
             self.assertEqual(result["termination_reason"], "interrupted")
             self.assertEqual(result["termination_detail"], "controller interrupted")
             self.assertTrue((Path(tmp) / "result.json").is_file())
+
+    def test_clean_verifier_boundary_failure_is_infrastructure(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            seams = _Seams(Path(tmp), self.fixture)
+            with (
+                mock.patch.object(worker, "prepare_run", seams.prepare),
+                mock.patch.object(results, "persist_attempt", seams.persist),
+                mock.patch.object(
+                    experiment._EXPERIMENT_GRAPH,
+                    "stream",
+                    side_effect=verifier.VerifierInfrastructureError(
+                        "clean verifier failed to start"
+                    ),
+                ),
+            ):
+                result = experiment.run_experiment(
+                    TARGET, TARGET / "run.json", run_round=lambda request: request
+                )
+
+            self.assertEqual(result["outcome"], "infrastructure_failed")
+            self.assertEqual(
+                result["termination_reason"],
+                "clean_verifier_infrastructure_failed",
+            )
 
 
 if __name__ == "__main__":

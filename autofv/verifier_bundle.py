@@ -83,12 +83,18 @@ OBSERVED_FIELDS = frozenset(
         "native_decide_uses",
         "compiler_assumptions",
         "meaning",
+        "sorry_count_before",
+        "sorry_count_after",
     }
 )
 
 
 class VerifierError(RuntimeError):
     """The clean verifier failed or returned an unauthoritative report."""
+
+
+class VerifierInfrastructureError(VerifierError):
+    """The clean verifier boundary could not be started or reached."""
 
 
 def _canonical_bytes(value: Any) -> bytes:
@@ -250,6 +256,8 @@ def _report(
     checks: dict[str, bool] | None = None,
     state: dict[str, Any] | None = None,
     meaning: dict[str, Any] | None = None,
+    sorry_count_before: int | None = None,
+    sorry_count_after: int | None = None,
 ) -> dict[str, Any]:
     body = {
         "schema": "autofv-verifier-report/v1",
@@ -259,6 +267,8 @@ def _report(
         "native_decide_uses": (state or {}).get("native_decide_uses", []),
         "compiler_assumptions": (state or {}).get("compiler_assumptions", []),
         "meaning": meaning or {},
+        "sorry_count_before": sorry_count_before,
+        "sorry_count_after": sorry_count_after,
         "evidence_level": "L4" if not failures else "L0",
         "verdict": "PASS" if not failures else "FAIL",
     }
@@ -466,6 +476,8 @@ def verify_bundle(
         return _report(invocation, failures, checks=checks, state=state)
     try:
         observed = run_checks(members, state, reference_bytes)
+    except VerifierInfrastructureError:
+        raise
     except Exception as exc:
         return _report(
             invocation,
@@ -535,6 +547,13 @@ def verify_bundle(
         or not set(changed_paths) <= allowed_paths,
     )
     _append(failures, "holes_present", observed.get("holes") != [])
+    _append(
+        failures,
+        "sorry_count_mismatch",
+        type(observed.get("sorry_count_before")) is not int
+        or observed["sorry_count_before"] < 0
+        or observed.get("sorry_count_after") != 0,
+    )
     _append(failures, "trust_failed", observed.get("trust_passed") is not True)
     _append(
         failures,
@@ -590,4 +609,6 @@ def verify_bundle(
         checks=checks,
         state=state,
         meaning=meaning if isinstance(meaning, dict) else {},
+        sorry_count_before=observed["sorry_count_before"],
+        sorry_count_after=observed["sorry_count_after"],
     )

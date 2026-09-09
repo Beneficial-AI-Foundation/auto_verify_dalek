@@ -288,7 +288,7 @@ class RestartTests(unittest.TestCase):
                 mock.patch.object(
                     worker, "dispose_run", side_effect=worker.WorkerError("export failed")
                 ),
-                mock.patch.object(worker, "_destroy_worker") as destroy,
+                mock.patch.object(worker, "force_destroy_worker") as destroy,
                 self.assertRaisesRegex(
                     experiment.ContractError, "after forced worker destruction"
                 ),

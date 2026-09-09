@@ -13,7 +13,14 @@ from decimal import Decimal
 from pathlib import Path
 from unittest import mock
 
-from autofv import experiment, results, worker
+from autofv import (
+    experiment,
+    results,
+    worker,
+    worker_artifacts,
+    worker_proxy,
+    worker_runtime,
+)
 from tests.test_model_proxy_fixture import (
     FIXTURE_PATH as MODEL_FIXTURE_PATH,
     RUN_TOKEN,
@@ -156,8 +163,8 @@ class LinuxIsolationTests(unittest.TestCase):
 
                     export = worker.export_run(run, interrupted=interrupted)
                     if interrupted:
-                        worker._docker(
-                            *worker._runtime_argv(
+                        worker_runtime._docker(
+                            *worker_runtime._runtime_argv(
                                 LOCK,
                                 run["volume"],
                                 "sh",
@@ -172,7 +179,12 @@ class LinuxIsolationTests(unittest.TestCase):
                         self.assertIsNotNone(
                             worker.inspect_lima_instance(worker.AGENT_VM)
                         )
-                        worker._git(run, "reset", "--hard", run["accepted"]["accepted_commit"])
+                        worker_runtime._git(
+                            run,
+                            "reset",
+                            "--hard",
+                            run["accepted"]["accepted_commit"],
+                        )
                     disposal = worker.dispose_run(run, interrupted=interrupted)
                     disposed = True
                 finally:
@@ -202,8 +214,8 @@ class LinuxIsolationTests(unittest.TestCase):
     def test_dirty_working_state_survives_export_and_worker_recreation(self) -> None:
         run = self.prepare("dirty-recovery-001")
         try:
-            worker._docker(
-                *worker._runtime_argv(
+            worker_runtime._docker(
+                *worker_runtime._runtime_argv(
                     LOCK,
                     run["volume"],
                     "sh",
@@ -225,15 +237,17 @@ class LinuxIsolationTests(unittest.TestCase):
             self.assertEqual(worker.read_project_file(run, "recovery-note.txt"), b"retained")
         finally:
             if worker.inspect_lima_instance(worker.AGENT_VM) is not None:
-                worker._git(run, "reset", "--hard", run["accepted"]["accepted_commit"])
-                worker._git(run, "clean", "-ffd")
+                worker_runtime._git(
+                    run, "reset", "--hard", run["accepted"]["accepted_commit"]
+                )
+                worker_runtime._git(run, "clean", "-ffd")
                 worker.dispose_run(run, interrupted=True)
 
     def test_export_rejects_unaccepted_head_without_destroying_worker(self) -> None:
         run = self.prepare("unaccepted-head-001")
         try:
-            worker._docker(
-                *worker._runtime_argv(
+            worker_runtime._docker(
+                *worker_runtime._runtime_argv(
                     LOCK,
                     run["volume"],
                     "sh",
@@ -241,8 +255,8 @@ class LinuxIsolationTests(unittest.TestCase):
                     "printf '\\n-- unaccepted commit\\n' >> Diamond/Left.lean",
                 )
             )
-            worker._git(run, "add", "--", "Diamond/Left.lean")
-            worker._git(
+            worker_runtime._git(run, "add", "--", "Diamond/Left.lean")
+            worker_runtime._git(
                 run,
                 "-c",
                 "user.name=AutoFV test",
@@ -259,7 +273,9 @@ class LinuxIsolationTests(unittest.TestCase):
             self.assertIsNotNone(worker.inspect_lima_instance(worker.AGENT_VM))
         finally:
             if worker.inspect_lima_instance(worker.AGENT_VM) is not None:
-                worker._git(run, "reset", "--hard", run["accepted"]["accepted_commit"])
+                worker_runtime._git(
+                    run, "reset", "--hard", run["accepted"]["accepted_commit"]
+                )
                 worker.dispose_run(run, interrupted=True)
 
     def test_export_rejects_symlinked_host_artifacts(self) -> None:
@@ -271,7 +287,7 @@ class LinuxIsolationTests(unittest.TestCase):
                 root / "elsewhere", target_is_directory=True
             )
             with self.assertRaisesRegex(worker.WorkerError, "not a regular file"):
-                worker._host_artifacts({"run_root": tmp})
+                worker_artifacts._host_artifacts({"run_root": tmp})
 
     def test_interrupted_result_marks_disposal(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -307,9 +323,11 @@ class LinuxIsolationTests(unittest.TestCase):
             self.assertEqual(result["termination_reason"], "interrupted")
 
     def test_preparation_failure_destroys_worker_but_export_failure_retains_it(self) -> None:
-        _, control_manifest, snapshot_sha256 = worker._seed_archive(TARGET, LOCK)
+        _, control_manifest, snapshot_sha256 = worker_runtime._seed_archive(
+            TARGET, LOCK
+        )
         with mock.patch.object(
-            worker,
+            worker_runtime,
             "_seed_archive",
             return_value=(b"not a tar archive", control_manifest, snapshot_sha256),
         ):
@@ -323,8 +341,8 @@ class LinuxIsolationTests(unittest.TestCase):
         run = self.prepare("failed-export-001")
         try:
             run["artifact_scan_markers"] = ("synthetic-blocked-marker",)
-            worker._docker(
-                *worker._runtime_argv(
+            worker_runtime._docker(
+                *worker_runtime._runtime_argv(
                     LOCK,
                     run["volume"],
                     "sh",
@@ -338,7 +356,9 @@ class LinuxIsolationTests(unittest.TestCase):
             self.assertIsNotNone(worker.inspect_lima_instance(worker.AGENT_VM))
         finally:
             if worker.inspect_lima_instance(worker.AGENT_VM) is not None:
-                worker._git(run, "reset", "--hard", run["accepted"]["accepted_commit"])
+                worker_runtime._git(
+                    run, "reset", "--hard", run["accepted"]["accepted_commit"]
+                )
                 run.pop("artifact_scan_markers", None)
                 worker.dispose_run(run, interrupted=True)
 
@@ -369,7 +389,7 @@ class ProxyAccountingTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             run = self.proxy_run(tmp)
             self.assertEqual(
-                worker._validate_proxy_request(run, FIRST_REQUEST),
+                worker_proxy._validate_proxy_request(run, FIRST_REQUEST),
                 hashlib.sha256(
                     experiment.canonical_json_bytes(FIRST_REQUEST)
                 ).hexdigest(),
@@ -384,20 +404,20 @@ class ProxyAccountingTests(unittest.TestCase):
                 with self.subTest(capability=capability), self.assertRaisesRegex(
                     worker.WorkerError, "fields"
                 ):
-                    worker._validate_proxy_request(run, request)
+                    worker_proxy._validate_proxy_request(run, request)
 
             wrong_run = copy.deepcopy(FIRST_REQUEST)
             wrong_run["run_id"] = "caller-selected-run"
             with self.assertRaisesRegex(worker.WorkerError, "identity"):
-                worker._validate_proxy_request(run, wrong_run)
+                worker_proxy._validate_proxy_request(run, wrong_run)
 
             run["lock"]["fixed_proxy"]["path"] = "/v1/caller-selected"
             with self.assertRaisesRegex(worker.WorkerError, "policy"):
-                worker._validate_proxy_request(run, FIRST_REQUEST)
+                worker_proxy._validate_proxy_request(run, FIRST_REQUEST)
 
-            worker._bind_proxy_client_identity(run, "first-run-scoped-token")
+            worker_proxy._bind_proxy_client_identity(run, "first-run-scoped-token")
             with self.assertRaisesRegex(worker.WorkerError, "client identity"):
-                worker._bind_proxy_client_identity(run, "replacement-token")
+                worker_proxy._bind_proxy_client_identity(run, "replacement-token")
 
     def test_proxy_transport_failure_is_explicit_hash_only_evidence(self) -> None:
         cases = (
@@ -432,11 +452,13 @@ class ProxyAccountingTests(unittest.TestCase):
                 )
                 with (
                     mock.patch.object(
-                        worker,
+                        worker_proxy,
                         "_ensure_proxy_relay",
                         return_value=("net", "10.0.0.2"),
                     ),
-                    mock.patch.object(worker, "_docker", return_value=completed),
+                    mock.patch.object(
+                        worker_proxy, "_docker", return_value=completed
+                    ),
                     self.assertRaisesRegex(worker.WorkerError, classification),
                 ):
                     worker.proxy_round(run, FIRST_REQUEST)
@@ -535,9 +557,11 @@ class ProxyAccountingTests(unittest.TestCase):
                     clear=False,
                 ):
                     with mock.patch.object(
-                        worker,
+                        worker_proxy,
                         "_RELAY_PROGRAM",
-                        worker._RELAY_PROGRAM.replace("timeout=30", "timeout=1"),
+                        worker_proxy._RELAY_PROGRAM.replace(
+                            "timeout=30", "timeout=1"
+                        ),
                     ):
                         policy = worker.run_proxy_policy_matrix(run, self.fixture)
                     state = {
@@ -579,7 +603,7 @@ class ProxyAccountingTests(unittest.TestCase):
                     self.assertRegex(run["proxy_client_identity_sha256"], r"^[0-9a-f]{64}$")
 
                     run["artifact_scan_markers"] = (provider_marker, fixture_marker)
-                    artifacts = worker._export_artifacts(run)
+                    artifacts = worker_artifacts._export_artifacts(run)
                     scan = worker.scan_retained_state(
                         run, artifacts, run["artifact_scan_markers"]
                     )
@@ -600,8 +624,8 @@ class ProxyAccountingTests(unittest.TestCase):
                     with self.assertRaisesRegex(worker.WorkerError, "environment"):
                         worker.scan_retained_state(run, artifacts, (RUN_TOKEN,))
 
-                    worker._docker(
-                        *worker._runtime_argv(
+                    worker_runtime._docker(
+                        *worker_runtime._runtime_argv(
                             LOCK,
                             run["volume"],
                             "sh",
@@ -617,7 +641,7 @@ class ProxyAccountingTests(unittest.TestCase):
                     run["synthetic_state"] = surface_marker
                     result_path = Path(run["run_root"]) / "result.json"
                     result_path.write_text(surface_marker, encoding="utf-8")
-                    leaked_artifacts = worker._export_artifacts(run)
+                    leaked_artifacts = worker_artifacts._export_artifacts(run)
                     with self.assertRaises(worker.WorkerError) as leaked:
                         worker.scan_retained_state(
                             run, leaked_artifacts, (surface_marker,)
@@ -662,9 +686,9 @@ class ProxyAccountingTests(unittest.TestCase):
                     self.assertEqual(errors[-1]["classification"], "timeout")
             finally:
                 if run is not None and worker.inspect_lima_instance(worker.AGENT_VM):
-                    worker._git(run, "clean", "-ffd")
-                    worker._docker(
-                        *worker._runtime_argv(
+                    worker_runtime._git(run, "clean", "-ffd")
+                    worker_runtime._docker(
+                        *worker_runtime._runtime_argv(
                             LOCK,
                             run["volume"],
                             "rm",

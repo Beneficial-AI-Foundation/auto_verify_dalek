@@ -276,7 +276,7 @@ def _resume_identities(
     config: dict[str, Any],
     lock: dict[str, Any],
 ) -> dict[str, Any]:
-    control_manifest, _ = worker._control_manifest(lock)
+    control_manifest, _ = worker.control_manifest(lock)
     return {
         "snapshot_sha256": worker.hash_tree(target),
         "manifest_sha256": _canonical_sha256(manifest),

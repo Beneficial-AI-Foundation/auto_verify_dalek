@@ -305,7 +305,10 @@ only the Phase 1 diamond.
 | Wall/cost budgets, checkpoints, and restart recovery | [`run_state.py`](run_state.py) | Owns durable state transitions; [`experiment.py`](experiment.py) remains the CLI and stable composition entry point. |
 | Result fields and the attempt ledger | [`results.py`](results.py) | Builds and immutably writes each canonical result/L0 pair and refuses attempt replacement. |
 | L0 sources, levels, and claims | [`evidence.py`](evidence.py) | Binds retained evidence bytes to trusted receipts and withholds recovery below complete L4. |
-| Agent template/run VM names, UID, CPU, memory, PID, firewall, relay, export, and disposal | [`worker.py`](worker.py) | Current agent containers use 2 CPUs, 2 GiB, 256 PIDs, and two 64 MiB temporary filesystems. Real runs report `sealed_runsc`. |
+| Worker preparation, probe runs, proof lanes, and candidate acceptance | [`worker.py`](worker.py) | Stable entry point for the controller's worker calls. |
+| Lima, Docker, `runsc`, resource labels, and container limits | [`worker_runtime.py`](worker_runtime.py) | Current agent containers use 2 CPUs, 2 GiB, 256 PIDs, and two 64 MiB temporary filesystems. Real runs report `sealed_runsc`. |
+| Fixed relay, client identity, proxy policy, and egress checks | [`worker_proxy.py`](worker_proxy.py) | Owns the only model-network path visible to the agent worker. |
+| Retained-state scan, export, disposal, and resume restoration | [`worker_artifacts.py`](worker_artifacts.py) | Verifies retained bytes before deleting or rebuilding the disposable worker. |
 | Candidate scope and acceptance checks | `accept_candidate(...)` in [`worker.py`](worker.py) | It checks one-file scope, base and patch hashes, patch application, forbidden source markers, and the configured build. A failed post-apply check reverses and restages the patch before returning. |
 | Canonical statement and trust-base implementations | [`../harness/gates/StmtCanon.lean`](../harness/gates/StmtCanon.lean) and [`../harness/gates/g2_trust_base.py`](../harness/gates/g2_trust_base.py) | These gates exist in the earlier runner and are locked into the control bundle. The new tracer does not call them yet. |
 | Hostile verifier bundle intake and report reduction | [`verifier_bundle.py`](verifier_bundle.py) | Rejects unsafe or mismatched bundle members before any clean-worker checks run. |

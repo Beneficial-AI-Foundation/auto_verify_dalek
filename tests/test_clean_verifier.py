@@ -119,7 +119,7 @@ def _invocation(bundle, state=None):
         "probe_aeneas_sha256": graph["probe_aeneas_sha256"],
         "graph_sha256": graph["graph_sha256"],
         "image_digest": lock["image"]["image_digest"],
-        "control_bundle_sha256": worker._control_manifest(lock)[0][
+        "control_bundle_sha256": worker.control_manifest(lock)[0][
             "bundle_sha256"
         ],
         "native_decide_policy_sha256": lock["native_decide_policy_sha256"],

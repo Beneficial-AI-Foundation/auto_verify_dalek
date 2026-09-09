@@ -67,7 +67,7 @@
   <!-- Keep this page in sync with README.md. -->
   <h1>AutoFV</h1>
   <p>AutoFV is the trusted host-side controller for experiments that ask an agent to recover Lean specifications and proofs inside a sealed Linux worker.</p>
-  <p class="meta">This page describes the code as it exists on 8 September 2026. Phase 1 is still in progress. <a href="README.md">Read the Markdown version</a>.</p>
+  <p class="meta">This page describes the code as it exists on 9 September 2026. Phase 1 is still in progress. <a href="README.md">Read the Markdown version</a>.</p>
 
   <nav aria-label="Page sections">
     <a href="#status">Status</a>
@@ -77,13 +77,14 @@
   </nav>
 
   <h2 id="status">Status</h2>
-  <p class="status">An earlier sealed diamond fixture completed under <code>runsc</code> and passed on the separate verifier VM. The launcher now uses a disposable VM for each attempt; its isolation and proxy paths have passed their Linux system matrices. The remaining Phase 1 plan will rerun the whole diamond through this new lifecycle. No provider call has run.</p>
+  <p class="status">An earlier sealed diamond fixture completed under <code>runsc</code> and passed on the separate verifier VM. The launcher now uses a disposable VM for each attempt. Its worker-firewall and proxy paths have passed their Linux system matrices; the upstream macOS/VPC default-deny layer still needs implementation evidence before the final sealed run. No provider call has run.</p>
   <table>
     <thead><tr><th>Area</th><th>Current evidence</th></tr></thead>
     <tbody>
       <tr><td>Disposable worker boundary</td><td>Nine Linux system tests clone a stopped template, inspect the actual Docker/<code>runsc</code> boundary, deny general egress, export state, delete the run VM, and restore onto a fresh clone</td></tr>
       <tr><td>Fixed proxy and accounting boundary</td><td>Four Linux system tests reject seven caller-controlled capabilities, accept eight signed fixture receipts, exercise a real timeout, and scan retained surfaces</td></tr>
       <tr><td>Pinned probe output</td><td>Captured from the toolchain image and checked byte-for-byte</td></tr>
+      <tr><td>Result and evidence contract</td><td>Fourteen local tests cover complete L4, receipt/file mismatch, missing or symlinked evidence, typed pre-worker failures, finalization failure, and append-only attempt records</td></tr>
       <tr><td>Earlier end-to-end diamond</td><td>Overlapped both leaf requests, accepted all three source files serially, and received a distinct verifier <code>PASS</code>; this predates the disposable-VM change</td></tr>
       <tr><td>End-to-end diamond on the current launcher</td><td>Not run yet</td></tr>
       <tr><td>Provider model call and billed usage</td><td>Not run</td></tr>
@@ -93,9 +94,9 @@
   <p><code>cost_usd</code> is never guessed from terminal activity. It changes only after the controller validates a signed proxy receipt containing usage and cost for the current run, request, response, model, route, and sequence. A real deployment needs an external proxy that obtains provider billing data, signs that receipt, and binds it to the institutional account. This repository does not yet ship that proxy.</p>
   <p>The <code>cryptography</code> Python package verifies the receipt's Ed25519 signature. The repository contains only the public verification key. The signing key stays in the trusted proxy. This signature protects the accounting record; it is unrelated to the curve25519-dalek code being verified by the experiment.</p>
   <p>The earlier successful run recorded <code>execution_tier: sealed_runsc</code> and <code>cost_classification: synthetic_fixture</code>. It created separate worktrees, caches, and result paths for the two leaves, overlapped their proxy calls, then accepted the left, stale right, and stale top patches one at a time. Stale patches were applied and rebuilt against the latest accepted tree. It processed eight receipts and ended with <code>clean_verifier:PASS</code>.</p>
-  <p>The controller writes canonical, hash-checked checkpoints around model, probe, build, apply, verifier, and result-export transitions. At the end of an attempt, it exports the accepted Git tree, repository bundle, working patch, untracked files, result, evidence, and checkpoints to the host run directory. It checks their hashes and scans retained state before deleting the disposable VM. Resume validates that export and recreates the project in a new disposable VM and volume.</p>
+  <p>The controller writes canonical, hash-checked checkpoints around model, probe, build, apply, verifier, and result-export transitions. At the end of an attempt, it exports the accepted Git tree, repository bundle, working patch, untracked files, verifier evidence, and checkpoints to the host run directory. It checks their hashes and scans retained state before deleting the disposable VM. It then writes the disposal receipt, result, and L0 index; scans those two final files; and links that scan from the append-only attempt record. An unfinished resume validates the export before recreating the project in a new disposable VM and volume.</p>
   <p><code>max_wall_seconds</code> uses monotonic controller time and keeps up to five seconds, or ten percent of a smaller budget, for final result persistence. <code>max_cost_usd</code> changes only when a unique signed proxy receipt matches the current run, request, response, model, route, currency, and sequence. A limit produces <code>budget_exhausted</code> with partial counts and retained state. Rejected receipts leave cost unchanged and appear as hash-only evidence.</p>
-  <p>Probe and allocated-worker launch failures write a non-success result and L0 receipt before exit, without making a model request. Invalid target or run configuration still stops before worker allocation and returns a non-zero CLI status. The remaining Phase 1 plan adds durable records for those pre-allocation attempts and completes the evidence contract.</p>
+  <p>Probe and allocated-worker launch failures write a non-success result and L0 receipt before exit, without making a model request. Invalid targets and run configurations also write typed, unscored attempts before worker allocation. All non-success outcomes return a non-zero CLI status.</p>
 
   <h2>Intended run</h2>
   <pre><code>trusted host
@@ -152,16 +153,18 @@ UV_CACHE_DIR=/private/tmp/autofv-uv-cache uv sync</code></pre>
     <li>a proxy that implements the locked <code>POST /v1/autofv/infer</code> contract and signs usage receipts with the pinned key.</li>
   </ul>
   <p><code>AUTOFV_PROXY_BASE</code> must be an <code>http</code> or <code>https</code> base URL with one literal IPv4 address and no path, query, fragment, or embedded credentials. The run token is an opaque client token issued for one experiment. Provider API keys stay in the external proxy, and VM access uses separate credentials. The launcher puts the raw token only in its trusted relay, records its SHA-256 identity in checkpoints and receipts, and rejects a token change during the run. The external proxy uses the token to select the fixed run/account context and adds the provider credential itself.</p>
-  <p>The agent container has one internal Docker network and can reach only the relay's fixed address and port. The relay accepts only the locked POST path, strips caller authorization and upstream selection, and can reach only the configured proxy address. Host and forwarding firewall rules reject DNS, literal public IPv4, IPv6, link-local/metadata, and other routes.</p>
+  <p>The agent container has one internal Docker network and can reach only the relay's fixed address and port. The relay accepts only the locked POST path, strips caller authorization and upstream selection, and can reach only the configured proxy address. Rules on the disposable Linux worker reject DNS, literal public IPv4, IPv6, link-local/metadata, and other routes. The separate upstream macOS/VPC default-deny layer required by the design is not implemented yet.</p>
   <p>Verification creates a fresh Docker volume in <code>autofv-verifier</code>, runs the pinned image with <code>--network none</code>, and removes the volume when the build ends. Both launchers use <code>--pull never</code>; the verifier does not reuse the agent volume or caches. Its distinct worker identity is what <code>clean verifier</code> means in results and receipts.</p>
   <p>The provider credential belongs in the proxy service. Do not put it in this repository, either VM, the container, or either environment variable above. The current repository does not include a real proxy deployment or provider billing trace, so this command is still an integration target. The signing key pinned today belongs to the local fixture. A real proxy needs a separate signing key and a corresponding lock update.</p>
-  <p>The CLI prints the result JSON. The controller also writes <code>result.json</code>, <code>evidence/l0.json</code>, proxy policy/error evidence, checkpoints, an <code>export/</code> tree, and <code>disposal.json</code> in a host temporary run directory. Find the newest fixture directory and inspect it with:</p>
+  <p>The CLI prints the result JSON. Every attempt writes <code>result.json</code> and <code>evidence/l0.json</code> in a host temporary run directory. An allocated sealed run also writes checkpoints, proxy and egress evidence, an <code>export/</code> tree, <code>disposal.json</code>, <code>evidence/final-result-scan.json</code>, and <code>evidence/verifier.json</code> when verification ran. Read <code>run_root</code> in the printed result, then inspect it with:</p>
   <pre><code>run_dir=$(ls -td "${TMPDIR%/}"/fixture-diamond-run-0001-* | head -1)
 .venv/bin/python -m json.tool "$run_dir/result.json"
 .venv/bin/python -m json.tool "$run_dir/evidence/l0.json"
+.venv/bin/python -m json.tool "$run_dir/evidence/final-result-scan.json"
 .venv/bin/python -m json.tool "$run_dir/export/manifest.json"
 .venv/bin/python -m json.tool "$run_dir/disposal.json"</code></pre>
-  <p>A stable output directory has not been added to the CLI yet. The current L0 receipt binds the result and accepted proxy receipt hashes. The remaining Phase 1 plan expands the evidence index and verifier report.</p>
+  <p>A stable output directory has not been added to the CLI yet. Each new attempt appends one record to <code>AUTOFV_ATTEMPT_LEDGER</code>; the variable must be an absolute path. Without it, AutoFV uses <code>autofv-attempts.jsonl</code> in the system temporary directory. Existing result/L0 files and records for the same <code>attempt_id</code> cannot be replaced with different content through the result writer.</p>
+  <p>The L0 index names input, image, runtime, tool, probe, mount, network, model receipt, patch, scan, build, replay, verifier, export, and disposal evidence. Each item records its run event, SHA-256, byte size, media type, and retained file location. File bytes must match the trusted receipt or source value, and runtime receipts must also match their schema, run ID, and self-hash. A missing or mismatched item leaves <code>scored</code> false. A recovered specification claim appears only when every L0 item exists and the bound verifier report reaches L4. Network evidence is complete only when the receipt binds the container and worker firewall checks to a separate upstream default-deny policy; the fixed proxy policy by itself is not enough.</p>
   <p>Restart is currently a Python controller seam, not a CLI flag:</p>
   <pre><code>from autofv.experiment import run_experiment
 
@@ -172,13 +175,16 @@ result = run_experiment(target, run_config, resume_from=run_dir)</code></pre>
   <table>
     <thead><tr><th>Field</th><th>Meaning in the current diamond tracer</th></tr></thead>
     <tbody>
-      <tr><td><code>outcome</code></td><td><code>success</code> after a matching verifier <code>PASS</code>, <code>budget_exhausted</code> for a wall/cost stop, or <code>failure</code> for another reduced error</td></tr>
+      <tr><td><code>outcome</code></td><td>One of <code>success</code>, <code>budget_exhausted</code>, <code>verification_failed</code>, <code>infrastructure_failed</code>, <code>invalid_target</code>, <code>invalid_config</code>, or <code>contract_inconclusive</code>; <code>termination_reason</code> carries the narrower cause</td></tr>
+      <tr><td><code>attempt_id</code>, <code>run_root</code>, <code>attempt_ledger</code></td><td>Immutable attempt identity, artifact directory, and append-only ledger path</td></tr>
       <tr><td><code>execution_tier</code></td><td><code>sealed_runsc</code> for the real worker path; <code>simulation</code> when tests replace external boundaries</td></tr>
       <tr><td><code>cost_classification</code></td><td><code>synthetic_fixture</code> for the current locked proxy fixture</td></tr>
+      <tr><td><code>sets</code></td><td>Explicit target <code>T</code>, supplied-spec <code>S</code>, empty Phase 1 withheld set <code>W</code>, and recovered internal-spec identities</td></tr>
       <tr><td><code>targets_verified_final</code></td><td>Fixture-specific value: <code>1</code> on success</td></tr>
       <tr><td><code>internal_specs_accepted</code></td><td>Fixture-specific value: <code>2</code> on success</td></tr>
       <tr><td><code>internal_proofs_accepted</code></td><td>Fixture-specific value: <code>2</code> on success</td></tr>
       <tr><td><code>proxy_requests</code></td><td>Number of accepted signed receipts</td></tr>
+      <tr><td><code>model_attempts</code>, <code>model_retries</code>, <code>prompt_sha256</code></td><td>Attempt counts and content identities derived from retained model exchanges and rejected receipts</td></tr>
       <tr><td><code>cost_usd</code></td><td>Sum of <code>cost.amount</code> from accepted receipts; synthetic for fixture receipts</td></tr>
       <tr><td><code>wall_seconds</code> and <code>finalization_reserve_seconds</code></td><td>Monotonic controller time charged to the run and the portion held back for writing its final records</td></tr>
       <tr><td><code>receipt_rejections</code></td><td>Request identity, sequence, rejection reason, and hash of a rejected receipt payload; never the raw rejected receipt</td></tr>
@@ -187,6 +193,11 @@ result = run_experiment(target, run_config, resume_from=run_dir)</code></pre>
       <tr><td><code>candidate_receipts</code></td><td>Scope/fingerprint/policy preflight identity and the serial checkpoint outcome; it is not a clean-verifier report</td></tr>
       <tr><td><code>accepted_sequence</code></td><td>The only ordered transitions that advanced the canonical commit; stale candidates are marked <code>accepted_reverified</code></td></tr>
       <tr><td>hash fields</td><td>Identities of the snapshot, probes, policy, image, control bundle, accepted tree, and verifier report</td></tr>
+      <tr><td><code>sorry_counts</code>, <code>check_outcomes</code></td><td>Clean-verifier counts before and after repair, plus its named gate outcomes</td></tr>
+      <tr><td><code>evidence_level</code>, <code>scored</code>, <code>missing_evidence</code></td><td>Highest reproduced L0-L4 level and any absent L0 items; incomplete L0 is unscored</td></tr>
+      <tr><td><code>claim</code></td><td>A scoped recovered-specification claim only at complete L4; otherwise its status is <code>withheld</code></td></tr>
+      <tr><td><code>native_decide_uses</code>, <code>compiler_assumptions</code>, <code>exclusions</code></td><td>Exact selected-policy evidence and the stronger security claims this experiment does not make</td></tr>
+      <tr><td><code>l0_receipt</code></td><td>Content link for <code>evidence/l0.json</code>, including path, SHA-256, size, and media type</td></tr>
       <tr><td><code>events</code></td><td>Ordered controller transitions, not a provider or VM execution trace by itself</td></tr>
     </tbody>
   </table>
@@ -205,6 +216,8 @@ result = run_experiment(target, run_config, resume_from=run_dir)</code></pre>
       <tr><td>Proof readiness, lane overlap, candidate replay, and contract repair</td><td><a href="diamond.py"><code>diamond.py</code></a></td><td>Owns the bounded Phase 1 diamond scheduler and its sole candidate-acceptance path.</td></tr>
       <tr><td>Model requests and authenticated cost accounting</td><td><a href="model.py"><code>model.py</code></a></td><td>Sends work through the fixed proxy and commits receipts in sequence.</td></tr>
       <tr><td>Wall/cost budgets, checkpoints, and restart recovery</td><td><a href="run_state.py"><code>run_state.py</code></a></td><td>Owns durable state transitions; <a href="experiment.py"><code>experiment.py</code></a> remains the CLI and stable composition entry point.</td></tr>
+      <tr><td>Result fields and the attempt ledger</td><td><a href="results.py"><code>results.py</code></a></td><td>Builds and immutably writes each canonical result/L0 pair and refuses attempt replacement.</td></tr>
+      <tr><td>L0 sources, levels, and claims</td><td><a href="evidence.py"><code>evidence.py</code></a></td><td>Binds retained evidence bytes to trusted receipts and withholds recovery below complete L4.</td></tr>
       <tr><td>Agent template/run VM names, UID, CPU, memory, PID, firewall, relay, export, and disposal</td><td><a href="worker.py"><code>worker.py</code></a></td><td>Current agent containers use 2 CPUs, 2 GiB, 256 PIDs, and two 64 MiB temporary filesystems. Real runs report <code>sealed_runsc</code>.</td></tr>
       <tr><td>Candidate scope and acceptance checks</td><td><code>accept_candidate(...)</code> in <a href="worker.py"><code>worker.py</code></a></td><td>It checks one-file scope, base and patch hashes, patch application, forbidden source markers, and the configured build. A failed post-apply check reverses and restages the patch before returning.</td></tr>
       <tr><td>Canonical statement and trust-base implementations</td><td><a href="../harness/gates/StmtCanon.lean"><code>harness/gates/StmtCanon.lean</code></a> and <a href="../harness/gates/g2_trust_base.py"><code>harness/gates/g2_trust_base.py</code></a></td><td>These gates exist in the earlier runner and are locked into the control bundle. The new tracer does not call them yet.</td></tr>
@@ -212,7 +225,7 @@ result = run_experiment(target, run_config, resume_from=run_dir)</code></pre>
       <tr><td>Clean verifier VM execution and report binding</td><td><a href="verifier.py"><code>verifier.py</code></a></td><td>A matching report must name a worker distinct from the agent VM. The accepted archive hash is checked before extraction into a fresh no-network volume.</td></tr>
     </tbody>
   </table>
-  <p>Canonical statement, complete <code>native_decide</code>, and trust-base recomputation on the clean verifier are still planned work. The current candidate receipt names only the checks it runs.</p>
+  <p>Canonical statements, <code>native_decide</code> use, and the trust base are recomputed on the clean verifier. The candidate receipt remains a preflight record and cannot authorize success.</p>
 
   <h2>Tests worth reading</h2>
   <table>
@@ -225,6 +238,7 @@ result = run_experiment(target, run_config, resume_from=run_dir)</code></pre>
       <tr><td><a href="../tests/test_restart_budget.py"><code>tests/test_restart_budget.py</code></a></td><td>Atomic checkpoint selection, working/accepted recovery, graph-state replay, wall/cost exhaustion, exact fixture totals, and rejected-receipt evidence</td></tr>
       <tr><td><a href="../tests/test_phase1_diamond.py"><code>tests/test_phase1_diamond.py</code></a></td><td>Controller flow with test doubles, failure-state retention, worker command construction, and clean-verifier isolation arguments</td></tr>
       <tr><td><a href="../tests/test_probe_graph.py"><code>tests/test_probe_graph.py</code></a></td><td>Probe schema and closure mutations, deterministic graph direction and scheduling, raw-byte retention, and pre-model failure results</td></tr>
+      <tr><td><a href="../tests/test_results_evidence.py"><code>tests/test_results_evidence.py</code></a></td><td>Complete L0/L4 claims, receipt/file binding, missing evidence, typed failures, and append-only attempt records</td></tr>
       <tr><td><a href="../tests/test_image_contract.py"><code>tests/test_image_contract.py</code></a></td><td>Pinned image contents and runtime contract</td></tr>
       <tr><td><a href="../harness/gates/tests/test_g1.py"><code>harness/gates/tests/test_g1.py</code></a></td><td>Canonical Lean statement fingerprinting</td></tr>
     </tbody>
@@ -239,7 +253,7 @@ result = run_experiment(target, run_config, resume_from=run_dir)</code></pre>
     <li>Never add a proxy signing key, provider credential, hidden reference, or complete future-response program to the target or worker volume.</li>
     <li>Do not call a run successful until the accepted tree passes on the separate clean verifier and every bound identity matches.</li>
   </ul>
-  <p>The remaining Phase 1 plan adds complete gate receipts, durable verifier artifacts, every-exit results, and the final full run. A stable user-selected run directory is still outside the CLI.</p>
+  <p>The remaining Phase 1 work is the upstream default-deny boundary and final full run on the current two-worker lifecycle. A stable user-selected run directory is still outside the CLI.</p>
 </main>
 </body>
 </html>

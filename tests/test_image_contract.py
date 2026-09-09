@@ -796,7 +796,9 @@ class ControlBundleBoundaryTests(unittest.TestCase):
         moved_experiment_code = {
             "autofv/contracts.py",
             "autofv/diamond.py",
+            "autofv/evidence.py",
             "autofv/model.py",
+            "autofv/results.py",
             "autofv/run_state.py",
         }
         self.assertTrue(moved_experiment_code <= members)

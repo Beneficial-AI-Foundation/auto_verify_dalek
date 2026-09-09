@@ -13,7 +13,7 @@ from decimal import Decimal
 from pathlib import Path
 from unittest import mock
 
-from autofv import experiment, worker
+from autofv import experiment, results, worker
 from tests.test_model_proxy_fixture import (
     FIXTURE_PATH as MODEL_FIXTURE_PATH,
     RUN_TOKEN,
@@ -65,6 +65,12 @@ class LinuxIsolationTests(unittest.TestCase):
             self.assertEqual(inventory["image_digest"], LOCK["image"]["image_digest"])
             self.assertEqual(inventory["runtime"], LOCK["tools"]["runsc"]["runtime_name"])
             self.assertEqual(inventory["runtime_args"], LOCK["tools"]["runsc"]["runtime_args"])
+            scored = run["scored_container_receipt"]
+            self.assertEqual(scored["schema"], "autofv-scored-container/v1")
+            self.assertEqual(scored["run_id"], run["run_id"])
+            self.assertTrue(
+                (Path(run["evidence_dir"]) / "scored-container.json").is_file()
+            )
 
             mutations = []
             tagged = copy.deepcopy(LOCK)
@@ -270,15 +276,35 @@ class LinuxIsolationTests(unittest.TestCase):
     def test_interrupted_result_marks_disposal(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             run = {
+                "attempt_id": "attempt-interrupted",
+                "attempt_ledger": str(Path(tmp) / "attempts.jsonl"),
+                "run_id": "interrupted-run",
                 "run_root": tmp,
                 "execution_tier": "sealed_runsc",
+                "cost_classification": "synthetic_fixture",
                 "base_commit": "1" * 40,
+                "events": [],
             }
-            result = {"termination_reason": "interrupted"}
-            with mock.patch.object(worker, "dispose_run") as dispose:
-                worker.persist_result(run, result, {})
+            state = {
+                "run": run,
+                "config": {},
+                "receipts": [],
+                "checkpoint_enabled": False,
+            }
+            with (
+                mock.patch.object(worker, "dispose_run") as dispose,
+                mock.patch.object(results, "persist_attempt") as persist,
+            ):
+                result = experiment._finish_attempt(
+                    run,
+                    state,
+                    outcome="infrastructure_failed",
+                    reason="interrupted",
+                )
 
             dispose.assert_called_once_with(run, interrupted=True)
+            persist.assert_called_once()
+            self.assertEqual(result["termination_reason"], "interrupted")
 
     def test_preparation_failure_destroys_worker_but_export_failure_retains_it(self) -> None:
         _, control_manifest, snapshot_sha256 = worker._seed_archive(TARGET, LOCK)
@@ -533,8 +559,11 @@ class ProxyAccountingTests(unittest.TestCase):
                             state, entry["request"], response, receipt
                         )
 
-                    result = experiment._result(
-                        run, state, outcome="success", reason="proxy_matrix_complete"
+                    result, _ = results.render_attempt(
+                        run,
+                        state,
+                        outcome="success",
+                        reason="proxy_matrix_complete",
                     )
                     self.assertEqual(
                         [case["id"] for case in policy["rejected"]],

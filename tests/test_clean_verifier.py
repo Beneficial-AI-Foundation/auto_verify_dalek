@@ -167,6 +167,8 @@ def _observed(state=None):
             "non_vacuity": True,
             "broken_implementation_rejected": True,
         },
+        "sorry_count_before": 1,
+        "sorry_count_after": 0,
     }
 
 
@@ -207,6 +209,21 @@ class BundleIntakeTests(unittest.TestCase):
         self.assertEqual(report["verdict"], "PASS")
         self.assertEqual(report["failures"], [])
         self.assertEqual(report["evidence_level"], "L4")
+
+    def test_clean_worker_infrastructure_failure_is_not_reduced_to_a_failed_proof(self):
+        with self.assertRaisesRegex(
+            verifier.VerifierInfrastructureError, "verifier unavailable"
+        ):
+            verifier.verify_bundle(
+                self.bundle,
+                _invocation(self.bundle),
+                reference_bytes=REFERENCE.read_bytes(),
+                run_checks=mock.Mock(
+                    side_effect=verifier.VerifierInfrastructureError(
+                        "verifier unavailable"
+                    )
+                ),
+            )
 
     def test_archive_paths_types_duplicates_members_sizes_and_hashes_fail_closed(self):
         cases = []

@@ -9,7 +9,7 @@ import unittest
 from pathlib import Path
 from unittest import mock
 
-from autofv import experiment, probes, worker
+from autofv import experiment, probes, results, worker
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -213,8 +213,8 @@ class ProbeGraphTests(unittest.TestCase):
                         return_value=(self.rust_raw, aeneas_raw),
                     ),
                     mock.patch.object(
-                        worker,
-                        "persist_result",
+                        results,
+                        "persist_attempt",
                         side_effect=lambda run, result, receipt: persisted.append(
                             (result, receipt)
                         ),
@@ -226,12 +226,14 @@ class ProbeGraphTests(unittest.TestCase):
                         run_round=lambda request: calls.append(request),
                     )
 
-                self.assertEqual(result["outcome"], "failure")
-                self.assertEqual(result["termination_reason"], "probe")
+                self.assertEqual(result["outcome"], "verification_failed")
+                self.assertEqual(result["termination_reason"], "probe_failed")
                 self.assertEqual(result["proxy_requests"], 0)
                 self.assertEqual(calls, [])
                 self.assertEqual(len(persisted), 1)
-                self.assertEqual(persisted[0][1]["outcome"], "failure")
+                self.assertEqual(
+                    persisted[0][0]["outcome"], "verification_failed"
+                )
 
     def test_raw_probe_files_survive_parse_failure(self):
         bad_aeneas = copy.deepcopy(self.aeneas)
@@ -280,8 +282,8 @@ class ProbeGraphTests(unittest.TestCase):
             with (
                 mock.patch.object(worker, "prepare_run", side_effect=failure),
                 mock.patch.object(
-                    worker,
-                    "persist_result",
+                    results,
+                    "persist_attempt",
                     side_effect=lambda prepared, result, receipt: persisted.append(
                         (prepared, result, receipt)
                     ),
@@ -293,12 +295,16 @@ class ProbeGraphTests(unittest.TestCase):
                     run_round=lambda request: calls.append(request),
                 )
 
-            self.assertEqual(result["outcome"], "failure")
-            self.assertEqual(result["termination_reason"], "infrastructure_failed")
+            self.assertEqual(result["outcome"], "infrastructure_failed")
+            self.assertEqual(
+                result["termination_reason"], "worker_preparation_failed"
+            )
             self.assertIn("limactl is unavailable", result["termination_detail"])
             self.assertEqual(calls, [])
             self.assertEqual(len(persisted), 1)
-            self.assertEqual(persisted[0][2]["outcome"], "failure")
+            self.assertEqual(
+                persisted[0][1]["outcome"], "infrastructure_failed"
+            )
 
     def test_non_success_result_makes_the_public_cli_exit_one(self):
         with (

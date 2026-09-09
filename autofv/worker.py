@@ -1114,6 +1114,7 @@ def prepare_run(target: Path, manifest: dict[str, Any], lock: dict[str, Any]) ->
             ),
             "checks": ["sealed_baseline"],
         }
+        run["scored_container_receipt"] = inspect_scored_container(run)
     except BaseException as exc:
         if worker_created:
             try:
@@ -1124,6 +1125,11 @@ def prepare_run(target: Path, manifest: dict[str, Any], lock: dict[str, Any]) ->
                 ) from exc
         if isinstance(exc, WorkerError):
             exc.run = run
+        if isinstance(exc, KeyboardInterrupt):
+            run["preparation_interrupted"] = True
+            raise WorkerError(
+                "controller interrupted during worker preparation", run=run
+            ) from exc
         raise
     return run
 
@@ -1353,6 +1359,7 @@ def inspect_scored_container(run: dict[str, Any]) -> dict[str, Any]:
         ]
         body = {
             "schema": "autofv-scored-container/v1",
+            "run_id": run["run_id"],
             "container_id": value.get("Id"),
             "runtime": host.get("Runtime"),
             "read_only_root": host.get("ReadonlyRootfs"),
@@ -1525,6 +1532,7 @@ def _record_proxy_policy(run: dict[str, Any]) -> dict[str, Any]:
         _canonical_bytes(receipt) + b"\n",
     )
     run["proxy_policy_sha256"] = receipt["policy_sha256"]
+    run["proxy_policy_receipt"] = receipt
     if "fixed_proxy_policy_bound" not in run["events"]:
         run["events"].append("fixed_proxy_policy_bound")
     return receipt
@@ -2115,16 +2123,6 @@ def accept_candidate(
     }
 
 
-def persist_result(run: dict[str, Any], result: dict[str, Any], receipt: dict[str, Any]) -> None:
-    """Atomically persist the public result and initial L0 receipt."""
-    root = Path(run["run_root"])
-    evidence = root / "evidence"
-    for path, value in ((root / "result.json", result), (evidence / "l0.json", receipt)):
-        _atomic_write(path, _canonical_bytes(value) + b"\n")
-    if run.get("execution_tier") == "sealed_runsc" and run.get("base_commit"):
-        dispose_run(run, interrupted=result.get("termination_reason") == "interrupted")
-
-
 def _atomic_write(path: Path, raw: bytes) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     temporary = path.with_name(f".{path.name}.tmp")
@@ -2493,6 +2491,7 @@ def export_run(run: dict[str, Any], *, interrupted: bool = False) -> dict[str, A
     verified, _ = _load_verified_export(run)
     if verified != receipt:
         raise WorkerError("export manifest verification failed")
+    run["artifact_scan_receipt"] = scan
     run["export_receipt"] = receipt
     run["events"].append("artifacts_exported")
     return receipt
@@ -2632,13 +2631,19 @@ def _restore_export(run: dict[str, Any]) -> None:
     manifest, artifacts = _load_verified_export(run)
     run.pop("export_receipt", None)
     run.pop("disposal_receipt", None)
+    run.pop("artifact_scan_receipt", None)
     for key in (
         "proxy_firewall",
         "proxy_network",
         "proxy_relay",
         "proxy_policy_sha256",
+        "proxy_policy_receipt",
+        "upstream_policy_sha256",
+        "egress_policy_sha256",
+        "egress_receipt",
     ):
         run.pop(key, None)
+    (Path(run["evidence_dir"]) / "egress.json").unlink(missing_ok=True)
     run["finalization_sequence"] = int(manifest.get("sequence", 0))
     control_manifest, control_files = _control_manifest(run["lock"])
     if control_manifest["bundle_sha256"] != run.get("control_bundle_sha256"):
@@ -2657,6 +2662,10 @@ def _restore_export(run: dict[str, Any]) -> None:
         run["worker_inventory"] = inventory
         run["worker_inventory_sha256"] = inventory["inventory_sha256"]
         run["agent_worker_id"] = f"lima:{AGENT_VM}:{inventory['machine_id']}"
+        _atomic_write(
+            Path(run["evidence_dir"]) / "worker-inventory.json",
+            _canonical_bytes(inventory) + b"\n",
+        )
         claim_worker(run)
         if _docker("volume", "inspect", run["volume"], check=False).returncode == 0:
             raise WorkerError("disposed run volume was unexpectedly reused")
@@ -2734,6 +2743,7 @@ def _restore_export(run: dict[str, Any]) -> None:
             or _sha256(restored_tree) != run["accepted"]["accepted_tree_sha256"]
         ):
             raise WorkerError("restored accepted state mismatch")
+        run["scored_container_receipt"] = inspect_scored_container(run)
     except BaseException:
         if worker_created:
             _destroy_worker(run)

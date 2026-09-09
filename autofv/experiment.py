@@ -1,7 +1,7 @@
 """Stable entry point for one sealed AutoFV experiment.
 
-Implementation lives behind four cohesive seams: contracts, durable run state,
-model exchange, and the bounded diamond scheduler.
+Implementation lives behind five cohesive seams: contracts, durable run state,
+model exchange, the bounded diamond scheduler, and result/evidence records.
 """
 
 from __future__ import annotations
@@ -15,7 +15,7 @@ from typing import Any
 
 from langgraph.graph import END, START, StateGraph
 
-from . import probes, verifier, worker
+from . import probes, results, verifier, worker
 from .contracts import (
     BudgetExhausted,
     ContractError,
@@ -86,6 +86,7 @@ from .run_state import (
     _valid_checkpoint,
     _write_checkpoint,
 )
+
 
 def _clean_verify(state: _RunState) -> dict[str, Any]:
     run, graph, accepted = state["run"], state["graph"], state["accepted"]
@@ -162,84 +163,111 @@ def _build_graph():
 _EXPERIMENT_GRAPH = _build_graph()
 
 
-def _result(
-    run: dict[str, Any], state: _RunState, *, outcome: str, reason: str
+def _persist_unallocated_attempt(
+    identity: dict[str, str],
+    target: str | Path,
+    run_config: str | Path,
+    wall_started: int,
+    *,
+    outcome: str,
+    reason: str,
+    detail: Exception,
 ) -> dict[str, Any]:
-    graph = state.get("graph", {})
-    wall = _charge_wall(state)
-    accepted = state.get("accepted", run.get("accepted", {}))
-    report = state.get("verifier_report", {})
-    frozen_contracts = state.get("contracts", {}).get("frozen", {})
-    internal_nodes = set(state.get("accepted_nodes", [])) - set(
-        graph.get("frozen_targets", [])
+    run = results.allocate_attempt(
+        identity, target=target, run_config=run_config
     )
-    cost = sum(
-        (Decimal(item["cost"]["amount"]) for item in state.get("receipts", [])),
-        Decimal("0.000000"),
-    )
-    _event_once(run, "result_emitted")
-    return {
-        "schema": "autofv-result/v1",
-        "run_id": run["run_id"],
-        "execution_tier": run["execution_tier"],
-        "cost_classification": run["cost_classification"],
-        "outcome": outcome,
-        "termination_reason": reason,
-        "termination_detail": state.get("termination_detail"),
-        "frozen_targets": graph.get("frozen_targets", []),
-        "targets_total": len(graph.get("frozen_targets", [])),
-        "targets_verified_final": 1 if outcome == "success" else 0,
-        "internal_specs_accepted": len(frozen_contracts),
-        "internal_proofs_accepted": len(internal_nodes),
-        "proxy_requests": len(state.get("receipts", [])),
-        "cost_usd": f"{cost:.6f}",
-        "wall_seconds": f"{wall:.6f}",
-        "finalization_reserve_seconds": (
-            f"{state.get('finalization_reserve_seconds', Decimal('0')):.6f}"
-        ),
-        "receipt_rejections": state.get("receipt_rejections", []),
-        "native_decide_policy": run["native_decide_policy"],
-        "native_decide_policy_sha256": run["native_decide_policy_sha256"],
-        "snapshot_sha256": run["snapshot_sha256"],
-        "manifest_sha256": run["manifest_sha256"],
-        "probe_rust_sha256": graph.get("probe_rust_sha256"),
-        "probe_aeneas_sha256": graph.get("probe_aeneas_sha256"),
-        "graph_sha256": graph.get("graph_sha256"),
-        "image_digest": run["image_digest"],
-        "control_bundle_sha256": run["control_bundle_sha256"],
-        "accepted_commit": accepted.get("accepted_commit"),
-        "accepted_tree_sha256": accepted.get("accepted_tree_sha256"),
-        "lanes": state.get("lanes", run.get("lanes", [])),
-        "lane_intervals": state.get(
-            "lane_intervals", run.get("lane_intervals", {})
-        ),
-        "candidate_receipts": state.get(
-            "candidate_receipts", run.get("candidate_receipts", [])
-        ),
-        "processed_candidate_sha256": state.get(
-            "processed_candidate_sha256",
-            run.get("processed_candidate_sha256", []),
-        ),
-        "accepted_sequence": state.get(
-            "accepted_sequence", run.get("accepted_sequence", [])
-        ),
-        "verifier_report_sha256": report.get("report_sha256"),
-        "events": list(run["events"]),
+    state: _RunState = {
+        "run": run,
+        "config": {},
+        "receipts": [],
+        "receipt_rejections": [],
+        "wall_seconds_used": Decimal("0.000000"),
+        "finalization_reserve_seconds": Decimal("0.000000"),
+        "wall_started_monotonic_ns": wall_started,
+        "termination_detail": str(detail)[:1000],
     }
+    _charge_wall(state)
+    results.persist_l0_sources(run, state)
+    result, receipt = results.render_attempt(
+        run, state, outcome=outcome, reason=reason
+    )
+    results.persist_attempt(run, result, receipt)
+    return result
 
 
-def _l0_receipt(run: dict[str, Any], state: _RunState, result: dict[str, Any]) -> dict[str, Any]:
-    body = {
-        "schema": "autofv-evidence-l0/v1",
-        "run_id": run["run_id"],
-        "outcome": result["outcome"],
-        "result_sha256": _canonical_sha256(result),
-        "proxy_receipt_sha256": [
-            item["receipt_sha256"] for item in state.get("receipts", [])
-        ],
-        "events": result["events"],
-    }
-    return {**body, "receipt_sha256": _canonical_sha256(body)}
+def _persist_unallocated_interrupt(
+    identity: dict[str, str],
+    target: str | Path,
+    run_config: str | Path,
+    wall_started: int,
+) -> dict[str, Any]:
+    return _persist_unallocated_attempt(
+        identity,
+        target,
+        run_config,
+        wall_started,
+        outcome="infrastructure_failed",
+        reason="interrupted",
+        detail=RuntimeError("controller interrupted"),
+    )
+
+
+def _finish_attempt(
+    run: dict[str, Any],
+    state: _RunState,
+    *,
+    outcome: str,
+    reason: str,
+) -> dict[str, Any]:
+    interrupted = reason == "interrupted"
+
+    def failed_finalization(exc: BaseException) -> None:
+        nonlocal outcome, reason
+        state["termination_detail"] = {
+            "prior_outcome": outcome,
+            "prior_reason": reason,
+            "prior_detail": state.get("termination_detail"),
+            "finalization_error": str(exc)[:1000],
+        }
+        outcome, reason = "infrastructure_failed", "finalization_failed"
+
+    try:
+        results.persist_verifier_report(run, state.get("verifier_report"))
+        results.persist_l0_sources(run, state)
+        _checkpoint_if_enabled(state, "result:before-export")
+    except (Exception, KeyboardInterrupt) as exc:
+        failed_finalization(exc)
+
+    if (
+        run.get("execution_tier") == "sealed_runsc"
+        and run.get("base_commit")
+        and not run.get("worker_disposed")
+    ):
+        try:
+            worker.dispose_run(run, interrupted=interrupted)
+        except (Exception, KeyboardInterrupt) as exc:
+            failed_finalization(exc)
+
+    try:
+        _charge_wall(state)
+    except (Exception, KeyboardInterrupt) as exc:
+        failed_finalization(exc)
+    result, receipt = results.render_attempt(
+        run, state, outcome=outcome, reason=reason
+    )
+    state["result"] = result
+    state["l0_receipt"] = receipt
+    try:
+        _checkpoint_if_enabled(state, "result:after-export")
+    except (Exception, KeyboardInterrupt) as exc:
+        failed_finalization(exc)
+        result, receipt = results.render_attempt(
+            run, state, outcome=outcome, reason=reason
+        )
+        state["result"] = result
+        state["l0_receipt"] = receipt
+    results.persist_attempt(run, result, receipt)
+    return result
 
 
 def _resume_identities(
@@ -267,35 +295,132 @@ def run_experiment(
     run_round=agentproc.run_round,
     resume_from: str | Path | None = None,
 ) -> dict[str, Any]:
-    """Run the bounded sealed tracer and reduce every post-allocation exit."""
-    target_path, manifest = validate_target(target)
-    _, config = validate_run_config(run_config)
-    lock = load_toolchain_lock()
-    policy = validate_native_decide_policy(lock)
+    """Run the bounded sealed tracer and persist every attempted run."""
     wall_started = time.monotonic_ns()
+    try:
+        identity = results.new_attempt_identity()
+    except results.ResultError as exc:
+        return _persist_unallocated_attempt(
+            results.default_attempt_identity(),
+            target,
+            run_config,
+            wall_started,
+            outcome="invalid_config",
+            reason="attempt_ledger_invalid",
+            detail=exc,
+        )
+    try:
+        target_path, manifest = validate_target(target)
+    except KeyboardInterrupt:
+        return _persist_unallocated_interrupt(
+            identity, target, run_config, wall_started
+        )
+    except ContractError as exc:
+        return _persist_unallocated_attempt(
+            identity,
+            target,
+            run_config,
+            wall_started,
+            outcome="invalid_target",
+            reason="target_invalid",
+            detail=exc,
+        )
+    try:
+        _, config = validate_run_config(run_config)
+    except KeyboardInterrupt:
+        return _persist_unallocated_interrupt(
+            identity, target, run_config, wall_started
+        )
+    except ContractError as exc:
+        return _persist_unallocated_attempt(
+            identity,
+            target,
+            run_config,
+            wall_started,
+            outcome="invalid_config",
+            reason="run_config_invalid",
+            detail=exc,
+        )
+    try:
+        lock = load_toolchain_lock()
+        policy = validate_native_decide_policy(lock)
+    except KeyboardInterrupt:
+        return _persist_unallocated_interrupt(
+            identity, target, run_config, wall_started
+        )
+    except ContractError as exc:
+        return _persist_unallocated_attempt(
+            identity,
+            target,
+            run_config,
+            wall_started,
+            outcome="infrastructure_failed",
+            reason="toolchain_contract_invalid",
+            detail=exc,
+        )
+
     preparation_failure = None
     if resume_from is not None:
-        resume_root = _absolute_path(resume_from, "resume root", directory=True)
-        checkpoint = _load_checkpoint(
-            resume_root,
-            _resume_identities(target_path, manifest, config, lock),
-        )
-        state = _restore_checkpoint(
-            checkpoint,
-            manifest=manifest,
-            config=config,
-            lock=lock,
-            run_round=run_round,
-        )
-        run = state["run"]
+        try:
+            resume_root = _absolute_path(
+                resume_from, "resume root", directory=True
+            )
+            checkpoint = _load_checkpoint(
+                resume_root,
+                _resume_identities(target_path, manifest, config, lock),
+            )
+            state = _restore_checkpoint(
+                checkpoint,
+                manifest=manifest,
+                config=config,
+                lock=lock,
+                run_round=run_round,
+            )
+            run = state["run"]
+        except KeyboardInterrupt:
+            return _persist_unallocated_interrupt(
+                identity, target, run_config, wall_started
+            )
+        except Exception as exc:
+            return _persist_unallocated_attempt(
+                identity,
+                target,
+                run_config,
+                wall_started,
+                outcome="infrastructure_failed",
+                reason="resume_failed",
+                detail=exc,
+            )
     else:
         try:
             run = worker.prepare_run(target_path, manifest, lock)
+        except KeyboardInterrupt:
+            return _persist_unallocated_interrupt(
+                identity, target, run_config, wall_started
+            )
         except worker.WorkerError as exc:
             if exc.run is None:
-                raise
+                return _persist_unallocated_attempt(
+                    identity,
+                    target,
+                    run_config,
+                    wall_started,
+                    outcome="infrastructure_failed",
+                    reason="worker_preparation_failed",
+                    detail=exc,
+                )
             run = exc.run
             preparation_failure = exc
+        except Exception as exc:
+            return _persist_unallocated_attempt(
+                identity,
+                target,
+                run_config,
+                wall_started,
+                outcome="infrastructure_failed",
+                reason="worker_preparation_failed",
+                detail=exc,
+            )
         run.update(
             {
                 "lock": lock,
@@ -306,6 +431,7 @@ def run_experiment(
                 ],
             }
         )
+        run.update(identity)
         accepted = run.get("accepted") or {"accepted_commit": run.get("base_commit")}
         state = {
             "run": run,
@@ -319,64 +445,99 @@ def run_experiment(
             "pending_model_exchanges": {},
             "model_exchanges": {},
             "receipt_rejections": [],
+            "compiler_assumptions": verifier.compiler_assumptions(lock),
             "wall_seconds_used": Decimal("0.000000"),
             "finalization_reserve_seconds": _finalization_reserve(config),
         }
+    run.setdefault("attempt_id", identity["attempt_id"])
+    run.setdefault("attempt_ledger", identity["attempt_ledger"])
     state["wall_started_monotonic_ns"] = wall_started
     state.setdefault("receipt_rejections", [])
+    state.setdefault("compiler_assumptions", verifier.compiler_assumptions(lock))
     state.setdefault("wall_seconds_used", Decimal("0.000000"))
     state.setdefault("finalization_reserve_seconds", _finalization_reserve(config))
-    _charge_wall(state)
     state["checkpoint_enabled"] = bool(run.get("run_root"))
-    if resume_from is None:
-        _checkpoint_if_enabled(state, "run:prepared")
-    elif state.get("result"):
+    if resume_from is not None and state.get("result"):
         result = state["result"]
-        _checkpoint_if_enabled(state, "result:before-export")
-        worker.persist_result(run, result, _l0_receipt(run, state, result))
-        _checkpoint_if_enabled(state, "result:after-export")
+        receipt = state.get("l0_receipt")
+        if not isinstance(receipt, dict):
+            receipt = _read_json(
+                Path(run["run_root"]) / "evidence" / "l0.json",
+                "L0 receipt",
+            )
+        results.persist_attempt(run, result, receipt)
         return result
     try:
+        _charge_wall(state)
+        if resume_from is None:
+            _checkpoint_if_enabled(state, "run:prepared")
         if preparation_failure is not None:
             raise preparation_failure
         for update in _EXPERIMENT_GRAPH.stream(state, stream_mode="updates"):
             for values in update.values():
                 state.update(values)
-        result = _result(run, state, outcome="success", reason="all_targets_verified")
+        outcome, reason = "success", "all_targets_verified"
     except KeyboardInterrupt:
         state["termination_detail"] = "controller interrupted"
-        result = _result(run, state, outcome="failure", reason="interrupted")
+        outcome, reason = "infrastructure_failed", "interrupted"
     except BudgetExhausted as exc:
         state["termination_detail"] = exc.detail
-        result = _result(
-            run,
-            state,
-            outcome="budget_exhausted",
-            reason=(
-                "cost_budget_exhausted"
-                if exc.kind == "cost_usd"
-                else "wall_budget_exhausted"
-            ),
+        outcome = "budget_exhausted"
+        reason = (
+            "cost_budget_exhausted"
+            if exc.kind == "cost_usd"
+            else "wall_budget_exhausted"
         )
-    except (ContractError, probes.ProbeError, worker.WorkerError, verifier.VerifierError) as exc:
+    except ContractInconclusive as exc:
         state["termination_detail"] = str(exc)[:1000]
-        result = _result(
-            run,
-            state,
-            outcome="failure",
-            reason=(
-                "infrastructure_failed"
-                if exc is preparation_failure
-                else "contract_inconclusive"
-                if isinstance(exc, ContractInconclusive)
-                else type(exc).__name__.removesuffix("Error").lower()
-            ),
+        outcome, reason = "contract_inconclusive", "contract_inconclusive"
+    except probes.ProbeError as exc:
+        state["termination_detail"] = str(exc)[:1000]
+        outcome, reason = "verification_failed", "probe_failed"
+    except verifier.VerifierInfrastructureError as exc:
+        state["termination_detail"] = str(exc)[:1000]
+        outcome, reason = (
+            "infrastructure_failed",
+            "clean_verifier_infrastructure_failed",
         )
-    state["result"] = result
-    _checkpoint_if_enabled(state, "result:before-export")
-    worker.persist_result(run, result, _l0_receipt(run, state, result))
-    _checkpoint_if_enabled(state, "result:after-export")
-    return result
+    except verifier.VerifierError as exc:
+        state["termination_detail"] = str(exc)[:1000]
+        outcome, reason = "verification_failed", "clean_verifier_failed"
+    except worker.WorkerError as exc:
+        state["termination_detail"] = str(exc)[:1000]
+        outcome = "infrastructure_failed"
+        if run.pop("preparation_interrupted", False):
+            reason = "interrupted"
+        else:
+            reason = (
+                "worker_preparation_failed"
+                if exc is preparation_failure
+                else "worker_failed"
+            )
+    except ContractError as exc:
+        state["termination_detail"] = str(exc)[:1000]
+        outcome, reason = "contract_inconclusive", "contract_invalid"
+    except Exception as exc:
+        state["termination_detail"] = str(exc)[:1000]
+        outcome, reason = "infrastructure_failed", "controller_failed"
+    try:
+        return _finish_attempt(run, state, outcome=outcome, reason=reason)
+    except (Exception, KeyboardInterrupt) as exc:
+        detail = RuntimeError(
+            f"final result persistence failed for {run.get('run_id')}: {exc}"
+        )
+        return _persist_unallocated_attempt(
+            {
+                "attempt_id": run["attempt_id"],
+                "attempt_ledger": run["attempt_ledger"],
+            },
+            target,
+            run_config,
+            wall_started,
+            outcome="infrastructure_failed",
+            reason="finalization_failed",
+            detail=detail,
+        )
 
 
 def _parser() -> argparse.ArgumentParser:

@@ -131,9 +131,9 @@ def _run_bundle(run: dict[str, Any], state: dict[str, Any]) -> bytes:
     except OSError as exc:
         raise VerifierError("clean verifier probe evidence is missing") from exc
     accepted_commit = run["accepted"]["accepted_commit"]
-    if worker._git(run, "rev-parse", "HEAD").decode().strip() != accepted_commit:
+    repository = worker.verification_repository(run, accepted_commit)
+    if repository is None:
         raise VerifierError("accepted commit changed before verification")
-    repository = worker._git(run, "bundle", "create", "-", "HEAD")
     return build_bundle(
         {
             "accepted/repository.bundle": repository,

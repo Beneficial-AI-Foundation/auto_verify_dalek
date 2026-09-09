@@ -9,7 +9,7 @@ import unittest
 from pathlib import Path
 from unittest import mock
 
-from autofv import experiment, probes, results, verifier, worker
+from autofv import experiment, probes, results, verifier, worker, worker_runtime
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -205,6 +205,25 @@ class _Seams:
 
 
 class WorkerBridgeTests(unittest.TestCase):
+    def test_verification_repository_exports_only_the_expected_head(self):
+        with mock.patch.object(
+            worker_runtime,
+            "_git",
+            side_effect=(b"a" * 40 + b"\n", b"repository-bundle"),
+        ) as git:
+            bundle = worker.verification_repository({}, "a" * 40)
+
+        self.assertEqual(bundle, b"repository-bundle")
+        self.assertEqual(git.call_count, 2)
+
+        with mock.patch.object(
+            worker_runtime, "_git", return_value=b"b" * 40 + b"\n"
+        ) as git:
+            bundle = worker.verification_repository({}, "a" * 40)
+
+        self.assertIsNone(bundle)
+        git.assert_called_once_with({}, "rev-parse", "HEAD")
+
     def test_worker_errors_keep_command_stdout_and_stderr(self):
         completed = subprocess.CompletedProcess(
             args=("command",),
@@ -216,11 +235,11 @@ class WorkerBridgeTests(unittest.TestCase):
             with self.assertRaisesRegex(
                 worker.WorkerError, "(?s)useful compiler diagnostic.*build failed"
             ):
-                worker._lima("command")
+                worker_runtime._lima("command")
 
     def test_runsc_commands_use_the_sealed_project_as_workdir(self):
         lock = experiment.load_toolchain_lock()
-        argv = worker._runtime_argv(lock, "test-volume", "true")
+        argv = worker_runtime._runtime_argv(lock, "test-volume", "true")
 
         self.assertEqual(argv[argv.index("--workdir") + 1], "/volume/work/project")
         self.assertEqual(argv[argv.index("--pull") + 1], "never")

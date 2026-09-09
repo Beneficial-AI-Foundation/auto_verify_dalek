@@ -470,7 +470,7 @@ def _restore_checkpoint(
             except BaseException as cleanup_exc:
                 cleanup_error = cleanup_exc
                 try:
-                    worker._destroy_worker(run)
+                    worker.force_destroy_worker(run)
                 except BaseException as destroy_exc:
                     raise ContractError(
                         "resume failed and forced worker destruction failed: "

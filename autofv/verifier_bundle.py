@@ -454,7 +454,7 @@ def verify_bundle(
     _append(
         failures,
         "control_bundle_mismatch",
-        worker._control_manifest(lock)[0]["bundle_sha256"]
+        worker.control_manifest(lock)[0]["bundle_sha256"]
         != invocation["control_bundle_sha256"],
     )
     _append(

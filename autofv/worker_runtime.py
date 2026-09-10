@@ -9,10 +9,14 @@ import json
 import os
 import re
 import secrets
+import shutil
+import socket
 import stat
 import subprocess
+import sys
 import tarfile
 import tempfile
+import urllib.parse
 from pathlib import Path, PurePosixPath
 from typing import Any, Iterable
 
@@ -27,6 +31,8 @@ CLAIM_CONTAINER = "autofv-worker-claim"
 RESOURCE_LABEL = "org.autofv"
 OUTPUT_CHAIN = "AUTOFV-OUTPUT"
 FORWARD_CHAIN = "AUTOFV-FORWARD"
+NETWORK_ENFORCER = "upstream-default-deny+worker-firewall+docker-internal-network"
+SANDBOX_EXEC = Path("/usr/bin/sandbox-exec")
 
 
 class WorkerError(RuntimeError):
@@ -169,6 +175,134 @@ def _install_worker_firewall() -> None:
     _firewall_snapshot()
 
 
+def _proxy_endpoint(base: str) -> tuple[str, int]:
+    parsed = urllib.parse.urlsplit(base)
+    try:
+        address = str(ipaddress.IPv4Address(parsed.hostname or ""))
+        port = parsed.port or (443 if parsed.scheme == "https" else 80)
+    except (ValueError, ipaddress.AddressValueError) as exc:
+        raise WorkerError("trusted proxy must use one literal IPv4 endpoint") from exc
+    if (
+        parsed.scheme not in {"http", "https"}
+        or parsed.username
+        or parsed.password
+        or parsed.query
+        or parsed.fragment
+        or parsed.path not in {"", "/"}
+        or not 1 <= port <= 65535
+    ):
+        raise WorkerError("trusted proxy base address is invalid")
+    return address, port
+
+
+def _seatbelt_profile(
+    instance_dir: Path, *, ssh_port: int, proxy_port: int | None
+) -> str:
+    """Deny Lima host-agent egress except its own SSH and fixed proxy ports."""
+    if not instance_dir.is_absolute() or not 1 <= ssh_port <= 65535:
+        raise WorkerError("Lima Seatbelt identity is invalid")
+    ports = sorted({ssh_port, *(() if proxy_port is None else (proxy_port,))})
+    if any(not 1 <= port <= 65535 for port in ports):
+        raise WorkerError("Lima Seatbelt port is invalid")
+    allows = "\n".join(
+        f'(allow network-outbound (remote ip "localhost:{port}"))'
+        for port in ports
+    )
+    socket_scope = json.dumps(str(instance_dir))
+    return (
+        "(version 1)\n"
+        "(allow default)\n"
+        "(deny network-outbound)\n"
+        f"{allows}\n"
+        f"(allow network-outbound (remote unix-socket (subpath {socket_scope})))\n"
+    )
+
+
+def _available_loopback_port() -> int:
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as reservation:
+        reservation.bind(("127.0.0.1", 0))
+        return int(reservation.getsockname()[1])
+
+
+def _upstream_policy(
+    run: dict[str, Any], instance: dict[str, Any]
+) -> tuple[str, dict[str, Any]]:
+    if sys.platform != "darwin":
+        raise WorkerError("local upstream policy requires macOS Seatbelt")
+    try:
+        instance_dir = Path(instance["dir"]).resolve(strict=True)
+        ssh_port = int(instance["sshLocalPort"])
+    except (KeyError, OSError, TypeError, ValueError) as exc:
+        raise WorkerError("Lima Seatbelt identity is incomplete") from exc
+    if instance_dir.name != AGENT_VM:
+        raise WorkerError("Lima Seatbelt instance scope mismatch")
+    base = os.environ.get("AUTOFV_PROXY_BASE") or run.get("proxy_base")
+    proxy_port = _proxy_endpoint(base)[1] if isinstance(base, str) else None
+    profile = _seatbelt_profile(
+        instance_dir, ssh_port=ssh_port, proxy_port=proxy_port
+    )
+    try:
+        sandbox_status = SANDBOX_EXEC.stat()
+        sandbox_raw = SANDBOX_EXEC.read_bytes()
+    except OSError as exc:
+        raise WorkerError("macOS Seatbelt launcher is unavailable") from exc
+    if (
+        not stat.S_ISREG(sandbox_status.st_mode)
+        or sandbox_status.st_uid != 0
+        or sandbox_status.st_mode & (stat.S_IWGRP | stat.S_IWOTH)
+    ):
+        raise WorkerError("macOS Seatbelt launcher is not trusted")
+    limactl = shutil.which("limactl")
+    if limactl is None:
+        raise WorkerError("Lima lifecycle command is unavailable")
+    body = {
+        "schema": "autofv-upstream-egress-policy/v1",
+        "run_id": run["run_id"],
+        "enforcer": "macos-seatbelt-network-outbound",
+        "lima_instance": AGENT_VM,
+        "allowed_loopback_ports": sorted(
+            {ssh_port, *(() if proxy_port is None else (proxy_port,))}
+        ),
+        "proxy_loopback_port": proxy_port,
+        "instance_socket_scope_sha256": _sha256(str(instance_dir).encode()),
+        "profile_sha256": _sha256(profile.encode()),
+        "sandbox_exec_sha256": _sha256(sandbox_raw),
+        "limactl_sha256": _sha256(Path(limactl).read_bytes()),
+    }
+    receipt = {**body, "policy_sha256": _sha256(_canonical_bytes(body))}
+    existing = run.get("upstream_policy_sha256")
+    if existing not in (None, receipt["policy_sha256"]):
+        raise WorkerError("upstream egress policy changed during the run")
+    return profile, receipt
+
+
+def _start_worker(run: dict[str, Any], instance: dict[str, Any]) -> None:
+    profile, receipt = _upstream_policy(run, instance)
+    limactl = shutil.which("limactl")
+    if limactl is None:
+        raise WorkerError("Lima lifecycle command is unavailable")
+    try:
+        completed = subprocess.run(
+            (str(SANDBOX_EXEC), "-p", profile, limactl, "start", AGENT_VM),
+            capture_output=True,
+        )
+    except OSError as exc:
+        raise WorkerError(f"sandboxed Lima launch failed: {exc}") from exc
+    if completed.returncode:
+        detail = (completed.stdout + completed.stderr).decode(
+            "utf-8", "replace"
+        ).strip()[-4000:]
+        raise WorkerError(f"sandboxed Lima launch failed: {detail or 'limactl'}")
+    run["upstream_policy_sha256"] = receipt["policy_sha256"]
+    run["upstream_policy_receipt"] = receipt
+    _atomic_write(
+        Path(run["evidence_dir"]) / "upstream-policy.json",
+        _canonical_bytes(receipt) + b"\n",
+    )
+    if "upstream_policy_bound" not in run["events"]:
+        run["events"].append("upstream_policy_bound")
+
+
 def _create_worker(run: dict[str, Any]) -> None:
     if inspect_lima_instance(AGENT_VM) is not None:
         raise WorkerError("worker is already claimed by another run")
@@ -183,10 +317,12 @@ def _create_worker(run: dict[str, Any]) -> None:
         or (config.get("ssh") or {}).get("forwardAgent") is not False
     ):
         raise WorkerError("pristine worker template contract mismatch")
+    ssh_port = _available_loopback_port()
     _limactl(
         "clone",
-        "--start",
         "--mount-none",
+        "--ssh-port",
+        str(ssh_port),
         "--set",
         ".hostResolver.enabled = false",
         "--set",
@@ -197,6 +333,14 @@ def _create_worker(run: dict[str, Any]) -> None:
         AGENT_VM,
     )
     try:
+        instance = inspect_lima_instance(AGENT_VM)
+        if (
+            instance is None
+            or instance.get("status") != "Stopped"
+            or instance.get("sshLocalPort") != ssh_port
+        ):
+            raise WorkerError("disposable worker clone identity mismatch")
+        _start_worker(run, instance)
         hostname = _lima("hostname").stdout.decode("ascii", "replace").strip()
         if re.fullmatch(r"[a-z0-9][a-z0-9.-]{0,252}", hostname) is None:
             raise WorkerError("disposable worker hostname is invalid")
@@ -235,7 +379,7 @@ def _owned_worker(run: dict[str, Any]) -> dict[str, Any] | None:
     if instance is None:
         return None
     if instance.get("status") == "Stopped":
-        _limactl("start", AGENT_VM)
+        _start_worker(run, instance)
         _install_worker_firewall()
         run["firewall_installed"] = True
         run.pop("proxy_firewall", None)
@@ -508,6 +652,65 @@ def _resource_inventory() -> dict[str, list[dict[str, Any]] | list[str]]:
     }
 
 
+def _guest_forbidden_paths() -> list[str]:
+    completed = _lima(
+        "sudo",
+        "find",
+        "/home",
+        "/root",
+        "/opt",
+        "/srv",
+        "-xdev",
+        "(",
+        "-type",
+        "d",
+        "(",
+        "-name",
+        ".git",
+        "-o",
+        "-name",
+        ".aws",
+        "-o",
+        "-name",
+        ".azure",
+        "-o",
+        "-name",
+        ".kube",
+        ")",
+        "-o",
+        "-type",
+        "f",
+        "(",
+        "-name",
+        ".env",
+        "-o",
+        "-name",
+        ".netrc",
+        "-o",
+        "-name",
+        ".git-credentials",
+        "-o",
+        "-name",
+        ".bash_history",
+        "-o",
+        "-name",
+        ".zsh_history",
+        "-o",
+        "-path",
+        "*/.ssh/id_*",
+        "-o",
+        "-path",
+        "*/.docker/config.json",
+        "-o",
+        "-path",
+        "*/.config/gcloud/*",
+        ")",
+        ")",
+        "-print",
+    )
+    return sorted(filter(None, completed.stdout.decode("utf-8", "strict").splitlines()))
+
+
 def inspect_worker(lock: dict[str, Any], *, run_id: str) -> dict[str, Any]:
     """Fail closed unless the supplied worker matches the locked Linux boundary."""
     image = lock.get("image", {}).get("image_digest")
@@ -626,6 +829,9 @@ def inspect_worker(lock: dict[str, Any], *, run_id: str) -> dict[str, Any]:
     mounts = _lima("findmnt", "-rn", "-o", "FSTYPE,SOURCE,TARGET").stdout.decode()
     if any(kind in mounts for kind in ("virtiofs", "9p", str(ROOT))):
         raise WorkerError("worker contains a host checkout mount")
+    forbidden_guest_paths = _guest_forbidden_paths()
+    if forbidden_guest_paths:
+        raise WorkerError("worker contains a checkout, credential, or shell history")
 
     resources = _resource_inventory()
     if any(resources.values()):
@@ -653,6 +859,7 @@ def inspect_worker(lock: dict[str, Any], *, run_id: str) -> dict[str, Any]:
         "native_decide_policy_sha256": policy_hash,
         "environment_names": environment_names,
         "host_checkout_mounts": [],
+        "forbidden_guest_paths": forbidden_guest_paths,
         "resources": resources,
     }
     return {**body, "inventory_sha256": _sha256(_canonical_bytes(body))}

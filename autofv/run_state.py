@@ -52,6 +52,7 @@ CHECKPOINT_RUN_FIELDS = (
     "proxy_policy_sha256",
     "proxy_policy_receipt",
     "upstream_policy_sha256",
+    "upstream_policy_receipt",
     "egress_policy_sha256",
     "egress_receipt",
     "artifact_scan_receipt",

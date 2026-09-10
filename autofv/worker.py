@@ -21,7 +21,12 @@ from .worker_artifacts import (
     scan_artifacts,
     scan_retained_state,
 )
-from .worker_proxy import proxy_round, run_egress_matrix, run_proxy_policy_matrix
+from .worker_proxy import (
+    proxy_round,
+    run_egress_matrix,
+    run_proxy_policy_matrix,
+    verify_egress,
+)
 
 
 AGENT_TEMPLATE_VM = _runtime.AGENT_TEMPLATE_VM

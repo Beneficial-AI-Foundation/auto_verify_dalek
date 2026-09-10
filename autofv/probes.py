@@ -323,7 +323,6 @@ def run_probes(project_dir: str | Path, evidence_dir: str | Path) -> dict[str, A
             str(project),
             "--with-locations",
             "--with-public-api",
-            "--auto-install",
             "-o",
             str(rust_path),
         ),

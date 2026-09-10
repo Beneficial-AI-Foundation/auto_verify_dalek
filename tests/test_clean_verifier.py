@@ -136,6 +136,7 @@ def _observed(state=None):
     graph = state["graph"]
     return {
         "verifier_worker_id": "lima:autofv-verifier:verifier-machine",
+        "runtime_identity": True,
         "snapshot_sha256": "0" * 64,
         "accepted_commit": "2" * 40,
         "accepted_tree_sha256": "3" * 64,
@@ -353,6 +354,12 @@ class CleanStateMutationTests(unittest.TestCase):
 
 
 class ReportAuthorityTests(unittest.TestCase):
+    def test_hidden_reference_imports_exact_source_modules(self):
+        program = verifier._reference_program(REFERENCE.read_bytes()).decode()
+        self.assertIn("import Diamond.Left\n", program)
+        self.assertIn("import Diamond.Right\n", program)
+        self.assertNotIn("import Diamond\n", program)
+
     def test_only_exact_current_distinct_worker_pass_is_authoritative(self):
         bundle = verifier.build_bundle(_members())
         invocation = _invocation(bundle)
@@ -388,6 +395,47 @@ class ReportAuthorityTests(unittest.TestCase):
 
 
 class VerifyRunWiringTests(unittest.TestCase):
+    def test_verifier_runtime_mismatch_fails_before_bundle_intake(self):
+        lock = experiment.load_toolchain_lock()
+        configured = {
+            lock["tools"]["runsc"]["runtime_name"]: {
+                "path": "/usr/bin/runsc",
+                "runtimeArgs": lock["tools"]["runsc"]["runtime_args"],
+            }
+        }
+
+        def docker(*argv, **_):
+            output = (
+                b"29.7.2\n"
+                if argv[0] == "version"
+                else _canonical(configured)
+            )
+            return subprocess.CompletedProcess(argv, 0, output, b"")
+
+        runsc = subprocess.CompletedProcess(
+            ("runsc", "--version"),
+            0,
+            b"runsc version release-20260817.0\nspec: 1.2.1\n",
+            b"",
+        )
+        with (
+            mock.patch.object(verifier, "_docker", side_effect=docker),
+            mock.patch.object(verifier, "_shell", return_value=runsc),
+        ):
+            verifier._check_verifier_runtime(lock)
+
+        configured[lock["tools"]["runsc"]["runtime_name"]]["runtimeArgs"] = [
+            "--network=host"
+        ]
+        with (
+            mock.patch.object(verifier, "_docker", side_effect=docker),
+            mock.patch.object(verifier, "_shell", return_value=runsc),
+            self.assertRaisesRegex(
+                verifier.VerifierInfrastructureError, "runtime identity mismatch"
+            ),
+        ):
+            verifier._check_verifier_runtime(lock)
+
     def test_verify_run_binds_bundle_reference_worker_and_invocation(self):
         state = _state()
         bundle = verifier.build_bundle(_members(state))
@@ -432,6 +480,7 @@ class VerifyRunWiringTests(unittest.TestCase):
         with (
             mock.patch.object(verifier.subprocess, "run", return_value=started),
             mock.patch.object(verifier, "_shell", return_value=machine),
+            mock.patch.object(verifier, "_check_verifier_runtime") as runtime,
             mock.patch.object(verifier, "_run_bundle", return_value=bundle),
             mock.patch.object(
                 verifier, "_clean_worker_checks", return_value=_observed(state)
@@ -446,6 +495,7 @@ class VerifyRunWiringTests(unittest.TestCase):
         )
         self.assertEqual(report["bundle_sha256"], _sha256(bundle))
         self.assertEqual(report["reference_sha256"], _sha256(REFERENCE.read_bytes()))
+        runtime.assert_called_once_with(run["lock"])
         clean.assert_called_once()
 
 

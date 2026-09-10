@@ -128,17 +128,19 @@ def _clean_verify(state: _RunState) -> dict[str, Any]:
     _checkpoint_if_enabled(state, "verifier:before")
     try:
         run["verification_state"] = verification_state
-        report = verifier.validate_report(
-            verifier.verify_run(run, expected), run, expected
-        )
-    except Exception:
+        report = verifier.verify_run(run, expected)
+        state["verifier_report"] = report
+        report = verifier.validate_report(report, run, expected)
+    except Exception as exc:
+        rejected = state.get("verifier_report")
+        if isinstance(exc, verifier.VerifierError) and isinstance(rejected, dict):
+            exc.report = rejected
         _charge_wall(state)
         _checkpoint_if_enabled(state, "verifier:failed")
         raise
     finally:
         run.pop("verification_state", None)
     _charge_wall(state)
-    state["verifier_report"] = report
     _event_once(run, "clean_verifier:PASS")
     _checkpoint_if_enabled(state, "verifier:after")
     return _node_update(
@@ -506,6 +508,9 @@ def run_experiment(
             "clean_verifier_infrastructure_failed",
         )
     except verifier.VerifierError as exc:
+        rejected = getattr(exc, "report", None)
+        if isinstance(rejected, dict):
+            state["verifier_report"] = rejected
         state["termination_detail"] = str(exc)[:1000]
         outcome, reason = "verification_failed", "clean_verifier_failed"
     except worker.WorkerError as exc:

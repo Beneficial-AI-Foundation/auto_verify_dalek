@@ -492,7 +492,6 @@
           "/work/rust-fixture",
           "--with-locations",
           "--with-public-api",
-          "--auto-install",
           "-o",
           "/work/rust-atoms.json"
         ],

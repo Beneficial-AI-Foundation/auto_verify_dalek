@@ -3,25 +3,25 @@
 AutoFV is the trusted host-side controller for experiments that ask an agent
 to recover Lean specifications and proofs inside a sealed Linux worker.
 
-This page describes the code as it exists on 9 September 2026. Phase 1 is
-still in progress. Keep this file and [README.html](README.html) in sync.
+This page describes the code as it exists on 10 September 2026. The Phase 1
+vertical slice is complete. Keep this file and [README.html](README.html) in
+sync.
 
 ## Status
 
-An earlier sealed diamond fixture completed under `runsc` and passed on the
-separate verifier VM. The launcher now uses a disposable VM for each attempt.
-Its worker-firewall and proxy paths have passed their Linux system matrices;
-the upstream macOS/VPC default-deny layer still needs implementation evidence
-before the final sealed run. No provider call has run.
+The current launcher completed one full sealed diamond under `runsc` and passed
+on the separate verifier VM. The two leaf requests overlapped, all three source
+changes were accepted serially, and the final result reached complete L4. No
+provider call has run.
 
 | Area | Current evidence |
 | --- | --- |
 | Disposable worker boundary | Nine Linux system tests clone a stopped template, inspect the actual Docker/`runsc` boundary, deny general egress, export state, delete the run VM, and restore onto a fresh clone |
 | Fixed proxy and accounting boundary | Four Linux system tests reject seven caller-controlled capabilities, accept eight signed fixture receipts, exercise a real timeout, and scan retained surfaces |
+| Local upstream boundary | macOS Seatbelt limits the Lima host agent to the exact VM sockets, its loopback SSH port, and the fixed proxy port; the egress matrix proves this layer separately from the worker and container rules |
 | Pinned probe output | Captured from the toolchain image and checked byte-for-byte |
 | Result and evidence contract | Fourteen local tests cover complete L4, receipt/file mismatch, missing or symlinked evidence, typed pre-worker failures, finalization failure, and append-only attempt records |
-| Earlier end-to-end diamond | Overlapped both leaf requests, accepted all three source files serially, and received a distinct verifier `PASS`; this predates the disposable-VM change |
-| End-to-end diamond on the current launcher | Not run yet |
+| End-to-end diamond on the current launcher | `success`, `sealed_runsc`, complete L4, one sorry removed, eight signed fixture receipts, `$0.022350` synthetic cost, and a distinct clean-verifier `PASS` |
 | Provider model call and billed usage | Not run |
 
 The current `$0.022350` result is fixture data: eight handwritten receipts for
@@ -43,12 +43,16 @@ The repository contains only the public verification key. The signing key
 stays in the trusted proxy. This signature protects the accounting record; it
 is unrelated to the curve25519-dalek code being verified by the experiment.
 
-The earlier successful run recorded `execution_tier: sealed_runsc` and
+The successful current run recorded `execution_tier: sealed_runsc` and
 `cost_classification: synthetic_fixture`. It created separate worktrees, caches,
 and result paths for the two leaves, overlapped their proxy calls, then accepted
 the left, stale right, and stale top patches one at a time. Stale patches were
 applied and rebuilt against the latest accepted tree. It processed eight
-receipts and ended with `clean_verifier:PASS`.
+receipts and ended with `clean_verifier:PASS`, zero remaining sorries, and no
+missing evidence. Earlier attempts remain in host temporary directories. They
+failed closed while exposing an evidence-write race, an incomplete verifier
+runtime, offline probe assumptions, and missing clean-verifier inputs; none was
+scored as successful.
 The controller writes canonical, hash-checked checkpoints around model, probe,
 build, apply, verifier, and result-export transitions. At the end of an attempt,
 it exports the accepted Git tree, repository bundle, working patch, untracked
@@ -76,6 +80,7 @@ All non-success outcomes return a non-zero CLI status.
 trusted host
   autofv run
     ├── clone the stopped autofv-agent-template VM into autofv-agent-run
+    ├── start its Lima host agent under the local macOS Seatbelt policy
     ├── copy the approved target and control files into one fresh Docker volume
     ├── run the pinned image with gVisor runsc
     ├── retain and validate probe-rust and probe-aeneas output
@@ -96,14 +101,16 @@ the agent volume or caches.
 The worker receives no developer checkout, container-runtime socket, provider
 credential, complete proxy response fixture, or hidden verifier reference. The
 trusted host copies an allowlisted control bundle into the managed volume.
-Only the accepted source tree crosses into the verifier.
+The verifier receives only the accepted repository bundle and its own trusted
+reference, never the agent volume or caches.
 
 The local tracer test in
 [`tests/test_phase1_diamond.py`](../tests/test_phase1_diamond.py) exercises
 the controller order and failure rules with test doubles. It records the
-orchestration contract and reports `execution_tier: simulation`. The sealed
-fixture run exercised both VMs and the local trusted proxy. Neither path called
-a model provider.
+orchestration contract and reports `execution_tier: simulation`. The full
+diamond test in the same file exercised the disposable VM, pinned `runsc`
+container, local trusted proxy, and separate verifier VM. Neither path called a
+model provider.
 
 The current deterministic proxy returns patch text; no shell-capable model
 process edits a lane worktree yet. Each lane writes a hash-only preflight receipt
@@ -126,7 +133,7 @@ Sealed runs currently require:
 
 - Lima and two prepared VMs: the stopped `autofv-agent-template` and the
   separate `autofv-verifier`;
-- Docker Engine 29.7.2 and gVisor `runsc` release `20260817.0` in the template;
+- Docker Engine 29.7.2 and gVisor `runsc` release `20260817.0` in both VMs;
 - the exact image digest recorded in
   [`docker/autofv/toolchain-lock.json`](../docker/autofv/toolchain-lock.json)
   already loaded in both VMs;
@@ -135,7 +142,8 @@ Sealed runs currently require:
 The repository does not yet automate VM/template provisioning. The launcher
 fails closed if the template is running, mounted to the host, forwards an SSH
 agent, contains extra Docker resources or images, or differs from the locked
-kernel/runtime/image inventory.
+kernel/runtime/image inventory. The clean verifier also checks its exact Docker
+version and `runsc` path, version, and arguments before reading the bundle.
 
 Run the fast local contracts:
 
@@ -152,6 +160,15 @@ Run the fast local contracts:
 The native-policy launch test replaces worker preparation, graph execution,
 and result persistence. It checks policy binding without contacting Lima; it
 is not VM or full-run evidence.
+
+Run the real boundary and full vertical-slice checks only when the prepared VMs
+are available:
+
+```bash
+.venv/bin/python -m unittest tests.test_linux_isolation
+.venv/bin/python -m unittest \
+  tests.test_phase1_diamond.Phase1DiamondTests.test_one_full_sealed_concurrent_diamond
+```
 
 Show the CLI without starting a worker:
 
@@ -192,15 +209,23 @@ The agent container has one internal Docker network and can reach only the
 relay's fixed address and port. The relay accepts only the locked POST path,
 strips caller authorization and upstream selection, and can reach only the
 configured proxy address. Rules on the disposable Linux worker reject DNS,
-literal public IPv4, IPv6, link-local/metadata, and other routes. The separate
-upstream macOS/VPC default-deny layer required by the design is not implemented
-yet.
+literal public IPv4, IPv6, link-local/metadata, and other routes. On macOS,
+Seatbelt provides a separate default-deny layer around the Lima host agent. Its
+receipt is stored in `evidence/upstream-policy.json`. The egress test temporarily
+removes the worker's output jump to prove the outer layer, restores it, then
+tests the worker and container layers. A cloud deployment still needs the
+equivalent host firewall and VPC policy; the macOS profile is local only.
+The allowed-route probe deliberately sends an invalid body and expects HTTP
+400, so it proves reachability without creating a signed model receipt or
+synthetic charge.
 
 Verification creates a fresh Docker volume in `autofv-verifier`, runs the
 pinned image with `--network none`, and removes the volume when the build ends.
-Both launchers use `--pull never`; the verifier does not reuse the agent volume
-or caches. Its distinct worker identity is what `clean verifier` means in
-results and receipts.
+Both launchers use `--pull never` and force Cargo offline. The verifier does not
+reuse the agent volume or caches. It regenerates the `probe-aeneas` bridge from
+fresh Rust output, imports the exact Lean source modules named by the hidden
+reference, and checks its own pinned runtime identity. Its distinct worker
+identity is what `clean verifier` means in results and receipts.
 
 The provider credential belongs in the proxy service. Do not put it in this
 repository, either VM, the container, or either environment variable above.
@@ -220,6 +245,8 @@ result, then inspect it with:
 run_dir=$(ls -td "${TMPDIR%/}"/fixture-diamond-run-0001-* | head -1)
 .venv/bin/python -m json.tool "$run_dir/result.json"
 .venv/bin/python -m json.tool "$run_dir/evidence/l0.json"
+.venv/bin/python -m json.tool "$run_dir/evidence/egress.json"
+.venv/bin/python -m json.tool "$run_dir/evidence/verifier.json"
 .venv/bin/python -m json.tool "$run_dir/evidence/final-result-scan.json"
 .venv/bin/python -m json.tool "$run_dir/export/manifest.json"
 .venv/bin/python -m json.tool "$run_dir/disposal.json"
@@ -259,7 +286,7 @@ recreates the accepted and working state in a fresh clone and volume.
 
 ## What the result fields mean today
 
-| Field | Meaning in the current diamond tracer |
+| Field | Meaning in the current diamond run |
 | --- | --- |
 | `outcome` | One of `success`, `budget_exhausted`, `verification_failed`, `infrastructure_failed`, `invalid_target`, `invalid_config`, or `contract_inconclusive`; `termination_reason` carries the narrower cause |
 | `attempt_id`, `run_root`, `attempt_ledger` | Immutable attempt identity, artifact directory, and append-only ledger path |
@@ -306,13 +333,13 @@ only the Phase 1 diamond.
 | Result fields and the attempt ledger | [`results.py`](results.py) | Builds and immutably writes each canonical result/L0 pair and refuses attempt replacement. |
 | L0 sources, levels, and claims | [`evidence.py`](evidence.py) | Binds retained evidence bytes to trusted receipts and withholds recovery below complete L4. |
 | Worker preparation, probe runs, proof lanes, and candidate acceptance | [`worker.py`](worker.py) | Stable entry point for the controller's worker calls. |
-| Lima, Docker, `runsc`, resource labels, and container limits | [`worker_runtime.py`](worker_runtime.py) | Current agent containers use 2 CPUs, 2 GiB, 256 PIDs, and two 64 MiB temporary filesystems. Real runs report `sealed_runsc`. |
-| Fixed relay, client identity, proxy policy, and egress checks | [`worker_proxy.py`](worker_proxy.py) | Owns the only model-network path visible to the agent worker. |
+| Lima, Docker, `runsc`, local Seatbelt policy, resource labels, and container limits | [`worker_runtime.py`](worker_runtime.py) | Current agent containers use 2 CPUs, 2 GiB, 256 PIDs, two 64 MiB temporary filesystems, and offline Cargo. Real runs report `sealed_runsc`. |
+| Fixed relay, client identity, proxy policy, and egress checks | [`worker_proxy.py`](worker_proxy.py) | Owns the only model-network path visible to the agent worker and records separate upstream, worker, and container denial results. |
 | Retained-state scan, export, disposal, and resume restoration | [`worker_artifacts.py`](worker_artifacts.py) | Verifies retained bytes before deleting or rebuilding the disposable worker. |
 | Candidate scope and acceptance checks | `accept_candidate(...)` in [`worker.py`](worker.py) | It checks one-file scope, base and patch hashes, patch application, forbidden source markers, and the configured build. A failed post-apply check reverses and restages the patch before returning. |
 | Canonical statement and trust-base implementations | [`../harness/gates/StmtCanon.lean`](../harness/gates/StmtCanon.lean) and [`../harness/gates/g2_trust_base.py`](../harness/gates/g2_trust_base.py) | These gates exist in the earlier runner and are locked into the control bundle. The new tracer does not call them yet. |
 | Hostile verifier bundle intake and report reduction | [`verifier_bundle.py`](verifier_bundle.py) | Rejects unsafe or mismatched bundle members before any clean-worker checks run. |
-| Clean verifier VM execution and report binding | [`verifier.py`](verifier.py) | A matching report must name a worker distinct from the agent VM. The accepted archive hash is checked before extraction into a fresh no-network volume. |
+| Clean verifier VM execution and report binding | [`verifier.py`](verifier.py) | Checks the verifier's pinned Docker/`runsc` identity, rebuilds the exact accepted commit in a fresh no-network volume, regenerates probe inputs, and runs the hidden reference. |
 
 Canonical statements, `native_decide` use, and the trust base are recomputed on
 the clean verifier. The candidate receipt remains a preflight record and cannot
@@ -327,7 +354,7 @@ authorize success.
 | [`tests/test_linux_isolation.py`](../tests/test_linux_isolation.py) | Actual disposable Lima lifecycle, `runsc` inspection, four-class egress denial, fixed-proxy capability denial, signed accounting, retained-state scans, export, disposal, and fresh-clone resume |
 | [`tests/test_parallel_lanes.py`](../tests/test_parallel_lanes.py) | Barrier-backed leaf overlap, private paths, scope and policy rejection, stale re-verification, replay idempotency, and top-proof readiness |
 | [`tests/test_restart_budget.py`](../tests/test_restart_budget.py) | Atomic checkpoint selection, working/accepted recovery, graph-state replay, wall/cost exhaustion, exact fixture totals, and rejected-receipt evidence |
-| [`tests/test_phase1_diamond.py`](../tests/test_phase1_diamond.py) | Controller flow with test doubles, failure-state retention, worker command construction, and clean-verifier isolation arguments |
+| [`tests/test_phase1_diamond.py`](../tests/test_phase1_diamond.py) | Controller flow with test doubles, concurrent evidence-write regression, worker/verifier command construction, and the full sealed two-worker diamond |
 | [`tests/test_probe_graph.py`](../tests/test_probe_graph.py) | Probe schema and closure mutations, deterministic graph direction and scheduling, raw-byte retention, and pre-model failure results |
 | [`tests/test_results_evidence.py`](../tests/test_results_evidence.py) | Complete L0/L4 claims, receipt/file binding, missing evidence, typed failures, and append-only attempt records |
 | [`tests/test_image_contract.py`](../tests/test_image_contract.py) | Pinned image contents and runtime contract |
@@ -348,6 +375,6 @@ not the sealed AutoFV execution path.
 - Do not call a run successful until the accepted tree passes on the separate
   clean verifier and every bound identity matches.
 
-The remaining Phase 1 work is the upstream default-deny boundary and final full
-run on the current two-worker lifecycle. A stable user-selected run directory
-is still outside the CLI.
+Phase 1 now has the required local sealed-run evidence. A real provider proxy,
+cloud host/VPC policy, and stable user-selected run directory remain outside
+this vertical slice.

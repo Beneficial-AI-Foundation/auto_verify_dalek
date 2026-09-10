@@ -5,7 +5,10 @@ import os
 import shutil
 import subprocess
 import tempfile
+import threading
 import unittest
+import urllib.parse
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from unittest import mock
 
@@ -205,6 +208,34 @@ class _Seams:
 
 
 class WorkerBridgeTests(unittest.TestCase):
+    def test_concurrent_atomic_writes_use_distinct_temporary_files(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "policy.json"
+            sources = []
+            barrier = threading.Barrier(2)
+            replace = os.replace
+
+            def delayed_replace(source, destination):
+                sources.append(source)
+                barrier.wait(timeout=2)
+                replace(source, destination)
+
+            with (
+                mock.patch.object(
+                    worker_runtime.os, "replace", side_effect=delayed_replace
+                ),
+                ThreadPoolExecutor(max_workers=2) as pool,
+            ):
+                writes = [
+                    pool.submit(worker_runtime._atomic_write, path, b"same\n")
+                    for _ in range(2)
+                ]
+                for write in writes:
+                    write.result(timeout=3)
+
+            self.assertEqual(path.read_bytes(), b"same\n")
+            self.assertEqual(len(set(sources)), 2)
+
     def test_verification_repository_exports_only_the_expected_head(self):
         with mock.patch.object(
             worker_runtime,
@@ -243,10 +274,11 @@ class WorkerBridgeTests(unittest.TestCase):
 
         self.assertEqual(argv[argv.index("--workdir") + 1], "/volume/work/project")
         self.assertEqual(argv[argv.index("--pull") + 1], "never")
+        self.assertIn("CARGO_NET_OFFLINE=true", argv)
 
     def test_bridge_keeps_project_rust_atoms_without_is_relevant(self):
         manifest = json.loads((TARGET / "autofv.json").read_text())
-        bridge = json.loads(worker._bridge(RUST_PROBE.read_bytes(), manifest))
+        bridge = json.loads(worker.probe_bridge(RUST_PROBE.read_bytes(), manifest))
 
         self.assertEqual(
             [item["rust_name"] for item in bridge["functions"]],
@@ -283,6 +315,7 @@ class VerifierRuntimeTests(unittest.TestCase):
         self.assertIn("--read-only", argv)
         self.assertEqual(argv[argv.index("--network") + 1], "none")
         self.assertEqual(argv[argv.index("--pull") + 1], "never")
+        self.assertIn("CARGO_NET_OFFLINE=true", argv)
         self.assertIn(
             "type=volume,src=fresh-verifier-volume,dst=/project,volume-nocopy",
             argv,
@@ -480,6 +513,85 @@ class TracerTests(unittest.TestCase):
                 result["termination_reason"],
                 "clean_verifier_infrastructure_failed",
             )
+
+
+class Phase1DiamondTests(unittest.TestCase):
+    def test_one_full_sealed_concurrent_diamond(self):
+        from tests.test_model_proxy_fixture import (
+            PROOF_PAIR,
+            RUN_ID,
+            RUN_TOKEN,
+            _trusted_proxy,
+        )
+
+        fixture = json.loads(MODEL_FIXTURE.read_text())
+        lock = experiment.load_toolchain_lock()
+        ledger_root = Path(tempfile.mkdtemp(prefix="autofv-phase1-ledger-"))
+        ledger = ledger_root / "attempts.jsonl"
+        barrier = threading.Barrier(2)
+        with _trusted_proxy(
+            fixture, lock["fixed_proxy"], barrier=barrier
+        ) as (base_url, program, audit):
+            port = urllib.parse.urlsplit(base_url).port
+            environment = {
+                "AUTOFV_ATTEMPT_LEDGER": str(ledger),
+                "AUTOFV_PROXY_BASE": f"http://192.168.5.2:{port}",
+                "AUTOFV_RUN_ID": RUN_ID,
+                "AUTOFV_RUN_TOKEN": RUN_TOKEN,
+            }
+            with mock.patch.dict(os.environ, environment, clear=False):
+                result = experiment.run_experiment(TARGET, TARGET / "run.json")
+
+        self.assertEqual(
+            (result["outcome"], result["termination_reason"]),
+            ("success", "all_targets_verified"),
+            result.get("termination_detail"),
+        )
+        self.assertEqual(result["execution_tier"], "sealed_runsc")
+        self.assertTrue(result["scored"])
+        self.assertEqual(result["evidence_level"], "L4")
+        self.assertEqual(result["claim"]["status"], "supported")
+        self.assertEqual(result["missing_evidence"], [])
+        self.assertEqual(result["sorry_counts"], {"before": 1, "after": 0})
+        self.assertEqual(result["proxy_requests"], 8)
+        self.assertEqual(result["cost_usd"], "0.022350")
+        self.assertEqual(audit["stripped_run_credentials"], 8)
+
+        intervals = [program.intervals[request_id] for request_id in PROOF_PAIR]
+        self.assertLess(
+            max(start for start, _ in intervals),
+            min(end for _, end in intervals),
+        )
+        self.assertEqual(
+            [item["status"] for item in result["accepted_sequence"]],
+            ["accepted", "accepted_reverified", "accepted_reverified"],
+        )
+
+        run_root = Path(result["run_root"])
+        report = json.loads((run_root / "evidence/verifier.json").read_text())
+        egress = json.loads((run_root / "evidence/egress.json").read_text())
+        self.assertEqual(report["accepted_commit"], result["accepted_commit"])
+        self.assertNotEqual(report["agent_worker_id"], report["verifier_worker_id"])
+        self.assertTrue(report["checks"]["runtime_identity"])
+        self.assertEqual(
+            egress["policy"]["upstream_policy_sha256"],
+            egress["upstream_policy"]["policy_sha256"],
+        )
+        self.assertTrue(
+            all(
+                case["blocked"]
+                for layer in (
+                    "upstream_denied",
+                    "worker_denied",
+                    "container_denied",
+                )
+                for case in egress[layer]
+            )
+        )
+        self.assertTrue((run_root / "result.json").is_file())
+        self.assertTrue((run_root / "evidence/l0.json").is_file())
+        self.assertEqual(len(ledger.read_text().splitlines()), 1)
+        self.assertIsNone(worker.inspect_lima_instance(worker.AGENT_VM))
 
 
 if __name__ == "__main__":

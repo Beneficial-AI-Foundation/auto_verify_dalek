@@ -413,6 +413,8 @@ class RuntimeSmokeTests(unittest.TestCase):
             "/tmp:rw,noexec,nosuid,nodev,size=64m",
             "--tmpfs",
             "/home/autofv/.cache:rw,noexec,nosuid,nodev,size=64m",
+            "--env",
+            "CARGO_NET_OFFLINE=true",
             "--mount",
             f"type=volume,src={self.volume},dst=/work,volume-nocopy",
             self.image["image_digest"],
@@ -552,6 +554,7 @@ pub fn top(value: u64) -> u64 {
 
     def test_probe_rust_extract_runs_with_full_closure_offline(self):
         contract = self.probe_contract("probe-rust-extract-offline")
+        self.assertNotIn("--auto-install", contract["argv"])
         with tempfile.TemporaryDirectory() as tmp:
             fixture = Path(tmp) / "rust-fixture"
             self.write_rust_fixture(fixture)

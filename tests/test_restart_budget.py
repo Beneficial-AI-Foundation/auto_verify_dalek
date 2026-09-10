@@ -484,6 +484,31 @@ class BudgetTests(unittest.TestCase):
         self.assertEqual(update["verifier_report"]["verdict"], "PASS")
         self.assertEqual(state["verifier_report"]["verdict"], "PASS")
 
+    def test_clean_verifier_failure_is_retained_for_inspection(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            state = _checkpoint_state(Path(tmp))
+            state["graph"] = {
+                "probe_rust_sha256": "4" * 64,
+                "probe_aeneas_sha256": "5" * 64,
+            }
+            report = {"verdict": "FAIL", "failures": ["scope_mismatch"]}
+
+            with (
+                mock.patch.object(verifier, "verify_run", return_value=report),
+                mock.patch.object(
+                    verifier,
+                    "validate_report",
+                    side_effect=verifier.VerifierError(
+                        "clean verifier did not pass"
+                    ),
+                ),
+                self.assertRaises(verifier.VerifierError) as rejected,
+            ):
+                experiment._clean_verify(state)
+
+        self.assertEqual(state["verifier_report"], report)
+        self.assertEqual(rejected.exception.report, report)
+
 
 def _exchange_state(root: Path) -> dict:
     state = _checkpoint_state(root)

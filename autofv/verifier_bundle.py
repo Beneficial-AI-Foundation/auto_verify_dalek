@@ -67,6 +67,7 @@ MEANING_FIELDS = frozenset(
 OBSERVED_FIELDS = frozenset(
     {
         "verifier_worker_id",
+        "runtime_identity",
         "snapshot_sha256",
         "accepted_commit",
         "accepted_tree_sha256",
@@ -91,6 +92,8 @@ OBSERVED_FIELDS = frozenset(
 
 class VerifierError(RuntimeError):
     """The clean verifier failed or returned an unauthoritative report."""
+
+    report: dict[str, Any] | None = None
 
 
 class VerifierInfrastructureError(VerifierError):
@@ -496,6 +499,11 @@ def verify_bundle(
     )
     _append(
         failures,
+        "runtime_identity_mismatch",
+        observed.get("runtime_identity") is not True,
+    )
+    _append(
+        failures,
         "snapshot_mismatch",
         observed.get("snapshot_sha256") != invocation["snapshot_sha256"],
     )
@@ -581,6 +589,7 @@ def verify_bundle(
     )
     checks.update(
         {
+            "runtime_identity": "runtime_identity_mismatch" not in failures,
             "exact_commit": "accepted_commit_mismatch" not in failures,
             "exact_tree": "accepted_tree_mismatch" not in failures,
             "fresh_cache": "cache_not_fresh" not in failures,

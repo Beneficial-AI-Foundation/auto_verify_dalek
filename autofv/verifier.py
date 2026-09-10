@@ -63,6 +63,37 @@ def _docker(*argv: str, input_bytes: bytes | None = None) -> subprocess.Complete
     return _shell("sudo", "docker", *argv, input_bytes=input_bytes)
 
 
+def _check_verifier_runtime(lock: dict[str, Any]) -> None:
+    runtime = lock["tools"]["runsc"]
+    try:
+        docker_version = _docker(
+            "version", "--format", "{{.Server.Version}}"
+        ).stdout.decode("utf-8", "strict").strip()
+        runsc_version = _shell("runsc", "--version").stdout.decode(
+            "utf-8", "strict"
+        ).splitlines()[0]
+        runtimes = _strict_json(
+            _docker("info", "--format", "{{json .Runtimes}}").stdout,
+            "verifier_runtime",
+        )
+    except (KeyError, IndexError, UnicodeError, VerifierError) as exc:
+        raise VerifierInfrastructureError(
+            "clean verifier runtime identity is unreadable"
+        ) from exc
+    configured = runtimes.get(runtime["runtime_name"])
+    if (
+        docker_version
+        != lock["tools"]["docker"]["observed_version"].removeprefix("Docker ")
+        or runsc_version != f"runsc version {runtime['pin']}"
+        or not isinstance(configured, dict)
+        or configured.get("path") != "/usr/bin/runsc"
+        or configured.get("runtimeArgs") != runtime["runtime_args"]
+    ):
+        raise VerifierInfrastructureError(
+            "clean verifier runtime identity mismatch"
+        )
+
+
 def _runtime_argv(
     image: str,
     volume: str,
@@ -96,6 +127,8 @@ def _runtime_argv(
         "/tmp:rw,noexec,nosuid,nodev,size=64m",
         "--tmpfs",
         "/home/autofv/.cache:rw,noexec,nosuid,nodev,size=64m",
+        "--env",
+        "CARGO_NET_OFFLINE=true",
         "--mount",
         f"type=volume,src={volume},dst=/project,volume-nocopy",
         image,
@@ -148,7 +181,11 @@ def _run_bundle(run: dict[str, Any], state: dict[str, Any]) -> bytes:
 def _seed_file(
     image: str, volume: str, path: str, raw: bytes, *, runtime: str
 ) -> None:
-    if path not in {"repository.bundle", "reference-check.lean"}:
+    if path not in {
+        "repository.bundle",
+        "reference-check.lean",
+        "repo/functions.json",
+    }:
         raise VerifierError("clean verifier seed path is not allowlisted")
     _docker(
         "run",
@@ -288,18 +325,25 @@ def _reference_program(raw: bytes) -> bytes:
             raise VerifierError("verifier_reference_leaf_invalid")
         declaration = leaf["declaration"]
         spec = leaf["spec"]
+        source = leaf["source"]
         statement = leaf["statement"]
         proof = leaf["proof"]
-        if not all(isinstance(item, str) and item for item in (declaration, spec, statement, proof)):
+        if not all(
+            isinstance(item, str) and item
+            for item in (declaration, spec, source, statement, proof)
+        ):
             raise VerifierError("verifier_reference_leaf_invalid")
+        source_path = PurePosixPath(source)
         if (
             _sha256(statement.encode()) != leaf["statement_sha256"]
             or _sha256(proof.encode()) != leaf["proof_sha256"]
             or declaration not in statement
             or re.fullmatch(r"\s*(?:True|False)\s*", statement)
+            or not _safe_path(source)
+            or source_path.suffix != ".lean"
         ):
             raise VerifierError("verifier_reference_meaning_invalid")
-        modules.add(declaration.split(".", 1)[0])
+        modules.add(".".join(source_path.with_suffix("").parts))
         declarations.extend(
             (
                 f"theorem hidden_{index} : {statement} := {proof}",
@@ -324,7 +368,7 @@ def _probe_output(
             "sh",
             "-eu",
             "-c",
-            'output="$(mktemp)"; "$@" -o "$output"; cat "$output"',
+            'output="$(mktemp)"; "$@" -o "$output" >&2; cat "$output"',
             "autofv-probe",
             executable,
             *arguments,
@@ -465,7 +509,13 @@ def _clean_worker_checks(
             "/project/repo",
             "--with-locations",
             "--with-public-api",
-            "--auto-install",
+            runtime=runtime,
+        )
+        _seed_file(
+            image,
+            volume,
+            "repo/functions.json",
+            worker.probe_bridge(final_rust, run["manifest"]),
             runtime=runtime,
         )
         final_aeneas = _probe_output(
@@ -514,6 +564,7 @@ def _clean_worker_checks(
         }
         return {
             "verifier_worker_id": invocation["verifier_worker_id"],
+            "runtime_identity": True,
             "snapshot_sha256": _snapshot_hash(base_archive),
             "accepted_commit": commit,
             "accepted_tree_sha256": _sha256(archive),
@@ -561,6 +612,8 @@ def verify_run(
     verifier_worker_id = f"lima:{VERIFIER_VM}:{machine_id}"
     if not machine_id or verifier_worker_id == run.get("agent_worker_id"):
         raise VerifierInfrastructureError("clean verifier worker is not distinct")
+    lock = run["lock"]
+    _check_verifier_runtime(lock)
     state = verification_state or run.get("verification_state")
     if not isinstance(state, dict):
         raise VerifierInfrastructureError("clean verifier state is missing")
@@ -569,7 +622,6 @@ def verify_run(
         reference_bytes = REFERENCE_PATH.read_bytes()
     except OSError as exc:
         raise VerifierInfrastructureError("clean verifier reference is missing") from exc
-    lock = run["lock"]
     invocation = {
         "schema": "autofv-verifier-invocation/v1",
         "run_id": run["run_id"],

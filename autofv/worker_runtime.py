@@ -582,6 +582,8 @@ def _runtime_argv(
         "/tmp:rw,noexec,nosuid,nodev,size=64m,mode=1777",
         "--tmpfs",
         "/home/autofv/.cache:rw,noexec,nosuid,nodev,size=64m,mode=1777",
+        "--env",
+        "CARGO_NET_OFFLINE=true",
         "--mount",
         f"type=volume,src={volume},dst=/volume,volume-nocopy",
         lock["image"]["image_digest"],
@@ -1041,11 +1043,16 @@ def inspect_scored_container(run: dict[str, Any]) -> dict[str, Any]:
     finally:
         if started:
             _docker("container", "rm", "--force", name, check=False)
+
+
 def _atomic_write(path: Path, raw: bytes) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
-    temporary = path.with_name(f".{path.name}.tmp")
-    with temporary.open("wb") as output:
-        output.write(raw)
-        output.flush()
-        os.fsync(output.fileno())
-    os.replace(temporary, path)
+    temporary = path.with_name(f".{path.name}.{secrets.token_hex(8)}.tmp")
+    try:
+        with temporary.open("xb") as output:
+            output.write(raw)
+            output.flush()
+            os.fsync(output.fileno())
+        os.replace(temporary, path)
+    finally:
+        temporary.unlink(missing_ok=True)

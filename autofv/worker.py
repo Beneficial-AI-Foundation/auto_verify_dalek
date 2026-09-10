@@ -219,7 +219,8 @@ def prepare_run(
     return run
 
 
-def _bridge(rust_raw: bytes, manifest: dict[str, Any]) -> bytes:
+def probe_bridge(rust_raw: bytes, manifest: dict[str, Any]) -> bytes:
+    """Map fresh Rust atoms to the Lean names consumed by probe-aeneas."""
     rust = json.loads(rust_raw)
     namespace = manifest["targets"][0]["spec"].rsplit(".", 1)[0]
     records = []
@@ -360,7 +361,6 @@ def run_probes(run: dict[str, Any]) -> tuple[bytes, bytes]:
             "/volume/work/project",
             "--with-locations",
             "--with-public-api",
-            "--auto-install",
             "-o",
             rust_output,
         )
@@ -375,7 +375,7 @@ def run_probes(run: dict[str, Any]) -> tuple[bytes, bytes]:
             )
         ).stdout
     )
-    bridge = _bridge(rust_raw, manifest)
+    bridge = probe_bridge(rust_raw, manifest)
     _runtime._docker(
         *_runtime._runtime_argv(
             lock,

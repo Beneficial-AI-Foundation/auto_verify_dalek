@@ -8,6 +8,7 @@ from pathlib import Path
 from typing import Any
 
 from .contracts import canonical_json_bytes
+from .worker_runtime import NETWORK_ENFORCER
 
 
 REQUIRED_L0_ITEMS = (
@@ -41,9 +42,6 @@ ISOLATION_ASSUMPTIONS = (
     "the clean verifier ran on a distinct worker without agent caches",
 )
 SHA256 = re.compile(r"[0-9a-f]{64}")
-NETWORK_ENFORCER = (
-    "upstream-default-deny+worker-firewall+docker-internal-network"
-)
 
 FILE_LOCATIONS = {
     "input": "evidence/l0/input.json",
@@ -177,8 +175,26 @@ def source_values(run: dict[str, Any], state: dict[str, Any]) -> dict[str, Any]:
         mount_value = None
     network_value = run.get("egress_receipt")
     policy = network_value.get("policy") if isinstance(network_value, dict) else None
+    upstream = (
+        network_value.get("upstream_policy")
+        if isinstance(network_value, dict)
+        else None
+    )
+    upstream_body = (
+        {key: value for key, value in upstream.items() if key != "policy_sha256"}
+        if isinstance(upstream, dict)
+        else None
+    )
     if (
         not isinstance(policy, dict)
+        or not isinstance(upstream_body, dict)
+        or upstream.get("schema") != "autofv-upstream-egress-policy/v1"
+        or upstream.get("run_id") != run.get("run_id")
+        or upstream.get("enforcer") != "macos-seatbelt-network-outbound"
+        or upstream.get("policy_sha256")
+        != _sha(canonical_json_bytes(upstream_body))
+        or policy.get("upstream_policy_sha256")
+        != upstream.get("policy_sha256")
         or policy.get("enforcer") != NETWORK_ENFORCER
         or policy.get("policy_sha256") != run.get("egress_policy_sha256")
         or policy.get("upstream_policy_sha256")

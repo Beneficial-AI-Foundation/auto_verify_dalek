@@ -105,7 +105,15 @@ def _complete_attempt(root: Path, *, attempt_id: str = "attempt-complete"):
         },
         "policy_sha256",
     )
-    upstream_policy_sha256 = "8" * 64
+    upstream_policy = _receipt(
+        {
+            "schema": "autofv-upstream-egress-policy/v1",
+            "run_id": run_id,
+            "enforcer": "macos-seatbelt-network-outbound",
+        },
+        "policy_sha256",
+    )
+    upstream_policy_sha256 = upstream_policy["policy_sha256"]
     egress_policy = _receipt(
         {
             "schema": "autofv-egress-policy/v1",
@@ -119,8 +127,10 @@ def _complete_attempt(root: Path, *, attempt_id: str = "attempt-complete"):
             "schema": "autofv-egress-evidence/v1",
             "run_id": run_id,
             "policy": egress_policy,
+            "upstream_policy": upstream_policy,
             "fixed_proxy_sha256": "7" * 64,
             "proxy_policy_sha256": proxy_policy["policy_sha256"],
+            "upstream_denied": [],
             "worker_denied": [],
             "container_denied": [],
             "fixed_proxy": {"status": "ok"},

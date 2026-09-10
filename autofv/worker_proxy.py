@@ -7,13 +7,14 @@ import json
 import os
 import re
 import secrets
-import urllib.parse
 from pathlib import Path
 from typing import Any
 
 from .worker_runtime import (
     AGENT_UID,
     FORWARD_CHAIN,
+    NETWORK_ENFORCER,
+    OUTPUT_CHAIN,
     WorkerError,
     _atomic_write,
     _canonical_bytes,
@@ -23,6 +24,8 @@ from .worker_runtime import (
     _json_output,
     _labels,
     _lima,
+    _install_worker_firewall,
+    _proxy_endpoint,
     _resource_matches,
     _runtime_argv,
     _sha256,
@@ -186,28 +189,34 @@ print(
 )
 raise SystemExit(0 if blocked else 23)
 """
+
+_DENIED_EGRESS = (
+    ("external_dns", "dns", "example.com", 443),
+    ("literal_ipv4", "ipv4", "1.1.1.1", 443),
+    ("literal_ipv6", "ipv6", "2606:4700:4700::1111", 443),
+    ("link_local_metadata", "ipv4", "169.254.169.254", 80),
+)
+
+
+def _egress_fixture(run: dict[str, Any]) -> dict[str, Any]:
+    route = run["lock"]["fixed_proxy"]
+    return {
+        "schema": "autofv-linux-isolation-fixture/v1",
+        "denied": [
+            {"id": case_id, "kind": kind, "host": host, "port": port}
+            for case_id, kind, host, port in _DENIED_EGRESS
+        ],
+        "fixed_proxy": {"method": route["method"], "path": route["path"]},
+    }
+
+
+def verify_egress(run: dict[str, Any]) -> dict[str, Any]:
+    """Run the fixed Phase 1 egress contract for a scored experiment."""
+    return run_egress_matrix(run, _egress_fixture(run))
+
+
 def _proxy_resources(run: dict[str, Any]) -> tuple[str, str]:
     return f"{run['volume']}-network", f"{run['volume']}-relay"
-
-
-def _proxy_endpoint(base: str) -> tuple[str, int]:
-    parsed = urllib.parse.urlsplit(base)
-    try:
-        address = str(ipaddress.IPv4Address(parsed.hostname or ""))
-        port = parsed.port or (443 if parsed.scheme == "https" else 80)
-    except (ValueError, ipaddress.AddressValueError) as exc:
-        raise WorkerError("trusted proxy must use one literal IPv4 endpoint") from exc
-    if (
-        parsed.scheme not in {"http", "https"}
-        or parsed.username
-        or parsed.password
-        or parsed.query
-        or parsed.fragment
-        or parsed.path not in {"", "/"}
-        or not 1 <= port <= 65535
-    ):
-        raise WorkerError("trusted proxy base address is invalid")
-    return address, port
 
 
 def _validate_proxy_request(run: dict[str, Any], request: Any) -> str:
@@ -683,9 +692,9 @@ def run_proxy_policy_matrix(
 
 
 def run_egress_matrix(
-    run: dict[str, Any], fixture: dict[str, Any], request: dict[str, Any]
+    run: dict[str, Any], fixture: dict[str, Any]
 ) -> dict[str, Any]:
-    """Exercise denied destinations and the fixed relay on one internal network."""
+    """Exercise the outer policy, worker firewall, and fixed relay."""
     if fixture.get("schema") != "autofv-linux-isolation-fixture/v1":
         raise WorkerError("egress fixture schema mismatch")
     denied = fixture.get("denied")
@@ -701,7 +710,20 @@ def run_egress_matrix(
         "path": run["lock"]["fixed_proxy"]["path"],
     }:
         raise WorkerError("egress fixed route mismatch")
-    network, _ = _ensure_proxy_relay(run)
+    upstream = run.get("upstream_policy_receipt")
+    if not isinstance(upstream, dict):
+        raise WorkerError("upstream egress policy evidence is missing")
+    upstream_body = {
+        key: value for key, value in upstream.items() if key != "policy_sha256"
+    }
+    if (
+        upstream.get("schema") != "autofv-upstream-egress-policy/v1"
+        or upstream.get("run_id") != run["run_id"]
+        or upstream.get("enforcer") != "macos-seatbelt-network-outbound"
+        or upstream.get("policy_sha256") != _sha256(_canonical_bytes(upstream_body))
+        or upstream.get("policy_sha256") != run.get("upstream_policy_sha256")
+    ):
+        raise WorkerError("upstream egress policy evidence is invalid")
     probe = (
         "import json,socket,sys;"
         "kind,host,port=sys.argv[1],sys.argv[2],int(sys.argv[3]);"
@@ -718,8 +740,8 @@ def run_egress_matrix(
         "print(json.dumps({'blocked':blocked,'reason':reason},sort_keys=True,separators=(',',':')))\n"
         "raise SystemExit(0 if blocked else 23)"
     )
-    layers = {}
-    for layer in ("worker_denied", "container_denied"):
+
+    def observe(layer: str, *, container: bool = False) -> list[dict[str, Any]]:
         observed = []
         for case in denied:
             if set(case) != {"id", "kind", "host", "port"}:
@@ -733,28 +755,66 @@ def run_egress_matrix(
                 str(case["port"]),
             )
             completed = (
-                _lima(*argv, check=False)
-                if layer == "worker_denied"
-                else _docker(
+                _docker(
                     *_runtime_argv(
                         run["lock"], run["volume"], *argv, network=network
                     ),
                     check=False,
                 )
+                if container
+                else _lima(*argv, check=False)
             )
             value = _json_output(completed, f"egress case {case['id']}")
             if completed.returncode != 0 or value.get("blocked") is not True:
                 raise WorkerError(f"external policy allowed {case['id']} at {layer}")
             observed.append({"id": case["id"], **value})
-        layers[layer] = observed
+        return observed
 
-    response, receipt = proxy_round(run, request)
+    _firewall_snapshot()
+    try:
+        for tool in ("iptables", "ip6tables"):
+            if _firewall(tool, "-C", "OUTPUT", "-j", OUTPUT_CHAIN, check=False).returncode:
+                raise WorkerError("worker firewall bypass precondition failed")
+            _firewall(tool, "-D", "OUTPUT", "-j", OUTPUT_CHAIN)
+        upstream_denied = observe("upstream_denied")
+    finally:
+        _install_worker_firewall()
+
+    network, address = _ensure_proxy_relay(run)
+    layers = {
+        "upstream_denied": upstream_denied,
+        "worker_denied": observe("worker_denied"),
+        "container_denied": observe("container_denied", container=True),
+    }
+
+    route = run["lock"]["fixed_proxy"]
+    fixed = _docker(
+        *_runtime_argv(
+            run["lock"],
+            run["volume"],
+            "python",
+            "-c",
+            _PROXY_POLICY_CLIENT_PROGRAM,
+            address,
+            str(RELAY_PORT),
+            route["method"],
+            route["path"],
+            "",
+            network=network,
+        ),
+        input_bytes=b"{}",
+        check=False,
+    )
+    fixed_value = _json_output(fixed, "fixed proxy reachability")
+    if fixed.returncode or fixed_value != {"blocked": True, "status": 400}:
+        raise WorkerError("fixed proxy route probe failed")
     network_values = _json_output(
         _docker("network", "inspect", network), "proxy network"
     )
     policy = {
         "schema": "autofv-egress-policy/v1",
-        "enforcer": "worker-firewall-and-docker-internal-network",
+        "enforcer": NETWORK_ENFORCER,
+        "upstream_policy_sha256": upstream["policy_sha256"],
         "network_id": network_values[0].get("Id"),
         "internal": network_values[0].get("Internal"),
         "firewall": _configure_proxy_firewall(
@@ -768,11 +828,13 @@ def run_egress_matrix(
         "schema": "autofv-egress-evidence/v1",
         "run_id": run["run_id"],
         "policy": {**policy, "policy_sha256": _sha256(_canonical_bytes(policy))},
+        "upstream_policy": upstream,
+        "fixed_proxy_sha256": run["fixed_proxy_sha256"],
+        "proxy_policy_sha256": run["proxy_policy_sha256"],
         **layers,
         "fixed_proxy": {
-            "status": "ok",
-            "request_id": response.get("request_id"),
-            "receipt_sha256": receipt.get("receipt_sha256"),
+            "status": "reachable",
+            "probe_status": fixed_value["status"],
         },
     }
     evidence = {**body, "evidence_sha256": _sha256(_canonical_bytes(body))}
@@ -780,5 +842,6 @@ def run_egress_matrix(
     path.mkdir(parents=True, exist_ok=True)
     _atomic_write(path / "egress.json", _canonical_bytes(evidence) + b"\n")
     run["egress_policy_sha256"] = evidence["policy"]["policy_sha256"]
+    run["egress_receipt"] = evidence
     run["events"].append("egress_matrix_passed")
     return evidence

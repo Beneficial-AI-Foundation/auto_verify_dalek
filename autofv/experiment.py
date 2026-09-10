@@ -469,10 +469,15 @@ def run_experiment(
         return result
     try:
         _charge_wall(state)
-        if resume_from is None:
-            _checkpoint_if_enabled(state, "run:prepared")
         if preparation_failure is not None:
             raise preparation_failure
+        if (
+            run.get("execution_tier") == "sealed_runsc"
+            and not run.get("egress_receipt")
+        ):
+            worker.verify_egress(run)
+        if resume_from is None:
+            _checkpoint_if_enabled(state, "run:prepared")
         for update in _EXPERIMENT_GRAPH.stream(state, stream_mode="updates"):
             for values in update.values():
                 state.update(values)

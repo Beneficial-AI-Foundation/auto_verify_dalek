@@ -36,6 +36,24 @@ MODEL_FIXTURE = json.loads(MODEL_FIXTURE_PATH.read_text(encoding="utf-8"))
 FIRST_REQUEST = MODEL_FIXTURE["entries"][0]["request"]
 
 
+class UpstreamPolicyTests(unittest.TestCase):
+    def test_seatbelt_profile_allows_only_the_worker_and_proxy_ports(self) -> None:
+        profile = worker_runtime._seatbelt_profile(
+            Path("/Users/ada/.lima/autofv-agent-run"),
+            ssh_port=61593,
+            proxy_port=61234,
+        )
+
+        self.assertIn("(deny network-outbound)", profile)
+        self.assertIn('(remote ip "localhost:61593")', profile)
+        self.assertIn('(remote ip "localhost:61234")', profile)
+        self.assertIn(
+            '(remote unix-socket (subpath "/Users/ada/.lima/autofv-agent-run"))',
+            profile,
+        )
+        self.assertNotIn("localhost:*", profile)
+
+
 class LinuxIsolationTests(unittest.TestCase):
     def setUp(self) -> None:
         self.fixture = json.loads(EGRESS_FIXTURE.read_text(encoding="utf-8"))
@@ -47,6 +65,10 @@ class LinuxIsolationTests(unittest.TestCase):
 
     def test_fixture_covers_the_four_denied_classes_and_locked_route(self) -> None:
         self.assertEqual(self.fixture["schema"], "autofv-linux-isolation-fixture/v1")
+        self.assertEqual(
+            self.fixture["denied"],
+            worker_proxy._egress_fixture({"lock": LOCK})["denied"],
+        )
         self.assertEqual(
             [case["id"] for case in self.fixture["denied"]],
             ["external_dns", "literal_ipv4", "literal_ipv6", "link_local_metadata"],
@@ -69,6 +91,7 @@ class LinuxIsolationTests(unittest.TestCase):
                 {"containers": [], "volumes": [], "networks": []},
             )
             self.assertEqual(inventory["run_id"], run["run_id"])
+            self.assertEqual(inventory["forbidden_guest_paths"], [])
             self.assertEqual(inventory["image_digest"], LOCK["image"]["image_digest"])
             self.assertEqual(inventory["runtime"], LOCK["tools"]["runsc"]["runtime_name"])
             self.assertEqual(inventory["runtime_args"], LOCK["tools"]["runsc"]["runtime_args"])
@@ -105,7 +128,12 @@ class LinuxIsolationTests(unittest.TestCase):
         route = LOCK["fixed_proxy"]
         with _trusted_proxy(MODEL_FIXTURE, route) as (base_url, _, audit):
             port = urllib.parse.urlsplit(base_url).port
-            run = self.prepare()
+            with mock.patch.dict(
+                os.environ,
+                {"AUTOFV_PROXY_BASE": base_url, "AUTOFV_RUN_TOKEN": RUN_TOKEN},
+                clear=False,
+            ):
+                run = self.prepare()
             try:
                 proxy_base = f"http://{worker.lima_host_address()}:{port}"
                 with mock.patch.dict(
@@ -114,7 +142,7 @@ class LinuxIsolationTests(unittest.TestCase):
                     clear=False,
                 ):
                     runtime = worker.inspect_scored_container(run)
-                    matrix = worker.run_egress_matrix(run, self.fixture, FIRST_REQUEST)
+                    matrix = worker.run_egress_matrix(run, self.fixture)
             finally:
                 worker.dispose_run(run, interrupted=True)
 
@@ -132,17 +160,21 @@ class LinuxIsolationTests(unittest.TestCase):
         self.assertEqual(runtime["nano_cpus"], 2_000_000_000)
         self.assertEqual(
             matrix["policy"]["enforcer"],
-            "worker-firewall-and-docker-internal-network",
+            "upstream-default-deny+worker-firewall+docker-internal-network",
         )
-        for layer in ("worker_denied", "container_denied"):
+        self.assertEqual(
+            matrix["policy"]["upstream_policy_sha256"],
+            run["upstream_policy_sha256"],
+        )
+        for layer in ("upstream_denied", "worker_denied", "container_denied"):
             self.assertEqual(
                 [case["id"] for case in matrix[layer]],
                 [case["id"] for case in self.fixture["denied"]],
             )
             self.assertTrue(all(case["blocked"] for case in matrix[layer]))
-        self.assertEqual(matrix["fixed_proxy"]["status"], "ok")
-        self.assertEqual(matrix["fixed_proxy"]["request_id"], FIRST_REQUEST["request_id"])
-        self.assertEqual(audit["stripped_run_credentials"], 1)
+        self.assertEqual(matrix["fixed_proxy"]["status"], "reachable")
+        self.assertEqual(matrix["fixed_proxy"]["probe_status"], 400)
+        self.assertEqual(audit["stripped_run_credentials"], 0)
         self.assertIsNone(worker.inspect_lima_instance(worker.AGENT_VM))
 
     def test_claim_collision_and_export_before_disposal(self) -> None:
@@ -545,7 +577,11 @@ class ProxyAccountingTests(unittest.TestCase):
             port = urllib.parse.urlsplit(base_url).port
             with mock.patch.dict(
                 os.environ,
-                {"AUTOFV_RUN_ID": FIRST_REQUEST["run_id"]},
+                {
+                    "AUTOFV_PROXY_BASE": base_url,
+                    "AUTOFV_RUN_ID": FIRST_REQUEST["run_id"],
+                    "AUTOFV_RUN_TOKEN": RUN_TOKEN,
+                },
                 clear=False,
             ):
                 run = worker.prepare_run(TARGET, self.manifest, LOCK)

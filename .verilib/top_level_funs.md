@@ -1,6 +1,6 @@
 # graph-top：Funs.lean 中不被其他抽取函数依赖的函数
 
-来源: `functions.json`（557 行；剔除 196 个 trait 实例记录、19 个 `_loop` 体后 342 个候选）；共 **134** 条。
+来源: `functions.json`（557 行；剔除 200 个 trait 实例记录、19 个 `_loop` 体后 338 个候选）；共 **134** 条。
 判定: 候选函数不被任何其他候选函数依赖。实例记录透传（含 supertrait 链），`P_loop` 的依赖记为 `P` 的依赖。
 `external_caller_suspect` 非空 = 可能有调用者藏在 `FunsExternal.lean` 的手写模型里，图上看不到，需人工确认。`rust_grep_hits` = crate 非测试源码中 `name(` 的出现次数（定义行除外），仅作交叉核对提示；按方法名匹配，同名方法（如 `CompletedPoint::as_extended` 与 `ProjectivePoint::as_extended`）会互相污染，高计数不等于有调用者。
 
@@ -71,7 +71,7 @@
 | `curve25519_dalek.edwards.CompressedEdwardsY.Insts.CoreCloneClone.clone` |  |  | curve25519-dalek/src/edwards.rs:L171-L171 |
 | `curve25519_dalek.edwards.CompressedEdwardsY.Insts.CoreCmpEq.assert_receiver_is_total_eq` |  |  | curve25519-dalek/src/edwards.rs:L171-L171 |
 | `curve25519_dalek.edwards.CompressedEdwardsY.Insts.CoreCmpPartialEqCompressedEdwardsY.eq` |  | called by core's default PartialEq::ne, an axiom in FunsExternal.lean | curve25519-dalek/src/edwards.rs:L171-L171 |
-| `curve25519_dalek.edwards.CompressedEdwardsY.Insts.CoreConvertTryFromShared0SliceU8TryFromSliceError` |  |  | curve25519-dalek/src/edwards.rs:L251-L257 |
+| `curve25519_dalek.edwards.CompressedEdwardsY.Insts.CoreConvertTryFromShared0SliceU8TryFromSliceError.try_from` |  |  | curve25519-dalek/src/edwards.rs:L254-L256 |
 | `curve25519_dalek.edwards.CompressedEdwardsY.Insts.CoreDefaultDefault.default` |  |  | curve25519-dalek/src/edwards.rs:L402-L404 |
 | `curve25519_dalek.edwards.CompressedEdwardsY.Insts.SubtleConstantTimeEq.ct_eq` | ✓ | called by subtle's default ConstantTimeEq::ct_ne (external) | curve25519-dalek/src/edwards.rs:L175-L177 |
 | `curve25519_dalek.edwards.EdwardsPoint.Insts.CoreCloneClone.clone` |  |  | curve25519-dalek/src/edwards.rs:L379-L379 |
@@ -95,7 +95,7 @@
 | `curve25519_dalek.ristretto.CompressedRistretto.Insts.CoreCloneClone.clone` |  |  | curve25519-dalek/src/ristretto.rs:L219-L219 |
 | `curve25519_dalek.ristretto.CompressedRistretto.Insts.CoreCmpEq.assert_receiver_is_total_eq` |  |  | curve25519-dalek/src/ristretto.rs:L219-L219 |
 | `curve25519_dalek.ristretto.CompressedRistretto.Insts.CoreCmpPartialEqCompressedRistretto.eq` |  | called by core's default PartialEq::ne, an axiom in FunsExternal.lean | curve25519-dalek/src/ristretto.rs:L219-L219 |
-| `curve25519_dalek.ristretto.CompressedRistretto.Insts.CoreConvertTryFromShared0SliceU8TryFromSliceError` |  |  | curve25519-dalek/src/ristretto.rs:L357-L363 |
+| `curve25519_dalek.ristretto.CompressedRistretto.Insts.CoreConvertTryFromShared0SliceU8TryFromSliceError.try_from` |  |  | curve25519-dalek/src/ristretto.rs:L360-L362 |
 | `curve25519_dalek.ristretto.CompressedRistretto.Insts.CoreDefaultDefault.default` |  |  | curve25519-dalek/src/ristretto.rs:L352-L354 |
 | `curve25519_dalek.ristretto.CompressedRistretto.Insts.SubtleConstantTimeEq.ct_eq` | ✓ | called by subtle's default ConstantTimeEq::ct_ne (external) | curve25519-dalek/src/ristretto.rs:L223-L225 |
 | `curve25519_dalek.ristretto.RistrettoPoint.Insts.CoreCloneClone.clone` |  |  | curve25519-dalek/src/ristretto.rs:L493-L493 |

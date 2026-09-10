@@ -2,9 +2,9 @@
  "method": "functions.json row (Aeneas def) with no dependant among the other rows; trait-instance records are transparent (transitively), *_loop bodies fold into their parent, records and loop bodies are not candidates",
  "source": "functions.json",
  "rows_total": 557,
- "records_excluded": 196,
+ "records_excluded": 200,
  "loop_bodies_excluded": 19,
- "candidates": 342,
+ "candidates": 338,
  "top_level_count": 134,
  "by_category": {
   "api": 29,
@@ -1279,7 +1279,7 @@
    "rust_grep_hits": null
   },
   {
-   "lean_name": "curve25519_dalek.edwards.CompressedEdwardsY.Insts.CoreConvertTryFromShared0SliceU8TryFromSliceError",
+   "lean_name": "curve25519_dalek.edwards.CompressedEdwardsY.Insts.CoreConvertTryFromShared0SliceU8TryFromSliceError.try_from",
    "rust_name": "curve25519_dalek::edwards::{core::convert::TryFrom<&0 (",
    "category": "trait_impl",
    "specified": false,
@@ -1288,7 +1288,7 @@
    "is_ignored": false,
    "is_extraction_artifact": false,
    "source": "curve25519-dalek/src/edwards.rs",
-   "lines": "L251-L257",
+   "lines": "L254-L256",
    "external_caller_suspect": null,
    "rust_grep_hits": null
   },
@@ -1615,7 +1615,7 @@
    "rust_grep_hits": null
   },
   {
-   "lean_name": "curve25519_dalek.ristretto.CompressedRistretto.Insts.CoreConvertTryFromShared0SliceU8TryFromSliceError",
+   "lean_name": "curve25519_dalek.ristretto.CompressedRistretto.Insts.CoreConvertTryFromShared0SliceU8TryFromSliceError.try_from",
    "rust_name": "curve25519_dalek::ristretto::{core::convert::TryFrom<&0 (",
    "category": "trait_impl",
    "specified": false,
@@ -1624,7 +1624,7 @@
    "is_ignored": false,
    "is_extraction_artifact": false,
    "source": "curve25519-dalek/src/ristretto.rs",
-   "lines": "L357-L363",
+   "lines": "L360-L362",
    "external_caller_suspect": null,
    "rust_grep_hits": null
   },

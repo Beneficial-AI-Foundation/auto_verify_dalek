@@ -10,8 +10,10 @@ Judgement (DEC-04 follow-up; companion to api_top.py):
     (operator calls are already resolved to the impl method by Aeneas).
 
 Node set: rows of functions.json (one per Aeneas def), minus
-  * trait-instance records (rust_name ends in `}`; Lean value of the trait
-    structure, no logic of its own);
+  * trait-instance records (rust_name ends in `}`, or -- when the probe
+    truncated rust_name at a `(` -- the row is the parent of a
+    `<record>.<method>` row; Lean value of the trait structure, no logic of
+    its own);
   * `*_loop` bodies (Aeneas-split loop of the parent function).
 
 Edge rule (functions.json `dependencies`, caller -> callee):
@@ -62,8 +64,19 @@ EXTERNAL_CALLER_SUSPECTS = {
 TRAIT_IMPL_RE = re.compile(r"\{.+ for .+\}")
 
 
+_LEAN_NAMES = set()      # filled by load_functions(); used by is_record
+
+
 def is_record(entry):
-    return entry["rust_name"].endswith("}")
+    rn = entry["rust_name"]
+    if rn.count("{") == rn.count("}"):          # intact rust_name
+        return rn.endswith("}")
+    # rust_name truncated by the probe at the first '(' (e.g.
+    # `TryFrom<&0 ([u8]), ...>`, `FnOnce<([u8; 32],)>`): the record and its
+    # methods then share one rust_name, so fall back to the Lean-name shape --
+    # a record is the parent of some `<record>.<method>` row.
+    prefix = entry["lean_name"] + "."
+    return any(n.startswith(prefix) for n in _LEAN_NAMES)
 
 
 def is_loop(entry):
@@ -81,7 +94,10 @@ def is_trait_method(entry):
 
 def load_functions():
     with open(os.path.join(REPO, "functions.json")) as fh:
-        return json.load(fh)["functions"]
+        rows = json.load(fh)["functions"]
+    _LEAN_NAMES.clear()
+    _LEAN_NAMES.update(r["lean_name"] for r in rows)
+    return rows
 
 
 def build_callers(rows):

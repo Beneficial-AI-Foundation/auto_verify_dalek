@@ -24,20 +24,32 @@ Edge rule (functions.json `dependencies`, caller -> callee):
   * an edge from `P_loop` counts as an edge from `P`.
   * self edges are ignored.
 
-Known false tops (callee reached only from a hand-written model in
-FunsExternal.lean, which cannot import Funs.lean): flagged, not removed --
-see EXTERNAL_CALLER_SUSPECTS.
+Hand-written Lean (FunsExternal.lean, Aux.lean) cannot import Funs.lean,
+so a call from there would be invisible to functions.json.  `external_lean_refs`
+lists the hand-written files that mention a top's Lean name or its instance
+record; verified 2026-09-11 that the list is empty for every top (earlier
+`external_caller_suspect` flags on eq / conditional_select / ct_eq were false
+alarms: the default-method models take the instance record as an argument,
+and no extracted function passes those records).
+
+Categories (Rust side, no API judgement):
+  trait_impl / operator_forwarder  -- trait methods (macros.rs shells split out)
+  inherent_pub / inherent_pub_crate / inherent_private
+      -- inherent fns by the visibility keyword on the `fn` line.  `pub_module`
+      says whether the owning module is exported from lib.rs; `inherent_pub`
+      with pub_module=false is a backend fn, crate-internal in effect.
 
 Cross-check hint: `rust_grep_hits` counts `name(` occurrences in the crate's
 non-test source outside the definition line.  Meaningless for operator
 methods (`add`, `mul`, ...) and other trait methods, so it is only reported
-for the `api` and `internal` categories.  It matches by bare method name, so
+for the inherent categories.  It matches by bare method name, so
 same-named methods on other types inflate it (verified 2026-09-10: the three
 `internal` tops -- deprecated `FieldElement51::as_bytes`,
 `ProjectivePoint::as_extended` (all hits are `CompletedPoint::as_extended`),
 `Scalar52::square` (test-only) -- are genuine tops).
 
-Inputs (pinned):   functions.json, curve25519-dalek/src/ (repo copy)
+Inputs (pinned):   functions.json, curve25519-dalek/src/ (repo copy),
+                   Curve25519Dalek/FunsExternal.lean, Curve25519Dalek/Aux.lean
 Outputs:           .verilib/top_level_funs.json, .verilib/top_level_funs.md
 """
 
@@ -53,13 +65,10 @@ from api_top import owning_module, self_type, load_pub_types  # noqa: E402
 
 RUST_SRC = os.path.join(REPO, "curve25519-dalek", "src")
 
-# method name -> why it may have a caller that lives in FunsExternal.lean
-EXTERNAL_CALLER_SUSPECTS = {
-    "conditional_select": "called by subtle's default conditional_assign / "
-                          "conditional_swap, modelled in FunsExternal.lean",
-    "eq": "called by core's default PartialEq::ne, an axiom in FunsExternal.lean",
-    "ct_eq": "called by subtle's default ConstantTimeEq::ct_ne (external)",
-}
+# hand-written Lean that may call into Funs.lean without functions.json seeing it
+HAND_WRITTEN_LEAN = ["Curve25519Dalek/FunsExternal.lean", "Curve25519Dalek/Aux.lean"]
+LEAN_NS = "curve25519_dalek."
+FN_LINE_RE = re.compile(r"^\s*(pub(?:\([^)]*\))?)?\s*(?:const\s+)?(?:unsafe\s+)?fn\s+(\w+)")
 
 TRAIT_IMPL_RE = re.compile(r"\{.+ for .+\}")
 
@@ -129,16 +138,67 @@ def build_callers(rows):
     return callers
 
 
-def categorize(entry, pub_types):
+def rust_visibility(entry):
+    """Visibility keyword on the `fn` line of the entry's source range."""
+    a, b = (int(x[1:]) for x in entry["lines"].split("-"))
+    with open(os.path.join(REPO, entry["source"])) as fh:
+        # functions.json ranges are sometimes off by one (they start at the
+        # body); look a few lines above the range for the `fn` line.
+        lines = fh.read().split("\n")[max(a - 4, 0):b]
+    want = method_name(entry)
+    for line in lines:
+        m = FN_LINE_RE.match(line)
+        if m and m.group(2) == want:
+            kw = m.group(1) or ""
+            if kw == "pub":
+                return "pub"
+            if kw.startswith("pub("):
+                return "pub_crate"        # pub(crate) / pub(super)
+            return "private"
+    raise ValueError(f"no `fn {want}` in {entry['source']}:{entry['lines']}")
+
+
+def categorize(entry):
     if is_trait_method(entry):
         if entry["source"].endswith("macros.rs"):
             return "operator_forwarder"
         return "trait_impl"
+    return "inherent_" + rust_visibility(entry)
+
+
+def is_pub_module(entry, pub_types):
     module = owning_module(entry["rust_name"])
     st = self_type(entry["rust_name"])
-    if module and (st is None or st in pub_types):
-        return "api"
-    return "internal"
+    return bool(module and (st is None or st in pub_types))
+
+
+_LEAN_TEXT = {}
+
+
+def hand_written_lean():
+    if not _LEAN_TEXT:
+        for rel in HAND_WRITTEN_LEAN:
+            with open(os.path.join(REPO, rel)) as fh:
+                text = fh.read()
+            text = re.sub(r"/-.*?-/", "", text, flags=re.S)
+            text = re.sub(r"--[^\n]*", "", text)
+            _LEAN_TEXT[rel] = text
+    return _LEAN_TEXT
+
+
+def external_lean_refs(lean_name):
+    """Hand-written Lean files mentioning `lean_name` or its instance record.
+
+    Files sit inside `namespace curve25519_dalek`, so both the qualified and
+    the namespace-relative spelling are checked."""
+    short = lean_name[len(LEAN_NS):] if lean_name.startswith(LEAN_NS) else lean_name
+    targets = {short}
+    if ".Insts." in short:
+        targets.add(short.rsplit(".", 1)[0])       # the trait-instance record
+    pats = [re.compile(r"(?<![\w.'])(?:" + re.escape(LEAN_NS) + r")?"
+                       + re.escape(t) + r"(?![\w.'])") for t in targets]
+    return sorted(rel for rel, text in hand_written_lean().items()
+                  if any(p.search(text) for p in pats))
 
 
 _SRC_CACHE = {}
@@ -187,12 +247,14 @@ def main():
     for r in candidates:
         if callers[r["lean_name"]]:
             continue
-        cat = categorize(r, pub_types)
+        cat = categorize(r)
         name = method_name(r)
+        inherent = cat.startswith("inherent_")
         row = {
             "lean_name": r["lean_name"],
             "rust_name": r["rust_name"],
             "category": cat,
+            "pub_module": is_pub_module(r, pub_types) if inherent else None,
             "specified": r["specified"],
             "verified": r["verified"],
             "is_hidden": r["is_hidden"],
@@ -200,10 +262,8 @@ def main():
             "is_extraction_artifact": r["is_extraction_artifact"],
             "source": r["source"],
             "lines": r["lines"],
-            "external_caller_suspect": EXTERNAL_CALLER_SUSPECTS.get(name)
-            if cat == "trait_impl" else None,
-            "rust_grep_hits": rust_grep_hits(name)
-            if cat in ("api", "internal") else None,
+            "external_lean_refs": external_lean_refs(r["lean_name"]),
+            "rust_grep_hits": rust_grep_hits(name) if inherent else None,
         }
         top.append(row)
     top.sort(key=lambda x: (x["category"], x["lean_name"]))
@@ -221,7 +281,8 @@ def main():
         "candidates": len(candidates),
         "top_level_count": len(top),
         "by_category": dict(counts),
-        "external_caller_suspects": EXTERNAL_CALLER_SUSPECTS,
+        "external_lean_checked": HAND_WRITTEN_LEAN,
+        "external_lean_ref_count": sum(1 for x in top if x["external_lean_refs"]),
         "top_level": top,
     }
     os.makedirs(os.path.join(REPO, ".verilib"), exist_ok=True)
@@ -229,11 +290,13 @@ def main():
         json.dump(out, fh, indent=1, ensure_ascii=False)
 
     titles = {
-        "api": "公开 API 入口",
-        "internal": "内部 helper（需核对 Rust 源：是否只在测试中使用）",
+        "inherent_pub": "固有方法，`pub`",
+        "inherent_pub_crate": "固有方法，`pub(crate)`",
+        "inherent_private": "固有方法，私有",
         "trait_impl": "trait 实现方法",
         "operator_forwarder": "运算符转发壳（macros.rs 生成）",
     }
+    ext_n = out["external_lean_ref_count"]
     md = [
         "# graph-top：Funs.lean 中不被其他抽取函数依赖的函数",
         "",
@@ -242,24 +305,32 @@ def main():
         f"{len(candidates)} 个候选）；共 **{len(top)}** 条。",
         "判定: 候选函数不被任何其他候选函数依赖。实例记录透传（含 supertrait 链），"
         "`P_loop` 的依赖记为 `P` 的依赖。",
-        "`external_caller_suspect` 非空 = 可能有调用者藏在 `FunsExternal.lean` 的手写模型里，"
-        "图上看不到，需人工确认。`rust_grep_hits` = crate 非测试源码中 `name(` 的出现次数"
+        "分类只按 Rust 源里 `fn` 行的可见性关键字，不判断是否为 API 入口；`模块` 列 = 所属模块是否由 lib.rs 导出"
+        "（`pub` 但模块未导出 = backend 内部函数）。"
+        f"`external_lean_refs` = 手写 Lean（{', '.join(f'`{f}`' for f in HAND_WRITTEN_LEAN)}）"
+        f"中提到该函数或其实例记录的文件；本次 {ext_n} 条非空"
+        "（手写默认方法模型以实例记录为参数，抽取代码从未传入这些记录）。"
+        "`rust_grep_hits` = crate 非测试源码中 `name(` 的出现次数"
         "（定义行除外），仅作交叉核对提示；按方法名匹配，同名方法（如 `CompletedPoint::as_extended` 与 `ProjectivePoint::as_extended`）会互相污染，高计数不等于有调用者。",
         "",
     ]
-    for cat in ("api", "internal", "trait_impl", "operator_forwarder"):
+    for cat in ("inherent_pub", "inherent_pub_crate", "inherent_private",
+                "trait_impl", "operator_forwarder"):
         items = [x for x in top if x["category"] == cat]
+        if not items:
+            continue
         md += [f"## {titles[cat]}（{len(items)} 条）", ""]
-        if cat in ("api", "internal"):
-            md += ["| Lean 名 | spec | grep | 位置 |", "|---|---|---|---|"]
+        if cat.startswith("inherent_"):
+            md += ["| Lean 名 | spec | 模块 | grep | 位置 |", "|---|---|---|---|---|"]
             for x in items:
                 md.append(f"| `{x['lean_name']}` | {'✓' if x['specified'] else ''} "
+                          f"| {'导出' if x['pub_module'] else 'backend'} "
                           f"| {x['rust_grep_hits']} | {x['source']}:{x['lines']} |")
         else:
-            md += ["| Lean 名 | spec | 疑似外部调用者 | 位置 |", "|---|---|---|---|"]
+            md += ["| Lean 名 | spec | 手写 Lean 引用 | 位置 |", "|---|---|---|---|"]
             for x in items:
                 md.append(f"| `{x['lean_name']}` | {'✓' if x['specified'] else ''} "
-                          f"| {x['external_caller_suspect'] or ''} "
+                          f"| {', '.join(x['external_lean_refs'])} "
                           f"| {x['source']}:{x['lines']} |")
         md.append("")
     with open(os.path.join(REPO, ".verilib", "top_level_funs.md"), "w") as fh:

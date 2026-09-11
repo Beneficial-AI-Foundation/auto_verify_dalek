@@ -28,6 +28,7 @@ Results must say this clearly. See [Isolation and integrity](ISOLATION-AND-INTEG
 
 | Document | Purpose |
 | --- | --- |
+| [Method](METHOD.md) | How `T` is chosen, why top-level specs are frozen before proving bottom-up, and how internal specs are repaired when a proof fails. |
 | [Project scope](PROJECT-SCOPE.md) | What we are trying to learn and what counts as success. |
 | [Architecture](ARCHITECTURE.md) | The proposed builder, agent runner, verifier, and result storage. |
 | [Experiment protocol](EXPERIMENT-PROTOCOL.md) | The inputs and steps for one run. |

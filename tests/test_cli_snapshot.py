@@ -164,6 +164,32 @@ class ToolchainContractTests(unittest.TestCase):
         }
         self.assertEqual(after, before)
 
+    def test_inspect_refuses_target_writes_and_leaves_no_partial_report(self):
+        fixture = ROOT / "tests" / "fixtures" / "diamond"
+        with mock.patch.object(experiment.probes, "run_probes") as run_probes:
+            with self.assertRaisesRegex(
+                probes.ProbeError, "inspect_output_inside_repository"
+            ):
+                experiment.inspect_repository(
+                    fixture, fixture / "target-report.json"
+                )
+        run_probes.assert_not_called()
+
+        with tempfile.TemporaryDirectory() as tmp:
+            output = Path(tmp) / "target-report.json"
+            output.write_bytes(b"previous report")
+            with (
+                mock.patch.object(
+                    experiment.probes,
+                    "run_probes",
+                    side_effect=probes.ProbeError("incomplete evidence"),
+                ),
+                self.assertRaisesRegex(probes.ProbeError, "incomplete evidence"),
+            ):
+                experiment.inspect_repository(fixture, output)
+            self.assertEqual(output.read_bytes(), b"previous report")
+            self.assertEqual(list(Path(tmp).glob(".*.tmp")), [])
+
     def test_every_runtime_identity_is_verified_and_smoked(self):
         lock = load_lock()
         records = [lock["base_oci"], lock["model_client"], lock["verifier"]]

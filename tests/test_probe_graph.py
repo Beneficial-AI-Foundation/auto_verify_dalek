@@ -90,6 +90,65 @@ class ProbeGraphTests(unittest.TestCase):
         )
         self.assertEqual(report["diagnostics"], [])
 
+    def test_target_report_is_canonical_and_does_not_infer_public_metadata(self):
+        graph = self.parse()
+        expected = probes.render_target_report(graph)
+
+        def reverse_objects(value):
+            if isinstance(value, dict):
+                return {
+                    key: reverse_objects(item)
+                    for key, item in reversed(tuple(value.items()))
+                }
+            if isinstance(value, list):
+                return [reverse_objects(item) for item in value]
+            return value
+
+        self.assertEqual(
+            probes.render_target_report(reverse_objects(graph)), expected
+        )
+
+        rust = copy.deepcopy(self.rust)
+        del rust["data"][TARGET_RUST]["is-public-api"]
+        report = json.loads(probes.render_target_report(self.parse(rust=rust)))
+        self.assertIsNone(report["declarations"][TARGET_RUST]["public_api"])
+
+    def test_inspection_source_and_edge_evidence_is_required(self):
+        missing_locations = copy.deepcopy(self.rust)
+        del missing_locations["data"][TARGET_RUST]["dependencies-with-locations"]
+        with self.assertRaisesRegex(
+            probes.ProbeError, "project_rust_fields_missing"
+        ):
+            self.parse(rust=missing_locations)
+
+        missing_source_identity = copy.deepcopy(self.rust)
+        del missing_source_identity["source"]
+        with self.assertRaisesRegex(
+            probes.ProbeError, "probe_rust_source_identity_missing"
+        ):
+            self.parse(rust=missing_source_identity)
+
+    def test_cycle_diagnostic_names_members_edges_and_source_locations(self):
+        cycle = copy.deepcopy(self.aeneas)
+        cycle["data"][LEFT]["dependencies"] = [TOP]
+        cycle["data"][LEFT]["term-dependencies"] = [TOP]
+
+        with self.assertRaises(probes.ProbeError) as raised:
+            self.parse(aeneas=cycle)
+
+        diagnostic = str(raised.exception)
+        for expected in (
+            "unsupported_dependency_cycle",
+            LEFT,
+            TOP,
+            "Diamond/Left.lean",
+            "Diamond/Top.lean",
+            '"edges"',
+            '"members"',
+            '"sources"',
+        ):
+            self.assertIn(expected, diagnostic)
+
     def test_wrong_envelopes_and_incomplete_target_truth_fail_closed(self):
         cases = []
 

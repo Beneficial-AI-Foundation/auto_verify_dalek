@@ -12,7 +12,7 @@ from decimal import Decimal
 from pathlib import Path
 from unittest import mock
 
-from autofv import experiment, results
+from autofv import experiment, probes, results
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -125,11 +125,44 @@ class ToolchainContractTests(unittest.TestCase):
         )
         self.assertEqual(top.returncode, 0, top.stderr)
         self.assertEqual(run.returncode, 0, run.stderr)
-        self.assertIn("{run}", top.stdout)
+        self.assertIn("{inspect,run}", top.stdout)
+        self.assertIn("inspect", top.stdout)
         self.assertIn("--target", run.stdout)
         self.assertIn("--run-config", run.stdout)
         for forbidden in ("--model", "--node", "--probe", "--provider", "--host"):
             self.assertNotIn(forbidden, top.stdout + run.stdout)
+
+    def test_inspect_cli_writes_canonical_report_without_mutating_target(self):
+        fixture = ROOT / "tests" / "fixtures" / "diamond"
+        manifest = json.loads((fixture / "autofv.json").read_text())
+        rust_raw = (ROOT / "tests" / "fixtures" / "probes" / "diamond-rust.json").read_bytes()
+        aeneas_raw = (ROOT / "tests" / "fixtures" / "probes" / "diamond-aeneas.json").read_bytes()
+        graph = probes.parse_probe_bytes(manifest, rust_raw, aeneas_raw)
+        before = {
+            path.relative_to(fixture).as_posix(): hashlib.sha256(path.read_bytes()).hexdigest()
+            for path in fixture.rglob("*")
+            if path.is_file()
+        }
+
+        with tempfile.TemporaryDirectory() as tmp:
+            output = Path(tmp) / "target-report.json"
+            with (
+                mock.patch.object(
+                    sys,
+                    "argv",
+                    ["autofv", "inspect", str(fixture), "--output", str(output)],
+                ),
+                mock.patch.object(experiment.probes, "run_probes", return_value=graph),
+            ):
+                experiment.main()
+            self.assertEqual(output.read_bytes(), probes.render_target_report(graph))
+
+        after = {
+            path.relative_to(fixture).as_posix(): hashlib.sha256(path.read_bytes()).hexdigest()
+            for path in fixture.rglob("*")
+            if path.is_file()
+        }
+        self.assertEqual(after, before)
 
     def test_every_runtime_identity_is_verified_and_smoked(self):
         lock = load_lock()

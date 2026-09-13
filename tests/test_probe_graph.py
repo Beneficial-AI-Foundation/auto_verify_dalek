@@ -55,6 +55,41 @@ class ProbeGraphTests(unittest.TestCase):
         self.assertEqual(graph["contract_order"], [TOP, LEFT, RIGHT])
         self.assertEqual(graph["proof_batches"], [[LEFT, RIGHT], [TOP]])
 
+    def test_target_report_keeps_public_metadata_separate_from_graph_tops(self):
+        renderer = getattr(probes, "render_target_report", None)
+        self.assertIsNotNone(renderer, "canonical target report renderer is missing")
+
+        report = json.loads(renderer(self.parse()))
+        self.assertEqual(
+            set(report),
+            {"schema", "inputs", "tools", "graph_tops", "declarations", "diagnostics"},
+        )
+        self.assertEqual(report["schema"], "target-report/v1")
+        self.assertEqual(report["graph_tops"], [TARGET_RUST])
+        self.assertEqual(
+            report["inputs"],
+            {
+                "probe_aeneas_sha256": hashlib.sha256(self.aeneas_raw).hexdigest(),
+                "probe_rust_sha256": hashlib.sha256(self.rust_raw).hexdigest(),
+            },
+        )
+        self.assertEqual(
+            report["tools"],
+            {
+                "probe_aeneas": self.aeneas["tool"],
+                "probe_rust": self.rust["tool"],
+            },
+        )
+        top = report["declarations"][TARGET_RUST]
+        self.assertIs(top["public_api"], True)
+        self.assertEqual(top["declaration"], TOP)
+        self.assertEqual(top["primary_spec"], TOP_SPEC)
+        self.assertEqual(top["directed_closure"], [LEFT, RIGHT, TOP])
+        self.assertEqual(
+            top["source"], {"path": "src/lib.rs", "lines": [9, 11]}
+        )
+        self.assertEqual(report["diagnostics"], [])
+
     def test_wrong_envelopes_and_incomplete_target_truth_fail_closed(self):
         cases = []
 

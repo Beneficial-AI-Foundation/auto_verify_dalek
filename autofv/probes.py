@@ -12,6 +12,7 @@ from typing import Any
 MAX_PROBE_BYTES = 16 * 1024 * 1024
 MAX_NODES = 10_000
 MAX_EDGES = 100_000
+MAX_DIAGNOSTIC_MEMBERS = 32
 
 
 class ProbeError(ValueError):
@@ -100,6 +101,20 @@ def _source_path(value: Any, reason: str) -> str:
     return source
 
 
+def _source_location(atom: dict[str, Any], reason: str) -> dict[str, Any]:
+    path = _source_path(atom.get("code-path"), reason)
+    lines = atom.get("code-text")
+    if (
+        not isinstance(lines, dict)
+        or type(lines.get("lines-start")) is not int
+        or type(lines.get("lines-end")) is not int
+        or lines["lines-start"] <= 0
+        or lines["lines-end"] < lines["lines-start"]
+    ):
+        raise ProbeError(reason)
+    return {"path": path, "lines": [lines["lines-start"], lines["lines-end"]]}
+
+
 def _selected_lean_atom(name: str, atom: Any) -> dict[str, Any]:
     if not isinstance(atom, dict) or atom.get("language") != "lean":
         raise ProbeError("selected_lean_atom_missing")
@@ -135,17 +150,8 @@ def _selected_lean_atom(name: str, atom: Any) -> dict[str, Any]:
         "unverified",
     }:
         raise ProbeError("selected_lean_status_invalid")
-    _source_path(atom["code-path"], "selected_lean_source_invalid")
+    _source_location(atom, "selected_lean_source_invalid")
     _text(atom["display-name"], "selected_lean_display_name_missing")
-    lines = atom["code-text"]
-    if (
-        not isinstance(lines, dict)
-        or type(lines.get("lines-start")) is not int
-        or type(lines.get("lines-end")) is not int
-        or lines["lines-start"] <= 0
-        or lines["lines-end"] < lines["lines-start"]
-    ):
-        raise ProbeError("selected_lean_code_range_invalid")
     _string_list(atom["dependencies"], "selected_dependencies_invalid")
     _string_list(atom["term-dependencies"], "selected_term_dependencies_invalid")
     _string_list(atom["type-dependencies"], "selected_type_dependencies_invalid")
@@ -169,7 +175,10 @@ def _validate_dependency_partition(
 
 
 def _topological_orders(
-    nodes: set[str], edges: list[tuple[str, str]], roots: list[str]
+    nodes: set[str],
+    edges: list[tuple[str, str]],
+    roots: list[str],
+    locations: dict[str, dict[str, Any]] | None = None,
 ) -> tuple[list[str], list[list[str]]]:
     dependencies = {node: set() for node in nodes}
     consumers = {node: set() for node in nodes}
@@ -197,13 +206,204 @@ def _topological_orders(
     while remaining:
         ready = sorted(node for node, values in remaining.items() if not values)
         if not ready:
-            raise ProbeError("unsupported_dependency_cycle")
+            members = sorted(remaining)[:MAX_DIAGNOSTIC_MEMBERS]
+            member_set = set(members)
+            cycle_edges = [
+                list(edge)
+                for edge in edges
+                if edge[0] in member_set and edge[1] in member_set
+            ][: MAX_DIAGNOSTIC_MEMBERS * 2]
+            diagnostic = {
+                "members": members,
+                "edges": cycle_edges,
+                "sources": {
+                    member: locations[member]
+                    for member in members
+                    if locations and member in locations
+                },
+                "truncated": len(remaining) > len(members),
+            }
+            raise ProbeError(
+                "unsupported_dependency_cycle: "
+                + _canonical_bytes(diagnostic).decode("utf-8")
+            )
         proof_batches.append(ready)
         for node in ready:
             del remaining[node]
         for values in remaining.values():
             values.difference_update(ready)
     return contract_order, proof_batches
+
+
+def _collect_lean_closure(
+    roots: list[str], merged_atoms: dict[str, Any]
+) -> tuple[
+    set[str],
+    set[tuple[str, str]],
+    dict[str, str],
+    dict[str, dict[str, Any]],
+]:
+    nodes = set(roots)
+    pending = list(roots)
+    edges: set[tuple[str, str]] = set()
+    sources: dict[str, str] = {}
+    locations: dict[str, dict[str, Any]] = {}
+    while pending:
+        name = pending.pop()
+        atom = _selected_lean_atom(name, merged_atoms.get(name))
+        _validate_dependency_partition(atom, merged_atoms)
+        location = _source_location(atom, "selected_lean_source_invalid")
+        sources[name] = location["path"]
+        locations[name] = location
+        for dependency in atom["term-dependencies"]:
+            candidate = merged_atoms.get(dependency)
+            if not isinstance(candidate, dict) or candidate.get("language") != "lean":
+                raise ProbeError("selected_term_dependency_missing")
+            _selected_lean_atom(dependency, candidate)
+            edges.add((name, dependency))
+            if dependency not in nodes:
+                nodes.add(dependency)
+                pending.append(dependency)
+    if len(edges) > MAX_EDGES:
+        raise ProbeError("probe_graph_too_large")
+    return nodes, edges, sources, locations
+
+
+def _project_rust_atom(name: str, atom: Any) -> dict[str, Any] | None:
+    if not isinstance(atom, dict):
+        raise ProbeError(f"project_rust_atom_invalid: {name}")
+    if atom.get("language") != "rust" or atom.get("kind") != "exec":
+        return None
+    if not atom.get("code-path"):
+        return None
+    required = {
+        "code-path",
+        "code-text",
+        "dependencies",
+        "dependencies-with-locations",
+        "display-name",
+        "rust-qualified-name",
+        "untracked",
+    }
+    if not required <= atom.keys():
+        raise ProbeError(f"project_rust_fields_missing: {name}")
+    if atom["untracked"] is not False:
+        raise ProbeError(f"project_rust_function_untracked: {name}")
+    _source_location(atom, f"project_rust_source_invalid: {name}")
+    _text(atom["display-name"], f"project_rust_display_name_missing: {name}")
+    _text(atom["rust-qualified-name"], f"project_rust_identity_missing: {name}")
+    dependencies = _string_list(
+        atom["dependencies"], f"project_rust_dependencies_invalid: {name}"
+    )
+    locations = atom["dependencies-with-locations"]
+    if not isinstance(locations, list):
+        raise ProbeError(f"project_rust_edge_locations_invalid: {name}")
+    located: list[str] = []
+    for location in locations:
+        if not isinstance(location, dict) or set(location) != {
+            "code-name",
+            "line",
+            "location",
+        }:
+            raise ProbeError(f"project_rust_edge_location_invalid: {name}")
+        located.append(_text(location["code-name"], "project_rust_edge_name_invalid"))
+        if type(location["line"]) is not int or location["line"] <= 0:
+            raise ProbeError(f"project_rust_edge_line_invalid: {name}")
+        _text(location["location"], f"project_rust_edge_kind_invalid: {name}")
+    if set(located) != set(dependencies):
+        raise ProbeError(f"project_rust_edge_locations_incomplete: {name}")
+    public_api = atom.get("is-public-api")
+    if public_api is not None and type(public_api) is not bool:
+        raise ProbeError(f"project_rust_public_api_invalid: {name}")
+    return atom
+
+
+def _build_target_report(
+    rust: dict[str, Any],
+    aeneas: dict[str, Any],
+    rust_atoms: dict[str, Any],
+    merged_atoms: dict[str, Any],
+    rust_sha256: str,
+    aeneas_sha256: str,
+) -> dict[str, Any]:
+    project_atoms = {
+        name: selected
+        for name, atom in rust_atoms.items()
+        if (selected := _project_rust_atom(name, atom)) is not None
+    }
+    if not project_atoms:
+        raise ProbeError("project_rust_functions_missing")
+
+    package = rust.get("source", {}).get("package")
+    package_version = rust.get("source", {}).get("package-version")
+    if not isinstance(package, str) or not package or not isinstance(package_version, str):
+        raise ProbeError("probe_rust_source_identity_missing")
+    project_prefix = f"probe:{package}/{package_version}/"
+    project_names = set(project_atoms)
+    edges: set[tuple[str, str]] = set()
+    locations = {
+        name: _source_location(atom, f"project_rust_source_invalid: {name}")
+        for name, atom in project_atoms.items()
+    }
+    for consumer, atom in project_atoms.items():
+        for dependency in atom["dependencies"]:
+            if dependency in project_names:
+                edges.add((consumer, dependency))
+            elif dependency.startswith(project_prefix):
+                raise ProbeError(f"project_rust_dependency_missing: {dependency}")
+
+    consumed = {dependency for _, dependency in edges}
+    graph_tops = sorted(project_names - consumed)
+    if not graph_tops:
+        graph_tops = sorted(project_names)
+    _topological_orders(project_names, sorted(edges), graph_tops, locations)
+
+    declarations: dict[str, Any] = {}
+    for root in graph_tops:
+        merged_root = merged_atoms.get(root)
+        if not isinstance(merged_root, dict) or merged_root.get("language") != "rust":
+            raise ProbeError(f"project_translation_missing: {root}")
+        declaration = _text(
+            merged_root.get("translation-name"),
+            f"project_translation_identity_missing: {root}",
+        )
+        if merged_root.get("code-path") != project_atoms[root]["code-path"]:
+            raise ProbeError(f"project_source_identity_mismatch: {root}")
+        declaration_atom = _selected_lean_atom(
+            declaration, merged_atoms.get(declaration)
+        )
+        primary_spec = declaration_atom.get("primary-spec")
+        if not isinstance(primary_spec, str) or not primary_spec:
+            raise ProbeError(f"graph_top_primary_spec_missing: {root}")
+        _selected_lean_atom(primary_spec, merged_atoms.get(primary_spec))
+        closure, lean_edges, _, lean_locations = _collect_lean_closure(
+            [declaration], merged_atoms
+        )
+        _topological_orders(
+            closure, sorted(lean_edges), [declaration], lean_locations
+        )
+        declarations[root] = {
+            "public_api": project_atoms[root].get("is-public-api"),
+            "declaration": declaration,
+            "primary_spec": primary_spec,
+            "directed_closure": sorted(closure),
+            "source": locations[root],
+        }
+
+    return {
+        "schema": "target-report/v1",
+        "inputs": {
+            "probe_aeneas_sha256": aeneas_sha256,
+            "probe_rust_sha256": rust_sha256,
+        },
+        "tools": {
+            "probe_aeneas": aeneas["tool"],
+            "probe_rust": rust["tool"],
+        },
+        "graph_tops": graph_tops,
+        "declarations": declarations,
+        "diagnostics": [],
+    }
 
 
 def parse_probe_bytes(
@@ -248,25 +448,12 @@ def parse_probe_bytes(
         frozen_targets.append(lean_name)
         supplied_specs[lean_name] = primary_spec
 
-    nodes: set[str] = set(frozen_targets)
-    pending = list(frozen_targets)
-    edges: set[tuple[str, str]] = set()
+    nodes, edges, sources, locations = _collect_lean_closure(
+        frozen_targets, merged_atoms
+    )
     type_edges: set[tuple[str, str]] = set()
-    sources: dict[str, str] = {}
-    while pending:
-        name = pending.pop()
+    for name in sorted(nodes):
         atom = _selected_lean_atom(name, merged_atoms.get(name))
-        _validate_dependency_partition(atom, merged_atoms)
-        sources[name] = atom["code-path"]
-        for dependency in atom["term-dependencies"]:
-            candidate = merged_atoms.get(dependency)
-            if not isinstance(candidate, dict) or candidate.get("language") != "lean":
-                raise ProbeError("selected_term_dependency_missing")
-            _selected_lean_atom(dependency, candidate)
-            edges.add((name, dependency))
-            if dependency not in nodes:
-                nodes.add(dependency)
-                pending.append(dependency)
         for dependency in atom["type-dependencies"]:
             candidate = merged_atoms.get(dependency)
             if not isinstance(candidate, dict) or candidate.get("language") != "lean":
@@ -288,9 +475,9 @@ def parse_probe_bytes(
             sources[dependency] = dependency_atom["code-path"]
             type_edges.add((spec, dependency))
 
-    if len(edges) > MAX_EDGES:
-        raise ProbeError("probe_graph_too_large")
-    contract_order, proof_batches = _topological_orders(nodes, sorted(edges), frozen_targets)
+    contract_order, proof_batches = _topological_orders(
+        nodes, sorted(edges), frozen_targets, locations
+    )
     graph_body = {
         "frozen_targets": sorted(frozen_targets),
         "supplied_specs": supplied_specs,
@@ -301,12 +488,30 @@ def parse_probe_bytes(
         "proof_batches": proof_batches,
         "source_paths": {key: sources[key] for key in sorted(sources)},
     }
+    rust_sha256 = _sha256(rust_raw)
+    aeneas_sha256 = _sha256(aeneas_raw)
     return {
         **graph_body,
-        "probe_rust_sha256": _sha256(rust_raw),
-        "probe_aeneas_sha256": _sha256(aeneas_raw),
+        "probe_rust_sha256": rust_sha256,
+        "probe_aeneas_sha256": aeneas_sha256,
         "graph_sha256": _sha256(_canonical_bytes(graph_body)),
+        "target_report": _build_target_report(
+            rust,
+            aeneas,
+            rust_atoms,
+            merged_atoms,
+            rust_sha256,
+            aeneas_sha256,
+        ),
     }
+
+
+def render_target_report(graph: dict[str, Any]) -> bytes:
+    """Return the canonical report derived at the probe trust boundary."""
+    report = graph.get("target_report")
+    if not isinstance(report, dict) or report.get("schema") != "target-report/v1":
+        raise ProbeError("target_report_missing")
+    return _canonical_bytes(report)
 
 
 def run_probes(project_dir: str | Path, evidence_dir: str | Path) -> dict[str, Any]:
@@ -343,5 +548,10 @@ def run_probes(project_dir: str | Path, evidence_dir: str | Path) -> dict[str, A
     )
     rust_raw = rust_path.read_bytes()
     aeneas_raw = aeneas_path.read_bytes()
-    manifest = json.loads((project / "autofv.json").read_text(encoding="utf-8"))
+    manifest_path = project / "autofv.json"
+    manifest = (
+        json.loads(manifest_path.read_text(encoding="utf-8"))
+        if manifest_path.is_file()
+        else {"schema": "autofv/v1", "targets": []}
+    )
     return parse_probe_bytes(manifest, rust_raw, aeneas_raw)

@@ -6,12 +6,19 @@ import hashlib
 import hmac
 import re
 import threading
+import time
+from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, wait
 from pathlib import Path, PurePosixPath
 from typing import Any
 
 from . import probes, worker
 from .contracts import ContractError, ContractInconclusive, _sha256
-from .model import _model_request, _parallel_model_requests
+from .model import (
+    _accept_model_exchange,
+    _invoke_model,
+    _model_envelope,
+    _model_request,
+)
 from .run_state import (
     _RunState,
     _canonical_sha256,
@@ -100,10 +107,10 @@ def _lane_descriptors(
         "accepted_commit", run["base_commit"]
     )
     lanes = []
-    assigned = set()
+    lane_ids = set()
     for node in nodes:
-        leaf = node.rsplit(".", 1)[-1].lower()
-        if re.fullmatch(r"[a-z0-9-]+", leaf) is None:
+        leaf = re.sub(r"[^a-z0-9]+", "-", node.rsplit(".", 1)[-1].lower()).strip("-")
+        if not leaf:
             raise ContractError("proof node cannot form a safe lane identity")
         path = graph["source_paths"].get(node)
         pure = PurePosixPath(path) if isinstance(path, str) else None
@@ -112,11 +119,12 @@ def _lane_descriptors(
             or pure.is_absolute()
             or ".." in pure.parts
             or pure.suffix != ".lean"
-            or path in assigned
         ):
-            raise ContractError("proof lane must own one distinct safe Lean path")
-        assigned.add(path)
+            raise ContractError("proof lane must own one safe Lean path")
         request_id = f"proof-{leaf}-001"
+        if request_id in lane_ids:
+            request_id = f"proof-{leaf}-{hashlib.sha256(node.encode()).hexdigest()[:8]}-001"
+        lane_ids.add(request_id)
         lane_root = f"{root}/{request_id}"
         lanes.append(
             {
@@ -224,6 +232,101 @@ def _proof_ready_nodes(graph: dict[str, Any], accepted_nodes: set[str]) -> list[
         for node, required in dependencies.items()
         if node not in accepted_nodes and required <= accepted_nodes
     )
+
+
+def _immediate_consumers(graph: dict[str, Any], node: str) -> list[str]:
+    return sorted(
+        consumer
+        for consumer, dependency in graph["term_dependencies"]
+        if dependency == node
+    )
+
+
+def _contract_frontier(graph: dict[str, Any], completed_nodes: set[str]) -> list[str]:
+    return sorted(
+        node
+        for node in graph["selected_nodes"]
+        if node not in completed_nodes
+        and set(_immediate_consumers(graph, node)) <= completed_nodes
+    )
+
+
+def _schedule_proofs(
+    graph,
+    run_job,
+    accept_job,
+    *,
+    prepare_job=None,
+    accepted_nodes=(),
+) -> set[str]:
+    """Run ready declaration jobs concurrently, with one owner per Lean file."""
+    accepted = set(accepted_nodes)
+    submitted: set[str] = set()
+    busy_files: set[str] = set()
+    file_locks: dict[str, threading.Lock] = {}
+    futures = {}
+    completed = {}
+    submission = 0
+    next_accept = 0
+
+    def run_locked(node: str, job):
+        path = graph["source_paths"][node]
+        with file_locks.setdefault(path, threading.Lock()):
+            return run_job(job)
+
+    def priority(node: str) -> tuple[int, str]:
+        remaining = [
+            len(
+                {
+                    dependency
+                    for consumer, dependency in graph["term_dependencies"]
+                    if consumer == parent
+                }
+                - accepted
+            )
+            for parent in _immediate_consumers(graph, node)
+        ]
+        return (min(remaining, default=0), node)
+
+    with ThreadPoolExecutor(
+        max_workers=max(1, len(graph["selected_nodes"])),
+        thread_name_prefix="autofv-proof",
+    ) as pool:
+        while len(accepted) < len(graph["selected_nodes"]):
+            if prepare_job:
+                while next_accept in completed:
+                    node, result = completed.pop(next_accept)
+                    accept_job(node, result)
+                    accepted.add(node)
+                    next_accept += 1
+            for node in sorted(_proof_ready_nodes(graph, accepted), key=priority):
+                path = graph["source_paths"][node]
+                if node in submitted or path in busy_files:
+                    continue
+                submitted.add(node)
+                busy_files.add(path)
+                job = prepare_job(node) if prepare_job else node
+                futures[pool.submit(run_locked, node, job)] = (
+                    submission,
+                    node,
+                    path,
+                )
+                submission += 1
+            if len(accepted) == len(graph["selected_nodes"]):
+                break
+            if not futures:
+                break
+            done, _ = wait(futures, return_when=FIRST_COMPLETED)
+            for future in done:
+                order, node, path = futures.pop(future)
+                busy_files.remove(path)
+                completed[order] = (node, future.result())
+            if not prepare_job:
+                for order in sorted(completed):
+                    node, result = completed.pop(order)
+                    accept_job(node, result)
+                    accepted.add(node)
+    return accepted
 
 
 def _checkpoint_candidate(
@@ -395,13 +498,30 @@ def _repair_contracts(
     state: _RunState,
     dependency: dict[str, Any],
     top_fingerprint: str,
+    graph: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
-    """Run the bounded weak-draft, consumer-check, review, and freeze sequence."""
+    """Draft consumer-first contracts, then run the bounded freeze gate."""
     run = state["run"]
     previous = state.get("contracts")
     if isinstance(previous, dict) and previous.get("frozen_fingerprints"):
         return previous
     policy_sha256 = run["native_decide_policy_sha256"]
+    if graph is None:
+        graph = {
+            "frozen_targets": ["probe:Diamond.top"],
+            "selected_nodes": [
+                "probe:Diamond.left",
+                "probe:Diamond.right",
+                "probe:Diamond.top",
+            ],
+            "term_dependencies": [
+                ["probe:Diamond.top", "probe:Diamond.left"],
+                ["probe:Diamond.top", "probe:Diamond.right"],
+            ],
+        }
+    targets = set(graph["frozen_targets"])
+    if len(targets) != 1:
+        raise ContractError("the bounded contract pass requires one selected root")
     contracts = {
         "attempts": [],
         "provisional": {},
@@ -409,93 +529,136 @@ def _repair_contracts(
         "frozen_fingerprints": [],
         "invalidated_fingerprints": [],
         "feasibility": [],
+        "immediate_consumer_requirements": {},
+        "node_fingerprints": {next(iter(targets)): top_fingerprint},
+        "revision_lineage": [],
+        "max_revisions": min(
+            2, max(0, int(state.get("config", {}).get("max_contract_revisions", 1)))
+        ),
+        "proof_barrier": "drafting",
     }
     state["contracts"] = contracts
+    completed = set(targets)
+    contract_nodes = []
+    while len(completed) < len(graph["selected_nodes"]):
+        frontier = _contract_frontier(graph, completed)
+        if not frontier:
+            raise ContractError("contract graph has no consumer-first frontier")
+        for node in frontier:
+            requirements = [
+                {
+                    "consumer": consumer,
+                    "fingerprint": contracts["node_fingerprints"][consumer],
+                }
+                for consumer in _immediate_consumers(graph, node)
+            ]
+            response, _ = _model_request(
+                state,
+                request_id=f"contract-{node.rsplit('.', 1)[-1].lower()}-001",
+                role="contract-author",
+                input_hashes=[
+                    dependency["payload_sha256"],
+                    *(item["fingerprint"] for item in requirements),
+                ],
+            )
+            record = _statement_record(response, policy_sha256)
+            expected = f"{node.removeprefix('probe:')}_spec"
+            if record["declaration"] != expected:
+                raise ContractError("contract response declaration mismatch")
+            contracts["attempts"].append(record)
+            contracts["provisional"][record["declaration"]] = record
+            contracts["immediate_consumer_requirements"][node] = requirements
+            contracts["node_fingerprints"][node] = record["model_fingerprint"]
+            contract_nodes.append(node)
+            _event_once(run, f"contract_draft:{record['declaration']}")
+        completed.update(frontier)
+    _event_once(run, "provisional_contracts_applied")
 
-    weak_left, _ = _model_request(
-        state,
-        request_id="contract-left-001",
-        role="contract-author",
-        input_hashes=[dependency["payload_sha256"], top_fingerprint],
-    )
-    right, _ = _model_request(
-        state,
-        request_id="contract-right-001",
-        role="contract-author",
-        input_hashes=[dependency["payload_sha256"], top_fingerprint],
-    )
-    weak_record = _statement_record(weak_left, policy_sha256)
-    right_record = _statement_record(right, policy_sha256)
-    contracts["attempts"].extend((weak_record, right_record))
-    contracts["provisional"] = {
-        weak_record["declaration"]: weak_record,
-        right_record["declaration"]: right_record,
-    }
-    for event in (
-        f"contract_draft:{weak_record['declaration']}",
-        f"contract_draft:{right_record['declaration']}",
-        "provisional_contracts_applied",
-    ):
-        _event_once(run, event)
+    def check_feasibility(label: str) -> dict[str, Any]:
+        result = _external_call(
+            state,
+            label,
+            lambda: worker.check_contract_feasibility(
+                run,
+                [
+                    contracts["provisional"][f"{node.removeprefix('probe:')}_spec"][
+                        "canon"
+                    ]
+                    for node in contract_nodes
+                ],
+            ),
+        )
+        contracts["feasibility"].append(result)
+        _event_once(run, f"provisional_consumer:{result['status']}")
+        return result
 
-    feasibility = _external_call(
-        state,
-        "build:provisional-consumer-weak",
-        lambda: worker.check_contract_feasibility(
-            run, [weak_record["canon"], right_record["canon"]]
+    feasibility = check_feasibility("build:provisional-consumer-weak")
+    failed_node = next(
+        (
+            node
+            for node in contract_nodes
+            if f"{node.removeprefix('probe:')}_spec" == feasibility.get("declaration")
         ),
+        contract_nodes[0],
     )
-    contracts["feasibility"].append(feasibility)
-    _event_once(run, f"provisional_consumer:{feasibility['status']}")
-    if feasibility["status"] != "failed":
-        raise ContractError("fixture weak contract unexpectedly passed consumer proof")
-
-    strong_left, _ = _model_request(
-        state,
-        request_id="contract-left-review-002",
-        role="contract-reviewer",
-        input_hashes=[weak_record["model_fingerprint"], top_fingerprint],
-    )
-    strong_record = _statement_record(strong_left, policy_sha256)
-    if (
-        strong_record["declaration"] != weak_record["declaration"]
-        or strong_record["model_fingerprint"] == weak_record["model_fingerprint"]
-    ):
-        raise ContractError("contract review did not replace the weak statement")
-    contracts["attempts"].append(strong_record)
-    contracts["invalidated_fingerprints"].append(weak_record["model_fingerprint"])
-    contracts["provisional"][strong_record["declaration"]] = strong_record
-    for event in (
-        f"contract_review:{strong_record['declaration']}",
-        f"statement_invalidated:{weak_record['model_fingerprint']}",
-    ):
-        _event_once(run, event)
-
-    feasibility = _external_call(
-        state,
-        "build:provisional-consumer-strong",
-        lambda: worker.check_contract_feasibility(
-            run, [strong_record["canon"], right_record["canon"]]
-        ),
-    )
-    contracts["feasibility"].append(feasibility)
-    _event_once(run, f"provisional_consumer:{feasibility['status']}")
+    for revision in range(contracts["max_revisions"]):
+        if feasibility["status"] == "passed":
+            break
+        declaration = f"{failed_node.removeprefix('probe:')}_spec"
+        previous_record = contracts["provisional"][declaration]
+        requirements = contracts["immediate_consumer_requirements"][failed_node]
+        response, _ = _model_request(
+            state,
+            request_id=(
+                f"contract-{failed_node.rsplit('.', 1)[-1].lower()}-review-"
+                f"{revision + 2:03d}"
+            ),
+            role="contract-reviewer",
+            input_hashes=[
+                previous_record["model_fingerprint"],
+                *(item["fingerprint"] for item in requirements),
+            ],
+        )
+        record = _statement_record(response, policy_sha256)
+        if (
+            record["declaration"] != declaration
+            or record["model_fingerprint"] == previous_record["model_fingerprint"]
+        ):
+            raise ContractError("contract review did not replace the weak statement")
+        contracts["attempts"].append(record)
+        contracts["invalidated_fingerprints"].append(
+            previous_record["model_fingerprint"]
+        )
+        contracts["revision_lineage"].append(
+            {
+                "node": failed_node,
+                "revision": revision + 1,
+                "old_fingerprint": previous_record["model_fingerprint"],
+                "new_fingerprint": record["model_fingerprint"],
+            }
+        )
+        contracts["provisional"][declaration] = record
+        contracts["node_fingerprints"][failed_node] = record["model_fingerprint"]
+        _event_once(run, f"contract_review:{record['declaration']}")
+        _event_once(
+            run,
+            f"statement_invalidated:{previous_record['model_fingerprint']}",
+        )
+        feasibility = check_feasibility("build:provisional-consumer-strong")
     if feasibility["status"] != "passed":
+        contracts["proof_barrier"] = "inconclusive"
         _event_once(run, "contract_inconclusive")
         raise ContractInconclusive(feasibility["diagnostic"])
 
     contracts["frozen"] = {
-        record["declaration"]: {**record, "status": "frozen"}
-        for record in (strong_record, right_record)
+        declaration: {**record, "status": "frozen"}
+        for declaration, record in contracts["provisional"].items()
     }
     contracts["provisional"] = {}
     contracts["frozen_fingerprints"] = sorted(
-        [
-            top_fingerprint,
-            strong_record["model_fingerprint"],
-            right_record["model_fingerprint"],
-        ]
+        contracts["node_fingerprints"].values()
     )
+    contracts["proof_barrier"] = "frozen"
     _event_once(run, "statements_frozen")
     _checkpoint_if_enabled(state, "contracts:frozen")
     return contracts
@@ -518,8 +681,8 @@ def _freeze(state: _RunState) -> dict[str, Any]:
 
 def _agent_loop(state: _RunState) -> dict[str, Any]:
     graph, run, manifest = state["graph"], state["run"], state["manifest"]
-    if len(graph["frozen_targets"]) != 1 or len(graph["proof_batches"]) != 2:
-        raise ContractError("the V1 tracer requires one acyclic diamond target")
+    if len(graph["frozen_targets"]) != 1:
+        raise ContractError("the bounded scheduler requires one selected root")
     top_fingerprint = _external_call(
         state,
         "source:read-top-statement",
@@ -539,22 +702,24 @@ def _agent_loop(state: _RunState) -> dict[str, Any]:
         role="dependency-planner",
         input_hashes=[scout["payload_sha256"], probe_hash],
     )
-    contracts = _repair_contracts(state, dependency, top_fingerprint)
-    leaf_nodes = graph["proof_batches"][0]
-    if _proof_ready_nodes(graph, set()) != leaf_nodes:
-        raise ContractError("the V1 leaf proof frontier is inconsistent")
+    contracts = _repair_contracts(state, dependency, top_fingerprint, graph)
     lanes = state.setdefault("lanes", [])
     existing_lane_ids = {lane["lane_id"] for lane in lanes}
     new_lanes = [
         {**lane, "status": "preparing"}
-        for lane in _lane_descriptors(run, graph, leaf_nodes)
+        for lane in _lane_descriptors(
+            run,
+            graph,
+            graph["selected_nodes"],
+            base_commit=run["base_commit"],
+        )
         if lane["lane_id"] not in existing_lane_ids
     ]
     if new_lanes:
         lanes.extend(new_lanes)
         _external_call(
             state,
-            "lanes:prepare-leaves",
+            "lanes:prepare-proofs",
             lambda: worker.prepare_lanes(
                 run,
                 [_worker_lane(lane) for lane in new_lanes],
@@ -562,7 +727,6 @@ def _agent_loop(state: _RunState) -> dict[str, Any]:
         )
         for lane in new_lanes:
             lane["status"] = "running"
-    leaf_lanes = [lane for lane in lanes if lane["node"] in leaf_nodes]
     for key in (
         "lane_intervals",
         "candidate_receipts",
@@ -573,25 +737,88 @@ def _agent_loop(state: _RunState) -> dict[str, Any]:
         value = state.setdefault(key, {} if key == "lane_intervals" else [])
         run[key] = value
     run["lanes"] = lanes
-    exchanges = _parallel_model_requests(
-        state,
-        [
-            {
-                "request_id": lane["request_id"],
-                "role": "proof-author",
-                "batch_id": "proof-leaves-001",
-                "input_hashes": [
-                    contracts["frozen"][
-                        f"{lane['node'].removeprefix('probe:')}_spec"
-                    ]["model_fingerprint"],
-                    probe_hash,
-                ],
-            }
-            for lane in leaf_lanes
-        ],
-    )
-    leaf_patches = []
-    for lane, (response, _) in zip(leaf_lanes, exchanges, strict=True):
+    lanes_by_node = {lane["node"]: lane for lane in lanes}
+    proof_patches = state.setdefault("proof_patch_sha256", {})
+    run["proof_patch_sha256"] = proof_patches
+    dependencies = {node: [] for node in graph["selected_nodes"]}
+    for consumer, dependency_node in graph["term_dependencies"]:
+        dependencies[consumer].append(dependency_node)
+    first_frontier = _proof_ready_nodes(graph, set())
+    stored = {
+        **state.setdefault("model_exchanges", {}),
+        **state.setdefault("pending_model_exchanges", {}),
+    }
+    used_sequences = [
+        exchange["request"]["sequence"]
+        for exchange in stored.values()
+        if isinstance(exchange, dict) and isinstance(exchange.get("request"), dict)
+    ] + [receipt["sequence"] for receipt in state["receipts"]]
+    next_sequence = max(used_sequences, default=0) + 1
+
+    def prepare_job(node: str) -> dict[str, Any]:
+        nonlocal next_sequence
+        lane = lanes_by_node[node]
+        previous = stored.get(lane["request_id"])
+        sequence = (
+            previous["request"]["sequence"] if previous is not None else next_sequence
+        )
+        if previous is None:
+            next_sequence += 1
+        required = sorted(dependencies[node])
+        input_hashes = [contracts["node_fingerprints"][node]]
+        input_hashes.extend(
+            contracts["node_fingerprints"][dependency_node]
+            for dependency_node in required
+        )
+        input_hashes.extend(proof_patches[dependency_node] for dependency_node in required)
+        if not required:
+            input_hashes.append(probe_hash)
+        request = _model_envelope(
+            state,
+            request_id=lane["request_id"],
+            role="proof-author",
+            batch_id=(
+                "proof-leaves-001"
+                if len(first_frontier) > 1 and node in first_frontier
+                else None
+            ),
+            input_hashes=input_hashes,
+            sequence=sequence,
+        )
+        if previous is not None and previous.get("request") != request:
+            raise ContractError(f"resumed model request changed: {lane['request_id']}")
+        return {"lane": lane, "previous": previous, "request": request}
+
+    def run_job(job: dict[str, Any]) -> dict[str, Any]:
+        started = time.monotonic_ns()
+        previous = job["previous"]
+        if previous is None:
+            response, receipt = _invoke_model(state, job["request"], checkpoint=False)
+        else:
+            response, receipt = previous["response"], previous["receipt"]
+        return {
+            **job,
+            "response": response,
+            "receipt": receipt,
+            "started_monotonic_ns": started,
+            "finished_monotonic_ns": time.monotonic_ns(),
+        }
+
+    def accept_job(node: str, job: dict[str, Any]) -> None:
+        lane = job["lane"]
+        if lane["request_id"] not in state["model_exchanges"]:
+            response, _ = _accept_model_exchange(
+                state,
+                job["request"],
+                job["response"],
+                job["receipt"],
+            )
+        else:
+            response = job["response"]
+        state["lane_intervals"][lane["request_id"]] = {
+            "started_monotonic_ns": job["started_monotonic_ns"],
+            "finished_monotonic_ns": job["finished_monotonic_ns"],
+        }
         candidate = _candidate_record(
             response, lane, run["native_decide_policy_sha256"]
         )
@@ -599,7 +826,7 @@ def _agent_loop(state: _RunState) -> dict[str, Any]:
             _external_call(
                 state,
                 f"lane:{lane['lane_id']}:persist",
-                lambda candidate=candidate, lane=lane: worker.persist_lane_result(
+                lambda: worker.persist_lane_result(
                     run,
                     lane,
                     {
@@ -612,91 +839,43 @@ def _agent_loop(state: _RunState) -> dict[str, Any]:
         transition = _checkpoint_candidate(state, candidate, manifest)
         if transition["status"].startswith("accepted") or (
             transition["status"] == "duplicate"
-            and lane["node"] in state["accepted_nodes"]
+            and node in state["accepted_nodes"]
         ):
             lane["status"] = "accepted"
             lane["requeueable"] = False
-        else:
-            raise ContractError(
-                f"leaf candidate {lane['request_id']} was {transition['status']}: "
-                f"{transition['reason']}"
-            )
-        leaf_patches.append(response["payload"]["patch_sha256"])
-
-    top_batch = graph["proof_batches"][1]
-    if set(top_batch) <= set(state["accepted_nodes"]):
-        return _node_update(state, **{
-            "accepted": state["accepted"],
-            "contracts": contracts,
-            "receipts": state["receipts"],
-            "cost": state["cost"],
-            "lanes": lanes,
-            "lane_intervals": state["lane_intervals"],
-            "candidate_receipts": state["candidate_receipts"],
-            "processed_candidate_sha256": state["processed_candidate_sha256"],
-            "accepted_sequence": state["accepted_sequence"],
-            "accepted_nodes": state["accepted_nodes"],
-        })
-    ready = _proof_ready_nodes(graph, set(state["accepted_nodes"]))
-    if ready != top_batch:
-        raise ContractError("top proof became ready before both leaves were accepted")
-    left_fingerprint = contracts["frozen"]["Diamond.left_spec"]["model_fingerprint"]
-    right_fingerprint = contracts["frozen"]["Diamond.right_spec"]["model_fingerprint"]
-    proof_top, _ = _model_request(
-        state,
-        request_id="proof-top-001",
-        role="proof-author",
-        input_hashes=[
-            left_fingerprint,
-            right_fingerprint,
-            top_fingerprint,
-            *leaf_patches,
-        ],
-    )
-    desired_top = _lane_descriptors(run, graph, ready)[0]
-    top_lane = next(
-        (lane for lane in lanes if lane["lane_id"] == desired_top["lane_id"]), None
-    )
-    if top_lane is None:
-        top_lane = {**desired_top, "status": "preparing"}
-        lanes.append(top_lane)
-        _external_call(
-            state,
-            "lanes:prepare-top",
-            lambda: worker.prepare_lanes(run, [_worker_lane(top_lane)]),
-        )
-        top_lane["status"] = "running"
-    top_candidate = _candidate_record(
-        proof_top, top_lane, run["native_decide_policy_sha256"]
-    )
-    if top_candidate["candidate_sha256"] not in state["processed_candidate_sha256"]:
-        _external_call(
-            state,
-            f"lane:{top_lane['lane_id']}:persist",
-            lambda: worker.persist_lane_result(
-                run,
-                top_lane,
-                {
-                    key: value
-                    for key, value in top_candidate.items()
-                    if key != "response"
-                },
-            ),
-        )
-    transition = _checkpoint_candidate(state, top_candidate, manifest)
-    if transition["status"].startswith("accepted") or (
-        transition["status"] == "duplicate"
-        and top_lane["node"] in state["accepted_nodes"]
-    ):
-        top_lane["status"] = "accepted"
-        top_lane["requeueable"] = False
-    else:
+            proof_patches[node] = response["payload"]["patch_sha256"]
+            return
         raise ContractError(
-            f"top candidate was {transition['status']}: {transition['reason']}"
+            f"proof candidate {lane['request_id']} was {transition['status']}: "
+            f"{transition['reason']}"
         )
-    accepted = state["accepted"]
+
+    scheduled = _external_call(
+        state,
+        "proofs:schedule",
+        lambda: _schedule_proofs(
+            graph,
+            run_job,
+            accept_job,
+            prepare_job=prepare_job,
+            accepted_nodes=state["accepted_nodes"],
+        ),
+    )
+    if scheduled != set(graph["selected_nodes"]):
+        raise ContractError("proof scheduler stopped before the selected graph completed")
+    initial_intervals = [
+        state["lane_intervals"][lanes_by_node[node]["request_id"]]
+        for node in first_frontier
+        if lanes_by_node[node]["request_id"] in state["lane_intervals"]
+    ]
+    if len(initial_intervals) > 1:
+        if max(item["started_monotonic_ns"] for item in initial_intervals) >= min(
+            item["finished_monotonic_ns"] for item in initial_intervals
+        ):
+            raise ContractError("ready proof lanes did not overlap")
+        _event_once(run, "proof_lanes:overlapped")
     return _node_update(state, **{
-        "accepted": accepted,
+        "accepted": state["accepted"],
         "contracts": contracts,
         "receipts": state["receipts"],
         "cost": state["cost"],
@@ -706,4 +885,5 @@ def _agent_loop(state: _RunState) -> dict[str, Any]:
         "processed_candidate_sha256": state["processed_candidate_sha256"],
         "accepted_sequence": state["accepted_sequence"],
         "accepted_nodes": state["accepted_nodes"],
+        "proof_patch_sha256": proof_patches,
     })

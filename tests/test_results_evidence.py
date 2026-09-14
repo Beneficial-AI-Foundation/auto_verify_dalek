@@ -4,6 +4,7 @@ import json
 import os
 import tempfile
 import unittest
+from datetime import datetime, timezone
 from decimal import Decimal
 from pathlib import Path
 from unittest import mock
@@ -13,6 +14,9 @@ from autofv import evidence, experiment, results, verifier, worker
 
 ROOT = Path(__file__).resolve().parents[1]
 TARGET = ROOT / "tests" / "fixtures" / "diamond"
+MODEL_PROXY_FIXTURE = (
+    ROOT / "tests" / "fixtures" / "model-proxy" / "diamond-responses.json"
+)
 
 
 def _sha(value):
@@ -24,8 +28,12 @@ def _receipt(body, digest_field):
     return {**body, digest_field: _sha(body)}
 
 
-def _complete_attempt(root: Path, *, attempt_id: str = "attempt-complete"):
-    run_id = "result-evidence-run"
+def _complete_attempt(
+    root: Path,
+    *,
+    attempt_id: str = "attempt-complete",
+    run_id: str = "result-evidence-run",
+):
     lock = experiment.load_toolchain_lock()
     assumptions = verifier.compiler_assumptions(lock)
     checks = {
@@ -273,6 +281,74 @@ def _complete_attempt(root: Path, *, attempt_id: str = "attempt-complete"):
     return run, state
 
 
+def _generic_attempt(root: Path, *, attempt_id: str = "attempt-generic"):
+    fixture = json.loads(MODEL_PROXY_FIXTURE.read_text())
+    run, state = _complete_attempt(
+        root, attempt_id=attempt_id, run_id=fixture["run_id"]
+    )
+    left, right, top = state["graph"]["selected_nodes"]
+    old_fingerprint = "8" * 64
+    new_fingerprint = "9" * 64
+    state["target_states"] = {
+        node: {
+            "phase": "proof",
+            "status": "accepted",
+            "attempt_count": 1,
+            "contract_revision": 1 if node == left else 0,
+            "contract_fingerprint": (
+                new_fingerprint if node == left else chr(97 + index) * 64
+            ),
+            "block_chain": None,
+        }
+        for index, node in enumerate((left, right, top))
+    }
+    state["contracts"].update(
+        {
+            "invalidated_fingerprints": [old_fingerprint],
+            "revision_lineage": [
+                {
+                    "node": left,
+                    "revision": 1,
+                    "old_fingerprint": old_fingerprint,
+                    "new_fingerprint": new_fingerprint,
+                }
+            ],
+        }
+    )
+    state["invalidated_consumers"] = [top]
+    state["block_chains"] = {}
+    exchange = fixture["entries"][0]
+    request_id = exchange["request"]["request_id"]
+    state["receipts"] = [copy.deepcopy(exchange["receipt"])]
+    state["model_exchanges"] = {
+        request_id: {
+            name: copy.deepcopy(exchange[name])
+            for name in ("request", "response", "receipt")
+        }
+    }
+    state["receipt_rejections"] = [{"request_id": request_id}]
+    state["cost"] = Decimal(exchange["receipt"]["cost"]["amount"])
+    state["tool_calls"] = ["read_allowed", "lean_check", "submit_candidate"]
+    state["compaction_calls"] = ["proof-left-compaction-001"]
+    state["timing_seconds"] = {
+        "provider": Decimal("1.250000"),
+        "queue": Decimal("0.125000"),
+        "lean": Decimal("2.500000"),
+        "build": Decimal("3.750000"),
+    }
+    state["estimated_accounting"] = {
+        "tokens": {"input": 20, "output": 8, "total": 28},
+        "cost_usd": "0.020000",
+    }
+    run["cost_classification"] = run["lock"]["fixed_proxy"][
+        "cost_classification"
+    ]
+    for name in results.PERSISTED_SOURCE_ITEMS:
+        (root / results.FILE_LOCATIONS[name]).unlink(missing_ok=True)
+    results.persist_l0_sources(run, state)
+    return run, state
+
+
 class ResultEvidenceTests(unittest.TestCase):
     def test_complete_l0_and_l4_are_required_for_a_recovery_claim(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -339,6 +415,295 @@ class ResultEvidenceTests(unittest.TestCase):
         )
         self.assertIn("cryptographic_security", result["exclusions"])
         self.assertEqual(results.validate_l0(receipt), receipt)
+
+    def test_generic_complete_result_retains_progress_timing_and_accounting(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            run, state = _generic_attempt(Path(tmp) / "run")
+            result, receipt = results.render_attempt(
+                run, state, outcome="success", reason="all_targets_verified"
+            )
+
+            required = {
+                "target_states",
+                "verified_counts",
+                "block_chains",
+                "contract_history",
+                "calls",
+                "timing_seconds",
+                "accounting",
+            }
+            self.assertEqual(required - result.keys(), set())
+            self.assertEqual(result["target_states"], state["target_states"])
+            self.assertEqual(
+                result["verified_counts"],
+                {"targets": 1, "declarations": 3, "closure": 3},
+            )
+            self.assertEqual(result["block_chains"], {})
+            self.assertEqual(
+                result["contract_history"],
+                {
+                    "revision_lineage": state["contracts"]["revision_lineage"],
+                    "invalidated_fingerprints": state["contracts"][
+                        "invalidated_fingerprints"
+                    ],
+                    "invalidated_consumers": state["invalidated_consumers"],
+                },
+            )
+            self.assertEqual(
+                result["calls"],
+                {"model": 2, "tool": 3, "retry": 1, "compaction": 1},
+            )
+            self.assertEqual(
+                result["timing_seconds"],
+                {
+                    "provider": "1.250000",
+                    "queue": "0.125000",
+                    "lean": "2.500000",
+                    "build": "3.750000",
+                    "wall": "12.500000",
+                },
+            )
+            self.assertEqual(
+                result["accounting"],
+                {
+                    "provider_authenticated": {
+                        "requests": 0,
+                        "tokens": {"input": 0, "output": 0, "total": 0},
+                        "cost_usd": "0.000000",
+                    },
+                    "synthetic": {
+                        "requests": 1,
+                        "tokens": {"input": 120, "output": 40, "total": 160},
+                        "cost_usd": "0.001600",
+                    },
+                    "estimated": state["estimated_accounting"],
+                },
+            )
+            self.assertEqual(result["cost_classification"], "synthetic_fixture")
+            self.assertEqual(result["cost_usd"], "0.001600")
+            self.assertEqual(result["outcome"], "success")
+            self.assertEqual(result["termination_reason"], "all_targets_verified")
+            self.assertNotEqual(result["outcome"], result["termination_reason"])
+            self.assertEqual(result["snapshot_sha256"], "4" * 64)
+            self.assertEqual(result["manifest_sha256"], "5" * 64)
+            self.assertEqual(result["probe_rust_sha256"], "1" * 64)
+            self.assertEqual(result["probe_aeneas_sha256"], "2" * 64)
+            self.assertEqual(result["graph_sha256"], "3" * 64)
+            self.assertEqual(result["accepted_commit"], "a" * 40)
+
+            results.persist_attempt(run, result, receipt)
+            different = copy.deepcopy(result)
+            different["accounting"]["estimated"]["cost_usd"] = "9.000000"
+            with self.assertRaisesRegex(results.ResultError, "replacement refused"):
+                results.persist_attempt(run, different, receipt)
+
+            relabeled = copy.deepcopy(run)
+            relabeled["cost_classification"] = "provider_authenticated"
+            with self.assertRaises(results.ResultError):
+                results.render_attempt(
+                    relabeled,
+                    state,
+                    outcome="success",
+                    reason="all_targets_verified",
+                )
+
+            for mutation in ("missing_exchange", "tampered_signature"):
+                hostile = copy.deepcopy(state)
+                if mutation == "missing_exchange":
+                    hostile["model_exchanges"] = {}
+                else:
+                    hostile["receipts"][0]["auth"]["signature"] = "AAAA"
+                    stored = next(iter(hostile["model_exchanges"].values()))
+                    stored["receipt"]["auth"]["signature"] = "AAAA"
+                with self.subTest(mutation=mutation), self.assertRaises(
+                    results.ResultError
+                ):
+                    results.render_attempt(
+                        run,
+                        hostile,
+                        outcome="success",
+                        reason="all_targets_verified",
+                    )
+
+    def test_generic_partial_result_retains_blocked_and_invalidated_state(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            run, state = _generic_attempt(Path(tmp) / "run")
+            left, right, top = state["graph"]["selected_nodes"]
+            state["target_states"][left].update(
+                {"status": "failed", "block_chain": [left]}
+            )
+            state["target_states"][top].update(
+                {"status": "blocked", "block_chain": [top, left]}
+            )
+            state["block_chains"] = {top: [top, left]}
+            state["accepted_nodes"] = [right]
+            state.pop("verifier_report")
+
+            result, _ = results.render_attempt(
+                run,
+                state,
+                outcome="budget_exhausted",
+                reason="wall_budget_exhausted",
+            )
+
+            required = {
+                "target_states",
+                "verified_counts",
+                "block_chains",
+                "contract_history",
+                "calls",
+                "timing_seconds",
+                "accounting",
+            }
+            self.assertEqual(required - result.keys(), set())
+            self.assertEqual(result["target_states"], state["target_states"])
+            self.assertEqual(result["block_chains"], {top: [top, left]})
+            self.assertEqual(
+                result["verified_counts"],
+                {"targets": 0, "declarations": 0, "closure": 0},
+            )
+            self.assertEqual(
+                result["contract_history"]["revision_lineage"],
+                state["contracts"]["revision_lineage"],
+            )
+            self.assertEqual(result["calls"]["compaction"], 1)
+            self.assertEqual(result["timing_seconds"]["wall"], "12.500000")
+            self.assertEqual(
+                result["accounting"]["synthetic"]["cost_usd"],
+                "0.001600",
+            )
+            self.assertEqual(result["accepted_commit"], "a" * 40)
+            self.assertEqual(result["outcome"], "budget_exhausted")
+            self.assertEqual(
+                result["termination_reason"], "wall_budget_exhausted"
+            )
+
+    def test_retained_audit_validators_fail_closed_on_missing_or_mismatch(self):
+        smoke = getattr(results, "validate_smoke_audit", None)
+        full = getattr(results, "validate_full_audit", None)
+        self.assertTrue(callable(smoke), "validate_smoke_audit is missing")
+        self.assertTrue(callable(full), "validate_full_audit is missing")
+
+        with tempfile.TemporaryDirectory() as tmp:
+            base = Path(tmp)
+            run, state = _generic_attempt(base / "run")
+            result, receipt = results.render_attempt(
+                run, state, outcome="success", reason="all_targets_verified"
+            )
+            results.persist_attempt(run, result, receipt)
+            retained = base / "smoke-retained.json"
+            retained.write_bytes(experiment.canonical_json_bytes(result) + b"\n")
+
+            smoke(retained)
+            with self.assertRaises(results.ResultError):
+                smoke(base / "missing-retained.json")
+
+            mismatched = copy.deepcopy(result)
+            mismatched["l0_receipt_sha256"] = "0" * 64
+            mismatched_path = base / "mismatched-retained.json"
+            mismatched_path.write_bytes(
+                experiment.canonical_json_bytes(mismatched) + b"\n"
+            )
+            with self.assertRaises(results.ResultError):
+                smoke(mismatched_path)
+
+            inflated = copy.deepcopy(result)
+            inflated["verified_counts"]["targets"] = 99
+            inflated_path = base / "inflated-counts-retained.json"
+            inflated_path.write_bytes(
+                experiment.canonical_json_bytes(inflated) + b"\n"
+            )
+            with self.assertRaisesRegex(
+                results.ResultError, "verifier counts mismatch"
+            ):
+                smoke(inflated_path)
+
+            coordinated = copy.deepcopy(result)
+            coordinated["target_states"].pop("probe:Diamond.left")
+            coordinated["verified_counts"] = {
+                "targets": 1,
+                "declarations": 2,
+                "closure": 2,
+            }
+            coordinated_path = base / "coordinated-counts-retained.json"
+            coordinated_path.write_bytes(
+                experiment.canonical_json_bytes(coordinated) + b"\n"
+            )
+            with self.assertRaisesRegex(
+                results.ResultError, "target state node universe mismatch"
+            ):
+                smoke(coordinated_path)
+
+            with self.assertRaises(results.ResultError):
+                full(retained, base / "missing-contract-review.json")
+            review = base / "contract-semantic-review.json"
+            review.write_bytes(
+                experiment.canonical_json_bytes(
+                    {
+                        "schema": "autofv-contract-semantic-review/v1",
+                        "status": "approved",
+                        "accepted_commit": "0" * 40,
+                        "fingerprints": [],
+                    }
+                )
+                + b"\n"
+            )
+            with self.assertRaises(results.ResultError):
+                full(retained, review)
+
+            partial_run, partial_state = _generic_attempt(
+                base / "partial-run", attempt_id="attempt-partial-audit"
+            )
+            left, right, top = partial_state["graph"]["selected_nodes"]
+            partial_state["target_states"][left].update(
+                {"status": "failed", "block_chain": [left]}
+            )
+            partial_state["target_states"][top].update(
+                {"status": "blocked", "block_chain": [top, left]}
+            )
+            partial_state["block_chains"] = {top: [top, left]}
+            partial_state["accepted_nodes"] = [right]
+            partial_result, partial_receipt = results.render_attempt(
+                partial_run,
+                partial_state,
+                outcome="budget_exhausted",
+                reason="wall_budget_exhausted",
+            )
+            results.persist_attempt(
+                partial_run, partial_result, partial_receipt
+            )
+            partial_retained = base / "full-retained.json"
+            partial_retained.write_bytes(
+                experiment.canonical_json_bytes(partial_result) + b"\n"
+            )
+            review.write_bytes(
+                experiment.canonical_json_bytes(
+                    {
+                        "schema": "autofv-contract-semantic-review/v1",
+                        "status": "approved",
+                        "accepted_commit": "a" * 40,
+                        "fingerprints": [
+                            {
+                                "fingerprint": "8" * 64,
+                                "decision": "withheld",
+                            },
+                            {
+                                "fingerprint": "9" * 64,
+                                "decision": "withheld",
+                            },
+                            {
+                                "fingerprint": "b" * 64,
+                                "decision": "approved",
+                            },
+                        ],
+                    }
+                )
+                + b"\n"
+            )
+            with self.assertRaisesRegex(
+                results.ResultError, "verifier counts mismatch"
+            ):
+                full(partial_retained, review)
 
     def test_missing_or_incomplete_evidence_is_unscored_and_withholds_recovery(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -642,6 +1007,7 @@ class ResultEvidenceTests(unittest.TestCase):
                 "evidence_dir": str(root / "evidence"),
                 "execution_tier": "simulation",
                 "cost_classification": "synthetic_fixture",
+                "lock": experiment.load_toolchain_lock(),
                 "events": [],
             }
             state = {
@@ -702,6 +1068,156 @@ class ResultEvidenceTests(unittest.TestCase):
             self.assertIn("renderer failed", result["termination_detail"])
             self.assertTrue(Path(result["run_root"], "result.json").is_file())
             self.assertEqual(len(ledger.read_text().splitlines()), 1)
+
+    def test_durable_finalization_failure_reuses_the_allocated_attempt_root(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            base = Path(tmp)
+            ledger = base / "attempts.jsonl"
+            staging = base / "staging"
+            (staging / "evidence").mkdir(parents=True)
+            prepared = {
+                "run_id": "durable-renderer-failure-run",
+                "run_root": str(staging),
+                "evidence_dir": str(staging / "evidence"),
+                "execution_tier": "simulation",
+                "cost_classification": "synthetic_fixture",
+                "events": ["validated"],
+            }
+            allocated_roots = []
+
+            class FixedDatetime:
+                @classmethod
+                def now(cls, tz):
+                    return datetime(2026, 9, 14, tzinfo=timezone.utc)
+
+            def fail_finalization(run, *_args, **_kwargs):
+                allocated_roots.append(Path(run["run_root"]))
+                raise results.ResultError("renderer failed")
+
+            with (
+                mock.patch.dict(
+                    os.environ, {"AUTOFV_ATTEMPT_LEDGER": str(ledger)}
+                ),
+                mock.patch.object(results, "datetime", FixedDatetime),
+                mock.patch.object(worker, "prepare_run", return_value=prepared),
+                mock.patch.object(
+                    experiment._EXPERIMENT_GRAPH, "stream", return_value=[]
+                ),
+                mock.patch.object(
+                    experiment, "_finish_attempt", side_effect=fail_finalization
+                ),
+            ):
+                try:
+                    result = experiment.run_experiment(
+                        TARGET,
+                        TARGET / "run.json",
+                        output_root=base / "attempts",
+                    )
+                except results.ResultError as exc:
+                    self.fail(
+                        "emergency result was not persisted in the allocated "
+                        f"attempt root: {exc}"
+                    )
+
+            self.assertEqual(result["termination_reason"], "finalization_failed")
+            self.assertEqual(Path(result["run_root"]), allocated_roots[0])
+            self.assertTrue((allocated_roots[0] / "result.json").is_file())
+
+    def test_durable_binding_failure_force_destroys_the_prepared_worker(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            base = Path(tmp)
+            ledger = base / "attempts.jsonl"
+            staging = base / "staging"
+            (staging / "evidence").mkdir(parents=True)
+            prepared = {
+                "run_id": "binding-failure-run",
+                "run_root": str(staging),
+                "evidence_dir": str(staging / "evidence"),
+                "volume": "autofv-binding-failure",
+                "execution_tier": "sealed_runsc",
+                "cost_classification": "provider_backed",
+                "events": ["validated"],
+            }
+            moments = iter(
+                (
+                    datetime(2026, 9, 14, 0, 0, 0, tzinfo=timezone.utc),
+                    datetime(2026, 9, 14, 0, 0, 1, tzinfo=timezone.utc),
+                )
+            )
+
+            class AdvancingDatetime:
+                @classmethod
+                def now(cls, tz):
+                    return next(moments)
+
+            with (
+                mock.patch.dict(
+                    os.environ, {"AUTOFV_ATTEMPT_LEDGER": str(ledger)}
+                ),
+                mock.patch.object(results, "datetime", AdvancingDatetime),
+                mock.patch.object(worker, "prepare_run", return_value=prepared),
+                mock.patch.object(
+                    results,
+                    "bind_prepared_run",
+                    side_effect=results.ResultError("binding failed"),
+                ),
+                mock.patch.object(worker, "force_destroy_worker") as destroy,
+            ):
+                result = experiment.run_experiment(
+                    TARGET,
+                    TARGET / "run.json",
+                    output_root=base / "attempts",
+                )
+
+            self.assertEqual(result["termination_reason"], "attempt_allocation_failed")
+            destroy.assert_called_once_with(prepared)
+            attempt_roots = [path.resolve() for path in (base / "attempts").iterdir()]
+            self.assertEqual(attempt_roots, [Path(result["run_root"]).resolve()])
+
+    def test_durable_binding_removes_the_worker_staging_root(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            base = Path(tmp)
+            ledger = base / "attempts.jsonl"
+            staging = base / "staging"
+            (staging / "evidence").mkdir(parents=True)
+            prepared = {
+                "run_id": "successful-binding-run",
+                "run_root": str(staging),
+                "evidence_dir": str(staging / "evidence"),
+                "volume": "autofv-successful-binding",
+                "execution_tier": "sealed_runsc",
+                "cost_classification": "provider_backed",
+                "base_commit": "a" * 40,
+                "egress_receipt": {"status": "allowed"},
+                "events": ["validated"],
+            }
+
+            def finish_without_worker_calls(run, *_args, **_kwargs):
+                return {"outcome": "success", "run_root": run["run_root"]}
+
+            with (
+                mock.patch.dict(
+                    os.environ, {"AUTOFV_ATTEMPT_LEDGER": str(ledger)}
+                ),
+                mock.patch.object(worker, "prepare_run", return_value=prepared),
+                mock.patch.object(
+                    experiment._EXPERIMENT_GRAPH, "stream", return_value=[]
+                ),
+                mock.patch.object(
+                    experiment,
+                    "_finish_attempt",
+                    side_effect=finish_without_worker_calls,
+                ),
+            ):
+                result = experiment.run_experiment(
+                    TARGET,
+                    TARGET / "run.json",
+                    output_root=base / "attempts",
+                )
+
+            self.assertEqual(result["outcome"], "success")
+            self.assertNotEqual(Path(result["run_root"]), staging)
+            self.assertFalse(staging.exists())
 
 
 if __name__ == "__main__":

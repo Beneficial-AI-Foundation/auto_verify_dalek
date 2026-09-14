@@ -176,20 +176,41 @@ def _persist_unallocated_attempt(
     outcome: str,
     reason: str,
     detail: Exception,
+    output_root: str | Path | None = None,
+    accepted_source: Path | None = None,
+    existing_run: dict[str, Any] | None = None,
+    existing_state: _RunState | None = None,
 ) -> dict[str, Any]:
-    run = results.allocate_attempt(
-        identity, target=target, run_config=run_config
-    )
-    state: _RunState = {
-        "run": run,
-        "config": {},
-        "receipts": [],
-        "receipt_rejections": [],
-        "wall_seconds_used": Decimal("0.000000"),
-        "finalization_reserve_seconds": Decimal("0.000000"),
-        "wall_started_monotonic_ns": wall_started,
-        "termination_detail": str(detail)[:1000],
-    }
+    run = existing_run
+    if run is None:
+        run = results.allocate_attempt(
+            identity,
+            target=target,
+            run_config=run_config,
+            output_root=output_root,
+        )
+        if accepted_source is not None:
+            results.snapshot_input(run, accepted_source)
+    if existing_state is None:
+        state: _RunState = {
+            "run": run,
+            "config": {},
+            "receipts": [],
+            "receipt_rejections": [],
+            "wall_seconds_used": Decimal("0.000000"),
+            "finalization_reserve_seconds": Decimal("0.000000"),
+            "wall_started_monotonic_ns": wall_started,
+            "termination_detail": str(detail)[:1000],
+        }
+    else:
+        state = dict(existing_state)
+        state.update(
+            {
+                "run": run,
+                "wall_started_monotonic_ns": wall_started,
+                "termination_detail": str(detail)[:1000],
+            }
+        )
     _charge_wall(state)
     results.persist_l0_sources(run, state)
     result, receipt = results.render_attempt(
@@ -197,23 +218,6 @@ def _persist_unallocated_attempt(
     )
     results.persist_attempt(run, result, receipt)
     return result
-
-
-def _persist_unallocated_interrupt(
-    identity: dict[str, str],
-    target: str | Path,
-    run_config: str | Path,
-    wall_started: int,
-) -> dict[str, Any]:
-    return _persist_unallocated_attempt(
-        identity,
-        target,
-        run_config,
-        wall_started,
-        outcome="infrastructure_failed",
-        reason="interrupted",
-        detail=RuntimeError("controller interrupted"),
-    )
 
 
 def _finish_attempt(
@@ -249,6 +253,7 @@ def _finish_attempt(
     ):
         try:
             worker.dispose_run(run, interrupted=interrupted)
+            results.materialize_accepted(run)
         except (Exception, KeyboardInterrupt) as exc:
             failed_finalization(exc)
 
@@ -296,13 +301,15 @@ def run_experiment(
     target: str | Path,
     run_config: str | Path,
     *,
+    output_root: str | Path | None = None,
     run_round=agentproc.run_round,
     resume_from: str | Path | None = None,
 ) -> dict[str, Any]:
     """Run the bounded sealed tracer and persist every attempted run."""
     wall_started = time.monotonic_ns()
+    results.validate_output_root(target, output_root)
     try:
-        identity = results.new_attempt_identity()
+        identity = results.new_attempt_identity(target)
     except results.ResultError as exc:
         return _persist_unallocated_attempt(
             results.default_attempt_identity(),
@@ -312,55 +319,65 @@ def run_experiment(
             outcome="invalid_config",
             reason="attempt_ledger_invalid",
             detail=exc,
+            output_root=output_root,
         )
+    target_path: Path | None = None
+    durable_run: dict[str, Any] | None = None
+
+    def persist_unallocated(
+        outcome: str,
+        reason: str,
+        detail: Exception,
+        *,
+        existing_run: dict[str, Any] | None = None,
+        existing_state: _RunState | None = None,
+    ) -> dict[str, Any]:
+        return _persist_unallocated_attempt(
+            identity,
+            target,
+            run_config,
+            wall_started,
+            outcome=outcome,
+            reason=reason,
+            detail=detail,
+            output_root=output_root,
+            accepted_source=target_path,
+            existing_run=existing_run,
+            existing_state=existing_state,
+        )
+
     try:
         target_path, manifest = validate_target(target)
     except KeyboardInterrupt:
-        return _persist_unallocated_interrupt(
-            identity, target, run_config, wall_started
+        return persist_unallocated(
+            "infrastructure_failed",
+            "interrupted",
+            RuntimeError("controller interrupted"),
         )
     except ContractError as exc:
-        return _persist_unallocated_attempt(
-            identity,
-            target,
-            run_config,
-            wall_started,
-            outcome="invalid_target",
-            reason="target_invalid",
-            detail=exc,
-        )
+        return persist_unallocated("invalid_target", "target_invalid", exc)
     try:
         _, config = validate_run_config(run_config)
     except KeyboardInterrupt:
-        return _persist_unallocated_interrupt(
-            identity, target, run_config, wall_started
+        return persist_unallocated(
+            "infrastructure_failed",
+            "interrupted",
+            RuntimeError("controller interrupted"),
         )
     except ContractError as exc:
-        return _persist_unallocated_attempt(
-            identity,
-            target,
-            run_config,
-            wall_started,
-            outcome="invalid_config",
-            reason="run_config_invalid",
-            detail=exc,
-        )
+        return persist_unallocated("invalid_config", "run_config_invalid", exc)
     try:
         lock = load_toolchain_lock()
         policy = validate_native_decide_policy(lock)
     except KeyboardInterrupt:
-        return _persist_unallocated_interrupt(
-            identity, target, run_config, wall_started
+        return persist_unallocated(
+            "infrastructure_failed",
+            "interrupted",
+            RuntimeError("controller interrupted"),
         )
     except ContractError as exc:
-        return _persist_unallocated_attempt(
-            identity,
-            target,
-            run_config,
-            wall_started,
-            outcome="infrastructure_failed",
-            reason="toolchain_contract_invalid",
-            detail=exc,
+        return persist_unallocated(
+            "infrastructure_failed", "toolchain_contract_invalid", exc
         )
 
     preparation_failure = None
@@ -381,50 +398,68 @@ def run_experiment(
                 run_round=run_round,
             )
             run = state["run"]
+            durable_run = run
         except KeyboardInterrupt:
-            return _persist_unallocated_interrupt(
-                identity, target, run_config, wall_started
+            return persist_unallocated(
+                "infrastructure_failed",
+                "interrupted",
+                RuntimeError("controller interrupted"),
             )
         except Exception as exc:
-            return _persist_unallocated_attempt(
-                identity,
-                target,
-                run_config,
-                wall_started,
-                outcome="infrastructure_failed",
-                reason="resume_failed",
-                detail=exc,
+            return persist_unallocated(
+                "infrastructure_failed", "resume_failed", exc
             )
     else:
         try:
             run = worker.prepare_run(target_path, manifest, lock)
         except KeyboardInterrupt:
-            return _persist_unallocated_interrupt(
-                identity, target, run_config, wall_started
+            return persist_unallocated(
+                "infrastructure_failed",
+                "interrupted",
+                RuntimeError("controller interrupted"),
             )
         except worker.WorkerError as exc:
             if exc.run is None:
-                return _persist_unallocated_attempt(
-                    identity,
-                    target,
-                    run_config,
-                    wall_started,
-                    outcome="infrastructure_failed",
-                    reason="worker_preparation_failed",
-                    detail=exc,
+                return persist_unallocated(
+                    "infrastructure_failed", "worker_preparation_failed", exc
                 )
             run = exc.run
             preparation_failure = exc
         except Exception as exc:
-            return _persist_unallocated_attempt(
-                identity,
-                target,
-                run_config,
-                wall_started,
-                outcome="infrastructure_failed",
-                reason="worker_preparation_failed",
-                detail=exc,
+            return persist_unallocated(
+                "infrastructure_failed", "worker_preparation_failed", exc
             )
+        if output_root is not None or run.get("execution_tier") != "simulation":
+            prepared_run = run
+            allocation = None
+            try:
+                allocation = results.allocate_attempt(
+                    identity,
+                    target=target_path,
+                    run_config=run_config,
+                    output_root=output_root,
+                )
+                results.snapshot_input(allocation, target_path)
+                run = results.bind_prepared_run(allocation, run)
+                durable_run = run
+            except results.ResultError as exc:
+                detail: Exception = exc
+                if (
+                    prepared_run.get("execution_tier") == "sealed_runsc"
+                    and not prepared_run.get("worker_disposed")
+                ):
+                    try:
+                        worker.force_destroy_worker(prepared_run)
+                    except BaseException as destroy_exc:
+                        detail = RuntimeError(
+                            f"{exc}; forced worker destruction failed: {destroy_exc}"
+                        )
+                return persist_unallocated(
+                    "infrastructure_failed",
+                    "attempt_allocation_failed",
+                    detail,
+                    existing_run=allocation,
+                )
         run.update(
             {
                 "lock": lock,
@@ -538,17 +573,12 @@ def run_experiment(
         detail = RuntimeError(
             f"final result persistence failed for {run.get('run_id')}: {exc}"
         )
-        return _persist_unallocated_attempt(
-            {
-                "attempt_id": run["attempt_id"],
-                "attempt_ledger": run["attempt_ledger"],
-            },
-            target,
-            run_config,
-            wall_started,
-            outcome="infrastructure_failed",
-            reason="finalization_failed",
-            detail=detail,
+        return persist_unallocated(
+            "infrastructure_failed",
+            "finalization_failed",
+            detail,
+            existing_run=durable_run,
+            existing_state=state if durable_run is not None else None,
         )
 
 
@@ -601,9 +631,24 @@ def _parser() -> argparse.ArgumentParser:
     inspect.add_argument("repo")
     inspect.add_argument("--output", required=True)
     run = commands.add_parser("run")
-    run.add_argument("--target", required=True)
-    run.add_argument("--run-config", required=True)
+    run.add_argument("repo", nargs="?")
+    run.add_argument("--config")
+    run.add_argument("--output-root")
+    run.add_argument("--target", dest="target_alias")
+    run.add_argument("--run-config", dest="config_alias")
     return parser
+
+
+def _run_arguments(
+    parser: argparse.ArgumentParser, args: argparse.Namespace
+) -> tuple[str, str]:
+    repositories = [value for value in (args.repo, args.target_alias) if value]
+    configs = [value for value in (args.config, args.config_alias) if value]
+    if not repositories or not configs:
+        parser.error("run requires REPO and --config")
+    if len(set(repositories)) != 1 or len(set(configs)) != 1:
+        parser.error("run compatibility aliases disagree")
+    return repositories[0], configs[0]
 
 
 def main() -> None:
@@ -615,9 +660,14 @@ def main() -> None:
         except (OSError, probes.ProbeError) as exc:
             parser.error(str(exc))
         return
+    target, run_config = _run_arguments(parser, args)
     try:
-        result = run_experiment(args.target, args.run_config)
-    except ContractError as exc:
+        result = run_experiment(
+            target,
+            run_config,
+            output_root=args.output_root,
+        )
+    except (ContractError, results.ResultError) as exc:
         parser.error(str(exc))
     print(canonical_json_bytes(result).decode("utf-8"))
     if result["outcome"] != "success":

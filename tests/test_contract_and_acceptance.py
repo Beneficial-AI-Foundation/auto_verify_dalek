@@ -27,6 +27,7 @@ ROOT = "probe:Graph.root"
 LEFT_NODE = "probe:Graph.left"
 RIGHT_NODE = "probe:Graph.right"
 SHARED = "probe:Graph.shared"
+OTHER = "probe:Graph.other"
 
 
 def _shared_graph():
@@ -46,6 +47,14 @@ def _shared_graph():
             SHARED: "Graph/Shared.lean",
         },
     }
+
+
+def _failure_graph():
+    graph = _shared_graph()
+    graph["selected_nodes"].append(OTHER)
+    graph["term_dependencies"].append([ROOT, OTHER])
+    graph["source_paths"][OTHER] = "Graph/Other.lean"
+    return graph
 
 
 def _state():
@@ -99,6 +108,78 @@ class ContractRepairTests(unittest.TestCase):
             immediate_consumers(graph, SHARED),
             [LEFT_NODE, RIGHT_NODE],
         )
+
+    def test_contract_revision_invalidates_only_its_proof_and_transitive_consumers(self):
+        graph = _failure_graph()
+        state = {
+            "graph": graph,
+            "contracts": {
+                "node_fingerprints": {node: node + "-v1" for node in graph["selected_nodes"]},
+                "invalidated_fingerprints": [],
+                "revision_lineage": [],
+            },
+            "accepted_nodes": list(graph["selected_nodes"]),
+            "proof_patch_sha256": {node: node + "-patch" for node in graph["selected_nodes"]},
+            "target_states": {
+                node: {"phase": "proof", "status": "accepted"}
+                for node in graph["selected_nodes"]
+            },
+            "run": {"events": []},
+        }
+        revise = getattr(diamond, "_revise_contract_fingerprint", lambda *_: [])
+
+        invalidated = revise(state, SHARED, "shared-v2")
+
+        self.assertEqual(invalidated, [LEFT_NODE, RIGHT_NODE, ROOT])
+        self.assertEqual(state["accepted_nodes"], [OTHER])
+        self.assertEqual(state["target_states"][OTHER]["status"], "accepted")
+
+    def test_exhausted_helper_blocks_only_its_consumer_chain(self):
+        graph = _failure_graph()
+        state = {
+            "graph": graph,
+            "target_states": {
+                node: {"phase": "proof", "status": "accepted"}
+                for node in graph["selected_nodes"]
+            },
+            "block_chains": {},
+            "run": {"events": []},
+        }
+        block = getattr(diamond, "_block_dependents", lambda *_: [])
+
+        blocked = block(state, SHARED, "proof_exhausted")
+
+        self.assertEqual(blocked, [LEFT_NODE, RIGHT_NODE, ROOT])
+        self.assertEqual(state["block_chains"][ROOT], [ROOT, LEFT_NODE, SHARED])
+        self.assertEqual(state["target_states"][OTHER]["status"], "accepted")
+
+    def test_cycle_preflight_fails_with_graph_diagnostics_before_model_work(self):
+        graph = {
+            "frozen_targets": ["probe:Cycle.a"],
+            "selected_nodes": ["probe:Cycle.a", "probe:Cycle.b"],
+            "term_dependencies": [
+                ["probe:Cycle.a", "probe:Cycle.b"],
+                ["probe:Cycle.b", "probe:Cycle.a"],
+            ],
+            "source_paths": {
+                "probe:Cycle.a": "Cycle/A.lean",
+                "probe:Cycle.b": "Cycle/B.lean",
+            },
+        }
+        state = {"graph": graph, "preparation_defects": [], "run": {"events": []}}
+        validate = getattr(diamond, "_validate_scheduling_graph", lambda *_: None)
+
+        with (
+            mock.patch.object(diamond, "_model_request") as model,
+            self.assertRaisesRegex(
+                experiment.ContractError,
+                "unsupported_dependency_cycle.*probe:Cycle.a.*Cycle/A.lean",
+            ),
+        ):
+            validate(state)
+
+        model.assert_not_called()
+        self.assertEqual(state["preparation_defects"][0]["kind"], "cycle")
 
     def test_weak_contract_fails_before_review_and_only_strong_records_freeze(self):
         state = _state()

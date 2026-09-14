@@ -244,6 +244,22 @@ class ProbeGraphTests(unittest.TestCase):
         ):
             self.assertIn(expected, diagnostic)
 
+    def test_long_acyclic_closure_does_not_depend_on_python_recursion(self):
+        nodes = {f"node-{index:04d}" for index in range(1_500)}
+        edges = [
+            (f"node-{index:04d}", f"node-{index + 1:04d}")
+            for index in range(1_499)
+        ]
+
+        contract_order, proof_batches = probes._topological_orders(
+            nodes, edges, ["node-0000"]
+        )
+
+        self.assertEqual(len(contract_order), 1_500)
+        self.assertEqual(contract_order[:2], ["node-0000", "node-0001"])
+        self.assertEqual(proof_batches[0], ["node-1499"])
+        self.assertEqual(proof_batches[-1], ["node-0000"])
+
     def test_wrong_envelopes_and_incomplete_target_truth_fail_closed(self):
         cases = []
 

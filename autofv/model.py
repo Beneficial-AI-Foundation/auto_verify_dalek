@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import hmac
 import json
@@ -167,7 +168,11 @@ def _record_model_rejection(
 
 
 def _invoke_model(
-    state: _RunState, request: dict[str, Any], *, checkpoint: bool = True
+    state: _RunState,
+    request: dict[str, Any],
+    *,
+    checkpoint: bool = True,
+    call_kind: str = "explicit",
 ) -> tuple[dict[str, Any], dict[str, Any]]:
     if checkpoint:
         _check_budget(state)
@@ -204,6 +209,7 @@ def _invoke_model(
             "request": request,
             "response": response,
             "receipt": receipt,
+            "call_kind": call_kind,
         }
         _checkpoint_if_enabled(state, f"model:{request['request_id']}:after")
     return response, receipt
@@ -232,11 +238,22 @@ def _accept_model_exchange(
 
     request = json.loads(canonical_json_bytes(request))
     run, config = state["run"], state["config"]
+    pending = state.setdefault("pending_model_exchanges", {}).get(
+        request["request_id"], {}
+    )
+    call_kind = pending.get("call_kind", "explicit")
+    if call_kind not in _MODEL_CALL_KINDS:
+        raise ContractError("stored model call kind is invalid")
     new_cost = state["cost"] + amount
     state["cost"] = new_cost
     state["receipts"].append(receipt)
     state["receipts"].sort(key=lambda item: item["sequence"])
-    exchange = {"request": request, "response": response, "receipt": receipt}
+    exchange = {
+        "request": request,
+        "response": response,
+        "receipt": receipt,
+        "call_kind": call_kind,
+    }
     state.setdefault("model_exchanges", {})[request["request_id"]] = exchange
     state.setdefault("pending_model_exchanges", {}).pop(request["request_id"], None)
     _event_once(run, f"proxy:{request['request_id']}")
@@ -256,6 +273,39 @@ def _accept_model_exchange(
     return response, receipt
 
 
+_MODEL_CALL_KINDS = frozenset(
+    {"explicit", "retry", "schema_correction", "compaction", "framework"}
+)
+
+
+def _bind_model_call_kind(
+    state: _RunState,
+    request_id: str,
+    call_kind: str,
+    stored: dict[str, Any] | None,
+    *,
+    record_event: bool,
+) -> None:
+    if call_kind not in _MODEL_CALL_KINDS:
+        raise ContractError("model call kind is invalid")
+    prefix = f"model:{request_id}:reserved:"
+    reserved = {
+        event.removeprefix(prefix)
+        for event in state["run"].setdefault("events", [])
+        if isinstance(event, str) and event.startswith(prefix)
+    }
+    if reserved and reserved != {call_kind}:
+        raise ContractError(f"resumed model call kind changed: {request_id}")
+    if stored is not None:
+        stored_kind = stored.get("call_kind", "explicit")
+        if stored_kind != call_kind:
+            raise ContractError(f"resumed model call kind changed: {request_id}")
+        stored.setdefault("call_kind", call_kind)
+    if record_event:
+        _event_once(state["run"], f"{prefix}{call_kind}")
+        _checkpoint_if_enabled(state, f"model:{request_id}:reserved")
+
+
 def _model_request(
     state: _RunState,
     *,
@@ -263,7 +313,9 @@ def _model_request(
     role: str,
     input_hashes: list[str],
     batch_id: str | None = None,
+    call_kind: str | None = None,
 ) -> tuple[dict[str, Any], dict[str, Any]]:
+    classified_kind = "explicit" if call_kind is None else call_kind
     completed = state.setdefault("model_exchanges", {}).get(request_id)
     pending = state.setdefault("pending_model_exchanges", {}).get(request_id)
     stored = completed or pending
@@ -271,25 +323,56 @@ def _model_request(
         stored_sequence = stored["request"]["sequence"] if stored is not None else None
     except (KeyError, TypeError) as exc:
         raise ContractError(f"stored model request is invalid: {request_id}") from exc
-    request = _model_envelope(
-        state,
-        request_id=request_id,
-        role=role,
-        input_hashes=input_hashes,
-        batch_id=batch_id,
-        sequence=stored_sequence,
-    )
-    if completed is not None:
-        if completed.get("request") != request:
-            raise ContractError(f"resumed model request changed: {request_id}")
-        return completed["response"], completed["receipt"]
-    if pending is not None:
-        if pending.get("request") != request:
-            raise ContractError(f"pending model request changed: {request_id}")
-        return _accept_model_exchange(
-            state, request, pending.get("response"), pending.get("receipt")
+    try:
+        request = _model_envelope(
+            state,
+            request_id=request_id,
+            role=role,
+            input_hashes=input_hashes,
+            batch_id=batch_id,
+            sequence=stored_sequence,
         )
-    return _accept_model_exchange(state, request, *_invoke_model(state, request))
+        if completed is not None:
+            if completed.get("request") != request:
+                raise ContractError(f"resumed model request changed: {request_id}")
+        if pending is not None and pending.get("request") != request:
+            raise ContractError(f"pending model request changed: {request_id}")
+        _bind_model_call_kind(
+            state,
+            request_id,
+            classified_kind,
+            stored,
+            record_event=call_kind is not None,
+        )
+        if completed is not None:
+            return completed["response"], completed["receipt"]
+        if pending is not None:
+            return _accept_model_exchange(
+                state, request, pending.get("response"), pending.get("receipt")
+            )
+        return _accept_model_exchange(
+            state,
+            request,
+            *_invoke_model(state, request, call_kind=classified_kind),
+        )
+    except asyncio.CancelledError:
+        incomplete = state.setdefault("pending_model_exchanges", {}).get(request_id)
+        if not isinstance(incomplete, dict) or not {
+            "request",
+            "response",
+            "receipt",
+        } <= incomplete:
+            state["pending_model_exchanges"].pop(request_id, None)
+        _event_once(
+            state["run"], f"model:{request_id}:reserved:{classified_kind}"
+        )
+        _event_once(state["run"], f"model:{request_id}:cancelled")
+        try:
+            _charge_wall(state)
+            _checkpoint_if_enabled(state, f"model:{request_id}:cancelled")
+        except Exception:
+            pass
+        raise
 
 
 def _parallel_model_requests(
@@ -370,6 +453,7 @@ def _parallel_model_requests(
                 "request": request,
                 "response": response,
                 "receipt": receipt,
+                "call_kind": "explicit",
             }
             _checkpoint_if_enabled(state, f"model:{request['request_id']}:after")
 
@@ -460,7 +544,13 @@ def _validate_model_response(
         raise ContractError("model response request identity mismatch")
     if response["base_commit"] != base_commit:
         raise ContractError("model response base commit mismatch")
-    if response["kind"] not in {"scout", "dependency_plan", "statement", "patch"}:
+    if response["kind"] not in {
+        "scout",
+        "dependency_plan",
+        "statement",
+        "patch",
+        "tool_call",
+    }:
         raise ContractError("model response kind is unsupported")
     fingerprints = response["statement_fingerprints"]
     if (
@@ -500,4 +590,15 @@ def _validate_model_response(
             or payload.get("statement_fingerprints") != fingerprints
         ):
             raise ContractError("candidate patch bindings mismatch")
+    elif response["kind"] == "tool_call":
+        payload = _exact_dict(
+            payload,
+            {"schema", "name", "arguments"},
+            "lane tool call",
+        )
+        if payload["schema"] != "autofv-lane-tool-call/v1":
+            raise ContractError("lane tool call schema mismatch")
+        _text(payload["name"], "lane tool call name")
+        if not isinstance(payload["arguments"], dict):
+            raise ContractError("lane tool call arguments must be an object")
     return response

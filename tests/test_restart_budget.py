@@ -1,4 +1,6 @@
+import asyncio
 import copy
+import inspect
 import json
 import os
 import tempfile
@@ -7,7 +9,7 @@ from decimal import Decimal
 from pathlib import Path
 from unittest import mock
 
-from autofv import experiment, results, verifier, worker
+from autofv import experiment, model, results, verifier, worker
 from tests.test_phase1_diamond import MODEL_FIXTURE, TARGET, _FixtureProxy, _Seams
 
 
@@ -70,6 +72,11 @@ def _checkpoint_state(root: Path) -> dict:
 
 class RestartTests(unittest.TestCase):
     def test_completed_model_exchange_reuses_its_original_sequence(self):
+        self.assertIn(
+            "call_kind",
+            inspect.signature(model._model_request).parameters,
+            "Task 2 must classify every model call through the existing seam",
+        )
         with tempfile.TemporaryDirectory() as tmp:
             state = _checkpoint_state(Path(tmp))
             entry = copy.deepcopy(ENTRIES["scout-001"])
@@ -84,17 +91,138 @@ class RestartTests(unittest.TestCase):
             }
             state["pending_model_exchanges"] = {}
             state["run_round"] = mock.Mock(side_effect=AssertionError("replayed"))
+            accepted = copy.deepcopy(state["accepted"])
 
-            response, receipt = experiment._model_request(
+            response, receipt = model._model_request(
                 state,
                 request_id="scout-001",
                 role="scout",
                 input_hashes=entry["request"]["input_hashes"],
+                call_kind="explicit",
+            )
+            replayed = model._model_request(
+                state,
+                request_id="scout-001",
+                role="scout",
+                input_hashes=entry["request"]["input_hashes"],
+                call_kind="explicit",
             )
 
             self.assertEqual(response, entry["response"])
             self.assertEqual(receipt, entry["receipt"])
+            self.assertEqual(replayed, (response, receipt))
+            self.assertEqual(state["accepted"], accepted)
+            self.assertEqual(
+                state["run"]["events"].count("model:scout-001:reserved:explicit"),
+                1,
+            )
             state["run_round"].assert_not_called()
+
+    def test_every_lane_call_kind_is_reserved_and_has_a_signed_receipt(self):
+        self.assertIn(
+            "call_kind",
+            inspect.signature(model._model_request).parameters,
+            "Task 2 must classify every model call through the existing seam",
+        )
+        call_kinds = (
+            "explicit",
+            "retry",
+            "schema_correction",
+            "compaction",
+            "framework",
+        )
+        with tempfile.TemporaryDirectory() as tmp:
+            state = _checkpoint_state(Path(tmp))
+            state["run_round"] = _FixtureProxy(FIXTURE)
+
+            for call_kind, entry in zip(
+                call_kinds, FIXTURE["entries"][: len(call_kinds)], strict=True
+            ):
+                response, receipt = model._model_request(
+                    state,
+                    request_id=entry["request"]["request_id"],
+                    role=entry["request"]["role"],
+                    input_hashes=entry["request"]["input_hashes"],
+                    batch_id=entry["request"]["batch_id"],
+                    call_kind=call_kind,
+                )
+                self.assertEqual(response, entry["response"])
+                self.assertEqual(receipt, entry["receipt"])
+                self.assertIn(
+                    f"model:{entry['request']['request_id']}:reserved:{call_kind}",
+                    state["run"]["events"],
+                )
+
+            self.assertEqual(len(state["receipts"]), len(call_kinds))
+            self.assertEqual(len(state["model_exchanges"]), len(call_kinds))
+            self.assertTrue(
+                all(receipt["auth"]["signature"] for receipt in state["receipts"])
+            )
+
+    def test_interrupted_pending_lane_call_resumes_without_provider_reissue(self):
+        self.assertIn(
+            "call_kind",
+            inspect.signature(model._model_request).parameters,
+            "Task 2 must classify every model call through the existing seam",
+        )
+        with tempfile.TemporaryDirectory() as tmp:
+            state = _checkpoint_state(Path(tmp))
+            entry = copy.deepcopy(ENTRIES["scout-001"])
+            state["pending_model_exchanges"] = {
+                "scout-001": {
+                    "request": entry["request"],
+                    "response": entry["response"],
+                    "receipt": entry["receipt"],
+                }
+            }
+            state["model_exchanges"] = {}
+            state["run_round"] = mock.Mock(side_effect=AssertionError("reissued"))
+            accepted = copy.deepcopy(state["accepted"])
+
+            response, receipt = model._model_request(
+                state,
+                request_id="scout-001",
+                role="scout",
+                input_hashes=entry["request"]["input_hashes"],
+                call_kind="explicit",
+            )
+
+            self.assertEqual(response, entry["response"])
+            self.assertEqual(receipt, entry["receipt"])
+            self.assertEqual(state["pending_model_exchanges"], {})
+            self.assertIn("scout-001", state["model_exchanges"])
+            self.assertEqual(state["accepted"], accepted)
+            state["run_round"].assert_not_called()
+
+    def test_cancelled_lane_call_reconciles_without_receipt_or_acceptance(self):
+        self.assertIn(
+            "call_kind",
+            inspect.signature(model._model_request).parameters,
+            "Task 2 must classify every model call through the existing seam",
+        )
+        with tempfile.TemporaryDirectory() as tmp:
+            state = _checkpoint_state(Path(tmp))
+            entry = ENTRIES["scout-001"]
+            state["run_round"] = mock.Mock(side_effect=asyncio.CancelledError)
+            accepted = copy.deepcopy(state["accepted"])
+
+            with self.assertRaises(asyncio.CancelledError):
+                model._model_request(
+                    state,
+                    request_id=entry["request"]["request_id"],
+                    role=entry["request"]["role"],
+                    input_hashes=entry["request"]["input_hashes"],
+                    call_kind="framework",
+                )
+
+            self.assertEqual(state["receipts"], [])
+            self.assertEqual(state.get("pending_model_exchanges", {}), {})
+            self.assertEqual(state.get("model_exchanges", {}), {})
+            self.assertEqual(state["accepted"], accepted)
+            self.assertIn(
+                "model:scout-001:reserved:framework", state["run"]["events"]
+            )
+            self.assertIn("model:scout-001:cancelled", state["run"]["events"])
 
     def test_loader_uses_highest_valid_sequence_not_name_or_mtime(self):
         with tempfile.TemporaryDirectory() as tmp:

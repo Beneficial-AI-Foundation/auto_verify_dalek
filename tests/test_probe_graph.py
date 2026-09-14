@@ -21,6 +21,9 @@ TOP = "probe:Diamond.top"
 LEFT = "probe:Diamond.left"
 RIGHT = "probe:Diamond.right"
 TOP_SPEC = "probe:Diamond.top_spec"
+SIBLING_RUST = "probe:autofv-diamond/0.1.0/sibling()"
+SIBLING = "probe:Diamond.sibling"
+SIBLING_SPEC = "probe:Diamond.sibling_spec"
 
 
 def _bytes(value):
@@ -54,6 +57,208 @@ class ProbeGraphTests(unittest.TestCase):
         self.assertEqual(graph["type_dependencies"], [[TOP_SPEC, TOP]])
         self.assertEqual(graph["contract_order"], [TOP, LEFT, RIGHT])
         self.assertEqual(graph["proof_batches"], [[LEFT, RIGHT], [TOP]])
+
+    def test_target_report_keeps_public_metadata_separate_from_graph_tops(self):
+        renderer = getattr(probes, "render_target_report", None)
+        self.assertIsNotNone(renderer, "canonical target report renderer is missing")
+
+        report = json.loads(renderer(self.parse()))
+        self.assertEqual(
+            set(report),
+            {"schema", "inputs", "tools", "graph_tops", "declarations", "diagnostics"},
+        )
+        self.assertEqual(report["schema"], "target-report/v1")
+        self.assertEqual(report["graph_tops"], [TARGET_RUST])
+        self.assertEqual(
+            report["inputs"],
+            {
+                "probe_aeneas_sha256": hashlib.sha256(self.aeneas_raw).hexdigest(),
+                "probe_rust_sha256": hashlib.sha256(self.rust_raw).hexdigest(),
+            },
+        )
+        self.assertEqual(
+            report["tools"],
+            {
+                "probe_aeneas": self.aeneas["tool"],
+                "probe_rust": self.rust["tool"],
+            },
+        )
+        top = report["declarations"][TARGET_RUST]
+        self.assertIs(top["public_api"], True)
+        self.assertEqual(top["declaration"], TOP)
+        self.assertEqual(top["primary_spec"], TOP_SPEC)
+        self.assertEqual(top["directed_closure"], [LEFT, RIGHT, TOP])
+        self.assertEqual(
+            top["source"], {"path": "src/lib.rs", "lines": [9, 11]}
+        )
+        self.assertEqual(report["diagnostics"], [])
+
+    def test_target_report_is_canonical_and_does_not_infer_public_metadata(self):
+        graph = self.parse()
+        expected = probes.render_target_report(graph)
+
+        def reverse_objects(value):
+            if isinstance(value, dict):
+                return {
+                    key: reverse_objects(item)
+                    for key, item in reversed(tuple(value.items()))
+                }
+            if isinstance(value, list):
+                return [reverse_objects(item) for item in value]
+            return value
+
+        self.assertEqual(
+            probes.render_target_report(reverse_objects(graph)), expected
+        )
+
+        rust = copy.deepcopy(self.rust)
+        del rust["data"][TARGET_RUST]["is-public-api"]
+        report = json.loads(probes.render_target_report(self.parse(rust=rust)))
+        self.assertIsNone(report["declarations"][TARGET_RUST]["public_api"])
+
+    def test_each_top_gets_its_directed_closure_not_shared_consumers(self):
+        rust = copy.deepcopy(self.rust)
+        sibling_rust = copy.deepcopy(rust["data"][TARGET_RUST])
+        sibling_rust.update(
+            {
+                "dependencies": ["probe:autofv-diamond/0.1.0/left()"],
+                "dependencies-with-locations": [
+                    sibling_rust["dependencies-with-locations"][0]
+                ],
+                "display-name": "sibling",
+                "is-public": False,
+                "is-public-api": False,
+                "rust-qualified-name": "autofv_diamond::sibling",
+            }
+        )
+        rust["data"][SIBLING_RUST] = sibling_rust
+
+        aeneas = copy.deepcopy(self.aeneas)
+        merged_sibling = copy.deepcopy(aeneas["data"][TARGET_RUST])
+        merged_sibling.update(
+            {
+                "dependencies": [
+                    LEFT,
+                    "probe:autofv-diamond/0.1.0/left()",
+                ],
+                "display-name": "sibling",
+                "is-public": False,
+                "is-public-api": False,
+                "rust-qualified-name": "autofv_diamond::sibling",
+                "translation-name": SIBLING,
+            }
+        )
+        sibling = copy.deepcopy(aeneas["data"][TOP])
+        sibling.update(
+            {
+                "dependencies": [
+                    LEFT,
+                    "probe:autofv-diamond/0.1.0/left()",
+                ],
+                "display-name": "sibling",
+                "primary-spec": SIBLING_SPEC,
+                "specs": [SIBLING_SPEC],
+                "term-dependencies": [LEFT],
+            }
+        )
+        sibling_spec = copy.deepcopy(aeneas["data"][TOP_SPEC])
+        sibling_spec.update(
+            {
+                "dependencies": [SIBLING, SIBLING_RUST],
+                "display-name": "sibling_spec",
+                "term-dependencies": [SIBLING],
+                "type-dependencies": [SIBLING],
+            }
+        )
+        aeneas["data"].update(
+            {
+                SIBLING_RUST: merged_sibling,
+                SIBLING: sibling,
+                SIBLING_SPEC: sibling_spec,
+            }
+        )
+
+        report = json.loads(
+            probes.render_target_report(self.parse(rust=rust, aeneas=aeneas))
+        )
+        self.assertEqual(
+            report["graph_tops"], sorted([SIBLING_RUST, TARGET_RUST])
+        )
+        self.assertIs(report["declarations"][SIBLING_RUST]["public_api"], False)
+        self.assertEqual(
+            report["declarations"][SIBLING_RUST]["directed_closure"],
+            [LEFT, SIBLING],
+        )
+        self.assertEqual(
+            report["declarations"][TARGET_RUST]["directed_closure"],
+            [LEFT, RIGHT, TOP],
+        )
+
+    def test_inspection_source_and_edge_evidence_is_required(self):
+        missing_locations = copy.deepcopy(self.rust)
+        del missing_locations["data"][TARGET_RUST]["dependencies-with-locations"]
+        with self.assertRaisesRegex(
+            probes.ProbeError, "project_rust_fields_missing"
+        ):
+            self.parse(rust=missing_locations)
+
+        missing_source_identity = copy.deepcopy(self.rust)
+        del missing_source_identity["source"]
+        with self.assertRaisesRegex(
+            probes.ProbeError, "probe_rust_source_identity_missing"
+        ):
+            self.parse(rust=missing_source_identity)
+
+        malformed_source_identity = copy.deepcopy(self.rust)
+        malformed_source_identity["source"] = []
+        with self.assertRaisesRegex(
+            probes.ProbeError, "probe_rust_source_identity_missing"
+        ):
+            self.parse(rust=malformed_source_identity)
+
+        mismatched_source_identity = copy.deepcopy(self.aeneas)
+        mismatched_source_identity["inputs"][0]["source"]["package"] = "other"
+        with self.assertRaisesRegex(
+            probes.ProbeError, "probe_input_source_identity_mismatch"
+        ):
+            self.parse(aeneas=mismatched_source_identity)
+
+    def test_cycle_diagnostic_names_members_edges_and_source_locations(self):
+        cycle = copy.deepcopy(self.aeneas)
+        cycle["data"][LEFT]["dependencies"] = [TOP]
+        cycle["data"][LEFT]["term-dependencies"] = [TOP]
+
+        with self.assertRaises(probes.ProbeError) as raised:
+            self.parse(aeneas=cycle)
+
+        diagnostic = str(raised.exception)
+        for expected in (
+            "unsupported_dependency_cycle",
+            LEFT,
+            TOP,
+            "Diamond/Left.lean",
+            "Diamond/Top.lean",
+            '"edges"',
+            '"members"',
+            '"sources"',
+        ):
+            self.assertIn(expected, diagnostic)
+
+    def test_long_acyclic_closure_does_not_depend_on_python_recursion(self):
+        nodes = {f"node-{index:04d}" for index in range(1_500)}
+        edges = [
+            (f"node-{index:04d}", f"node-{index + 1:04d}")
+            for index in range(1_499)
+        ]
+
+        contract_order, proof_batches = probes._topological_orders(
+            nodes, edges, ["node-0000"]
+        )
+
+        self.assertEqual(len(contract_order), 1_500)
+        self.assertEqual(contract_order[:2], ["node-0000", "node-0001"])
+        self.assertEqual(proof_batches[0], ["node-1499"])
+        self.assertEqual(proof_batches[-1], ["node-0000"])
 
     def test_wrong_envelopes_and_incomplete_target_truth_fail_closed(self):
         cases = []

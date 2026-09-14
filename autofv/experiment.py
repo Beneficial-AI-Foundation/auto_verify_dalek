@@ -7,7 +7,9 @@ model exchange, the bounded diamond scheduler, and result/evidence records.
 from __future__ import annotations
 
 import argparse
+import os
 import secrets
+import tempfile
 import time
 from decimal import Decimal
 from pathlib import Path
@@ -550,9 +552,54 @@ def run_experiment(
         )
 
 
+def _inspect_paths(
+    repo: str | Path, output: str | Path
+) -> tuple[Path, Path]:
+    project = Path(repo).resolve(strict=True)
+    if not project.is_dir():
+        raise probes.ProbeError("inspect_repo_not_directory")
+
+    requested = Path(output)
+    if not requested.name:
+        raise probes.ProbeError("inspect_output_invalid")
+    parent = requested.parent.resolve(strict=True)
+    destination = parent / requested.name
+    if destination == project or destination.is_relative_to(project):
+        raise probes.ProbeError("inspect_output_inside_repository")
+    if destination.is_symlink() or (
+        destination.exists() and not destination.is_file()
+    ):
+        raise probes.ProbeError("inspect_output_unsafe")
+    return project, destination
+
+
+def inspect_repository(repo: str | Path, output: str | Path) -> bytes:
+    """Inspect a supported repository and atomically publish its target report."""
+    project, destination = _inspect_paths(repo, output)
+    with tempfile.TemporaryDirectory(prefix="autofv-inspect-") as evidence:
+        graph = probes.run_probes(project, evidence)
+        report = probes.render_target_report(graph)
+
+    temporary = destination.with_name(
+        f".{destination.name}.{secrets.token_hex(8)}.tmp"
+    )
+    try:
+        with temporary.open("xb") as stream:
+            stream.write(report)
+            stream.flush()
+            os.fsync(stream.fileno())
+        os.replace(temporary, destination)
+    finally:
+        temporary.unlink(missing_ok=True)
+    return report
+
+
 def _parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="autofv")
     commands = parser.add_subparsers(dest="command", required=True)
+    inspect = commands.add_parser("inspect")
+    inspect.add_argument("repo")
+    inspect.add_argument("--output", required=True)
     run = commands.add_parser("run")
     run.add_argument("--target", required=True)
     run.add_argument("--run-config", required=True)
@@ -562,6 +609,12 @@ def _parser() -> argparse.ArgumentParser:
 def main() -> None:
     parser = _parser()
     args = parser.parse_args()
+    if args.command == "inspect":
+        try:
+            inspect_repository(args.repo, args.output)
+        except (OSError, probes.ProbeError) as exc:
+            parser.error(str(exc))
+        return
     try:
         result = run_experiment(args.target, args.run_config)
     except ContractError as exc:

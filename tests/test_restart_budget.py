@@ -518,6 +518,60 @@ def _exchange_state(root: Path) -> dict:
 
 
 class ProxyReceiptBudgetTests(unittest.TestCase):
+    def test_out_of_order_acceptance_charges_immediately_and_sorts_receipts(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            state = _exchange_state(Path(tmp))
+            for entry in FIXTURE["entries"][:5]:
+                experiment._accept_model_exchange(
+                    state,
+                    copy.deepcopy(entry["request"]),
+                    copy.deepcopy(entry["response"]),
+                    copy.deepcopy(entry["receipt"]),
+                )
+            later = FIXTURE["entries"][6]
+            experiment._accept_model_exchange(
+                state,
+                copy.deepcopy(later["request"]),
+                copy.deepcopy(later["response"]),
+                copy.deepcopy(later["receipt"]),
+                allow_out_of_order=True,
+            )
+            self.assertEqual(state["cost"], Decimal("0.015250"))
+            self.assertEqual(state["receipts"][-1]["sequence"], 7)
+
+            earlier = FIXTURE["entries"][5]
+            experiment._accept_model_exchange(
+                state,
+                copy.deepcopy(earlier["request"]),
+                copy.deepcopy(earlier["response"]),
+                copy.deepcopy(earlier["receipt"]),
+                allow_out_of_order=True,
+            )
+            self.assertEqual(
+                [item["sequence"] for item in state["receipts"]], list(range(1, 8))
+            )
+            self.assertEqual(state["cost"], Decimal("0.018650"))
+
+    def test_node_update_propagates_scheduler_restart_state(self):
+        state = _exchange_state(Path("/unused"))
+        fields = (
+            "immutable_graph_sha256",
+            "target_states",
+            "preparation_defects",
+            "invalidated_consumers",
+            "block_chains",
+            "file_owners",
+            "release_events",
+        )
+        for index, field in enumerate(fields):
+            state[field] = {"sentinel": index}
+
+        update = experiment._node_update(state)
+
+        self.assertEqual({field: update[field] for field in fields}, {
+            field: state[field] for field in fields
+        })
+
     def test_fixture_total_is_exact_and_duplicate_is_not_charged_twice(self):
         with tempfile.TemporaryDirectory() as tmp:
             state = _exchange_state(Path(tmp))

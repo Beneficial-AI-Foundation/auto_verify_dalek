@@ -12,7 +12,7 @@ from pathlib import Path, PurePosixPath
 from typing import Any
 
 from . import probes, worker
-from .contracts import ContractError, ContractInconclusive, _sha256
+from .contracts import BudgetExhausted, ContractError, ContractInconclusive, _sha256
 from .model import (
     _accept_model_exchange,
     _invoke_model,
@@ -25,8 +25,328 @@ from .run_state import (
     _checkpoint_if_enabled,
     _event_once,
     _external_call,
+    _check_budget,
     _node_update,
 )
+
+MAX_PARALLEL_LANES = 4
+
+
+def _record_preparation_defect(
+    state: _RunState, kind: str, **details: Any
+) -> dict[str, Any]:
+    defect = {"kind": kind, **details}
+    defects = state.setdefault("preparation_defects", [])
+    if defect not in defects:
+        defects.append(defect)
+    _event_once(state["run"], f"preparation_defect:{kind}")
+    return defect
+
+
+def _validate_scheduling_graph(state: _RunState) -> str:
+    """Freeze one valid declaration DAG before any model or worker call."""
+    graph = state.get("graph")
+    if not isinstance(graph, dict):
+        raise ContractError("scheduling graph is missing")
+    nodes = graph.get("selected_nodes")
+    targets = graph.get("frozen_targets")
+    edges = graph.get("term_dependencies")
+    type_edges = graph.get("type_dependencies", [])
+    paths = graph.get("source_paths")
+    supplied_specs = graph.get("supplied_specs", {})
+    if (
+        not isinstance(nodes, list)
+        or not nodes
+        or any(not isinstance(node, str) or not node for node in nodes)
+        or len(nodes) != len(set(nodes))
+        or not isinstance(targets, list)
+        or not targets
+        or any(target not in nodes for target in targets)
+        or not isinstance(edges, list)
+        or not isinstance(type_edges, list)
+        or not isinstance(paths, dict)
+        or not isinstance(supplied_specs, dict)
+        or any(
+            target not in targets or not isinstance(spec, str) or not spec
+            for target, spec in supplied_specs.items()
+        )
+    ):
+        _record_preparation_defect(state, "invalid_graph_shape")
+        raise ContractError("invalid scheduling graph shape")
+
+    node_set = set(nodes)
+    normalized_type_edges: list[list[str]] = []
+    for edge in type_edges:
+        if (
+            not isinstance(edge, list)
+            or len(edge) != 2
+            or any(not isinstance(item, str) or not item for item in edge)
+        ):
+            _record_preparation_defect(state, "invalid_type_edge", edge=edge)
+            raise ContractError(f"invalid scheduling type edge: {edge!r}")
+        normalized_type_edges.append(edge)
+    if len({tuple(edge) for edge in normalized_type_edges}) != len(
+        normalized_type_edges
+    ):
+        _record_preparation_defect(state, "duplicate_type_edge")
+        raise ContractError("duplicate scheduling type edge")
+    type_declarations = {item for edge in normalized_type_edges for item in edge}
+    declared_paths = node_set | set(supplied_specs.values()) | type_declarations
+    if set(paths) != declared_paths:
+        _record_preparation_defect(state, "invalid_graph_shape")
+        raise ContractError("invalid scheduling graph shape")
+    normalized_edges: list[list[str]] = []
+    for edge in edges:
+        if (
+            not isinstance(edge, list)
+            or len(edge) != 2
+            or any(not isinstance(item, str) for item in edge)
+            or edge[0] not in node_set
+            or edge[1] not in node_set
+        ):
+            _record_preparation_defect(state, "undeclared_edge", edge=edge)
+            raise ContractError(f"undeclared scheduling edge: {edge!r}")
+        normalized_edges.append(edge)
+    if len({tuple(edge) for edge in normalized_edges}) != len(normalized_edges):
+        _record_preparation_defect(state, "duplicate_edge")
+        raise ContractError("duplicate scheduling edge")
+    for declaration, path in paths.items():
+        pure = PurePosixPath(path) if isinstance(path, str) else None
+        if (
+            pure is None
+            or pure.is_absolute()
+            or ".." in pure.parts
+            or pure.suffix != ".lean"
+        ):
+            _record_preparation_defect(
+                state, "invalid_source_path", declaration=declaration
+            )
+            raise ContractError(f"invalid scheduling source path: {declaration}")
+
+    dependents = {node: [] for node in nodes}
+    indegree = {node: 0 for node in nodes}
+    for consumer, dependency in normalized_edges:
+        dependents[dependency].append(consumer)
+        indegree[consumer] += 1
+    ready = sorted(node for node, count in indegree.items() if count == 0)
+    visited: list[str] = []
+    while ready:
+        node = ready.pop(0)
+        visited.append(node)
+        for consumer in sorted(dependents[node]):
+            indegree[consumer] -= 1
+            if indegree[consumer] == 0:
+                ready.append(consumer)
+                ready.sort()
+    if len(visited) != len(nodes):
+        members = sorted(node for node, count in indegree.items() if count)
+        sources = {node: paths[node] for node in members}
+        _record_preparation_defect(
+            state,
+            "cycle",
+            nodes=members,
+            declarations=members,
+            source_paths=sources,
+            edges=[edge for edge in normalized_edges if set(edge) <= set(members)],
+        )
+        raise ContractError(
+            f"unsupported_dependency_cycle: nodes={members!r}; sources={sources!r}"
+        )
+
+    immutable = {
+        "frozen_targets": targets,
+        "selected_nodes": nodes,
+        "term_dependencies": normalized_edges,
+        "type_dependencies": normalized_type_edges,
+        "source_paths": paths,
+        "supplied_specs": supplied_specs,
+    }
+    digest = _canonical_sha256(immutable)
+    previous = state.get("immutable_graph_sha256")
+    if previous is not None and not hmac.compare_digest(previous, digest):
+        _record_preparation_defect(state, "graph_mutated")
+        raise ContractError("immutable scheduling graph changed")
+    state["immutable_graph_sha256"] = digest
+    target_states = state.setdefault("target_states", {})
+    for node in nodes:
+        target = target_states.setdefault(node, {})
+        for key, value in {
+            "phase": "contract",
+            "status": "pending",
+            "attempt_count": 0,
+            "immediate_consumer_requirements": _immediate_consumers(graph, node),
+            "contract_revision": 0,
+            "contract_fingerprint": None,
+            "file": paths[node],
+            "block_chain": None,
+        }.items():
+            target.setdefault(key, value)
+    state.setdefault("file_owners", {})
+    state.setdefault("release_events", [])
+    state.setdefault("invalidated_consumers", [])
+    state.setdefault("block_chains", {})
+    return digest
+
+
+def _transitive_consumers(graph: dict[str, Any], node: str) -> list[str]:
+    found: set[str] = set()
+    frontier = [node]
+    while frontier:
+        dependency = frontier.pop(0)
+        for consumer in _immediate_consumers(graph, dependency):
+            if consumer not in found:
+                found.add(consumer)
+                frontier.append(consumer)
+    return sorted(found)
+
+
+def _validate_dependency_plan(
+    state: _RunState, dependency: dict[str, Any]
+) -> None:
+    """Reject model-proposed declarations and edges outside the frozen graph."""
+    graph = state["graph"]
+    payload = dependency.get("payload")
+    root = graph["frozen_targets"][0]
+    expected_dependencies = {node: [] for node in graph["selected_nodes"]}
+    for consumer, required in graph["term_dependencies"]:
+        expected_dependencies[consumer].append(required)
+    lanes = payload.get("lanes") if isinstance(payload, dict) else None
+    join = payload.get("join") if isinstance(payload, dict) else None
+    valid = (
+        payload.get("root") == root
+        if isinstance(payload, dict)
+        else False
+    )
+    seen: set[str] = set()
+    if not isinstance(lanes, list):
+        valid = False
+        lanes = []
+    for lane in lanes:
+        declaration = lane.get("declaration") if isinstance(lane, dict) else None
+        if declaration in seen or declaration not in graph["selected_nodes"]:
+            valid = False
+            continue
+        seen.add(declaration)
+        depends_on = lane.get("depends_on")
+        if (
+            lane.get("source_path") != graph["source_paths"][declaration]
+            or not isinstance(depends_on, list)
+            or any(not isinstance(item, str) for item in depends_on)
+            or sorted(depends_on)
+            != sorted(expected_dependencies[declaration])
+        ):
+            valid = False
+    expected_lanes = set(graph["selected_nodes"]) - {root}
+    if seen != expected_lanes or not isinstance(join, dict):
+        valid = False
+    else:
+        requires = join.get("requires")
+        if (
+            join.get("consumer") != root
+            or not isinstance(requires, list)
+            or any(not isinstance(item, str) for item in requires)
+            or sorted(requires) != sorted(expected_dependencies[root])
+        ):
+            valid = False
+    if not valid:
+        _record_preparation_defect(
+            state,
+            "dependency_plan_outside_graph",
+            root=payload.get("root") if isinstance(payload, dict) else None,
+            declarations=sorted(seen),
+        )
+        raise ContractError("dependency plan contains an undeclared node or edge")
+
+
+def _revise_contract_fingerprint(
+    state: _RunState,
+    node: str,
+    new_fingerprint: str,
+    *,
+    graph: dict[str, Any] | None = None,
+) -> list[str]:
+    """Invalidate exactly the changed node's proof and transitive consumers."""
+    if graph is None:
+        _validate_scheduling_graph(state)
+        graph = state["graph"]
+    contracts = state["contracts"]
+    fingerprints = contracts["node_fingerprints"]
+    if node not in fingerprints or not isinstance(new_fingerprint, str):
+        raise ContractError("contract revision references an undeclared node")
+    old_fingerprint = fingerprints[node]
+    if hmac.compare_digest(old_fingerprint, new_fingerprint):
+        raise ContractError("contract revision did not change its fingerprint")
+    consumers = _transitive_consumers(graph, node)
+    fingerprints[node] = new_fingerprint
+    contracts.setdefault("invalidated_fingerprints", []).append(old_fingerprint)
+    frozen = contracts.get("frozen_fingerprints")
+    if isinstance(frozen, list):
+        contracts["frozen_fingerprints"] = sorted(
+            new_fingerprint if item == old_fingerprint else item for item in frozen
+        )
+    revision = 1 + sum(
+        item.get("node") == node for item in contracts.setdefault("revision_lineage", [])
+    )
+    contracts["revision_lineage"].append(
+        {
+            "node": node,
+            "revision": revision,
+            "old_fingerprint": old_fingerprint,
+            "new_fingerprint": new_fingerprint,
+        }
+    )
+    affected = {node, *consumers}
+    state["accepted_nodes"] = [
+        accepted for accepted in state.get("accepted_nodes", []) if accepted not in affected
+    ]
+    target_states = state.get("target_states", {})
+    for affected_node in affected:
+        state.setdefault("proof_patch_sha256", {}).pop(affected_node, None)
+        target = target_states.get(affected_node)
+        if target is not None:
+            target["phase"] = "contract" if affected_node == node else "proof"
+            target["status"] = "revised" if affected_node == node else "invalidated"
+            target["block_chain"] = None
+    if node in target_states:
+        target_states[node]["contract_revision"] = revision
+        target_states[node]["contract_fingerprint"] = new_fingerprint
+    invalidated = state.setdefault("invalidated_consumers", [])
+    invalidated.extend(item for item in consumers if item not in invalidated)
+    _event_once(state["run"], f"contract_revised:{node}")
+    return consumers
+
+
+def _block_dependents(state: _RunState, node: str, reason: str) -> list[str]:
+    """Retain deterministic consumer-to-failed-leaf diagnostic chains."""
+    _validate_scheduling_graph(state)
+    graph = state["graph"]
+    chains = {node: [node]}
+    frontier = [node]
+    while frontier:
+        dependency = frontier.pop(0)
+        for consumer in _immediate_consumers(graph, dependency):
+            if consumer not in chains:
+                chains[consumer] = [consumer, *chains[dependency]]
+                frontier.append(consumer)
+    blocked = sorted(set(chains) - {node})
+    target_states = state["target_states"]
+    target_states[node].update(
+        {"phase": "proof", "status": "failed", "reason": reason, "block_chain": [node]}
+    )
+    block_chains = state.setdefault("block_chains", {})
+    for consumer in blocked:
+        block_chains[consumer] = chains[consumer]
+        target_states[consumer].update(
+            {"phase": "proof", "status": "blocked", "block_chain": chains[consumer]}
+        )
+    affected = {node, *blocked}
+    state["accepted_nodes"] = [
+        accepted for accepted in state.get("accepted_nodes", []) if accepted not in affected
+    ]
+    for affected_node in affected:
+        state.setdefault("proof_patch_sha256", {}).pop(affected_node, None)
+    _event_once(state["run"], f"proof_blocked:{node}")
+    return blocked
 
 def _statement_fingerprint(run: dict[str, Any], graph: dict[str, Any]) -> str:
     spec = graph["supplied_specs"][graph["frozen_targets"][0]]
@@ -258,6 +578,7 @@ def _schedule_proofs(
     *,
     prepare_job=None,
     accepted_nodes=(),
+    max_workers=MAX_PARALLEL_LANES,
 ) -> set[str]:
     """Run ready declaration jobs concurrently, with one owner per Lean file."""
     accepted = set(accepted_nodes)
@@ -265,9 +586,9 @@ def _schedule_proofs(
     busy_files: set[str] = set()
     file_locks: dict[str, threading.Lock] = {}
     futures = {}
-    completed = {}
     submission = 0
-    next_accept = 0
+    if type(max_workers) is not int or max_workers <= 0:
+        raise ContractError("proof lane bound must be a positive integer")
 
     def run_locked(node: str, job):
         path = graph["source_paths"][node]
@@ -289,17 +610,14 @@ def _schedule_proofs(
         return (min(remaining, default=0), node)
 
     with ThreadPoolExecutor(
-        max_workers=max(1, len(graph["selected_nodes"])),
+        max_workers=min(max_workers, max(1, len(graph["selected_nodes"]))),
         thread_name_prefix="autofv-proof",
     ) as pool:
         while len(accepted) < len(graph["selected_nodes"]):
-            if prepare_job:
-                while next_accept in completed:
-                    node, result = completed.pop(next_accept)
-                    accept_job(node, result)
-                    accepted.add(node)
-                    next_accept += 1
+            available = max_workers - len(futures)
             for node in sorted(_proof_ready_nodes(graph, accepted), key=priority):
+                if available <= 0:
+                    break
                 path = graph["source_paths"][node]
                 if node in submitted or path in busy_files:
                     continue
@@ -312,20 +630,17 @@ def _schedule_proofs(
                     path,
                 )
                 submission += 1
+                available -= 1
             if len(accepted) == len(graph["selected_nodes"]):
                 break
             if not futures:
                 break
             done, _ = wait(futures, return_when=FIRST_COMPLETED)
-            for future in done:
-                order, node, path = futures.pop(future)
+            for future in sorted(done, key=lambda item: futures[item][0]):
+                _, node, path = futures.pop(future)
                 busy_files.remove(path)
-                completed[order] = (node, future.result())
-            if not prepare_job:
-                for order in sorted(completed):
-                    node, result = completed.pop(order)
-                    accept_job(node, result)
-                    accepted.add(node)
+                accept_job(node, future.result())
+                accepted.add(node)
     return accepted
 
 
@@ -377,6 +692,27 @@ def _checkpoint_candidate(
                 state, f"candidate:{candidate.get('request_id')}:{status}"
             )
             return receipt
+
+        graph = state.get("graph")
+        if graph is not None:
+            _validate_scheduling_graph(state)
+            node = candidate.get("node")
+            if node not in graph["selected_nodes"]:
+                _record_preparation_defect(
+                    state,
+                    "undeclared_node",
+                    node=node,
+                    request_id=candidate.get("request_id"),
+                )
+                return reject("preparation_defect_undeclared_node")
+            if candidate.get("assigned_path") != graph["source_paths"][node]:
+                _record_preparation_defect(
+                    state,
+                    "source_path_mismatch",
+                    node=node,
+                    assigned_path=candidate.get("assigned_path"),
+                )
+                return reject("preparation_defect_source_path_mismatch")
 
         if not isinstance(response, dict) or response.get("kind") != "patch":
             return reject("candidate_result_invalid")
@@ -522,6 +858,25 @@ def _repair_contracts(
     targets = set(graph["frozen_targets"])
     if len(targets) != 1:
         raise ContractError("the bounded contract pass requires one selected root")
+    contract_candidates = [
+        node for node in graph["selected_nodes"] if node not in targets
+    ]
+    leaf_counts: dict[str, int] = {}
+    for node in contract_candidates:
+        leaf = re.sub(r"[^a-z0-9]+", "-", node.rsplit(".", 1)[-1].lower()).strip("-")
+        if not leaf:
+            raise ContractError("contract node cannot form a safe request identity")
+        leaf_counts[leaf] = leaf_counts.get(leaf, 0) + 1
+    contract_stems = {}
+    for node in contract_candidates:
+        leaf = re.sub(r"[^a-z0-9]+", "-", node.rsplit(".", 1)[-1].lower()).strip("-")
+        contract_stems[node] = (
+            leaf
+            if leaf_counts[leaf] == 1
+            else f"{leaf}-{hashlib.sha256(node.encode()).hexdigest()[:12]}"
+        )
+    if len(set(contract_stems.values())) != len(contract_stems):
+        raise ContractError("contract request identities collided")
     contracts = {
         "attempts": [],
         "provisional": {},
@@ -554,7 +909,7 @@ def _repair_contracts(
             ]
             response, _ = _model_request(
                 state,
-                request_id=f"contract-{node.rsplit('.', 1)[-1].lower()}-001",
+                request_id=f"contract-{contract_stems[node]}-001",
                 role="contract-author",
                 input_hashes=[
                     dependency["payload_sha256"],
@@ -593,25 +948,29 @@ def _repair_contracts(
         return result
 
     feasibility = check_feasibility("build:provisional-consumer-weak")
-    failed_node = next(
-        (
+    revision_counts = {node: 0 for node in contract_nodes}
+    while feasibility["status"] != "passed":
+        failed_declaration = feasibility.get("declaration")
+        matching_nodes = [
             node
             for node in contract_nodes
-            if f"{node.removeprefix('probe:')}_spec" == feasibility.get("declaration")
-        ),
-        contract_nodes[0],
-    )
-    for revision in range(contracts["max_revisions"]):
-        if feasibility["status"] == "passed":
+            if f"{node.removeprefix('probe:')}_spec" == failed_declaration
+        ]
+        if failed_declaration is not None and not matching_nodes:
+            raise ContractError("contract diagnostic references an undeclared helper")
+        failed_node = matching_nodes[0] if matching_nodes else contract_nodes[0]
+        if revision_counts[failed_node] >= contracts["max_revisions"]:
             break
+        revision_counts[failed_node] += 1
+        revision = revision_counts[failed_node]
         declaration = f"{failed_node.removeprefix('probe:')}_spec"
         previous_record = contracts["provisional"][declaration]
         requirements = contracts["immediate_consumer_requirements"][failed_node]
         response, _ = _model_request(
             state,
             request_id=(
-                f"contract-{failed_node.rsplit('.', 1)[-1].lower()}-review-"
-                f"{revision + 2:03d}"
+                f"contract-{contract_stems[failed_node]}-review-"
+                f"{revision + 1:03d}"
             ),
             role="contract-reviewer",
             input_hashes=[
@@ -626,19 +985,13 @@ def _repair_contracts(
         ):
             raise ContractError("contract review did not replace the weak statement")
         contracts["attempts"].append(record)
-        contracts["invalidated_fingerprints"].append(
-            previous_record["model_fingerprint"]
-        )
-        contracts["revision_lineage"].append(
-            {
-                "node": failed_node,
-                "revision": revision + 1,
-                "old_fingerprint": previous_record["model_fingerprint"],
-                "new_fingerprint": record["model_fingerprint"],
-            }
-        )
         contracts["provisional"][declaration] = record
-        contracts["node_fingerprints"][failed_node] = record["model_fingerprint"]
+        _revise_contract_fingerprint(
+            state,
+            failed_node,
+            record["model_fingerprint"],
+            graph=graph,
+        )
         _event_once(run, f"contract_review:{record['declaration']}")
         _event_once(
             run,
@@ -681,6 +1034,7 @@ def _freeze(state: _RunState) -> dict[str, Any]:
 
 def _agent_loop(state: _RunState) -> dict[str, Any]:
     graph, run, manifest = state["graph"], state["run"], state["manifest"]
+    _validate_scheduling_graph(state)
     if len(graph["frozen_targets"]) != 1:
         raise ContractError("the bounded scheduler requires one selected root")
     top_fingerprint = _external_call(
@@ -702,7 +1056,19 @@ def _agent_loop(state: _RunState) -> dict[str, Any]:
         role="dependency-planner",
         input_hashes=[scout["payload_sha256"], probe_hash],
     )
+    _validate_dependency_plan(state, dependency)
     contracts = _repair_contracts(state, dependency, top_fingerprint, graph)
+    for node, target in state["target_states"].items():
+        target.update(
+            {
+                "phase": "proof",
+                "status": "pending",
+                "immediate_consumer_requirements": contracts[
+                    "immediate_consumer_requirements"
+                ].get(node, []),
+                "contract_fingerprint": contracts["node_fingerprints"][node],
+            }
+        )
     lanes = state.setdefault("lanes", [])
     existing_lane_ids = {lane["lane_id"] for lane in lanes}
     new_lanes = [
@@ -759,6 +1125,13 @@ def _agent_loop(state: _RunState) -> dict[str, Any]:
         nonlocal next_sequence
         lane = lanes_by_node[node]
         previous = stored.get(lane["request_id"])
+        if previous is None:
+            _check_budget(state)
+            state["target_states"][node]["attempt_count"] += 1
+        target = state["target_states"][node]
+        target["phase"] = "proof"
+        target["status"] = "running"
+        state["file_owners"][lane["assigned_path"]] = node
         sequence = (
             previous["request"]["sequence"] if previous is not None else next_sequence
         )
@@ -812,6 +1185,7 @@ def _agent_loop(state: _RunState) -> dict[str, Any]:
                 job["request"],
                 job["response"],
                 job["receipt"],
+                allow_out_of_order=True,
             )
         else:
             response = job["response"]
@@ -844,7 +1218,21 @@ def _agent_loop(state: _RunState) -> dict[str, Any]:
             lane["status"] = "accepted"
             lane["requeueable"] = False
             proof_patches[node] = response["payload"]["patch_sha256"]
+            target = state["target_states"][node]
+            target["status"] = "accepted"
+            target["accepted_commit"] = transition["accepted_commit"]
+            if state["file_owners"].get(lane["assigned_path"]) == node:
+                state["file_owners"].pop(lane["assigned_path"])
+            release = {
+                "sequence": len(state["release_events"]) + 1,
+                "node": node,
+                "accepted_commit": transition["accepted_commit"],
+            }
+            state["release_events"].append(release)
             return
+        if state["file_owners"].get(lane["assigned_path"]) == node:
+            state["file_owners"].pop(lane["assigned_path"])
+        _block_dependents(state, node, transition["reason"])
         raise ContractError(
             f"proof candidate {lane['request_id']} was {transition['status']}: "
             f"{transition['reason']}"
@@ -863,6 +1251,10 @@ def _agent_loop(state: _RunState) -> dict[str, Any]:
     )
     if scheduled != set(graph["selected_nodes"]):
         raise ContractError("proof scheduler stopped before the selected graph completed")
+    if state["cost"] > state["config"]["max_cost_usd"]:
+        raise BudgetExhausted(
+            "cost_usd", state["config"]["max_cost_usd"], state["cost"]
+        )
     initial_intervals = [
         state["lane_intervals"][lanes_by_node[node]["request_id"]]
         for node in first_frontier

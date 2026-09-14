@@ -428,6 +428,23 @@ end Solution
         self.assertFalse((self.root / "build" / "output").exists())
         self.assertFalse((self.root / "build" / "manifest.json").exists())
 
+    def test_rejected_destination_does_not_mutate_solved_source(self):
+        from autofv import prepare_dalek
+
+        created_parent = self.source / "new-output-parent"
+        with self.assertRaisesRegex(
+            prepare_dalek.PreparationError, "cannot modify solved source"
+        ):
+            prepare_dalek.prepare_dalek(
+                self.source,
+                self.report,
+                self.identities,
+                "small",
+                created_parent / "output",
+                self.root / "outside-manifest.json",
+            )
+        self.assertFalse(created_parent.exists())
+
     def test_write_once_outputs_allow_identical_bytes_and_refuse_replacement(self):
         from autofv import prepare_dalek
 

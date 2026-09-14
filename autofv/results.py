@@ -7,12 +7,15 @@ import hashlib
 import json
 import os
 import secrets
+import shutil
+import subprocess
 import tempfile
-from decimal import Decimal, InvalidOperation
+from datetime import datetime, timezone
+from decimal import Decimal
 from pathlib import Path
 from typing import Any
 
-from . import worker
+from . import result_audit, result_summary, worker
 from .contracts import canonical_json_bytes
 from .evidence import (
     EXCLUSIONS,
@@ -59,14 +62,48 @@ def default_attempt_identity() -> dict[str, str]:
     }
 
 
-def new_attempt_identity() -> dict[str, str]:
+def new_attempt_identity(target: str | Path | None = None) -> dict[str, str]:
     identity = default_attempt_identity()
     configured = os.environ.get("AUTOFV_ATTEMPT_LEDGER")
     ledger = Path(configured) if configured else DEFAULT_ATTEMPT_LEDGER
     if not ledger.is_absolute():
         raise ResultError("AUTOFV_ATTEMPT_LEDGER must be an absolute path")
+    if ledger.is_symlink():
+        raise ResultError("AUTOFV_ATTEMPT_LEDGER must not be a symlink")
+    if target is not None:
+        try:
+            source = Path(target).expanduser().resolve(strict=False)
+            resolved_ledger = ledger.expanduser().resolve(strict=False)
+        except (OSError, RuntimeError) as exc:
+            raise ResultError("AUTOFV_ATTEMPT_LEDGER path resolution failed") from exc
+        if resolved_ledger == source or resolved_ledger.is_relative_to(source):
+            raise ResultError("AUTOFV_ATTEMPT_LEDGER overlaps input repository")
     identity["attempt_ledger"] = str(ledger)
     return identity
+
+
+def validate_output_root(
+    target: str | Path, output_root: str | Path | None
+) -> Path:
+    """Resolve an attempt parent without allowing writes inside the input."""
+    requested_source = Path(target).expanduser()
+    requested = (
+        Path(output_root).expanduser()
+        if output_root is not None
+        else Path(tempfile.gettempdir())
+    )
+    if requested_source.is_symlink() or requested.is_symlink():
+        raise ResultError("run paths must not be symlinks")
+    try:
+        source = requested_source.resolve(strict=False)
+        parent = requested.resolve(strict=False)
+    except (OSError, RuntimeError) as exc:
+        raise ResultError("run path resolution failed") from exc
+    if parent == source or parent.is_relative_to(source):
+        raise ResultError("output root overlaps input repository")
+    if parent.exists() and (parent.is_symlink() or not parent.is_dir()):
+        raise ResultError("output root is not a safe directory")
+    return parent
 
 
 def allocate_attempt(
@@ -74,8 +111,24 @@ def allocate_attempt(
     *,
     target: str | Path,
     run_config: str | Path,
+    output_root: str | Path | None = None,
 ) -> dict[str, Any]:
-    root = Path(tempfile.mkdtemp(prefix=f"{identity['attempt_id']}-"))
+    parent = validate_output_root(target, output_root)
+    parent.mkdir(parents=True, exist_ok=True)
+    short_id = identity["attempt_id"].removeprefix("attempt-")[:8]
+    timestamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+    repo_name = Path(target).expanduser().resolve(strict=False).name or "repository"
+    root = parent / f"{repo_name}-autofv-{timestamp}-{short_id}"
+    created = False
+    try:
+        root.mkdir(mode=0o700)
+        created = True
+        for name in ("accepted", "evidence", "logs", "export"):
+            (root / name).mkdir()
+    except OSError as exc:
+        if created:
+            shutil.rmtree(root, ignore_errors=True)
+        raise ResultError("attempt root allocation failed") from exc
     return {
         **identity,
         "run_id": identity["attempt_id"],
@@ -89,59 +142,119 @@ def allocate_attempt(
     }
 
 
-def _decimal_cost(receipts: Any) -> Decimal:
-    total = Decimal("0.000000")
-    if not isinstance(receipts, list):
-        return total
+def snapshot_input(run: dict[str, Any], target: str | Path) -> None:
+    """Copy a validated input repository into the run-owned accepted tree."""
+    source = Path(target).resolve(strict=True)
+    if not source.is_dir() or source.is_symlink():
+        raise ResultError("input repository is not a safe directory")
+    for path in source.rglob("*"):
+        if path.is_symlink() or (not path.is_dir() and not path.is_file()):
+            raise ResultError("input repository contains an unsafe file kind")
+
+    root = Path(run["run_root"]).resolve(strict=True)
+    accepted = root / "accepted"
+    stage = root / ".accepted.tmp"
     try:
-        for receipt in receipts:
-            total += Decimal(receipt["cost"]["amount"])
-    except (KeyError, TypeError, InvalidOperation) as exc:
-        raise ResultError("accepted model receipt cost is invalid") from exc
-    return total
+        shutil.copytree(source, stage)
+        accepted.rmdir()
+        os.replace(stage, accepted)
+    except OSError as exc:
+        shutil.rmtree(stage, ignore_errors=True)
+        raise ResultError("accepted repository snapshot failed") from exc
 
 
-def _tokens(receipts: Any) -> dict[str, int]:
-    totals = {"input": 0, "output": 0, "total": 0}
-    if not isinstance(receipts, list):
-        return totals
-    fields = (
-        ("input", "input_tokens"),
-        ("output", "output_tokens"),
-        ("total", "total_tokens"),
+def bind_prepared_run(
+    allocation: dict[str, Any], prepared: dict[str, Any]
+) -> dict[str, Any]:
+    """Bind worker preparation metadata to the durable attempt root."""
+    root = Path(allocation["run_root"])
+    previous_root = Path(prepared["run_root"])
+    previous_evidence = previous_root / "evidence"
+    evidence_transferred = False
+    if previous_root != root and previous_evidence.is_dir():
+        try:
+            shutil.copytree(
+                previous_evidence, root / "evidence", dirs_exist_ok=True
+            )
+            evidence_transferred = True
+        except OSError as exc:
+            raise ResultError("worker evidence transfer failed") from exc
+    if (
+        previous_root != root
+        and prepared.get("execution_tier") == "sealed_runsc"
+        and evidence_transferred
+    ):
+        try:
+            shutil.rmtree(previous_root)
+        except OSError as exc:
+            raise ResultError("worker staging cleanup failed") from exc
+    prepared.update(
+        {
+            "attempt_id": allocation["attempt_id"],
+            "attempt_ledger": allocation["attempt_ledger"],
+            "run_root": str(root),
+            "evidence_dir": str(root / "evidence"),
+            "requested_target": allocation["requested_target"],
+            "requested_run_config": allocation["requested_run_config"],
+        }
     )
-    for receipt in receipts:
-        usage = receipt.get("usage", {}) if isinstance(receipt, dict) else {}
-        for target, source in fields:
-            value = usage.get(source)
-            if type(value) is int and value >= 0:
-                totals[target] += value
-    return totals
+    return prepared
 
 
-def _model_summary(state: dict[str, Any]) -> dict[str, Any]:
-    exchanges = state.get("model_exchanges")
-    accepted = list(exchanges.values()) if isinstance(exchanges, dict) else []
-    rejections = state.get("receipt_rejections")
-    rejected = rejections if isinstance(rejections, list) else []
-    request_ids = [
-        item.get("request", {}).get("request_id")
-        for item in accepted
-        if isinstance(item, dict)
-    ] + [
-        item.get("request_id") for item in rejected if isinstance(item, dict)
-    ]
-    request_ids = [item for item in request_ids if isinstance(item, str)]
-    prompts = [
-        item.get("request", {}).get("prompt_sha256")
-        for item in accepted
-        if isinstance(item, dict)
-    ]
-    return {
-        "attempts": len(request_ids),
-        "retries": len(request_ids) - len(set(request_ids)),
-        "prompt_sha256": [item for item in prompts if isinstance(item, str)],
-    }
+def materialize_accepted(run: dict[str, Any]) -> None:
+    """Replace the input snapshot with the exact exported accepted Git commit."""
+    root = Path(run["run_root"]).resolve(strict=True)
+    bundle = root / "export" / "accepted" / "repository.bundle"
+    accepted = root / "accepted"
+    stage = root / ".accepted-repository.tmp"
+    backup = root / ".accepted-input.tmp"
+    expected = (run.get("accepted") or {}).get("accepted_commit")
+    if not bundle.is_file() or bundle.is_symlink() or not isinstance(expected, str):
+        raise ResultError("accepted repository export is incomplete")
+    try:
+        stage.mkdir()
+        for command in (
+            ("git", "-C", str(stage), "init", "--quiet"),
+            (
+                "git",
+                "-C",
+                str(stage),
+                "fetch",
+                "--quiet",
+                "--no-tags",
+                str(bundle),
+                "HEAD",
+            ),
+            (
+                "git",
+                "-C",
+                str(stage),
+                "checkout",
+                "--quiet",
+                "--detach",
+                "FETCH_HEAD",
+            ),
+        ):
+            subprocess.run(command, check=True, capture_output=True)
+        head = subprocess.run(
+            ("git", "-C", str(stage), "rev-parse", "HEAD"),
+            check=True,
+            capture_output=True,
+            text=True,
+        ).stdout.strip()
+        if head != expected:
+            raise ResultError("accepted repository commit mismatch")
+        os.replace(accepted, backup)
+        try:
+            os.replace(stage, accepted)
+        except OSError:
+            os.replace(backup, accepted)
+            raise
+        shutil.rmtree(backup)
+    except (OSError, subprocess.CalledProcessError) as exc:
+        raise ResultError("accepted repository materialization failed") from exc
+    finally:
+        shutil.rmtree(stage, ignore_errors=True)
 
 
 def render_attempt(
@@ -171,7 +284,6 @@ def render_attempt(
     selected_nodes = graph.get("selected_nodes", [])
     accepted_nodes = state.get("accepted_nodes", [])
     internal = set(accepted_nodes) - set(frozen_targets)
-    receipts = state.get("receipts", [])
     native_uses = (
         report.get("native_decide_uses", state.get("native_decide_uses", []))
         if isinstance(report, dict)
@@ -184,9 +296,13 @@ def render_attempt(
         if isinstance(report, dict)
         else state.get("compiler_assumptions", [])
     )
-    cost = _decimal_cost(receipts)
-    tokens = _tokens(receipts)
-    model_summary = _model_summary(state)
+    try:
+        reduced_accounting = result_summary.reduce_accounting(run, state)
+        cost = reduced_accounting["cost"]
+        tokens = reduced_accounting["tokens"]
+        model_summary = result_summary.model_summary(state)
+    except result_summary.SummaryError as exc:
+        raise ResultError(str(exc)) from exc
     input_evidence = sources["input"] if isinstance(sources["input"], dict) else {}
     image_evidence = sources["image"] if isinstance(sources["image"], dict) else {}
     runtime_evidence = (
@@ -207,6 +323,16 @@ def render_attempt(
         (item for item in receipt["items"] if item["name"] == "verifier"), {}
     )
     verifier_bound = verifier_item.get("status") == "present"
+    try:
+        generic = result_summary.render_generic_summary(
+            run,
+            state,
+            report if isinstance(report, dict) else {},
+            verifier_bound=verifier_bound,
+            accounting=reduced_accounting["accounting"],
+        )
+    except result_summary.SummaryError as exc:
+        raise ResultError(str(exc)) from exc
     target_ids = list(frozen_targets) if isinstance(frozen_targets, list) else []
     supplied_ids = list(target_ids)
     recovered_ids = sorted(contracts) if isinstance(contracts, dict) else []
@@ -222,6 +348,7 @@ def render_attempt(
         "outcome": outcome,
         "termination_reason": reason,
         "termination_detail": state.get("termination_detail"),
+        **generic,
         "frozen_targets": frozen_targets,
         "sets": {
             "T": {"ids": target_ids, "size": len(target_ids)},
@@ -249,7 +376,7 @@ def render_attempt(
         "model_attempts": model_summary["attempts"],
         "model_retries": model_summary["retries"],
         "prompt_sha256": model_summary["prompt_sha256"],
-        "proxy_requests": len(receipts) if isinstance(receipts, list) else 0,
+        "proxy_requests": reduced_accounting["requests"],
         "tokens": tokens,
         "cost_usd": f"{cost:.6f}",
         "wall_seconds": f"{Decimal(state.get('wall_seconds_used', 0)):.6f}",
@@ -394,6 +521,26 @@ def validate_l0(receipt: Any) -> dict[str, Any]:
     if receipt.get("receipt_sha256") != _sha(canonical_json_bytes(body)):
         raise ResultError("L0 receipt hash mismatch")
     return receipt
+
+
+def validate_smoke_audit(path: str | Path) -> dict[str, Any]:
+    """Fail closed unless a retained smoke result proves verified progress."""
+    try:
+        return result_audit.validate_smoke_audit(path, validate_l0)
+    except result_audit.AuditError as exc:
+        raise ResultError(str(exc)) from exc
+
+
+def validate_full_audit(
+    path: str | Path, contract_review_path: str | Path
+) -> dict[str, Any]:
+    """Validate retained full-run evidence and its exact semantic review."""
+    try:
+        return result_audit.validate_full_audit(
+            path, contract_review_path, validate_l0
+        )
+    except result_audit.AuditError as exc:
+        raise ResultError(str(exc)) from exc
 
 
 def _atomic_write_once(path: Path, raw: bytes) -> None:

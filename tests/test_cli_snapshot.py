@@ -3,6 +3,8 @@ import hashlib
 import inspect
 import json
 import os
+import re
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -131,6 +133,247 @@ class ToolchainContractTests(unittest.TestCase):
         self.assertIn("--run-config", run.stdout)
         for forbidden in ("--model", "--node", "--probe", "--provider", "--host"):
             self.assertNotIn(forbidden, top.stdout + run.stdout)
+
+    def test_run_cli_normalizes_public_and_compatibility_forms(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            repo = str(root / "dalek-clean")
+            config = str(root / "run.json")
+            output_root = str(root / "attempts")
+            forms = (
+                (
+                    [
+                        "autofv",
+                        "run",
+                        repo,
+                        "--config",
+                        config,
+                        "--output-root",
+                        output_root,
+                    ],
+                    mock.call(repo, config, output_root=output_root),
+                ),
+                (
+                    [
+                        "autofv",
+                        "run",
+                        "--target",
+                        repo,
+                        "--run-config",
+                        config,
+                        "--output-root",
+                        output_root,
+                    ],
+                    mock.call(repo, config, output_root=output_root),
+                ),
+                (
+                    ["autofv", "run", repo, "--config", config],
+                    mock.call(repo, config, output_root=None),
+                ),
+            )
+            for argv, expected in forms:
+                with (
+                    self.subTest(argv=argv),
+                    mock.patch.object(sys, "argv", argv),
+                    mock.patch.object(
+                        experiment,
+                        "run_experiment",
+                        return_value={"outcome": "success"},
+                    ) as run_experiment,
+                    mock.patch("builtins.print"),
+                ):
+                    try:
+                        experiment.main()
+                    except SystemExit as exc:
+                        self.fail(f"public run form was rejected: {exc}")
+                    self.assertEqual(run_experiment.call_args, expected)
+
+    def test_named_attempt_root_has_immutable_accepted_and_evidence_siblings(self):
+        fixture = ROOT / "tests" / "fixtures" / "diamond"
+        with tempfile.TemporaryDirectory() as tmp:
+            base = Path(tmp)
+            repo = base / "dalek-clean"
+            shutil.copytree(fixture, repo)
+            (repo / ".git").mkdir()
+            (repo / ".git" / "HEAD").write_text("ref: refs/heads/main\n")
+            config = base / "invalid-run.json"
+            config.write_text(
+                json.dumps(
+                    {
+                        "schema": "autofv-run/v1",
+                        "model": "fixture-model-v1",
+                        "max_wall_seconds": 60,
+                        "max_cost_usd": 1,
+                        "unexpected": True,
+                    }
+                )
+            )
+            output_root = base / "attempts"
+            ledger = base / "attempts.jsonl"
+            before = {
+                path.relative_to(repo).as_posix(): path.read_bytes()
+                for path in repo.rglob("*")
+                if path.is_file()
+            }
+            with mock.patch.dict(
+                os.environ, {"AUTOFV_ATTEMPT_LEDGER": str(ledger)}
+            ):
+                try:
+                    result = experiment.run_experiment(
+                        repo, config, output_root=output_root
+                    )
+                except TypeError as exc:
+                    self.fail(f"output-root contract is missing: {exc}")
+
+            attempt = Path(result["run_root"])
+            short_id = result["attempt_id"].removeprefix("attempt-")[:8]
+            self.assertEqual(attempt.parent, output_root.resolve())
+            self.assertRegex(
+                attempt.name,
+                rf"^{re.escape(repo.name)}-autofv-\d{{8}}T\d{{6}}Z-{short_id}$",
+            )
+            self.assertEqual(
+                {path.name for path in attempt.iterdir()},
+                {"accepted", "result.json", "evidence", "logs", "export"},
+            )
+            accepted = {
+                path.relative_to(attempt / "accepted").as_posix(): path.read_bytes()
+                for path in (attempt / "accepted").rglob("*")
+                if path.is_file()
+            }
+            after = {
+                path.relative_to(repo).as_posix(): path.read_bytes()
+                for path in repo.rglob("*")
+                if path.is_file()
+            }
+            self.assertEqual(accepted, before)
+            self.assertEqual(after, before)
+            self.assertEqual(result["outcome"], "invalid_config")
+
+    def test_output_overlap_is_rejected_before_repository_mutation(self):
+        fixture = ROOT / "tests" / "fixtures" / "diamond"
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = Path(tmp) / "dalek-clean"
+            shutil.copytree(fixture, repo)
+            before = {
+                path.relative_to(repo).as_posix(): path.read_bytes()
+                for path in repo.rglob("*")
+                if path.is_file()
+            }
+            for output_root in (repo, repo / "attempts"):
+                with self.subTest(output_root=output_root):
+                    try:
+                        experiment.run_experiment(
+                            repo,
+                            repo / "run.json",
+                            output_root=output_root,
+                        )
+                    except TypeError as exc:
+                        self.fail(f"output-root contract is missing: {exc}")
+                    except results.ResultError:
+                        pass
+                    else:
+                        self.fail("repository-overlapping output root was accepted")
+            after = {
+                path.relative_to(repo).as_posix(): path.read_bytes()
+                for path in repo.rglob("*")
+                if path.is_file()
+            }
+            self.assertEqual(after, before)
+
+    def test_hostile_attempt_ledgers_are_rejected_before_worker_or_input_mutation(self):
+        fixture = ROOT / "tests" / "fixtures" / "diamond"
+        with tempfile.TemporaryDirectory() as tmp:
+            base = Path(tmp)
+            for kind in ("inside-target", "symlink"):
+                with self.subTest(kind=kind):
+                    case = base / kind
+                    repo = case / "dalek-clean"
+                    case.mkdir()
+                    shutil.copytree(fixture, repo)
+                    fallback = case / "fallback.jsonl"
+                    linked_ledger = case / "linked-ledger.jsonl"
+                    if kind == "inside-target":
+                        ledger = repo / "attempts.jsonl"
+                    else:
+                        linked_ledger.write_bytes(b"")
+                        ledger = case / "attempts.jsonl"
+                        ledger.symlink_to(linked_ledger)
+                    before = {
+                        path.relative_to(repo).as_posix(): path.read_bytes()
+                        for path in repo.rglob("*")
+                        if path.is_file()
+                    }
+                    with (
+                        mock.patch.object(
+                            results, "DEFAULT_ATTEMPT_LEDGER", fallback
+                        ),
+                        mock.patch.dict(
+                            os.environ, {"AUTOFV_ATTEMPT_LEDGER": str(ledger)}
+                        ),
+                        mock.patch.object(
+                            experiment.worker,
+                            "prepare_run",
+                            side_effect=experiment.worker.WorkerError(
+                                "worker must not launch"
+                            ),
+                        ) as prepare,
+                    ):
+                        result = experiment.run_experiment(
+                            repo,
+                            repo / "run.json",
+                            output_root=case / "attempts",
+                        )
+
+                    self.assertEqual(result["outcome"], "invalid_config")
+                    self.assertEqual(
+                        result["termination_reason"], "attempt_ledger_invalid"
+                    )
+                    self.assertEqual(
+                        Path(result["attempt_ledger"]).resolve(),
+                        fallback.resolve(),
+                    )
+                    self.assertEqual(len(fallback.read_text().splitlines()), 1)
+                    prepare.assert_not_called()
+                    after = {
+                        path.relative_to(repo).as_posix(): path.read_bytes()
+                        for path in repo.rglob("*")
+                        if path.is_file()
+                    }
+                    self.assertEqual(after, before)
+                    if kind == "symlink":
+                        self.assertTrue(ledger.is_symlink())
+                        self.assertEqual(linked_ledger.read_bytes(), b"")
+
+    def test_invalid_public_run_exits_one_with_a_persisted_typed_result(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            missing_repo = root / "missing"
+            output_root = root / "attempts"
+            ledger = root / "attempts.jsonl"
+            argv = [
+                "autofv",
+                "run",
+                str(missing_repo),
+                "--config",
+                str(ROOT / "tests" / "fixtures" / "diamond" / "run.json"),
+                "--output-root",
+                str(output_root),
+            ]
+            with (
+                mock.patch.object(sys, "argv", argv),
+                mock.patch.dict(
+                    os.environ, {"AUTOFV_ATTEMPT_LEDGER": str(ledger)}
+                ),
+                mock.patch("builtins.print") as print_result,
+                self.assertRaises(SystemExit) as raised,
+            ):
+                experiment.main()
+            self.assertEqual(raised.exception.code, 1)
+            rendered = json.loads(print_result.call_args.args[0])
+            self.assertEqual(rendered["outcome"], "invalid_target")
+            self.assertEqual(rendered["termination_reason"], "target_invalid")
+            self.assertTrue(Path(rendered["run_root"], "result.json").is_file())
 
     def test_inspect_cli_writes_canonical_report_without_mutating_target(self):
         fixture = ROOT / "tests" / "fixtures" / "diamond"

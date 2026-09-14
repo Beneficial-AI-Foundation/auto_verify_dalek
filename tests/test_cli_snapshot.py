@@ -281,6 +281,70 @@ class ToolchainContractTests(unittest.TestCase):
             }
             self.assertEqual(after, before)
 
+    def test_hostile_attempt_ledgers_are_rejected_before_worker_or_input_mutation(self):
+        fixture = ROOT / "tests" / "fixtures" / "diamond"
+        with tempfile.TemporaryDirectory() as tmp:
+            base = Path(tmp)
+            for kind in ("inside-target", "symlink"):
+                with self.subTest(kind=kind):
+                    case = base / kind
+                    repo = case / "dalek-clean"
+                    case.mkdir()
+                    shutil.copytree(fixture, repo)
+                    fallback = case / "fallback.jsonl"
+                    linked_ledger = case / "linked-ledger.jsonl"
+                    if kind == "inside-target":
+                        ledger = repo / "attempts.jsonl"
+                    else:
+                        linked_ledger.write_bytes(b"")
+                        ledger = case / "attempts.jsonl"
+                        ledger.symlink_to(linked_ledger)
+                    before = {
+                        path.relative_to(repo).as_posix(): path.read_bytes()
+                        for path in repo.rglob("*")
+                        if path.is_file()
+                    }
+                    with (
+                        mock.patch.object(
+                            results, "DEFAULT_ATTEMPT_LEDGER", fallback
+                        ),
+                        mock.patch.dict(
+                            os.environ, {"AUTOFV_ATTEMPT_LEDGER": str(ledger)}
+                        ),
+                        mock.patch.object(
+                            experiment.worker,
+                            "prepare_run",
+                            side_effect=experiment.worker.WorkerError(
+                                "worker must not launch"
+                            ),
+                        ) as prepare,
+                    ):
+                        result = experiment.run_experiment(
+                            repo,
+                            repo / "run.json",
+                            output_root=case / "attempts",
+                        )
+
+                    self.assertEqual(result["outcome"], "invalid_config")
+                    self.assertEqual(
+                        result["termination_reason"], "attempt_ledger_invalid"
+                    )
+                    self.assertEqual(
+                        Path(result["attempt_ledger"]).resolve(),
+                        fallback.resolve(),
+                    )
+                    self.assertEqual(len(fallback.read_text().splitlines()), 1)
+                    prepare.assert_not_called()
+                    after = {
+                        path.relative_to(repo).as_posix(): path.read_bytes()
+                        for path in repo.rglob("*")
+                        if path.is_file()
+                    }
+                    self.assertEqual(after, before)
+                    if kind == "symlink":
+                        self.assertTrue(ledger.is_symlink())
+                        self.assertEqual(linked_ledger.read_bytes(), b"")
+
     def test_invalid_public_run_exits_one_with_a_persisted_typed_result(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)

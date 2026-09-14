@@ -76,6 +76,14 @@ CHECKPOINT_STATE_FIELDS = (
     "processed_candidate_sha256",
     "accepted_sequence",
     "accepted_nodes",
+    "proof_patch_sha256",
+    "immutable_graph_sha256",
+    "target_states",
+    "preparation_defects",
+    "invalidated_consumers",
+    "block_chains",
+    "file_owners",
+    "release_events",
     "pending_model_exchanges",
     "model_exchanges",
     "inflight_transition",
@@ -106,6 +114,14 @@ class _RunState(TypedDict, total=False):
     processed_candidate_sha256: list[str]
     accepted_sequence: list[dict[str, Any]]
     accepted_nodes: list[str]
+    proof_patch_sha256: dict[str, str]
+    immutable_graph_sha256: str
+    target_states: dict[str, dict[str, Any]]
+    preparation_defects: list[dict[str, Any]]
+    invalidated_consumers: list[str]
+    block_chains: dict[str, list[str]]
+    file_owners: dict[str, str]
+    release_events: list[dict[str, Any]]
     receipt_rejections: list[dict[str, Any]]
     compiler_assumptions: list[dict[str, str]]
     l0_receipt: dict[str, Any]
@@ -135,6 +151,13 @@ def _node_update(state: _RunState, **values: Any) -> dict[str, Any]:
         "pending_model_exchanges",
         "model_exchanges",
         "receipt_rejections",
+        "immutable_graph_sha256",
+        "target_states",
+        "preparation_defects",
+        "invalidated_consumers",
+        "block_chains",
+        "file_owners",
+        "release_events",
     ):
         if name in state:
             values[name] = state[name]

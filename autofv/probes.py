@@ -183,23 +183,25 @@ def _topological_orders(
     dependencies = {node: set() for node in nodes}
     consumers = {node: set() for node in nodes}
     for consumer, dependency in edges:
+        if consumer not in nodes or dependency not in nodes:
+            raise ProbeError("dependency_edge_node_missing")
         dependencies[consumer].add(dependency)
         consumers[dependency].add(consumer)
 
     # The contract walk starts at T and follows consumer -> dependency.
     contract_order: list[str] = []
     seen: set[str] = set()
-
-    def visit(node: str) -> None:
-        if node in seen:
-            return
-        seen.add(node)
-        contract_order.append(node)
-        for dependency in sorted(dependencies[node]):
-            visit(dependency)
-
     for root in sorted(roots):
-        visit(root)
+        if root not in nodes:
+            raise ProbeError("dependency_root_missing")
+        pending = [root]
+        while pending:
+            node = pending.pop()
+            if node in seen:
+                continue
+            seen.add(node)
+            contract_order.append(node)
+            pending.extend(reversed(sorted(dependencies[node])))
 
     remaining = {node: set(values) for node, values in dependencies.items()}
     proof_batches: list[list[str]] = []
@@ -230,8 +232,9 @@ def _topological_orders(
         proof_batches.append(ready)
         for node in ready:
             del remaining[node]
-        for values in remaining.values():
-            values.difference_update(ready)
+            for consumer in consumers[node]:
+                if consumer in remaining:
+                    remaining[consumer].discard(node)
     return contract_order, proof_batches
 
 

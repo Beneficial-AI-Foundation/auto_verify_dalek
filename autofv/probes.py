@@ -318,6 +318,32 @@ def _project_rust_atom(name: str, atom: Any) -> dict[str, Any] | None:
     return atom
 
 
+def _validate_probe_source_identity(
+    rust: dict[str, Any], aeneas: dict[str, Any]
+) -> tuple[str, str]:
+    source = rust.get("source")
+    required = {"commit", "language", "package", "package-version", "repo"}
+    if (
+        not isinstance(source, dict)
+        or not required <= source.keys()
+        or source["language"] != "rust"
+        or any(not isinstance(source[key], str) for key in required)
+        or not source["package"]
+        or not source["package-version"]
+    ):
+        raise ProbeError("probe_rust_source_identity_missing")
+
+    inputs = aeneas.get("inputs")
+    rust_inputs = (
+        [item for item in inputs if isinstance(item, dict) and item.get("schema") == "probe-rust/extract"]
+        if isinstance(inputs, list)
+        else []
+    )
+    if len(rust_inputs) != 1 or rust_inputs[0].get("source") != source:
+        raise ProbeError("probe_input_source_identity_mismatch")
+    return source["package"], source["package-version"]
+
+
 def _build_target_report(
     rust: dict[str, Any],
     aeneas: dict[str, Any],
@@ -334,10 +360,7 @@ def _build_target_report(
     if not project_atoms:
         raise ProbeError("project_rust_functions_missing")
 
-    package = rust.get("source", {}).get("package")
-    package_version = rust.get("source", {}).get("package-version")
-    if not isinstance(package, str) or not package or not isinstance(package_version, str):
-        raise ProbeError("probe_rust_source_identity_missing")
+    package, package_version = _validate_probe_source_identity(rust, aeneas)
     project_prefix = f"probe:{package}/{package_version}/"
     project_names = set(project_atoms)
     edges: set[tuple[str, str]] = set()
@@ -375,7 +398,10 @@ def _build_target_report(
         primary_spec = declaration_atom.get("primary-spec")
         if not isinstance(primary_spec, str) or not primary_spec:
             raise ProbeError(f"graph_top_primary_spec_missing: {root}")
-        _selected_lean_atom(primary_spec, merged_atoms.get(primary_spec))
+        primary_spec_atom = _selected_lean_atom(
+            primary_spec, merged_atoms.get(primary_spec)
+        )
+        _validate_dependency_partition(primary_spec_atom, merged_atoms)
         closure, lean_edges, _, lean_locations = _collect_lean_closure(
             [declaration], merged_atoms
         )

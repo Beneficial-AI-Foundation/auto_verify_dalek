@@ -806,8 +806,8 @@ class ResultEvidenceTests(unittest.TestCase):
 
             self.assertEqual(result["termination_reason"], "attempt_allocation_failed")
             destroy.assert_called_once_with(prepared)
-            attempt_roots = list((base / "attempts").iterdir())
-            self.assertEqual(attempt_roots, [Path(result["run_root"])])
+            attempt_roots = [path.resolve() for path in (base / "attempts").iterdir()]
+            self.assertEqual(attempt_roots, [Path(result["run_root"]).resolve()])
 
     def test_durable_binding_removes_the_worker_staging_root(self):
         with tempfile.TemporaryDirectory() as tmp:

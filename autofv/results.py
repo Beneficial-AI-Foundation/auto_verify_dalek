@@ -7,7 +7,10 @@ import hashlib
 import json
 import os
 import secrets
+import shutil
+import subprocess
 import tempfile
+from datetime import datetime, timezone
 from decimal import Decimal, InvalidOperation
 from pathlib import Path
 from typing import Any
@@ -59,14 +62,48 @@ def default_attempt_identity() -> dict[str, str]:
     }
 
 
-def new_attempt_identity() -> dict[str, str]:
+def new_attempt_identity(target: str | Path | None = None) -> dict[str, str]:
     identity = default_attempt_identity()
     configured = os.environ.get("AUTOFV_ATTEMPT_LEDGER")
     ledger = Path(configured) if configured else DEFAULT_ATTEMPT_LEDGER
     if not ledger.is_absolute():
         raise ResultError("AUTOFV_ATTEMPT_LEDGER must be an absolute path")
+    if ledger.is_symlink():
+        raise ResultError("AUTOFV_ATTEMPT_LEDGER must not be a symlink")
+    if target is not None:
+        try:
+            source = Path(target).expanduser().resolve(strict=False)
+            resolved_ledger = ledger.expanduser().resolve(strict=False)
+        except (OSError, RuntimeError) as exc:
+            raise ResultError("AUTOFV_ATTEMPT_LEDGER path resolution failed") from exc
+        if resolved_ledger == source or resolved_ledger.is_relative_to(source):
+            raise ResultError("AUTOFV_ATTEMPT_LEDGER overlaps input repository")
     identity["attempt_ledger"] = str(ledger)
     return identity
+
+
+def validate_output_root(
+    target: str | Path, output_root: str | Path | None
+) -> Path:
+    """Resolve an attempt parent without allowing writes inside the input."""
+    requested_source = Path(target).expanduser()
+    requested = (
+        Path(output_root).expanduser()
+        if output_root is not None
+        else Path(tempfile.gettempdir())
+    )
+    if requested_source.is_symlink() or requested.is_symlink():
+        raise ResultError("run paths must not be symlinks")
+    try:
+        source = requested_source.resolve(strict=False)
+        parent = requested.resolve(strict=False)
+    except (OSError, RuntimeError) as exc:
+        raise ResultError("run path resolution failed") from exc
+    if parent == source or parent.is_relative_to(source):
+        raise ResultError("output root overlaps input repository")
+    if parent.exists() and (parent.is_symlink() or not parent.is_dir()):
+        raise ResultError("output root is not a safe directory")
+    return parent
 
 
 def allocate_attempt(
@@ -74,8 +111,24 @@ def allocate_attempt(
     *,
     target: str | Path,
     run_config: str | Path,
+    output_root: str | Path | None = None,
 ) -> dict[str, Any]:
-    root = Path(tempfile.mkdtemp(prefix=f"{identity['attempt_id']}-"))
+    parent = validate_output_root(target, output_root)
+    parent.mkdir(parents=True, exist_ok=True)
+    short_id = identity["attempt_id"].removeprefix("attempt-")[:8]
+    timestamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+    repo_name = Path(target).expanduser().resolve(strict=False).name or "repository"
+    root = parent / f"{repo_name}-autofv-{timestamp}-{short_id}"
+    created = False
+    try:
+        root.mkdir(mode=0o700)
+        created = True
+        for name in ("accepted", "evidence", "logs", "export"):
+            (root / name).mkdir()
+    except OSError as exc:
+        if created:
+            shutil.rmtree(root, ignore_errors=True)
+        raise ResultError("attempt root allocation failed") from exc
     return {
         **identity,
         "run_id": identity["attempt_id"],
@@ -87,6 +140,121 @@ def allocate_attempt(
         "requested_run_config": str(run_config),
         "events": ["attempt_started"],
     }
+
+
+def snapshot_input(run: dict[str, Any], target: str | Path) -> None:
+    """Copy a validated input repository into the run-owned accepted tree."""
+    source = Path(target).resolve(strict=True)
+    if not source.is_dir() or source.is_symlink():
+        raise ResultError("input repository is not a safe directory")
+    for path in source.rglob("*"):
+        if path.is_symlink() or (not path.is_dir() and not path.is_file()):
+            raise ResultError("input repository contains an unsafe file kind")
+
+    root = Path(run["run_root"]).resolve(strict=True)
+    accepted = root / "accepted"
+    stage = root / ".accepted.tmp"
+    try:
+        shutil.copytree(source, stage)
+        accepted.rmdir()
+        os.replace(stage, accepted)
+    except OSError as exc:
+        shutil.rmtree(stage, ignore_errors=True)
+        raise ResultError("accepted repository snapshot failed") from exc
+
+
+def bind_prepared_run(
+    allocation: dict[str, Any], prepared: dict[str, Any]
+) -> dict[str, Any]:
+    """Bind worker preparation metadata to the durable attempt root."""
+    root = Path(allocation["run_root"])
+    previous_root = Path(prepared["run_root"])
+    previous_evidence = previous_root / "evidence"
+    evidence_transferred = False
+    if previous_root != root and previous_evidence.is_dir():
+        try:
+            shutil.copytree(
+                previous_evidence, root / "evidence", dirs_exist_ok=True
+            )
+            evidence_transferred = True
+        except OSError as exc:
+            raise ResultError("worker evidence transfer failed") from exc
+    if (
+        previous_root != root
+        and prepared.get("execution_tier") == "sealed_runsc"
+        and evidence_transferred
+    ):
+        try:
+            shutil.rmtree(previous_root)
+        except OSError as exc:
+            raise ResultError("worker staging cleanup failed") from exc
+    prepared.update(
+        {
+            "attempt_id": allocation["attempt_id"],
+            "attempt_ledger": allocation["attempt_ledger"],
+            "run_root": str(root),
+            "evidence_dir": str(root / "evidence"),
+            "requested_target": allocation["requested_target"],
+            "requested_run_config": allocation["requested_run_config"],
+        }
+    )
+    return prepared
+
+
+def materialize_accepted(run: dict[str, Any]) -> None:
+    """Replace the input snapshot with the exact exported accepted Git commit."""
+    root = Path(run["run_root"]).resolve(strict=True)
+    bundle = root / "export" / "accepted" / "repository.bundle"
+    accepted = root / "accepted"
+    stage = root / ".accepted-repository.tmp"
+    backup = root / ".accepted-input.tmp"
+    expected = (run.get("accepted") or {}).get("accepted_commit")
+    if not bundle.is_file() or bundle.is_symlink() or not isinstance(expected, str):
+        raise ResultError("accepted repository export is incomplete")
+    try:
+        stage.mkdir()
+        for command in (
+            ("git", "-C", str(stage), "init", "--quiet"),
+            (
+                "git",
+                "-C",
+                str(stage),
+                "fetch",
+                "--quiet",
+                "--no-tags",
+                str(bundle),
+                "HEAD",
+            ),
+            (
+                "git",
+                "-C",
+                str(stage),
+                "checkout",
+                "--quiet",
+                "--detach",
+                "FETCH_HEAD",
+            ),
+        ):
+            subprocess.run(command, check=True, capture_output=True)
+        head = subprocess.run(
+            ("git", "-C", str(stage), "rev-parse", "HEAD"),
+            check=True,
+            capture_output=True,
+            text=True,
+        ).stdout.strip()
+        if head != expected:
+            raise ResultError("accepted repository commit mismatch")
+        os.replace(accepted, backup)
+        try:
+            os.replace(stage, accepted)
+        except OSError:
+            os.replace(backup, accepted)
+            raise
+        shutil.rmtree(backup)
+    except (OSError, subprocess.CalledProcessError) as exc:
+        raise ResultError("accepted repository materialization failed") from exc
+    finally:
+        shutil.rmtree(stage, ignore_errors=True)
 
 
 def _decimal_cost(receipts: Any) -> Decimal:

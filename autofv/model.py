@@ -49,6 +49,20 @@ def _prompt_sha256(run_id: str, request_id: str, role: str) -> str:
     return hashlib.sha256(raw).hexdigest()
 
 
+def _next_model_sequence(state: _RunState) -> int:
+    sequences = [item["sequence"] for item in state.get("receipts", [])]
+    for exchanges in (
+        state.get("model_exchanges", {}),
+        state.get("pending_model_exchanges", {}),
+    ):
+        sequences.extend(
+            exchange["request"]["sequence"]
+            for exchange in exchanges.values()
+            if isinstance(exchange, dict) and isinstance(exchange.get("request"), dict)
+        )
+    return max(sequences, default=0) + 1
+
+
 def _model_envelope(
     state: _RunState,
     *,
@@ -62,7 +76,7 @@ def _model_envelope(
     return {
         "schema": "autofv-model-request/v1",
         "run_id": run["run_id"],
-        "sequence": sequence if sequence is not None else len(state["receipts"]) + 1,
+        "sequence": sequence if sequence is not None else _next_model_sequence(state),
         "batch_id": batch_id,
         "request_id": request_id,
         "role": role,
@@ -81,6 +95,21 @@ def _validate_model_exchange(
     enforce_sequence: bool,
 ) -> tuple[dict[str, Any], dict[str, Any], Decimal]:
     run, config = state["run"], state["config"]
+    request_id = request.get("request_id")
+    pending = [
+        exchange
+        for stored_id, exchange in state.get("pending_model_exchanges", {}).items()
+        if stored_id != request_id and isinstance(exchange, dict)
+    ]
+    seen_sequences = {
+        item.get("sequence") for item in state["receipts"] if isinstance(item, dict)
+    } | {
+        exchange["request"].get("sequence")
+        for exchange in pending
+        if isinstance(exchange.get("request"), dict)
+    }
+    if request.get("sequence") in seen_sequences:
+        raise ContractError("duplicate proxy receipt sequence")
     response = _validate_model_response(response, request, run["base_commit"])
     amount = validate_proxy_receipt(
         receipt,
@@ -90,8 +119,14 @@ def _validate_model_exchange(
         model_id=config["model"],
         request_sha256=_canonical_sha256(request),
         response_sha256=_canonical_sha256(response),
-        seen_receipt_sha256={item["receipt_sha256"] for item in state["receipts"]},
-        seen_request_ids={item["request_id"] for item in state["receipts"]},
+        seen_receipt_sha256={item["receipt_sha256"] for item in state["receipts"]}
+        | {
+            exchange["receipt"].get("receipt_sha256")
+            for exchange in pending
+            if isinstance(exchange.get("receipt"), dict)
+        },
+        seen_request_ids={item["request_id"] for item in state["receipts"]}
+        | set(state.get("pending_model_exchanges", {})) - {request_id},
     )
     if enforce_sequence and request["sequence"] != len(state["receipts"]) + 1:
         raise ContractError("proxy receipt sequence is not next for this run")
@@ -181,6 +216,7 @@ def _accept_model_exchange(
     receipt: dict[str, Any],
     *,
     enforce_budget: bool = True,
+    allow_out_of_order: bool = False,
 ) -> tuple[dict[str, Any], dict[str, Any]]:
     try:
         response, receipt, amount = _validate_model_exchange(
@@ -188,7 +224,7 @@ def _accept_model_exchange(
             request,
             response,
             receipt,
-            enforce_sequence=True,
+            enforce_sequence=not allow_out_of_order,
         )
     except ContractError as exc:
         _record_model_rejection(state, request, receipt, exc, checkpoint=True)
@@ -199,6 +235,7 @@ def _accept_model_exchange(
     new_cost = state["cost"] + amount
     state["cost"] = new_cost
     state["receipts"].append(receipt)
+    state["receipts"].sort(key=lambda item: item["sequence"])
     exchange = {"request": request, "response": response, "receipt": receipt}
     state.setdefault("model_exchanges", {})[request["request_id"]] = exchange
     state.setdefault("pending_model_exchanges", {}).pop(request["request_id"], None)

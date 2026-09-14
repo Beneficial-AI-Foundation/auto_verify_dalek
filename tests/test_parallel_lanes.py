@@ -7,7 +7,7 @@ from decimal import Decimal
 from pathlib import Path
 from unittest import mock
 
-from autofv import experiment, probes, worker
+from autofv import diamond, experiment, probes, worker
 from tests.test_model_proxy_fixture import _FixtureProgram
 from tests.test_phase1_diamond import AENEAS_PROBE, MODEL_FIXTURE, RUST_PROBE, TARGET
 
@@ -20,6 +20,22 @@ LEFT = "probe:Diamond.left"
 RIGHT = "probe:Diamond.right"
 TOP = "probe:Diamond.top"
 POLICY = experiment.load_toolchain_lock()["native_decide_policy_sha256"]
+
+
+def _event_graph(*, same_file=False):
+    nodes = ["fast", "middle", "root", "slow"]
+    return {
+        "selected_nodes": nodes,
+        "term_dependencies": [
+            ["middle", "fast"],
+            ["root", "middle"],
+            ["root", "slow"],
+        ],
+        "source_paths": {
+            node: "Graph/Shared.lean" if same_file else f"Graph/{node}.lean"
+            for node in nodes
+        },
+    }
 
 
 def _graph():
@@ -63,6 +79,194 @@ def _state(run_round=None):
 
 
 class ParallelLaneTests(unittest.TestCase):
+    def test_newly_ready_consumer_starts_while_slow_lane_is_running(self):
+        slow_started = threading.Event()
+        middle_started = threading.Event()
+
+        def run(node):
+            if node == "slow":
+                slow_started.set()
+                self.assertTrue(middle_started.wait(1))
+            elif node == "fast":
+                self.assertTrue(slow_started.wait(1))
+            elif node == "middle":
+                middle_started.set()
+            return node
+
+        accepted = getattr(diamond, "_schedule_proofs", lambda *_: set())(
+            _event_graph(), run, lambda *_: None
+        )
+
+        self.assertEqual(accepted, {"fast", "middle", "root", "slow"})
+
+    def test_later_submission_releases_its_consumer_before_earlier_slow_job(self):
+        graph = {
+            "selected_nodes": ["a-slow", "a-middle", "root", "z-fast", "z-middle"],
+            "term_dependencies": [
+                ["a-middle", "a-slow"],
+                ["root", "a-middle"],
+                ["root", "z-middle"],
+                ["z-middle", "z-fast"],
+            ],
+            "source_paths": {
+                node: f"Graph/{node}.lean"
+                for node in ("a-slow", "a-middle", "root", "z-fast", "z-middle")
+            },
+        }
+        slow_started = threading.Event()
+        release_slow = threading.Event()
+        middle_started = threading.Event()
+        errors = []
+
+        def run(node):
+            if node == "a-slow":
+                slow_started.set()
+                release_slow.wait()
+            elif node == "z-fast":
+                slow_started.wait()
+            elif node == "z-middle":
+                middle_started.set()
+                release_slow.set()
+            return node
+
+        def schedule():
+            try:
+                diamond._schedule_proofs(
+                    graph,
+                    run,
+                    lambda *_: None,
+                    prepare_job=lambda node: node,
+                )
+            except Exception as exc:
+                errors.append(exc)
+
+        thread = threading.Thread(target=schedule)
+        thread.start()
+        self.assertTrue(slow_started.wait(1))
+        released_before_slow = middle_started.wait(1)
+        release_slow.set()
+        thread.join(1)
+
+        self.assertTrue(released_before_slow)
+        self.assertFalse(errors)
+
+    def test_scheduler_does_not_queue_more_paid_jobs_than_its_lane_bound(self):
+        graph = {
+            "selected_nodes": ["a", "b", "c", "d"],
+            "term_dependencies": [],
+            "source_paths": {node: f"Graph/{node}.lean" for node in "abcd"},
+        }
+        two_started = threading.Event()
+        release = threading.Event()
+        prepared = []
+        started = []
+        lock = threading.Lock()
+
+        def prepare(node):
+            prepared.append(node)
+            return node
+
+        def run(node):
+            with lock:
+                started.append(node)
+                if len(started) == 2:
+                    two_started.set()
+            release.wait(1)
+            return node
+
+        thread = threading.Thread(
+            target=lambda: diamond._schedule_proofs(
+                graph,
+                run,
+                lambda *_: None,
+                prepare_job=prepare,
+                max_workers=2,
+            )
+        )
+        thread.start()
+        self.assertTrue(two_started.wait(1))
+        self.assertEqual(prepared, ["a", "b"])
+        release.set()
+        thread.join(1)
+        self.assertFalse(thread.is_alive())
+
+    def test_failed_branch_blocks_only_consumers_and_drains_ready_siblings(self):
+        graph = {
+            "frozen_targets": ["root"],
+            "selected_nodes": ["blocked", "failed", "other", "root"],
+            "term_dependencies": [
+                ["blocked", "failed"],
+                ["root", "blocked"],
+                ["root", "other"],
+            ],
+            "source_paths": {
+                node: f"Graph/{node}.lean"
+                for node in ("blocked", "failed", "other", "root")
+            },
+        }
+        state = {"graph": graph, "run": {"events": []}}
+        diamond._validate_scheduling_graph(state)
+        completed = threading.Barrier(2)
+        ran = []
+        accounted = []
+
+        def run(node):
+            ran.append(node)
+            if node in {"failed", "other"}:
+                completed.wait(1)
+            return node
+
+        def accept(node, _result):
+            accounted.append(node)
+            if node == "failed":
+                diamond._block_dependents(state, node, "proof_exhausted")
+                return False
+            return None
+
+        accepted = diamond._schedule_proofs(graph, run, accept, max_workers=2)
+
+        self.assertEqual(accepted, {"other"})
+        self.assertEqual(set(accounted), {"failed", "other"})
+        self.assertEqual(set(ran), {"failed", "other"})
+        self.assertEqual(state["target_states"]["blocked"]["status"], "blocked")
+        self.assertEqual(state["target_states"]["root"]["status"], "blocked")
+
+    def test_ready_jobs_in_one_file_never_overlap(self):
+        graph = {
+            "selected_nodes": ["left", "right", "root"],
+            "term_dependencies": [["root", "left"], ["root", "right"]],
+            "source_paths": {
+                "left": "Graph/Shared.lean",
+                "right": "Graph/Shared.lean",
+                "root": "Graph/Root.lean",
+            },
+        }
+        left_started = threading.Event()
+        right_started = threading.Event()
+        release_left = threading.Event()
+        finished = threading.Event()
+
+        def run(node):
+            if node == "left":
+                left_started.set()
+                self.assertTrue(release_left.wait(1))
+            elif node == "right":
+                right_started.set()
+            return node
+
+        def schedule():
+            scheduler = getattr(diamond, "_schedule_proofs", lambda *_: set())
+            scheduler(graph, run, lambda *_: None)
+            finished.set()
+
+        thread = threading.Thread(target=schedule)
+        thread.start()
+        self.assertTrue(left_started.wait(1))
+        self.assertFalse(right_started.is_set())
+        release_left.set()
+        self.assertTrue(finished.wait(1))
+        thread.join()
+
     def test_leaf_proxy_rounds_overlap_but_receipts_commit_in_sequence(self):
         program = _FixtureProgram(FIXTURE, threading.Barrier(2))
         for entry in FIXTURE["entries"][:5]:
@@ -190,6 +394,37 @@ class ParallelLaneTests(unittest.TestCase):
             requeue = experiment._checkpoint_candidate(state, good, {})
         self.assertEqual(requeue["status"], "requeue")
         self.assertEqual(state["accepted"], {"accepted_commit": "9" * 40})
+
+    def test_undeclared_candidate_is_retained_as_a_preparation_defect(self):
+        state = _state()
+        state["graph"] = _graph()
+        lane = experiment._lane_descriptors(state["run"], state["graph"], [LEFT])[0]
+        candidate = experiment._candidate_record(
+            copy.deepcopy(ENTRIES["proof-left-001"]["response"]), lane, POLICY
+        )
+        candidate["node"] = "probe:Unknown.local"
+        body = {
+            key: value
+            for key, value in candidate.items()
+            if key not in {"candidate_sha256", "response"}
+        }
+        candidate["candidate_sha256"] = experiment._canonical_sha256(body)
+
+        with mock.patch.object(
+            worker,
+            "accept_candidate",
+            return_value={
+                "accepted_commit": "1" * 40,
+                "accepted_tree_sha256": "2" * 64,
+                "checks": ["configured_build"],
+            },
+        ) as accept:
+            rejected = experiment._checkpoint_candidate(state, candidate, {})
+
+        self.assertEqual(rejected["status"], "rejected")
+        self.assertEqual(rejected["reason"], "preparation_defect_undeclared_node")
+        self.assertEqual(state["preparation_defects"][0]["node"], candidate["node"])
+        accept.assert_not_called()
 
     def test_top_waits_for_both_term_dependencies(self):
         graph = _graph()

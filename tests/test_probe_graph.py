@@ -128,6 +128,20 @@ class ProbeGraphTests(unittest.TestCase):
         ):
             self.parse(rust=missing_source_identity)
 
+        malformed_source_identity = copy.deepcopy(self.rust)
+        malformed_source_identity["source"] = []
+        with self.assertRaisesRegex(
+            probes.ProbeError, "probe_rust_source_identity_missing"
+        ):
+            self.parse(rust=malformed_source_identity)
+
+        mismatched_source_identity = copy.deepcopy(self.aeneas)
+        mismatched_source_identity["inputs"][0]["source"]["package"] = "other"
+        with self.assertRaisesRegex(
+            probes.ProbeError, "probe_input_source_identity_mismatch"
+        ):
+            self.parse(aeneas=mismatched_source_identity)
+
     def test_cycle_diagnostic_names_members_edges_and_source_locations(self):
         cycle = copy.deepcopy(self.aeneas)
         cycle["data"][LEFT]["dependencies"] = [TOP]

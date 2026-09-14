@@ -1,6 +1,8 @@
 import hashlib
 import importlib.util
 import json
+import os
+import shutil
 import tempfile
 import unittest
 from pathlib import Path
@@ -48,6 +50,20 @@ def _tree_bytes(root):
         for path in root.rglob("*")
         if path.is_file()
     }
+
+
+def _tree_sha256(root):
+    entries = [
+        {
+            "path": name,
+            "sha256": hashlib.sha256(raw).hexdigest(),
+            "size": len(raw),
+        }
+        for name, raw in sorted(_tree_bytes(root).items())
+    ]
+    return hashlib.sha256(
+        json.dumps(entries, sort_keys=True, separators=(",", ":")).encode()
+    ).hexdigest()
 
 
 class DalekPreparationShapeTests(unittest.TestCase):
@@ -189,7 +205,7 @@ end Solution
                     "source": {
                         "repository": "https://example.invalid/curve25519-dalek-lean-verify.git",
                         "revision": "a" * 40,
-                        "tree_sha256": "b" * 64,
+                        "tree_sha256": _tree_sha256(self.source),
                     },
                     "probes": {
                         name: {
@@ -295,6 +311,199 @@ end Solution
             )
         self.assertEqual(_tree_bytes(cli), _tree_bytes(small))
         self.assertEqual(cli_manifest.read_bytes(), small_manifest.read_bytes())
+
+    def _case_inputs(self, name):
+        source = self.root / name / "source"
+        source.parent.mkdir()
+        shutil.copytree(self.source, source)
+        identities = json.loads(self.identities.read_text())
+        identities["source"]["tree_sha256"] = _tree_sha256(source)
+        identities_path = source.parent / "probe-identities.json"
+        identities_path.write_text(
+            json.dumps(identities, sort_keys=True, separators=(",", ":"))
+        )
+        return source, identities_path
+
+    def _call(self, source, identities, name, *, build_error=None):
+        from autofv import prepare_dalek
+
+        output = self.root / name / "output"
+        manifest = self.root / name / "manifest.json"
+        effect = build_error if build_error is not None else None
+        with mock.patch.object(prepare_dalek, "_run_build", side_effect=effect):
+            result = prepare_dalek.prepare_dalek(
+                source,
+                self.report,
+                identities,
+                "small",
+                output,
+                manifest,
+            )
+        return result, output, manifest
+
+    def test_reproducible_manifest_binds_inputs_tree_and_all_local_gates(self):
+        first, first_output, first_manifest = self._call(
+            self.source, self.identities, "repro-first"
+        )
+        second, second_output, second_manifest = self._call(
+            self.source, self.identities, "repro-second"
+        )
+        self.assertEqual(_tree_bytes(first_output), _tree_bytes(second_output))
+        self.assertEqual(first_manifest.read_bytes(), second_manifest.read_bytes())
+        self.assertEqual(first, second)
+        self.assertEqual(
+            set(first["gates"]),
+            {
+                "build",
+                "provenance",
+                "reproducibility",
+                "secret_scan",
+                "spoiler_scan",
+                "symlink_scan",
+            },
+        )
+        self.assertTrue(all(value == "passed" for value in first["gates"].values()))
+        self.assertEqual(first["source"], json.loads(self.identities.read_text())["source"])
+        self.assertEqual(first["probes"], json.loads(self.identities.read_text())["probes"])
+        self.assertEqual(first["tree_sha256"], _tree_sha256(first_output))
+        self.assertEqual(
+            first["manifest_sha256"],
+            hashlib.sha256(
+                json.dumps(
+                    {key: value for key, value in first.items() if key != "manifest_sha256"},
+                    sort_keys=True,
+                    separators=(",", ":"),
+                ).encode()
+            ).hexdigest(),
+        )
+
+    def test_hostile_inputs_fail_before_output_finalization(self):
+        from autofv import prepare_dalek
+
+        cases = []
+        source, identities = self._case_inputs("symlink")
+        os.symlink("Dalek/Scalar.lean", source / "linked.lean")
+        cases.append(("symlink", source, identities, "symlink"))
+
+        for name, marker, reason in (
+            ("secret", "\n-- OPENAI_API_KEY=sk-test-secret\n", "secret"),
+            ("spoiler", "\n-- hidden reference.json solution\n", "spoiler"),
+        ):
+            source, identities = self._case_inputs(name)
+            scalar = source / "Dalek/Scalar.lean"
+            scalar.write_text(scalar.read_text() + marker)
+            values = json.loads(identities.read_text())
+            values["source"]["tree_sha256"] = _tree_sha256(source)
+            identities.write_text(json.dumps(values, sort_keys=True, separators=(",", ":")))
+            cases.append((name, source, identities, reason))
+
+        source, identities = self._case_inputs("provenance")
+        values = json.loads(identities.read_text())
+        values["source"]["tree_sha256"] = "f" * 64
+        identities.write_text(json.dumps(values, sort_keys=True, separators=(",", ":")))
+        cases.append(("provenance", source, identities, "provenance"))
+
+        source, identities = self._case_inputs("unsafe")
+        values = json.loads(identities.read_text())
+        values["files"]["../escape"] = {"role": "build"}
+        identities.write_text(json.dumps(values, sort_keys=True, separators=(",", ":")))
+        cases.append(("unsafe", source, identities, "unsafe"))
+
+        for name, source, identities, reason in cases:
+            with self.subTest(name=name), self.assertRaisesRegex(
+                prepare_dalek.PreparationError, reason
+            ):
+                self._call(source, identities, name)
+            self.assertFalse((self.root / name / "output").exists())
+            self.assertFalse((self.root / name / "manifest.json").exists())
+
+        source, identities = self._case_inputs("build")
+        with self.assertRaisesRegex(prepare_dalek.PreparationError, "build"):
+            self._call(
+                source,
+                identities,
+                "build",
+                build_error=prepare_dalek.PreparationError("build failed"),
+            )
+        self.assertFalse((self.root / "build" / "output").exists())
+        self.assertFalse((self.root / "build" / "manifest.json").exists())
+
+    def test_write_once_outputs_allow_identical_bytes_and_refuse_replacement(self):
+        from autofv import prepare_dalek
+
+        _, output, manifest = self._call(self.source, self.identities, "write-once")
+        before = _tree_bytes(output)
+        self._call(self.source, self.identities, "write-once")
+        self.assertEqual(_tree_bytes(output), before)
+        (output / "Dalek/Scalar.lean").write_text("changed\n")
+        with self.assertRaisesRegex(
+            prepare_dalek.PreparationError, "different-byte replacement"
+        ):
+            self._call(self.source, self.identities, "write-once")
+        self.assertTrue(manifest.is_file())
+
+    def test_publication_receipt_requires_matching_approved_and_observed_hashes(self):
+        from autofv import prepare_dalek
+
+        validator = getattr(prepare_dalek, "validate_publication_receipt", None)
+        self.assertIsNotNone(validator, "publication receipt validator is missing")
+        hashes = {
+            "full": {"manifest_sha256": "1" * 64, "tree_sha256": "2" * 64},
+            "small": {"manifest_sha256": "3" * 64, "tree_sha256": "4" * 64},
+        }
+        approved = {
+            mode: {
+                "repository": f"https://github.com/BAIF/dalek-clean{'-small' if mode == 'small' else ''}.git",
+                "tag": "autofv-baseline-v1",
+                **hashes[mode],
+            }
+            for mode in ("full", "small")
+        }
+        observed = {
+            mode: {
+                **approved[mode],
+                "commit": commit * 40,
+                "tag_object": tag * 40,
+            }
+            for mode, commit, tag in (("full", "a", "c"), ("small", "b", "d"))
+        }
+        receipt = self.root / "publication-receipt.json"
+        receipt.write_text(
+            json.dumps(
+                {
+                    "schema": "autofv-publication-receipt/v1",
+                    "approved": approved,
+                    "observed": observed,
+                },
+                sort_keys=True,
+                separators=(",", ":"),
+            )
+        )
+        self.assertEqual(validator(receipt), json.loads(receipt.read_text()))
+
+        for section, mode, field in (
+            ("observed", "full", "tree_sha256"),
+            ("observed", "small", "repository"),
+            ("approved", "full", "tag"),
+        ):
+            changed = json.loads(receipt.read_text())
+            changed[section][mode][field] = "mismatch"
+            receipt.write_text(json.dumps(changed))
+            with self.subTest(section=section, mode=mode, field=field), self.assertRaises(
+                prepare_dalek.PreparationError
+            ):
+                validator(receipt)
+            receipt.write_text(
+                json.dumps(
+                    {
+                        "schema": "autofv-publication-receipt/v1",
+                        "approved": approved,
+                        "observed": observed,
+                    },
+                    sort_keys=True,
+                    separators=(",", ":"),
+                )
+            )
 
 
 if __name__ == "__main__":

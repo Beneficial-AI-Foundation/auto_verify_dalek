@@ -274,6 +274,82 @@ def _complete_attempt(root: Path, *, attempt_id: str = "attempt-complete"):
     return run, state
 
 
+def _generic_attempt(root: Path, *, attempt_id: str = "attempt-generic"):
+    run, state = _complete_attempt(root, attempt_id=attempt_id)
+    left, right, top = state["graph"]["selected_nodes"]
+    old_fingerprint = "8" * 64
+    new_fingerprint = "9" * 64
+    state["target_states"] = {
+        node: {
+            "phase": "proof",
+            "status": "accepted",
+            "attempt_count": 1,
+            "contract_revision": 1 if node == left else 0,
+            "contract_fingerprint": (
+                new_fingerprint if node == left else chr(97 + index) * 64
+            ),
+            "block_chain": None,
+        }
+        for index, node in enumerate((left, right, top))
+    }
+    state["contracts"].update(
+        {
+            "invalidated_fingerprints": [old_fingerprint],
+            "revision_lineage": [
+                {
+                    "node": left,
+                    "revision": 1,
+                    "old_fingerprint": old_fingerprint,
+                    "new_fingerprint": new_fingerprint,
+                }
+            ],
+        }
+    )
+    state["invalidated_consumers"] = [top]
+    state["block_chains"] = {}
+    state["model_exchanges"]["proof-left-retry"] = {
+        "request": {
+            "request_id": "proof-left-001",
+            "prompt_sha256": "d" * 64,
+        }
+    }
+    state["tool_calls"] = ["read_allowed", "lean_check", "submit_candidate"]
+    state["compaction_calls"] = ["proof-left-compaction-001"]
+    state["timing_seconds"] = {
+        "lean": Decimal("2.500000"),
+        "build": Decimal("3.750000"),
+    }
+    state["estimated_accounting"] = {
+        "tokens": {"input": 20, "output": 8, "total": 28},
+        "cost_usd": "0.020000",
+    }
+    state["synthetic_accounting"] = {
+        "tokens": {"input": 2, "output": 1, "total": 3},
+        "cost_usd": "0.001000",
+    }
+    run["cost_classification"] = "provider_authenticated"
+    receipt = state["receipts"][0]
+    receipt.update(
+        {
+            "auth": {
+                "algorithm": "Ed25519",
+                "key_id": "fixture-provider-key",
+                "signature": "fixture-signature",
+            },
+            "timing": {
+                "provider_seconds": "1.250000",
+                "queue_seconds": "0.125000",
+            },
+        }
+    )
+    receipt.pop("receipt_sha256")
+    receipt["receipt_sha256"] = _sha(receipt)
+    for name in results.PERSISTED_SOURCE_ITEMS:
+        (root / results.FILE_LOCATIONS[name]).unlink(missing_ok=True)
+    results.persist_l0_sources(run, state)
+    return run, state
+
+
 class ResultEvidenceTests(unittest.TestCase):
     def test_complete_l0_and_l4_are_required_for_a_recovery_claim(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -340,6 +416,181 @@ class ResultEvidenceTests(unittest.TestCase):
         )
         self.assertIn("cryptographic_security", result["exclusions"])
         self.assertEqual(results.validate_l0(receipt), receipt)
+
+    def test_generic_complete_result_retains_progress_timing_and_accounting(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            run, state = _generic_attempt(Path(tmp) / "run")
+            result, receipt = results.render_attempt(
+                run, state, outcome="success", reason="all_targets_verified"
+            )
+
+            required = {
+                "target_states",
+                "verified_counts",
+                "block_chains",
+                "contract_history",
+                "calls",
+                "timing_seconds",
+                "accounting",
+            }
+            self.assertEqual(required - result.keys(), set())
+            self.assertEqual(result["target_states"], state["target_states"])
+            self.assertEqual(
+                result["verified_counts"],
+                {"targets": 1, "declarations": 3, "closure": 3},
+            )
+            self.assertEqual(result["block_chains"], {})
+            self.assertEqual(
+                result["contract_history"],
+                {
+                    "revision_lineage": state["contracts"]["revision_lineage"],
+                    "invalidated_fingerprints": state["contracts"][
+                        "invalidated_fingerprints"
+                    ],
+                    "invalidated_consumers": state["invalidated_consumers"],
+                },
+            )
+            self.assertEqual(
+                result["calls"],
+                {"model": 2, "tool": 3, "retry": 1, "compaction": 1},
+            )
+            self.assertEqual(
+                result["timing_seconds"],
+                {
+                    "provider": "1.250000",
+                    "queue": "0.125000",
+                    "lean": "2.500000",
+                    "build": "3.750000",
+                    "wall": "12.500000",
+                },
+            )
+            self.assertEqual(
+                result["accounting"],
+                {
+                    "provider_authenticated": {
+                        "requests": 1,
+                        "tokens": {"input": 10, "output": 4, "total": 14},
+                        "cost_usd": "0.010000",
+                    },
+                    "estimated": state["estimated_accounting"],
+                    "synthetic": state["synthetic_accounting"],
+                },
+            )
+            self.assertEqual(result["cost_usd"], "0.010000")
+            self.assertEqual(result["outcome"], "success")
+            self.assertEqual(result["termination_reason"], "all_targets_verified")
+            self.assertNotEqual(result["outcome"], result["termination_reason"])
+            self.assertEqual(result["snapshot_sha256"], "4" * 64)
+            self.assertEqual(result["manifest_sha256"], "5" * 64)
+            self.assertEqual(result["probe_rust_sha256"], "1" * 64)
+            self.assertEqual(result["probe_aeneas_sha256"], "2" * 64)
+            self.assertEqual(result["graph_sha256"], "3" * 64)
+            self.assertEqual(result["accepted_commit"], "a" * 40)
+
+            results.persist_attempt(run, result, receipt)
+            different = copy.deepcopy(result)
+            different["accounting"]["estimated"]["cost_usd"] = "9.000000"
+            with self.assertRaisesRegex(results.ResultError, "replacement refused"):
+                results.persist_attempt(run, different, receipt)
+
+    def test_generic_partial_result_retains_blocked_and_invalidated_state(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            run, state = _generic_attempt(Path(tmp) / "run")
+            left, right, top = state["graph"]["selected_nodes"]
+            state["target_states"][left].update(
+                {"status": "failed", "block_chain": [left]}
+            )
+            state["target_states"][top].update(
+                {"status": "blocked", "block_chain": [top, left]}
+            )
+            state["block_chains"] = {top: [top, left]}
+            state["accepted_nodes"] = [right]
+            state.pop("verifier_report")
+
+            result, _ = results.render_attempt(
+                run,
+                state,
+                outcome="budget_exhausted",
+                reason="wall_budget_exhausted",
+            )
+
+            required = {
+                "target_states",
+                "verified_counts",
+                "block_chains",
+                "contract_history",
+                "calls",
+                "timing_seconds",
+                "accounting",
+            }
+            self.assertEqual(required - result.keys(), set())
+            self.assertEqual(result["target_states"], state["target_states"])
+            self.assertEqual(result["block_chains"], {top: [top, left]})
+            self.assertEqual(
+                result["verified_counts"],
+                {"targets": 0, "declarations": 0, "closure": 0},
+            )
+            self.assertEqual(
+                result["contract_history"]["revision_lineage"],
+                state["contracts"]["revision_lineage"],
+            )
+            self.assertEqual(result["calls"]["compaction"], 1)
+            self.assertEqual(result["timing_seconds"]["wall"], "12.500000")
+            self.assertEqual(
+                result["accounting"]["provider_authenticated"]["cost_usd"],
+                "0.010000",
+            )
+            self.assertEqual(result["accepted_commit"], "a" * 40)
+            self.assertEqual(result["outcome"], "budget_exhausted")
+            self.assertEqual(
+                result["termination_reason"], "wall_budget_exhausted"
+            )
+
+    def test_retained_audit_validators_fail_closed_on_missing_or_mismatch(self):
+        smoke = getattr(results, "validate_smoke_audit", None)
+        full = getattr(results, "validate_full_audit", None)
+        self.assertTrue(callable(smoke), "validate_smoke_audit is missing")
+        self.assertTrue(callable(full), "validate_full_audit is missing")
+
+        with tempfile.TemporaryDirectory() as tmp:
+            base = Path(tmp)
+            run, state = _generic_attempt(base / "run")
+            result, receipt = results.render_attempt(
+                run, state, outcome="success", reason="all_targets_verified"
+            )
+            results.persist_attempt(run, result, receipt)
+            retained = base / "smoke-retained.json"
+            retained.write_bytes(experiment.canonical_json_bytes(result) + b"\n")
+
+            smoke(retained)
+            with self.assertRaises(results.ResultError):
+                smoke(base / "missing-retained.json")
+
+            mismatched = copy.deepcopy(result)
+            mismatched["l0_receipt_sha256"] = "0" * 64
+            mismatched_path = base / "mismatched-retained.json"
+            mismatched_path.write_bytes(
+                experiment.canonical_json_bytes(mismatched) + b"\n"
+            )
+            with self.assertRaises(results.ResultError):
+                smoke(mismatched_path)
+
+            with self.assertRaises(results.ResultError):
+                full(retained, base / "missing-contract-review.json")
+            review = base / "contract-semantic-review.json"
+            review.write_bytes(
+                experiment.canonical_json_bytes(
+                    {
+                        "schema": "autofv-contract-semantic-review/v1",
+                        "status": "approved",
+                        "accepted_commit": "0" * 40,
+                        "fingerprints": [],
+                    }
+                )
+                + b"\n"
+            )
+            with self.assertRaises(results.ResultError):
+                full(retained, review)
 
     def test_missing_or_incomplete_evidence_is_unscored_and_withholds_recovery(self):
         with tempfile.TemporaryDirectory() as tmp:

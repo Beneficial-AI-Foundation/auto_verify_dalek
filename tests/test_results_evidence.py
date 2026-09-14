@@ -4,6 +4,7 @@ import json
 import os
 import tempfile
 import unittest
+from datetime import datetime, timezone
 from decimal import Decimal
 from pathlib import Path
 from unittest import mock
@@ -702,6 +703,156 @@ class ResultEvidenceTests(unittest.TestCase):
             self.assertIn("renderer failed", result["termination_detail"])
             self.assertTrue(Path(result["run_root"], "result.json").is_file())
             self.assertEqual(len(ledger.read_text().splitlines()), 1)
+
+    def test_durable_finalization_failure_reuses_the_allocated_attempt_root(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            base = Path(tmp)
+            ledger = base / "attempts.jsonl"
+            staging = base / "staging"
+            (staging / "evidence").mkdir(parents=True)
+            prepared = {
+                "run_id": "durable-renderer-failure-run",
+                "run_root": str(staging),
+                "evidence_dir": str(staging / "evidence"),
+                "execution_tier": "simulation",
+                "cost_classification": "synthetic_fixture",
+                "events": ["validated"],
+            }
+            allocated_roots = []
+
+            class FixedDatetime:
+                @classmethod
+                def now(cls, tz):
+                    return datetime(2026, 9, 14, tzinfo=timezone.utc)
+
+            def fail_finalization(run, *_args, **_kwargs):
+                allocated_roots.append(Path(run["run_root"]))
+                raise results.ResultError("renderer failed")
+
+            with (
+                mock.patch.dict(
+                    os.environ, {"AUTOFV_ATTEMPT_LEDGER": str(ledger)}
+                ),
+                mock.patch.object(results, "datetime", FixedDatetime),
+                mock.patch.object(worker, "prepare_run", return_value=prepared),
+                mock.patch.object(
+                    experiment._EXPERIMENT_GRAPH, "stream", return_value=[]
+                ),
+                mock.patch.object(
+                    experiment, "_finish_attempt", side_effect=fail_finalization
+                ),
+            ):
+                try:
+                    result = experiment.run_experiment(
+                        TARGET,
+                        TARGET / "run.json",
+                        output_root=base / "attempts",
+                    )
+                except results.ResultError as exc:
+                    self.fail(
+                        "emergency result was not persisted in the allocated "
+                        f"attempt root: {exc}"
+                    )
+
+            self.assertEqual(result["termination_reason"], "finalization_failed")
+            self.assertEqual(Path(result["run_root"]), allocated_roots[0])
+            self.assertTrue((allocated_roots[0] / "result.json").is_file())
+
+    def test_durable_binding_failure_force_destroys_the_prepared_worker(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            base = Path(tmp)
+            ledger = base / "attempts.jsonl"
+            staging = base / "staging"
+            (staging / "evidence").mkdir(parents=True)
+            prepared = {
+                "run_id": "binding-failure-run",
+                "run_root": str(staging),
+                "evidence_dir": str(staging / "evidence"),
+                "volume": "autofv-binding-failure",
+                "execution_tier": "sealed_runsc",
+                "cost_classification": "provider_backed",
+                "events": ["validated"],
+            }
+            moments = iter(
+                (
+                    datetime(2026, 9, 14, 0, 0, 0, tzinfo=timezone.utc),
+                    datetime(2026, 9, 14, 0, 0, 1, tzinfo=timezone.utc),
+                )
+            )
+
+            class AdvancingDatetime:
+                @classmethod
+                def now(cls, tz):
+                    return next(moments)
+
+            with (
+                mock.patch.dict(
+                    os.environ, {"AUTOFV_ATTEMPT_LEDGER": str(ledger)}
+                ),
+                mock.patch.object(results, "datetime", AdvancingDatetime),
+                mock.patch.object(worker, "prepare_run", return_value=prepared),
+                mock.patch.object(
+                    results,
+                    "bind_prepared_run",
+                    side_effect=results.ResultError("binding failed"),
+                ),
+                mock.patch.object(worker, "force_destroy_worker") as destroy,
+            ):
+                result = experiment.run_experiment(
+                    TARGET,
+                    TARGET / "run.json",
+                    output_root=base / "attempts",
+                )
+
+            self.assertEqual(result["termination_reason"], "attempt_allocation_failed")
+            destroy.assert_called_once_with(prepared)
+            attempt_roots = list((base / "attempts").iterdir())
+            self.assertEqual(attempt_roots, [Path(result["run_root"])])
+
+    def test_durable_binding_removes_the_worker_staging_root(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            base = Path(tmp)
+            ledger = base / "attempts.jsonl"
+            staging = base / "staging"
+            (staging / "evidence").mkdir(parents=True)
+            prepared = {
+                "run_id": "successful-binding-run",
+                "run_root": str(staging),
+                "evidence_dir": str(staging / "evidence"),
+                "volume": "autofv-successful-binding",
+                "execution_tier": "sealed_runsc",
+                "cost_classification": "provider_backed",
+                "base_commit": "a" * 40,
+                "egress_receipt": {"status": "allowed"},
+                "events": ["validated"],
+            }
+
+            def finish_without_worker_calls(run, *_args, **_kwargs):
+                return {"outcome": "success", "run_root": run["run_root"]}
+
+            with (
+                mock.patch.dict(
+                    os.environ, {"AUTOFV_ATTEMPT_LEDGER": str(ledger)}
+                ),
+                mock.patch.object(worker, "prepare_run", return_value=prepared),
+                mock.patch.object(
+                    experiment._EXPERIMENT_GRAPH, "stream", return_value=[]
+                ),
+                mock.patch.object(
+                    experiment,
+                    "_finish_attempt",
+                    side_effect=finish_without_worker_calls,
+                ),
+            ):
+                result = experiment.run_experiment(
+                    TARGET,
+                    TARGET / "run.json",
+                    output_root=base / "attempts",
+                )
+
+            self.assertEqual(result["outcome"], "success")
+            self.assertNotEqual(Path(result["run_root"]), staging)
+            self.assertFalse(staging.exists())
 
 
 if __name__ == "__main__":

@@ -2,6 +2,7 @@ import copy
 import hashlib
 import json
 import tempfile
+import threading
 import unittest
 from pathlib import Path
 from unittest import mock
@@ -90,6 +91,58 @@ def _feasibility(status, detail):
 
 
 class ContractRepairTests(unittest.TestCase):
+    def test_candidate_checkpoint_follows_out_of_order_receipt_acceptance(self):
+        class LaterReceiptFirst(_FixtureProxy):
+            def __init__(self, fixture):
+                super().__init__(fixture)
+                self.right_finished = threading.Event()
+
+            def __call__(self, request):
+                if request["request_id"] == "proof-left-001":
+                    self.assert_true(self.right_finished.wait(1))
+                exchange = super().__call__(request)
+                if request["request_id"] == "proof-right-001":
+                    self.right_finished.set()
+                return exchange
+
+            @staticmethod
+            def assert_true(value):
+                if not value:
+                    raise AssertionError("later receipt did not finish first")
+
+        with tempfile.TemporaryDirectory() as tmp:
+            seams = _Seams(Path(tmp), FIXTURE)
+            proxy = LaterReceiptFirst(FIXTURE)
+            original = diamond._checkpoint_candidate
+            checkpointed = []
+
+            def checkpoint(state, candidate, manifest):
+                request_id = candidate["request_id"]
+                self.assertIn(request_id, state["model_exchanges"])
+                self.assertIn(
+                    request_id, {receipt["request_id"] for receipt in state["receipts"]}
+                )
+                checkpointed.append(request_id)
+                return original(state, candidate, manifest)
+
+            with (
+                mock.patch.object(worker, "prepare_run", seams.prepare),
+                mock.patch.object(worker, "run_probes", seams.run_probes),
+                mock.patch.object(
+                    worker, "check_contract_feasibility", seams.check_contract_feasibility
+                ),
+                mock.patch.object(worker, "accept_candidate", seams.accept),
+                mock.patch.object(results, "persist_attempt", seams.persist),
+                mock.patch.object(verifier, "verify_run", seams.verify),
+                mock.patch.object(diamond, "_checkpoint_candidate", side_effect=checkpoint),
+            ):
+                result = experiment.run_experiment(
+                    TARGET, TARGET / "run.json", run_round=proxy
+                )
+
+        self.assertEqual(result["outcome"], "success")
+        self.assertEqual(checkpointed[0], "proof-right-001")
+
     def test_contract_frontier_is_consumer_first_for_shared_helpers(self):
         graph = _shared_graph()
         frontier = getattr(diamond, "_contract_frontier", lambda *_: [])
@@ -180,6 +233,103 @@ class ContractRepairTests(unittest.TestCase):
 
         model.assert_not_called()
         self.assertEqual(state["preparation_defects"][0]["kind"], "cycle")
+
+    def test_immutable_graph_binds_and_validates_supplied_spec_paths(self):
+        graph = _shared_graph()
+        spec = "probe:Graph.root_spec"
+        type_node = "probe:Graph.Input"
+        graph["supplied_specs"] = {ROOT: spec}
+        graph["source_paths"][spec] = "../RootSpec.lean"
+        with self.assertRaisesRegex(experiment.ContractError, "invalid scheduling source"):
+            diamond._validate_scheduling_graph(
+                {"graph": graph, "run": {"events": []}}
+            )
+
+        graph["source_paths"][spec] = "Graph/Root.lean"
+        graph["source_paths"][type_node] = "Graph/Input.lean"
+        graph["type_dependencies"] = [[spec, ROOT], [LEFT_NODE, type_node]]
+        state = {"graph": graph, "run": {"events": []}}
+        digest = diamond._validate_scheduling_graph(state)
+        self.assertEqual(
+            digest,
+            experiment._canonical_sha256(
+                {
+                    "frozen_targets": graph["frozen_targets"],
+                    "selected_nodes": graph["selected_nodes"],
+                    "term_dependencies": graph["term_dependencies"],
+                    "type_dependencies": graph["type_dependencies"],
+                    "source_paths": graph["source_paths"],
+                    "supplied_specs": graph["supplied_specs"],
+                }
+            ),
+        )
+
+    def test_contract_revision_limit_is_per_helper_with_unique_request_ids(self):
+        first = "probe:Alpha.helper"
+        second = "probe:Beta.helper"
+        graph = {
+            "frozen_targets": [ROOT],
+            "selected_nodes": [first, ROOT, second],
+            "term_dependencies": [[ROOT, first], [ROOT, second]],
+        }
+
+        def statement(node, version):
+            declaration = f"{node.removeprefix('probe:')}_spec"
+            text = f"theorem {declaration} : True := by trivial -- {version}"
+            fingerprint = hashlib.sha256(text.encode()).hexdigest()
+            return {
+                "payload": {
+                    "declaration": declaration,
+                    "text": text,
+                    "text_sha256": fingerprint,
+                },
+                "statement_fingerprints": [TOP, fingerprint],
+            }
+
+        responses = iter(
+            (
+                statement(first, "draft"),
+                statement(second, "draft"),
+                statement(first, "review"),
+                statement(second, "review"),
+            )
+        )
+        request_ids = []
+
+        def model_request(*args, **kwargs):
+            request_ids.append(kwargs["request_id"])
+            return next(responses), {}
+
+        checks = iter(
+            (
+                {**_feasibility("failed", "first weak"), "declaration": "Alpha.helper_spec"},
+                {**_feasibility("failed", "second weak"), "declaration": "Beta.helper_spec"},
+                _feasibility("passed", "both compiled"),
+            )
+        )
+        state = _state()
+        state["config"] = {"max_contract_revisions": 1}
+        with (
+            mock.patch.object(diamond, "_model_request", side_effect=model_request),
+            mock.patch.object(
+                worker,
+                "check_contract_feasibility",
+                side_effect=lambda *args: next(checks),
+            ),
+        ):
+            contracts = diamond._repair_contracts(
+                state,
+                {"payload_sha256": "d" * 64},
+                TOP,
+                graph,
+            )
+
+        self.assertEqual(
+            [item["node"] for item in contracts["revision_lineage"]],
+            [first, second],
+        )
+        self.assertEqual(len(request_ids), len(set(request_ids)))
+        self.assertEqual(contracts["proof_barrier"], "frozen")
 
     def test_weak_contract_fails_before_review_and_only_strong_records_freeze(self):
         state = _state()

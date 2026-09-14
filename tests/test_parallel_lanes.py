@@ -150,6 +150,46 @@ class ParallelLaneTests(unittest.TestCase):
         self.assertTrue(released_before_slow)
         self.assertFalse(errors)
 
+    def test_scheduler_does_not_queue_more_paid_jobs_than_its_lane_bound(self):
+        graph = {
+            "selected_nodes": ["a", "b", "c", "d"],
+            "term_dependencies": [],
+            "source_paths": {node: f"Graph/{node}.lean" for node in "abcd"},
+        }
+        two_started = threading.Event()
+        release = threading.Event()
+        prepared = []
+        started = []
+        lock = threading.Lock()
+
+        def prepare(node):
+            prepared.append(node)
+            return node
+
+        def run(node):
+            with lock:
+                started.append(node)
+                if len(started) == 2:
+                    two_started.set()
+            release.wait(1)
+            return node
+
+        thread = threading.Thread(
+            target=lambda: diamond._schedule_proofs(
+                graph,
+                run,
+                lambda *_: None,
+                prepare_job=prepare,
+                max_workers=2,
+            )
+        )
+        thread.start()
+        self.assertTrue(two_started.wait(1))
+        self.assertEqual(prepared, ["a", "b"])
+        release.set()
+        thread.join(1)
+        self.assertFalse(thread.is_alive())
+
     def test_ready_jobs_in_one_file_never_overlap(self):
         graph = {
             "selected_nodes": ["left", "right", "root"],

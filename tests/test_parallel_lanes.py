@@ -263,6 +263,37 @@ class ParallelLaneTests(unittest.TestCase):
         self.assertEqual(requeue["status"], "requeue")
         self.assertEqual(state["accepted"], {"accepted_commit": "9" * 40})
 
+    def test_undeclared_candidate_is_retained_as_a_preparation_defect(self):
+        state = _state()
+        state["graph"] = _graph()
+        lane = experiment._lane_descriptors(state["run"], state["graph"], [LEFT])[0]
+        candidate = experiment._candidate_record(
+            copy.deepcopy(ENTRIES["proof-left-001"]["response"]), lane, POLICY
+        )
+        candidate["node"] = "probe:Unknown.local"
+        body = {
+            key: value
+            for key, value in candidate.items()
+            if key not in {"candidate_sha256", "response"}
+        }
+        candidate["candidate_sha256"] = experiment._canonical_sha256(body)
+
+        with mock.patch.object(
+            worker,
+            "accept_candidate",
+            return_value={
+                "accepted_commit": "1" * 40,
+                "accepted_tree_sha256": "2" * 64,
+                "checks": ["configured_build"],
+            },
+        ) as accept:
+            rejected = experiment._checkpoint_candidate(state, candidate, {})
+
+        self.assertEqual(rejected["status"], "rejected")
+        self.assertEqual(rejected["reason"], "preparation_defect_undeclared_node")
+        self.assertEqual(state["preparation_defects"][0]["node"], candidate["node"])
+        accept.assert_not_called()
+
     def test_top_waits_for_both_term_dependencies(self):
         graph = _graph()
 

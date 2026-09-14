@@ -447,6 +447,34 @@ def check_contract_feasibility(
         "diagnostic_sha256": _runtime._sha256(diagnostic),
         "diagnostic": text,
     }
+
+
+def validate_assigned_patch(assigned_path: str, patch: str) -> None:
+    """Reject a patch unless it names exactly one safe assigned file."""
+    if not isinstance(assigned_path, str) or not isinstance(patch, str):
+        raise WorkerError("candidate scope is invalid")
+    pure = PurePosixPath(assigned_path)
+    if (
+        not assigned_path
+        or pure.is_absolute()
+        or "\\" in assigned_path
+        or pure.as_posix() != assigned_path
+        or any(part in {"", ".", ".."} for part in pure.parts)
+    ):
+        raise WorkerError("candidate scope is invalid")
+    header = f"diff --git a/{assigned_path} b/{assigned_path}\n"
+    if not patch.startswith(header) or patch.count("diff --git ") != 1:
+        raise WorkerError("candidate must modify exactly its assigned file")
+    lines = patch.splitlines()
+    if any(
+        line.startswith("--- ") and line != f"--- a/{assigned_path}"
+        or line.startswith("+++ ") and line != f"+++ b/{assigned_path}"
+        or line.startswith(("rename from ", "rename to ", "copy from ", "copy to "))
+        for line in lines
+    ):
+        raise WorkerError("candidate must modify exactly its assigned file")
+
+
 def accept_candidate(
     run: dict[str, Any], candidate: dict[str, Any], manifest: dict[str, Any]
 ) -> dict[str, Any]:
@@ -454,12 +482,9 @@ def accept_candidate(
     payload = candidate["payload"]
     path = payload["assigned_path"]
     patch = payload["patch"]
-    pure = PurePosixPath(path)
-    if pure.is_absolute() or ".." in pure.parts or candidate["assigned_path"] != path:
+    if candidate["assigned_path"] != path:
         raise WorkerError("candidate scope is invalid")
-    header = f"diff --git a/{path} b/{path}\n"
-    if not patch.startswith(header) or patch.count("diff --git ") != 1:
-        raise WorkerError("candidate must modify exactly its assigned file")
+    validate_assigned_patch(path, patch)
     if payload["base_commit"] != run["base_commit"]:
         raise WorkerError("candidate base commit mismatch")
     if _runtime._sha256(patch.encode("utf-8")) != payload["patch_sha256"]:

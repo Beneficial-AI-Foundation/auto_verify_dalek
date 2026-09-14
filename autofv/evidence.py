@@ -113,6 +113,17 @@ def _event(events: list[Any], names: tuple[str, ...]) -> str | None:
     return None
 
 
+def _exchange_order(exchange: Any) -> tuple[int, str]:
+    request = exchange.get("request") if isinstance(exchange, dict) else None
+    request = request if isinstance(request, dict) else {}
+    sequence = request.get("sequence")
+    request_id = request.get("request_id")
+    return (
+        sequence if type(sequence) is int else 0,
+        request_id if isinstance(request_id, str) else "",
+    )
+
+
 def source_values(run: dict[str, Any], state: dict[str, Any]) -> dict[str, Any]:
     graph = state.get("graph") if isinstance(state.get("graph"), dict) else {}
     report = (
@@ -124,6 +135,7 @@ def source_values(run: dict[str, Any], state: dict[str, Any]) -> dict[str, Any]:
     accepted = state.get("accepted") or run.get("accepted")
     export = run.get("export_receipt")
     receipts = state.get("receipts")
+    exchanges = state.get("model_exchanges")
     candidates = state.get("candidate_receipts")
     transitions = state.get("accepted_sequence")
 
@@ -225,6 +237,14 @@ def source_values(run: dict[str, Any], state: dict[str, Any]) -> dict[str, Any]:
             "accepted_checks": accepted.get("checks", []),
             "verifier_checks": report.get("checks", {}),
         }
+    model_value = None
+    if isinstance(exchanges, dict) and exchanges:
+        model_value = sorted(
+            exchanges.values(),
+            key=_exchange_order,
+        )
+    elif isinstance(receipts, list) and receipts:
+        model_value = receipts
 
     return {
         "input": input_value,
@@ -234,7 +254,7 @@ def source_values(run: dict[str, Any], state: dict[str, Any]) -> dict[str, Any]:
         "probe": probe_value,
         "mount": mount_value,
         "network": network_value,
-        "model_receipt": receipts if isinstance(receipts, list) and receipts else None,
+        "model_receipt": model_value,
         "patch": patch_value,
         "scan": run.get("artifact_scan_receipt") or scan_value,
         "build": build_value,

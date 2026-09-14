@@ -14,6 +14,9 @@ from autofv import evidence, experiment, results, verifier, worker
 
 ROOT = Path(__file__).resolve().parents[1]
 TARGET = ROOT / "tests" / "fixtures" / "diamond"
+MODEL_PROXY_FIXTURE = (
+    ROOT / "tests" / "fixtures" / "model-proxy" / "diamond-responses.json"
+)
 
 
 def _sha(value):
@@ -25,8 +28,12 @@ def _receipt(body, digest_field):
     return {**body, digest_field: _sha(body)}
 
 
-def _complete_attempt(root: Path, *, attempt_id: str = "attempt-complete"):
-    run_id = "result-evidence-run"
+def _complete_attempt(
+    root: Path,
+    *,
+    attempt_id: str = "attempt-complete",
+    run_id: str = "result-evidence-run",
+):
     lock = experiment.load_toolchain_lock()
     assumptions = verifier.compiler_assumptions(lock)
     checks = {
@@ -275,7 +282,10 @@ def _complete_attempt(root: Path, *, attempt_id: str = "attempt-complete"):
 
 
 def _generic_attempt(root: Path, *, attempt_id: str = "attempt-generic"):
-    run, state = _complete_attempt(root, attempt_id=attempt_id)
+    fixture = json.loads(MODEL_PROXY_FIXTURE.read_text())
+    run, state = _complete_attempt(
+        root, attempt_id=attempt_id, run_id=fixture["run_id"]
+    )
     left, right, top = state["graph"]["selected_nodes"]
     old_fingerprint = "8" * 64
     new_fingerprint = "9" * 64
@@ -307,15 +317,22 @@ def _generic_attempt(root: Path, *, attempt_id: str = "attempt-generic"):
     )
     state["invalidated_consumers"] = [top]
     state["block_chains"] = {}
-    state["model_exchanges"]["proof-left-retry"] = {
-        "request": {
-            "request_id": "proof-left-001",
-            "prompt_sha256": "d" * 64,
+    exchange = fixture["entries"][0]
+    request_id = exchange["request"]["request_id"]
+    state["receipts"] = [copy.deepcopy(exchange["receipt"])]
+    state["model_exchanges"] = {
+        request_id: {
+            name: copy.deepcopy(exchange[name])
+            for name in ("request", "response", "receipt")
         }
     }
+    state["receipt_rejections"] = [{"request_id": request_id}]
+    state["cost"] = Decimal(exchange["receipt"]["cost"]["amount"])
     state["tool_calls"] = ["read_allowed", "lean_check", "submit_candidate"]
     state["compaction_calls"] = ["proof-left-compaction-001"]
     state["timing_seconds"] = {
+        "provider": Decimal("1.250000"),
+        "queue": Decimal("0.125000"),
         "lean": Decimal("2.500000"),
         "build": Decimal("3.750000"),
     }
@@ -323,27 +340,9 @@ def _generic_attempt(root: Path, *, attempt_id: str = "attempt-generic"):
         "tokens": {"input": 20, "output": 8, "total": 28},
         "cost_usd": "0.020000",
     }
-    state["synthetic_accounting"] = {
-        "tokens": {"input": 2, "output": 1, "total": 3},
-        "cost_usd": "0.001000",
-    }
-    run["cost_classification"] = "provider_authenticated"
-    receipt = state["receipts"][0]
-    receipt.update(
-        {
-            "auth": {
-                "algorithm": "Ed25519",
-                "key_id": "fixture-provider-key",
-                "signature": "fixture-signature",
-            },
-            "timing": {
-                "provider_seconds": "1.250000",
-                "queue_seconds": "0.125000",
-            },
-        }
-    )
-    receipt.pop("receipt_sha256")
-    receipt["receipt_sha256"] = _sha(receipt)
+    run["cost_classification"] = run["lock"]["fixed_proxy"][
+        "cost_classification"
+    ]
     for name in results.PERSISTED_SOURCE_ITEMS:
         (root / results.FILE_LOCATIONS[name]).unlink(missing_ok=True)
     results.persist_l0_sources(run, state)
@@ -468,15 +467,20 @@ class ResultEvidenceTests(unittest.TestCase):
                 result["accounting"],
                 {
                     "provider_authenticated": {
+                        "requests": 0,
+                        "tokens": {"input": 0, "output": 0, "total": 0},
+                        "cost_usd": "0.000000",
+                    },
+                    "synthetic": {
                         "requests": 1,
-                        "tokens": {"input": 10, "output": 4, "total": 14},
-                        "cost_usd": "0.010000",
+                        "tokens": {"input": 120, "output": 40, "total": 160},
+                        "cost_usd": "0.001600",
                     },
                     "estimated": state["estimated_accounting"],
-                    "synthetic": state["synthetic_accounting"],
                 },
             )
-            self.assertEqual(result["cost_usd"], "0.010000")
+            self.assertEqual(result["cost_classification"], "synthetic_fixture")
+            self.assertEqual(result["cost_usd"], "0.001600")
             self.assertEqual(result["outcome"], "success")
             self.assertEqual(result["termination_reason"], "all_targets_verified")
             self.assertNotEqual(result["outcome"], result["termination_reason"])
@@ -492,6 +496,34 @@ class ResultEvidenceTests(unittest.TestCase):
             different["accounting"]["estimated"]["cost_usd"] = "9.000000"
             with self.assertRaisesRegex(results.ResultError, "replacement refused"):
                 results.persist_attempt(run, different, receipt)
+
+            relabeled = copy.deepcopy(run)
+            relabeled["cost_classification"] = "provider_authenticated"
+            with self.assertRaises(results.ResultError):
+                results.render_attempt(
+                    relabeled,
+                    state,
+                    outcome="success",
+                    reason="all_targets_verified",
+                )
+
+            for mutation in ("missing_exchange", "tampered_signature"):
+                hostile = copy.deepcopy(state)
+                if mutation == "missing_exchange":
+                    hostile["model_exchanges"] = {}
+                else:
+                    hostile["receipts"][0]["auth"]["signature"] = "AAAA"
+                    stored = next(iter(hostile["model_exchanges"].values()))
+                    stored["receipt"]["auth"]["signature"] = "AAAA"
+                with self.subTest(mutation=mutation), self.assertRaises(
+                    results.ResultError
+                ):
+                    results.render_attempt(
+                        run,
+                        hostile,
+                        outcome="success",
+                        reason="all_targets_verified",
+                    )
 
     def test_generic_partial_result_retains_blocked_and_invalidated_state(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -537,8 +569,8 @@ class ResultEvidenceTests(unittest.TestCase):
             self.assertEqual(result["calls"]["compaction"], 1)
             self.assertEqual(result["timing_seconds"]["wall"], "12.500000")
             self.assertEqual(
-                result["accounting"]["provider_authenticated"]["cost_usd"],
-                "0.010000",
+                result["accounting"]["synthetic"]["cost_usd"],
+                "0.001600",
             )
             self.assertEqual(result["accepted_commit"], "a" * 40)
             self.assertEqual(result["outcome"], "budget_exhausted")
@@ -575,6 +607,33 @@ class ResultEvidenceTests(unittest.TestCase):
             with self.assertRaises(results.ResultError):
                 smoke(mismatched_path)
 
+            inflated = copy.deepcopy(result)
+            inflated["verified_counts"]["targets"] = 99
+            inflated_path = base / "inflated-counts-retained.json"
+            inflated_path.write_bytes(
+                experiment.canonical_json_bytes(inflated) + b"\n"
+            )
+            with self.assertRaisesRegex(
+                results.ResultError, "verifier counts mismatch"
+            ):
+                smoke(inflated_path)
+
+            coordinated = copy.deepcopy(result)
+            coordinated["target_states"].pop("probe:Diamond.left")
+            coordinated["verified_counts"] = {
+                "targets": 1,
+                "declarations": 2,
+                "closure": 2,
+            }
+            coordinated_path = base / "coordinated-counts-retained.json"
+            coordinated_path.write_bytes(
+                experiment.canonical_json_bytes(coordinated) + b"\n"
+            )
+            with self.assertRaisesRegex(
+                results.ResultError, "target state node universe mismatch"
+            ):
+                smoke(coordinated_path)
+
             with self.assertRaises(results.ResultError):
                 full(retained, base / "missing-contract-review.json")
             review = base / "contract-semantic-review.json"
@@ -591,6 +650,60 @@ class ResultEvidenceTests(unittest.TestCase):
             )
             with self.assertRaises(results.ResultError):
                 full(retained, review)
+
+            partial_run, partial_state = _generic_attempt(
+                base / "partial-run", attempt_id="attempt-partial-audit"
+            )
+            left, right, top = partial_state["graph"]["selected_nodes"]
+            partial_state["target_states"][left].update(
+                {"status": "failed", "block_chain": [left]}
+            )
+            partial_state["target_states"][top].update(
+                {"status": "blocked", "block_chain": [top, left]}
+            )
+            partial_state["block_chains"] = {top: [top, left]}
+            partial_state["accepted_nodes"] = [right]
+            partial_result, partial_receipt = results.render_attempt(
+                partial_run,
+                partial_state,
+                outcome="budget_exhausted",
+                reason="wall_budget_exhausted",
+            )
+            results.persist_attempt(
+                partial_run, partial_result, partial_receipt
+            )
+            partial_retained = base / "full-retained.json"
+            partial_retained.write_bytes(
+                experiment.canonical_json_bytes(partial_result) + b"\n"
+            )
+            review.write_bytes(
+                experiment.canonical_json_bytes(
+                    {
+                        "schema": "autofv-contract-semantic-review/v1",
+                        "status": "approved",
+                        "accepted_commit": "a" * 40,
+                        "fingerprints": [
+                            {
+                                "fingerprint": "8" * 64,
+                                "decision": "withheld",
+                            },
+                            {
+                                "fingerprint": "9" * 64,
+                                "decision": "withheld",
+                            },
+                            {
+                                "fingerprint": "b" * 64,
+                                "decision": "approved",
+                            },
+                        ],
+                    }
+                )
+                + b"\n"
+            )
+            with self.assertRaisesRegex(
+                results.ResultError, "verifier counts mismatch"
+            ):
+                full(partial_retained, review)
 
     def test_missing_or_incomplete_evidence_is_unscored_and_withholds_recovery(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -894,6 +1007,7 @@ class ResultEvidenceTests(unittest.TestCase):
                 "evidence_dir": str(root / "evidence"),
                 "execution_tier": "simulation",
                 "cost_classification": "synthetic_fixture",
+                "lock": experiment.load_toolchain_lock(),
                 "events": [],
             }
             state = {

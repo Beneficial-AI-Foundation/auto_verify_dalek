@@ -11,11 +11,11 @@ import shutil
 import subprocess
 import tempfile
 from datetime import datetime, timezone
-from decimal import Decimal, InvalidOperation
+from decimal import Decimal
 from pathlib import Path
 from typing import Any
 
-from . import worker
+from . import result_audit, result_summary, worker
 from .contracts import canonical_json_bytes
 from .evidence import (
     EXCLUSIONS,
@@ -257,61 +257,6 @@ def materialize_accepted(run: dict[str, Any]) -> None:
         shutil.rmtree(stage, ignore_errors=True)
 
 
-def _decimal_cost(receipts: Any) -> Decimal:
-    total = Decimal("0.000000")
-    if not isinstance(receipts, list):
-        return total
-    try:
-        for receipt in receipts:
-            total += Decimal(receipt["cost"]["amount"])
-    except (KeyError, TypeError, InvalidOperation) as exc:
-        raise ResultError("accepted model receipt cost is invalid") from exc
-    return total
-
-
-def _tokens(receipts: Any) -> dict[str, int]:
-    totals = {"input": 0, "output": 0, "total": 0}
-    if not isinstance(receipts, list):
-        return totals
-    fields = (
-        ("input", "input_tokens"),
-        ("output", "output_tokens"),
-        ("total", "total_tokens"),
-    )
-    for receipt in receipts:
-        usage = receipt.get("usage", {}) if isinstance(receipt, dict) else {}
-        for target, source in fields:
-            value = usage.get(source)
-            if type(value) is int and value >= 0:
-                totals[target] += value
-    return totals
-
-
-def _model_summary(state: dict[str, Any]) -> dict[str, Any]:
-    exchanges = state.get("model_exchanges")
-    accepted = list(exchanges.values()) if isinstance(exchanges, dict) else []
-    rejections = state.get("receipt_rejections")
-    rejected = rejections if isinstance(rejections, list) else []
-    request_ids = [
-        item.get("request", {}).get("request_id")
-        for item in accepted
-        if isinstance(item, dict)
-    ] + [
-        item.get("request_id") for item in rejected if isinstance(item, dict)
-    ]
-    request_ids = [item for item in request_ids if isinstance(item, str)]
-    prompts = [
-        item.get("request", {}).get("prompt_sha256")
-        for item in accepted
-        if isinstance(item, dict)
-    ]
-    return {
-        "attempts": len(request_ids),
-        "retries": len(request_ids) - len(set(request_ids)),
-        "prompt_sha256": [item for item in prompts if isinstance(item, str)],
-    }
-
-
 def render_attempt(
     run: dict[str, Any],
     state: dict[str, Any],
@@ -339,7 +284,6 @@ def render_attempt(
     selected_nodes = graph.get("selected_nodes", [])
     accepted_nodes = state.get("accepted_nodes", [])
     internal = set(accepted_nodes) - set(frozen_targets)
-    receipts = state.get("receipts", [])
     native_uses = (
         report.get("native_decide_uses", state.get("native_decide_uses", []))
         if isinstance(report, dict)
@@ -352,9 +296,13 @@ def render_attempt(
         if isinstance(report, dict)
         else state.get("compiler_assumptions", [])
     )
-    cost = _decimal_cost(receipts)
-    tokens = _tokens(receipts)
-    model_summary = _model_summary(state)
+    try:
+        reduced_accounting = result_summary.reduce_accounting(run, state)
+        cost = reduced_accounting["cost"]
+        tokens = reduced_accounting["tokens"]
+        model_summary = result_summary.model_summary(state)
+    except result_summary.SummaryError as exc:
+        raise ResultError(str(exc)) from exc
     input_evidence = sources["input"] if isinstance(sources["input"], dict) else {}
     image_evidence = sources["image"] if isinstance(sources["image"], dict) else {}
     runtime_evidence = (
@@ -375,6 +323,16 @@ def render_attempt(
         (item for item in receipt["items"] if item["name"] == "verifier"), {}
     )
     verifier_bound = verifier_item.get("status") == "present"
+    try:
+        generic = result_summary.render_generic_summary(
+            run,
+            state,
+            report if isinstance(report, dict) else {},
+            verifier_bound=verifier_bound,
+            accounting=reduced_accounting["accounting"],
+        )
+    except result_summary.SummaryError as exc:
+        raise ResultError(str(exc)) from exc
     target_ids = list(frozen_targets) if isinstance(frozen_targets, list) else []
     supplied_ids = list(target_ids)
     recovered_ids = sorted(contracts) if isinstance(contracts, dict) else []
@@ -390,6 +348,7 @@ def render_attempt(
         "outcome": outcome,
         "termination_reason": reason,
         "termination_detail": state.get("termination_detail"),
+        **generic,
         "frozen_targets": frozen_targets,
         "sets": {
             "T": {"ids": target_ids, "size": len(target_ids)},
@@ -417,7 +376,7 @@ def render_attempt(
         "model_attempts": model_summary["attempts"],
         "model_retries": model_summary["retries"],
         "prompt_sha256": model_summary["prompt_sha256"],
-        "proxy_requests": len(receipts) if isinstance(receipts, list) else 0,
+        "proxy_requests": reduced_accounting["requests"],
         "tokens": tokens,
         "cost_usd": f"{cost:.6f}",
         "wall_seconds": f"{Decimal(state.get('wall_seconds_used', 0)):.6f}",
@@ -562,6 +521,26 @@ def validate_l0(receipt: Any) -> dict[str, Any]:
     if receipt.get("receipt_sha256") != _sha(canonical_json_bytes(body)):
         raise ResultError("L0 receipt hash mismatch")
     return receipt
+
+
+def validate_smoke_audit(path: str | Path) -> dict[str, Any]:
+    """Fail closed unless a retained smoke result proves verified progress."""
+    try:
+        return result_audit.validate_smoke_audit(path, validate_l0)
+    except result_audit.AuditError as exc:
+        raise ResultError(str(exc)) from exc
+
+
+def validate_full_audit(
+    path: str | Path, contract_review_path: str | Path
+) -> dict[str, Any]:
+    """Validate retained full-run evidence and its exact semantic review."""
+    try:
+        return result_audit.validate_full_audit(
+            path, contract_review_path, validate_l0
+        )
+    except result_audit.AuditError as exc:
+        raise ResultError(str(exc)) from exc
 
 
 def _atomic_write_once(path: Path, raw: bytes) -> None:

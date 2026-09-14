@@ -23,6 +23,30 @@ LEFT = FIXTURE["statement_fingerprints"]["Diamond.left_spec"]
 RIGHT = FIXTURE["statement_fingerprints"]["Diamond.right_spec"]
 POLICY = "b" * 64
 
+ROOT = "probe:Graph.root"
+LEFT_NODE = "probe:Graph.left"
+RIGHT_NODE = "probe:Graph.right"
+SHARED = "probe:Graph.shared"
+
+
+def _shared_graph():
+    return {
+        "frozen_targets": [ROOT],
+        "selected_nodes": [LEFT_NODE, RIGHT_NODE, ROOT, SHARED],
+        "term_dependencies": [
+            [LEFT_NODE, SHARED],
+            [RIGHT_NODE, SHARED],
+            [ROOT, LEFT_NODE],
+            [ROOT, RIGHT_NODE],
+        ],
+        "source_paths": {
+            LEFT_NODE: "Graph/Left.lean",
+            RIGHT_NODE: "Graph/Right.lean",
+            ROOT: "Graph/Root.lean",
+            SHARED: "Graph/Shared.lean",
+        },
+    }
+
 
 def _state():
     return {
@@ -57,6 +81,25 @@ def _feasibility(status, detail):
 
 
 class ContractRepairTests(unittest.TestCase):
+    def test_contract_frontier_is_consumer_first_for_shared_helpers(self):
+        graph = _shared_graph()
+        frontier = getattr(diamond, "_contract_frontier", lambda *_: [])
+        immediate_consumers = getattr(diamond, "_immediate_consumers", lambda *_: [])
+
+        self.assertEqual(frontier(graph, set()), [ROOT])
+        self.assertEqual(
+            frontier(graph, {ROOT}),
+            [LEFT_NODE, RIGHT_NODE],
+        )
+        self.assertEqual(
+            frontier(graph, {ROOT, LEFT_NODE, RIGHT_NODE}),
+            [SHARED],
+        )
+        self.assertEqual(
+            immediate_consumers(graph, SHARED),
+            [LEFT_NODE, RIGHT_NODE],
+        )
+
     def test_weak_contract_fails_before_review_and_only_strong_records_freeze(self):
         state = _state()
         accepted_before = copy.deepcopy(state["run"]["accepted"])

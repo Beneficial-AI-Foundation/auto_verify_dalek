@@ -99,6 +99,57 @@ class ParallelLaneTests(unittest.TestCase):
 
         self.assertEqual(accepted, {"fast", "middle", "root", "slow"})
 
+    def test_later_submission_releases_its_consumer_before_earlier_slow_job(self):
+        graph = {
+            "selected_nodes": ["a-slow", "a-middle", "root", "z-fast", "z-middle"],
+            "term_dependencies": [
+                ["a-middle", "a-slow"],
+                ["root", "a-middle"],
+                ["root", "z-middle"],
+                ["z-middle", "z-fast"],
+            ],
+            "source_paths": {
+                node: f"Graph/{node}.lean"
+                for node in ("a-slow", "a-middle", "root", "z-fast", "z-middle")
+            },
+        }
+        slow_started = threading.Event()
+        release_slow = threading.Event()
+        middle_started = threading.Event()
+        errors = []
+
+        def run(node):
+            if node == "a-slow":
+                slow_started.set()
+                release_slow.wait()
+            elif node == "z-fast":
+                slow_started.wait()
+            elif node == "z-middle":
+                middle_started.set()
+                release_slow.set()
+            return node
+
+        def schedule():
+            try:
+                diamond._schedule_proofs(
+                    graph,
+                    run,
+                    lambda *_: None,
+                    prepare_job=lambda node: node,
+                )
+            except Exception as exc:
+                errors.append(exc)
+
+        thread = threading.Thread(target=schedule)
+        thread.start()
+        self.assertTrue(slow_started.wait(1))
+        released_before_slow = middle_started.wait(1)
+        release_slow.set()
+        thread.join(1)
+
+        self.assertTrue(released_before_slow)
+        self.assertFalse(errors)
+
     def test_ready_jobs_in_one_file_never_overlap(self):
         graph = {
             "selected_nodes": ["left", "right", "root"],

@@ -7,7 +7,7 @@ from decimal import Decimal
 from pathlib import Path
 from unittest import mock
 
-from autofv import experiment, probes, worker
+from autofv import diamond, experiment, probes, worker
 from tests.test_model_proxy_fixture import _FixtureProgram
 from tests.test_phase1_diamond import AENEAS_PROBE, MODEL_FIXTURE, RUST_PROBE, TARGET
 
@@ -20,6 +20,22 @@ LEFT = "probe:Diamond.left"
 RIGHT = "probe:Diamond.right"
 TOP = "probe:Diamond.top"
 POLICY = experiment.load_toolchain_lock()["native_decide_policy_sha256"]
+
+
+def _event_graph(*, same_file=False):
+    nodes = ["fast", "middle", "root", "slow"]
+    return {
+        "selected_nodes": nodes,
+        "term_dependencies": [
+            ["middle", "fast"],
+            ["root", "middle"],
+            ["root", "slow"],
+        ],
+        "source_paths": {
+            node: "Graph/Shared.lean" if same_file else f"Graph/{node}.lean"
+            for node in nodes
+        },
+    }
 
 
 def _graph():
@@ -63,6 +79,62 @@ def _state(run_round=None):
 
 
 class ParallelLaneTests(unittest.TestCase):
+    def test_newly_ready_consumer_starts_while_slow_lane_is_running(self):
+        slow_started = threading.Event()
+        middle_started = threading.Event()
+
+        def run(node):
+            if node == "slow":
+                slow_started.set()
+                self.assertTrue(middle_started.wait(1))
+            elif node == "fast":
+                self.assertTrue(slow_started.wait(1))
+            elif node == "middle":
+                middle_started.set()
+            return node
+
+        accepted = getattr(diamond, "_schedule_proofs", lambda *_: set())(
+            _event_graph(), run, lambda *_: None
+        )
+
+        self.assertEqual(accepted, {"fast", "middle", "root", "slow"})
+
+    def test_ready_jobs_in_one_file_never_overlap(self):
+        graph = {
+            "selected_nodes": ["left", "right", "root"],
+            "term_dependencies": [["root", "left"], ["root", "right"]],
+            "source_paths": {
+                "left": "Graph/Shared.lean",
+                "right": "Graph/Shared.lean",
+                "root": "Graph/Root.lean",
+            },
+        }
+        left_started = threading.Event()
+        right_started = threading.Event()
+        release_left = threading.Event()
+        finished = threading.Event()
+
+        def run(node):
+            if node == "left":
+                left_started.set()
+                self.assertTrue(release_left.wait(1))
+            elif node == "right":
+                right_started.set()
+            return node
+
+        def schedule():
+            scheduler = getattr(diamond, "_schedule_proofs", lambda *_: set())
+            scheduler(graph, run, lambda *_: None)
+            finished.set()
+
+        thread = threading.Thread(target=schedule)
+        thread.start()
+        self.assertTrue(left_started.wait(1))
+        self.assertFalse(right_started.is_set())
+        release_left.set()
+        self.assertTrue(finished.wait(1))
+        thread.join()
+
     def test_leaf_proxy_rounds_overlap_but_receipts_commit_in_sequence(self):
         program = _FixtureProgram(FIXTURE, threading.Barrier(2))
         for entry in FIXTURE["entries"][:5]:

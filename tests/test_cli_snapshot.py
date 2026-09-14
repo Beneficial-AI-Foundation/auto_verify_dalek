@@ -12,7 +12,7 @@ from decimal import Decimal
 from pathlib import Path
 from unittest import mock
 
-from autofv import experiment, results
+from autofv import experiment, probes, results
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -125,11 +125,70 @@ class ToolchainContractTests(unittest.TestCase):
         )
         self.assertEqual(top.returncode, 0, top.stderr)
         self.assertEqual(run.returncode, 0, run.stderr)
-        self.assertIn("{run}", top.stdout)
+        self.assertIn("{inspect,run}", top.stdout)
+        self.assertIn("inspect", top.stdout)
         self.assertIn("--target", run.stdout)
         self.assertIn("--run-config", run.stdout)
         for forbidden in ("--model", "--node", "--probe", "--provider", "--host"):
             self.assertNotIn(forbidden, top.stdout + run.stdout)
+
+    def test_inspect_cli_writes_canonical_report_without_mutating_target(self):
+        fixture = ROOT / "tests" / "fixtures" / "diamond"
+        manifest = json.loads((fixture / "autofv.json").read_text())
+        rust_raw = (ROOT / "tests" / "fixtures" / "probes" / "diamond-rust.json").read_bytes()
+        aeneas_raw = (ROOT / "tests" / "fixtures" / "probes" / "diamond-aeneas.json").read_bytes()
+        graph = probes.parse_probe_bytes(manifest, rust_raw, aeneas_raw)
+        before = {
+            path.relative_to(fixture).as_posix(): hashlib.sha256(path.read_bytes()).hexdigest()
+            for path in fixture.rglob("*")
+            if path.is_file()
+        }
+
+        with tempfile.TemporaryDirectory() as tmp:
+            output = Path(tmp) / "target-report.json"
+            with (
+                mock.patch.object(
+                    sys,
+                    "argv",
+                    ["autofv", "inspect", str(fixture), "--output", str(output)],
+                ),
+                mock.patch.object(experiment.probes, "run_probes", return_value=graph),
+            ):
+                experiment.main()
+            self.assertEqual(output.read_bytes(), probes.render_target_report(graph))
+
+        after = {
+            path.relative_to(fixture).as_posix(): hashlib.sha256(path.read_bytes()).hexdigest()
+            for path in fixture.rglob("*")
+            if path.is_file()
+        }
+        self.assertEqual(after, before)
+
+    def test_inspect_refuses_target_writes_and_leaves_no_partial_report(self):
+        fixture = ROOT / "tests" / "fixtures" / "diamond"
+        with mock.patch.object(experiment.probes, "run_probes") as run_probes:
+            with self.assertRaisesRegex(
+                probes.ProbeError, "inspect_output_inside_repository"
+            ):
+                experiment.inspect_repository(
+                    fixture, fixture / "target-report.json"
+                )
+        run_probes.assert_not_called()
+
+        with tempfile.TemporaryDirectory() as tmp:
+            output = Path(tmp) / "target-report.json"
+            output.write_bytes(b"previous report")
+            with (
+                mock.patch.object(
+                    experiment.probes,
+                    "run_probes",
+                    side_effect=probes.ProbeError("incomplete evidence"),
+                ),
+                self.assertRaisesRegex(probes.ProbeError, "incomplete evidence"),
+            ):
+                experiment.inspect_repository(fixture, output)
+            self.assertEqual(output.read_bytes(), b"previous report")
+            self.assertEqual(list(Path(tmp).glob(".*.tmp")), [])
 
     def test_every_runtime_identity_is_verified_and_smoked(self):
         lock = load_lock()

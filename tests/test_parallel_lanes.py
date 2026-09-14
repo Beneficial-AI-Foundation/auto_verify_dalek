@@ -190,6 +190,47 @@ class ParallelLaneTests(unittest.TestCase):
         thread.join(1)
         self.assertFalse(thread.is_alive())
 
+    def test_failed_branch_blocks_only_consumers_and_drains_ready_siblings(self):
+        graph = {
+            "frozen_targets": ["root"],
+            "selected_nodes": ["blocked", "failed", "other", "root"],
+            "term_dependencies": [
+                ["blocked", "failed"],
+                ["root", "blocked"],
+                ["root", "other"],
+            ],
+            "source_paths": {
+                node: f"Graph/{node}.lean"
+                for node in ("blocked", "failed", "other", "root")
+            },
+        }
+        state = {"graph": graph, "run": {"events": []}}
+        diamond._validate_scheduling_graph(state)
+        completed = threading.Barrier(2)
+        ran = []
+        accounted = []
+
+        def run(node):
+            ran.append(node)
+            if node in {"failed", "other"}:
+                completed.wait(1)
+            return node
+
+        def accept(node, _result):
+            accounted.append(node)
+            if node == "failed":
+                diamond._block_dependents(state, node, "proof_exhausted")
+                return False
+            return None
+
+        accepted = diamond._schedule_proofs(graph, run, accept, max_workers=2)
+
+        self.assertEqual(accepted, {"other"})
+        self.assertEqual(set(accounted), {"failed", "other"})
+        self.assertEqual(set(ran), {"failed", "other"})
+        self.assertEqual(state["target_states"]["blocked"]["status"], "blocked")
+        self.assertEqual(state["target_states"]["root"]["status"], "blocked")
+
     def test_ready_jobs_in_one_file_never_overlap(self):
         graph = {
             "selected_nodes": ["left", "right", "root"],

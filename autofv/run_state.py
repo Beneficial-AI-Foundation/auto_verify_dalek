@@ -76,6 +76,7 @@ CHECKPOINT_STATE_FIELDS = (
     "processed_candidate_sha256",
     "accepted_sequence",
     "accepted_nodes",
+    "proof_patch_sha256",
     "pending_model_exchanges",
     "model_exchanges",
     "inflight_transition",
@@ -106,6 +107,7 @@ class _RunState(TypedDict, total=False):
     processed_candidate_sha256: list[str]
     accepted_sequence: list[dict[str, Any]]
     accepted_nodes: list[str]
+    proof_patch_sha256: dict[str, str]
     receipt_rejections: list[dict[str, Any]]
     compiler_assumptions: list[dict[str, str]]
     l0_receipt: dict[str, Any]

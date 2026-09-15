@@ -10,6 +10,7 @@ import secrets
 from pathlib import Path
 from typing import Any
 
+from . import provider_config, provider_service, provider_transport
 from .worker_runtime import (
     AGENT_UID,
     FORWARD_CHAIN,
@@ -25,6 +26,7 @@ from .worker_runtime import (
     _labels,
     _lima,
     _install_worker_firewall,
+    lima_host_address,
     _proxy_endpoint,
     _resource_matches,
     _runtime_argv,
@@ -59,6 +61,12 @@ path = os.environ["AUTOFV_PROXY_PATH"]
 upstream = os.environ["AUTOFV_PROXY_BASE"].rstrip("/") + path
 token = os.environ["AUTOFV_RUN_TOKEN"]
 
+class NoRedirect(urllib.request.HTTPRedirectHandler):
+    def redirect_request(self, *args, **kwargs):
+        return None
+
+opener = urllib.request.build_opener(urllib.request.ProxyHandler({}), NoRedirect())
+
 class Handler(http.server.BaseHTTPRequestHandler):
     def send_value(self, status, raw=b'{"error":"rejected"}'):
         self.send_response(status)
@@ -79,6 +87,8 @@ class Handler(http.server.BaseHTTPRequestHandler):
             if length <= 0 or length > 1_000_000:
                 raise ValueError
             raw = self.rfile.read(length)
+            if len(raw) != length:
+                raise ValueError
             request = urllib.request.Request(
                 upstream,
                 data=raw,
@@ -88,7 +98,7 @@ class Handler(http.server.BaseHTTPRequestHandler):
                     "X-AutoFV-Run-Token": token,
                 },
             )
-            with urllib.request.urlopen(request, timeout=30) as reply:
+            with opener.open(request, timeout=30) as reply:
                 response = reply.read(1_000_001)
                 if len(response) > 1_000_000:
                     self.send_value(502, b'{"error":"fixed proxy response too large"}')
@@ -138,6 +148,7 @@ try:
             )
 except urllib.error.HTTPError as error:
     classification = {
+        400: "malformed_response",
         401: "authentication_error",
         403: "authentication_error",
         408: "timeout",
@@ -280,6 +291,15 @@ def _bind_proxy_client_identity(run: dict[str, Any], token: str) -> str:
 
 def _record_proxy_policy(run: dict[str, Any]) -> dict[str, Any]:
     route = run["lock"]["fixed_proxy"]
+    provider_binding = run.get("provider_binding")
+    if isinstance(provider_binding, dict):
+        endpoint_sha256 = _sha256(run["proxy_base"].encode("utf-8"))
+        client_identity_sha256 = run.get("proxy_client_identity_sha256")
+        receipt_schema = provider_transport.PROVIDER_RECEIPT_SCHEMA
+    else:
+        endpoint_sha256 = _sha256(run["proxy_base"].encode("utf-8"))
+        client_identity_sha256 = run["proxy_client_identity_sha256"]
+        receipt_schema = route["receipt_schema"]
     body = {
         "schema": "autofv-fixed-proxy-policy/v1",
         "run_id": run["run_id"],
@@ -289,15 +309,19 @@ def _record_proxy_policy(run: dict[str, Any]) -> dict[str, Any]:
         "path": route["path"],
         "auth_scope": "run-scoped-fixed-inference",
         "provider_authorization_location": route["provider_authorization_location"],
-        "proxy_endpoint_sha256": _sha256(run["proxy_base"].encode("utf-8")),
-        "proxy_client_identity_sha256": run["proxy_client_identity_sha256"],
-        "receipt_schema_sha256": _sha256(_canonical_bytes(route["receipt_schema"])),
+        "proxy_endpoint_sha256": endpoint_sha256,
+        "proxy_client_identity_sha256": client_identity_sha256,
+        "receipt_schema_sha256": _sha256(_canonical_bytes(receipt_schema)),
         "fixed_proxy_sha256": run["fixed_proxy_sha256"],
         "image_digest": run["image_digest"],
         "control_bundle_sha256": run["control_bundle_sha256"],
         "native_decide_policy_sha256": run["native_decide_policy_sha256"],
         "worker_inventory_sha256": run.get("worker_inventory_sha256"),
     }
+    if isinstance(provider_binding, dict):
+        body["provider_binding"] = json.loads(_canonical_bytes(provider_binding))
+        body["provider_endpoint_sha256"] = provider_binding["endpoint_sha256"]
+        body["provider_receipt_schema"] = receipt_schema
     receipt = {**body, "policy_sha256": _sha256(_canonical_bytes(body))}
     existing = run.get("proxy_policy_sha256")
     if existing not in (None, receipt["policy_sha256"]):
@@ -372,7 +396,11 @@ def _record_proxy_error(
 def _configure_proxy_firewall(
     run: dict[str, Any], network: str, relay: str
 ) -> dict[str, Any]:
-    base = os.environ.get("AUTOFV_PROXY_BASE") or run.get("proxy_base")
+    base = (
+        run.get("proxy_base")
+        if provider_transport.is_configured(run)
+        else os.environ.get("AUTOFV_PROXY_BASE") or run.get("proxy_base")
+    )
     if not isinstance(base, str):
         raise WorkerError("trusted proxy identity is not configured")
     upstream_address, upstream_port = _proxy_endpoint(base)
@@ -439,7 +467,11 @@ def _configure_proxy_firewall(
 
 def _ensure_proxy_relay(run: dict[str, Any]) -> tuple[str, str]:
     network, relay = _proxy_resources(run)
-    base = os.environ.get("AUTOFV_PROXY_BASE") or run.get("proxy_base")
+    if provider_transport.is_configured(run):
+        base = provider_service.relay_base(run, lima_host_address())
+        run["proxy_base"] = base
+    else:
+        base = os.environ.get("AUTOFV_PROXY_BASE") or run.get("proxy_base")
     token = os.environ.get("AUTOFV_RUN_TOKEN")
     if not isinstance(base, str) or not token:
         raise WorkerError("trusted proxy identity is not configured")
@@ -530,6 +562,15 @@ def proxy_round(
     request_sha256 = _validate_proxy_request(run, request)
     route = run["lock"]["fixed_proxy"]
     try:
+        provider_configured = provider_transport.is_configured(run)
+    except provider_transport.ProviderError as exc:
+        raise WorkerError(str(exc), run=run) from exc
+    if (
+        run.get("cost_classification") == "provider_authenticated"
+        and not provider_configured
+    ):
+        raise WorkerError("provider binding is unavailable", run=run)
+    try:
         network, address = _ensure_proxy_relay(run)
     except WorkerError as exc:
         _record_proxy_error(
@@ -603,6 +644,41 @@ def proxy_round(
         )
         raise WorkerError("fixed proxy malformed_response", run=run)
     return body["response"], body["receipt"]
+
+
+def configure_provider(
+    run: dict[str, Any],
+    *,
+    env_path: str | Path | None = None,
+    tool_schemas: Any,
+    project_root: Path | None = None,
+    config_home: Path | None = None,
+) -> dict[str, Any]:
+    """Bind one trusted upstream without retaining its credential in run state."""
+    try:
+        public = provider_transport.configure_provider(
+            run,
+            env_path=env_path,
+            tool_schemas=tool_schemas,
+            project_root=project_root,
+            config_home=config_home,
+        )
+    except provider_transport.ProviderError as exc:
+        raise WorkerError(str(exc), run=run) from exc
+    try:
+        provider_service.start(run)
+    except provider_transport.ProviderError as exc:
+        provider_config.abort_configuration(run)
+        raise WorkerError(str(exc), run=run) from exc
+    return public
+
+
+validate_provider_receipt = provider_service.validate_pinned_receipt
+validate_provider_preflight = provider_service.validate_pinned_preflight
+provider_messages_sha256 = provider_transport.messages_sha256
+provider_reservation_usd = provider_transport.reservation_usd
+stage_provider_messages = provider_transport.stage_messages
+discard_provider_messages = provider_transport.discard_messages
 
 
 def run_proxy_policy_matrix(

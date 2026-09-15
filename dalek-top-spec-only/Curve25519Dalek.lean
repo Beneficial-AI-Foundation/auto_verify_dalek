@@ -3,14 +3,11 @@ import Curve25519Dalek.ExternallyVerified
 import Curve25519Dalek.Funs
 import Curve25519Dalek.FunsExternal
 import Curve25519Dalek.Math.Basic
-import Curve25519Dalek.Math.BitList
 import Curve25519Dalek.Math.Edwards.Basepoint
 import Curve25519Dalek.Math.Edwards.Curve
-import Curve25519Dalek.Math.Edwards.EightTorsion
 import Curve25519Dalek.Math.Edwards.Representation
 import Curve25519Dalek.Math.Montgomery.Curve
 import Curve25519Dalek.Math.Montgomery.Representation
-import Curve25519Dalek.Math.PrimeCerts
 import Curve25519Dalek.Math.Ristretto.Representation
 import Curve25519Dalek.Specs.Backend.Serial.CurveModels.AffineNielsPoint.Add
 import Curve25519Dalek.Specs.Backend.Serial.CurveModels.AffineNielsPoint.AssertReceiverIsTotalEq

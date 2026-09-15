@@ -66,5 +66,4 @@ prmopt_log.md
 ledger/
 # .verilib/
 # Generated agent-facing bundle (harness/build_without_internal_spec.py) and SCIP index
-dalek-top-spec-only/
 data/

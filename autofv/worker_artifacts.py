@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import io
+import hashlib
 import json
 import os
 import re
@@ -76,10 +77,21 @@ def failed(error):
 
 for root, surface in roots:
     manifest = hashlib.sha256()
+    entries = []
     file_count = byte_count = 0
     for current, directories, names in os.walk(root, topdown=True, onerror=failed):
         directories.sort()
         names.sort()
+        for name in directories:
+            path = os.path.join(current, name)
+            relative = os.path.relpath(path, root)
+            encoded_path = relative.encode("utf-8", "surrogateescape")
+            if any(marker in encoded_path for marker in markers):
+                hits.add(surface)
+            status = os.lstat(path)
+            kind = "directory" if stat.S_ISDIR(status.st_mode) else "non-regular"
+            entry = json.dumps([relative, kind], ensure_ascii=True)
+            entries.append(entry.encode())
         for name in names:
             path = os.path.join(current, name)
             relative = os.path.relpath(path, root)
@@ -89,7 +101,7 @@ for root, surface in roots:
             before = os.lstat(path)
             if not stat.S_ISREG(before.st_mode):
                 entry = json.dumps([relative, "non-regular"], ensure_ascii=True)
-                manifest.update(entry.encode() + b"\n")
+                entries.append(entry.encode())
                 continue
             digest = hashlib.sha256()
             tail = b""
@@ -109,7 +121,9 @@ for root, surface in roots:
             file_count += 1
             byte_count += size
             entry = json.dumps([relative, size, digest.hexdigest()], ensure_ascii=True)
-            manifest.update(entry.encode() + b"\n")
+            entries.append(entry.encode())
+    for entry in sorted(entries):
+        manifest.update(entry + b"\n")
     receipts.append(
         {
             "root": root,
@@ -132,12 +146,31 @@ print(
     )
 )
 """
-def _safe_tar(raw: bytes, label: str) -> None:
+_VOLUME_ROOTS = (
+    ("work", "filesystem"),
+    ("accepted", "filesystem"),
+    ("autofv-control", "filesystem"),
+    ("logs", "log"),
+    ("evidence", "transcript"),
+    ("lanes", "state"),
+)
+
+
+def _safe_tar(
+    raw: bytes,
+    label: str,
+    *,
+    forbidden: tuple[bytes, ...] = (),
+) -> None:
     try:
         with tarfile.open(fileobj=io.BytesIO(raw), mode="r:*") as archive:
             seen = set()
             for member in archive.getmembers():
                 path = PurePosixPath(member.name)
+                if forbidden and _marker_hits({member.name: b""}, forbidden):
+                    raise WorkerError(
+                        "forbidden material found in trusted worker-volume scan"
+                    )
                 if (
                     member.name in seen
                     or path.is_absolute()
@@ -199,6 +232,11 @@ def scan_artifacts(
         "clean": True,
     }
     return {**body, "scan_sha256": _sha256(_canonical_bytes(body))}
+
+
+def _retained_markers(run: dict[str, Any]) -> tuple[bytes | str, ...]:
+    """Return markers safe to pass into the isolated worker scanner."""
+    return tuple(run.get("artifact_scan_markers", ()))
 
 
 def _worker_environment_artifacts(run: dict[str, Any]) -> dict[str, bytes]:
@@ -287,6 +325,98 @@ def _scan_worker_volume(
     return {**body, "scan_sha256": _sha256(_canonical_bytes(body))}
 
 
+def _trusted_worker_volume_scan(
+    run: dict[str, Any],
+    forbidden: tuple[bytes, ...],
+    worker_scan: dict[str, Any],
+) -> dict[str, Any]:
+    """Stream the complete retained volume to the host and scan it there."""
+    completed = _docker(
+        *_runtime_argv(
+            run["lock"],
+            run["volume"],
+            "tar",
+            "--create",
+            "--file=-",
+            "--directory=/volume",
+            *(root for root, _surface in _VOLUME_ROOTS),
+        )
+    )
+    archive_raw = completed.stdout
+    _safe_tar(
+        archive_raw,
+        "trusted worker-volume scan",
+        forbidden=forbidden,
+    )
+    expected = {
+        item["root"].removeprefix("/volume/"): item
+        for item in worker_scan["roots"]
+    }
+    receipts = []
+    with tarfile.open(fileobj=io.BytesIO(archive_raw), mode="r:*") as archive:
+        members = archive.getmembers()
+        present = {member.name.rstrip("/") for member in members if member.isdir()}
+        for root, surface in _VOLUME_ROOTS:
+            if root not in present:
+                raise WorkerError("trusted worker-volume scan is incomplete")
+            manifest = hashlib.sha256()
+            entries: list[bytes] = []
+            file_count = byte_count = 0
+            prefix = root + "/"
+            for member in sorted(members, key=lambda item: item.name):
+                if not member.name.startswith(prefix):
+                    continue
+                relative = member.name[len(prefix):].rstrip("/")
+                if not relative:
+                    continue
+                if member.isdir():
+                    entries.append(
+                        json.dumps(
+                            [relative, "directory"], ensure_ascii=True
+                        ).encode()
+                    )
+                    continue
+                if not member.isfile():
+                    raise WorkerError("trusted worker-volume scan is incomplete")
+                source = archive.extractfile(member)
+                if source is None:
+                    raise WorkerError("trusted worker-volume scan is incomplete")
+                raw = source.read()
+                if len(raw) != member.size or _marker_hits(
+                    {relative: raw}, forbidden
+                ):
+                    raise WorkerError(
+                        "forbidden material found in trusted worker-volume scan"
+                    )
+                digest = hashlib.sha256(raw).hexdigest()
+                entries.append(
+                    json.dumps(
+                        [relative, len(raw), digest], ensure_ascii=True
+                    ).encode()
+                )
+                file_count += 1
+                byte_count += len(raw)
+            for entry in sorted(entries):
+                manifest.update(entry + b"\n")
+            receipt = {
+                "root": f"/volume/{root}",
+                "surface": surface,
+                "files": file_count,
+                "bytes": byte_count,
+                "manifest_sha256": manifest.hexdigest(),
+            }
+            if receipt != expected.get(root):
+                raise WorkerError("trusted worker-volume scan changed during export")
+            receipts.append(receipt)
+    body = {
+        "schema": "autofv-trusted-worker-volume-scan/v1",
+        "roots": receipts,
+        "archive_sha256": _sha256(archive_raw),
+        "clean": True,
+    }
+    return {**body, "scan_sha256": _sha256(_canonical_bytes(body))}
+
+
 def _host_surface(name: str) -> str:
     lowered = name.lower()
     if name == "result.json":
@@ -304,31 +434,68 @@ def scan_retained_state(
     run: dict[str, Any],
     artifacts: dict[str, bytes],
     markers: Iterable[bytes | str] = (),
+    *,
+    trusted_markers: Iterable[bytes | str] = (),
 ) -> dict[str, Any]:
-    """Scan every retained worker and export surface before destruction."""
-    forbidden = _forbidden_markers(markers)
+    """Scan retained state without disclosing provider secrets to the worker.
+
+    ``trusted_markers`` are used only by controller-side scans. They must never
+    enter a runsc argv, environment, or stdin payload.
+    """
+    markers = tuple(markers)
+    trusted_markers = tuple(trusted_markers)
+    provider_markers: tuple[bytes, ...] = ()
+    if isinstance(run.get("provider_binding"), dict):
+        from . import provider_config
+
+        try:
+            provider_markers = provider_config.secret_markers(run)
+        except provider_config.ProviderConfigError as exc:
+            raise WorkerError(
+                "provider secrets are unavailable for artifact scan"
+            ) from exc
+    provider_set = set(provider_markers)
+    worker_markers_list: list[bytes | str] = []
+    for marker in markers:
+        if isinstance(marker, str):
+            raw_marker = marker.encode("utf-8")
+        elif isinstance(marker, bytes):
+            raw_marker = marker
+        else:
+            raise WorkerError("artifact scan marker must be bytes or text")
+        if raw_marker not in provider_set:
+            worker_markers_list.append(marker)
+    worker_markers = tuple(worker_markers_list)
+    trusted_markers = (*trusted_markers, *provider_markers)
+    worker_forbidden = _forbidden_markers(worker_markers)
+    trusted_forbidden = _forbidden_markers((*markers, *trusted_markers))
     hits: set[str] = set()
 
     environment = _worker_environment_artifacts(run)
-    if _marker_hits(environment, forbidden):
+    if _marker_hits(environment, trusted_forbidden):
         hits.add("environment")
 
-    filesystem = _scan_worker_volume(run, forbidden)
+    filesystem = _scan_worker_volume(run, worker_forbidden)
     hits.update(filesystem["hit_surfaces"])
+    trusted_filesystem = (
+        _trusted_worker_volume_scan(run, trusted_forbidden, filesystem)
+        if provider_markers
+        else None
+    )
 
     state = {key: value for key, value in run.items() if key != "artifact_scan_markers"}
     try:
         state_raw = _canonical_bytes(state)
     except (TypeError, ValueError) as exc:
         raise WorkerError("controller run state is not canonical JSON") from exc
-    if _marker_hits({"run.json": state_raw}, forbidden):
+    if _marker_hits({"run.json": state_raw}, trusted_forbidden):
         hits.add("state")
 
     host = _host_artifacts(run)
     for name, raw in host.items():
-        if _marker_hits({name: raw}, forbidden):
+        if _marker_hits({name: raw}, trusted_forbidden):
             hits.add(_host_surface(name))
-    if _marker_hits(artifacts, forbidden):
+    if _marker_hits(artifacts, trusted_forbidden):
         hits.add("export")
 
     if hits:
@@ -337,16 +504,17 @@ def scan_retained_state(
             "forbidden material found in retained surfaces: " + ", ".join(ordered)
         )
 
-    export = scan_artifacts(artifacts, markers)
+    export = scan_artifacts(artifacts, (*markers, *trusted_markers))
     body = {
         "schema": "autofv-retained-state-scan/v1",
         "run_id": run["run_id"],
         "scanned_surfaces": list(SCANNED_SURFACES),
-        "marker_count": len(forbidden),
+        "marker_count": len(trusted_forbidden),
         "environment_sha256": {
             name: _sha256(raw) for name, raw in sorted(environment.items())
         },
         "worker_filesystem": filesystem,
+        "trusted_worker_filesystem": trusted_filesystem,
         "controller_state_sha256": _sha256(state_raw),
         "host_artifact_sha256": {
             name: _sha256(raw) for name, raw in sorted(host.items())
@@ -452,7 +620,7 @@ def export_run(run: dict[str, Any], *, interrupted: bool = False) -> dict[str, A
             raise WorkerError("working state changed after export")
         return verified
     artifacts = _export_artifacts(run)
-    markers = run.get("artifact_scan_markers", ())
+    markers = tuple(run.get("artifact_scan_markers", ()))
     scan = scan_retained_state(run, artifacts, markers)
     export_root = Path(run["run_root"]) / "export"
     for name, raw in artifacts.items():
@@ -461,6 +629,19 @@ def export_run(run: dict[str, Any], *, interrupted: bool = False) -> dict[str, A
         if (export_root / name).read_bytes() != raw:
             raise WorkerError(f"export hash verification failed: {name}")
     _atomic_write(export_root / "artifact-scan.json", _canonical_bytes(scan) + b"\n")
+    provider_scan_receipt_sha256 = None
+    if isinstance(run.get("provider_binding"), dict):
+        from . import provider_config, provider_receipts
+
+        binding = provider_config.provider_binding(run)
+        if binding is None:
+            raise WorkerError("provider binding is unavailable for artifact scan")
+        provider_scan = provider_receipts.sign_scan_receipt(
+            binding, run_id=run["run_id"], scan_sha256=scan["scan_sha256"]
+        )
+        provider_scan_raw = _canonical_bytes(provider_scan) + b"\n"
+        _atomic_write(export_root / "provider-scan-receipt.json", provider_scan_raw)
+        provider_scan_receipt_sha256 = _sha256(provider_scan_raw)
     entries = [
         {"path": name, "sha256": _sha256(raw), "size": len(raw)}
         for name, raw in sorted(artifacts.items())
@@ -482,6 +663,7 @@ def export_run(run: dict[str, Any], *, interrupted: bool = False) -> dict[str, A
         "sequence": _finalization_sequence(run),
         "entries": entries,
         "scan_sha256": scan["scan_sha256"],
+        "provider_scan_receipt_sha256": provider_scan_receipt_sha256,
         "verified_before_disposal": True,
     }
     receipt = {**body, "manifest_sha256": _sha256(_canonical_bytes(body))}
@@ -566,7 +748,6 @@ def _load_verified_export(run: dict[str, Any]) -> tuple[dict[str, Any], dict[str
     ):
         raise WorkerError("disposed run accepted tree mismatch")
 
-    export_scan = scan_artifacts(artifacts, run.get("artifact_scan_markers", ()))
     try:
         recorded_scan = (export_root / "artifact-scan.json").read_bytes()
         scan = json.loads(recorded_scan)
@@ -575,6 +756,40 @@ def _load_verified_export(run: dict[str, Any]) -> tuple[dict[str, Any], dict[str
     if not isinstance(scan, dict) or "scan_sha256" not in scan:
         raise WorkerError("disposed run artifact scan is invalid")
     scan_body = {key: value for key, value in scan.items() if key != "scan_sha256"}
+    provider_bound = isinstance(run.get("provider_binding"), dict)
+    if provider_bound:
+        from . import provider_receipts
+
+        try:
+            provider_scan_raw = (
+                export_root / "provider-scan-receipt.json"
+            ).read_bytes()
+            provider_scan = json.loads(provider_scan_raw)
+            provider_receipts.validate_scan_receipt(
+                provider_scan,
+                binding=run["provider_binding"],
+                run_id=run["run_id"],
+                scan_sha256=scan["scan_sha256"],
+            )
+        except (OSError, json.JSONDecodeError, WorkerError) as exc:
+            raise WorkerError("provider artifact scan receipt is invalid") from exc
+        if (
+            provider_scan_raw != _canonical_bytes(provider_scan) + b"\n"
+            or manifest.get("provider_scan_receipt_sha256")
+            != _sha256(provider_scan_raw)
+        ):
+            raise WorkerError("provider artifact scan receipt changed")
+        export_scan = scan.get("export")
+        if not isinstance(export_scan, dict) or export_scan.get(
+            "artifact_sha256"
+        ) != {name: _sha256(raw) for name, raw in sorted(artifacts.items())}:
+            raise WorkerError("provider-scanned export changed after disposal")
+    else:
+        export_scan = scan_artifacts(
+            artifacts, run.get("artifact_scan_markers", ())
+        )
+        if manifest.get("provider_scan_receipt_sha256") is not None:
+            raise WorkerError("unexpected provider artifact scan receipt")
     if (
         recorded_scan != _canonical_bytes(scan) + b"\n"
         or scan.get("schema") != "autofv-retained-state-scan/v1"
@@ -617,6 +832,10 @@ def dispose_run(run: dict[str, Any], *, interrupted: bool = False) -> dict[str, 
     )
     run["disposal_receipt"] = receipt
     run["events"].append("worker_disposed")
+    if isinstance(run.get("provider_binding"), dict):
+        from . import provider_service
+
+        provider_service.release(run)
     return receipt
 
 

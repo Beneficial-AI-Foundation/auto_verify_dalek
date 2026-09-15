@@ -13,7 +13,7 @@ from decimal import Decimal
 from types import SimpleNamespace
 from typing import Any
 
-from . import worker
+from . import worker, worker_proxy
 from .contracts import (
     BudgetExhausted,
     ContractError,
@@ -87,6 +87,16 @@ def _model_envelope(
     }
 
 
+def _message_bound_hashes(input_hashes: list[str], messages: Any) -> list[str]:
+    if messages is None:
+        return input_hashes
+    try:
+        message_sha256 = worker_proxy.provider_messages_sha256(messages)
+    except worker.WorkerError as exc:
+        raise ContractError(str(exc)) from exc
+    return [*input_hashes, message_sha256]
+
+
 def _validate_model_exchange(
     state: _RunState,
     request: dict[str, Any],
@@ -112,23 +122,37 @@ def _validate_model_exchange(
     if request.get("sequence") in seen_sequences:
         raise ContractError("duplicate proxy receipt sequence")
     response = _validate_model_response(response, request, run["base_commit"])
-    amount = validate_proxy_receipt(
-        receipt,
-        run_id=run["run_id"],
-        sequence=request["sequence"],
-        request_id=request["request_id"],
-        model_id=config["model"],
-        request_sha256=_canonical_sha256(request),
-        response_sha256=_canonical_sha256(response),
-        seen_receipt_sha256={item["receipt_sha256"] for item in state["receipts"]}
+    bindings = {
+        "run_id": run["run_id"],
+        "sequence": request["sequence"],
+        "request_id": request["request_id"],
+        "model_id": config["model"],
+        "request_sha256": _canonical_sha256(request),
+        "response_sha256": _canonical_sha256(response),
+        "seen_receipt_sha256": {
+            item["receipt_sha256"] for item in state["receipts"]
+        }
         | {
             exchange["receipt"].get("receipt_sha256")
             for exchange in pending
             if isinstance(exchange.get("receipt"), dict)
         },
-        seen_request_ids={item["request_id"] for item in state["receipts"]}
+        "seen_request_ids": {
+            item["request_id"] for item in state["receipts"]
+        }
         | set(state.get("pending_model_exchanges", {})) - {request_id},
-    )
+    }
+    try:
+        if isinstance(run.get("provider_binding"), dict):
+            amount = worker_proxy.validate_provider_receipt(
+                receipt,
+                run=run,
+                **bindings,
+            )
+        else:
+            amount = validate_proxy_receipt(receipt, **bindings)
+    except worker.WorkerError as exc:
+        raise ContractError(str(exc)) from exc
     if enforce_sequence and request["sequence"] != len(state["receipts"]) + 1:
         raise ContractError("proxy receipt sequence is not next for this run")
     return (
@@ -167,23 +191,134 @@ def _record_model_rejection(
         _checkpoint_if_enabled(state, f"receipt:{request.get('request_id')}:rejected")
 
 
+def _reserve_provider_calls(
+    state: _RunState,
+    calls: list[tuple[dict[str, Any], Any, str]],
+) -> None:
+    """Persist a conservative provider reservation before any paid dispatch."""
+    provider_bound = isinstance(state["run"].get("provider_binding"), dict)
+    if (
+        state["run"].get("cost_classification") == "provider_authenticated"
+        and not provider_bound
+    ):
+        raise ContractError("provider binding is missing from resumed state")
+    if not provider_bound:
+        return
+    pending = state.setdefault("pending_model_exchanges", {})
+    amounts: dict[str, Decimal] = {}
+    try:
+        for request, messages, _kind in calls:
+            amounts[request["request_id"]] = worker_proxy.provider_reservation_usd(
+                state["run"], request, messages
+            )
+    except worker.WorkerError as exc:
+        raise ContractError(str(exc)) from exc
+    active = sum(
+        (
+            Decimal(exchange.get("reservation_usd", "0.000000"))
+            for request_id, exchange in pending.items()
+            if request_id not in amounts and isinstance(exchange, dict)
+        ),
+        Decimal("0.000000"),
+    )
+    projected = Decimal(state["cost"]) + active + sum(
+        amounts.values(), Decimal("0.000000")
+    )
+    limit = Decimal(state["config"]["max_cost_usd"])
+    if projected > limit:
+        _checkpoint_if_enabled(state, "budget:cost_usd")
+        raise BudgetExhausted("cost_usd", limit, projected)
+    for request, _messages, kind in calls:
+        request_id = request["request_id"]
+        amount = f"{amounts[request_id]:.6f}"
+        existing = pending.get(request_id)
+        if existing is not None:
+            if (
+                existing.get("request") != request
+                or existing.get("call_kind", "explicit") != kind
+                or existing.get("reservation_usd") != amount
+            ):
+                raise ContractError(f"provider reservation changed: {request_id}")
+            continue
+        pending[request_id] = {
+            "request": request,
+            "call_kind": kind,
+            "reservation_usd": amount,
+            "dispatch_state": "reserved",
+        }
+
+
+def _provider_timeout_seconds(state: _RunState) -> float:
+    limit = Decimal(state["config"].get("max_wall_seconds", 30))
+    used = Decimal(state.get("wall_seconds_used", "0"))
+    now = time.monotonic_ns()
+    started = state.get("wall_started_monotonic_ns")
+    if type(started) is int:
+        if now < started:
+            raise ContractError("monotonic clock moved backwards")
+        used += Decimal(now - started) / Decimal(1_000_000_000)
+    reserve = Decimal(state.get("finalization_reserve_seconds", "0"))
+    remaining = limit - reserve - used
+    if remaining <= 0:
+        raise BudgetExhausted("wall_seconds", limit, used)
+    return float(min(Decimal("30"), remaining))
+
+
 def _invoke_model(
     state: _RunState,
     request: dict[str, Any],
     *,
     checkpoint: bool = True,
     call_kind: str = "explicit",
+    messages: Any = None,
 ) -> tuple[dict[str, Any], dict[str, Any]]:
     if checkpoint:
         _check_budget(state)
+        _reserve_provider_calls(state, [(request, messages, call_kind)])
         _checkpoint_if_enabled(state, f"model:{request['request_id']}:before")
+    pending = state.setdefault("pending_model_exchanges", {})
+    reservation = pending.get(request["request_id"])
+    provider_bound = isinstance(state["run"].get("provider_binding"), dict)
+    if reservation is None:
+        reservation = {
+            "request": request,
+            "call_kind": call_kind,
+            "dispatch_state": "reserved",
+        }
+        pending[request["request_id"]] = reservation
+    elif reservation.get("dispatch_state") in {"dispatched", "ambiguous"} and not provider_bound:
+        raise ContractError(
+            f"model request requires authenticated reconciliation: {request['request_id']}"
+        )
+    reservation["dispatch_state"] = "dispatched"
+    if checkpoint:
+        _checkpoint_if_enabled(state, f"model:{request['request_id']}:dispatched")
     runner = state["run_round"]
     try:
         if runner is agentproc.run_round:
-            exchange = worker.proxy_round(state["run"], request)
+            staged = False
+            try:
+                if messages is not None:
+                    staged = worker_proxy.stage_provider_messages(
+                        state["run"],
+                        request,
+                        messages,
+                        timeout_seconds=_provider_timeout_seconds(state),
+                    )
+                exchange = worker.proxy_round(state["run"], request)
+            finally:
+                if staged:
+                    worker_proxy.discard_provider_messages(
+                        state["run"], request["request_id"]
+                    )
         else:
             exchange = runner(request)
+    except asyncio.CancelledError:
+        reservation["dispatch_state"] = "ambiguous"
+        raise
     except Exception:
+        if not provider_bound:
+            pending.pop(request["request_id"], None)
         if checkpoint:
             _charge_wall(state)
             _checkpoint_if_enabled(state, f"model:{request['request_id']}:failed")
@@ -205,11 +340,16 @@ def _invoke_model(
         raise
     if checkpoint:
         _charge_wall(state)
-        state.setdefault("pending_model_exchanges", {})[request["request_id"]] = {
+        existing = state.setdefault("pending_model_exchanges", {}).get(
+            request["request_id"], {}
+        )
+        state["pending_model_exchanges"][request["request_id"]] = {
+            **existing,
             "request": request,
             "response": response,
             "receipt": receipt,
             "call_kind": call_kind,
+            "dispatch_state": "completed",
         }
         _checkpoint_if_enabled(state, f"model:{request['request_id']}:after")
     return response, receipt
@@ -314,7 +454,14 @@ def _model_request(
     input_hashes: list[str],
     batch_id: str | None = None,
     call_kind: str | None = None,
+    messages: Any = None,
 ) -> tuple[dict[str, Any], dict[str, Any]]:
+    """Run/replay one call; live lanes must deterministically reconstruct messages.
+
+    Message text is intentionally process-local. Its canonical digest joins the public
+    request identity, so Plan 02-08 lane resume must rebuild the same bounded history
+    from role context and receipted tool results rather than checkpoint a transcript.
+    """
     classified_kind = "explicit" if call_kind is None else call_kind
     completed = state.setdefault("model_exchanges", {}).get(request_id)
     pending = state.setdefault("pending_model_exchanges", {}).get(request_id)
@@ -328,7 +475,7 @@ def _model_request(
             state,
             request_id=request_id,
             role=role,
-            input_hashes=input_hashes,
+            input_hashes=_message_bound_hashes(input_hashes, messages),
             batch_id=batch_id,
             sequence=stored_sequence,
         )
@@ -347,22 +494,36 @@ def _model_request(
         if completed is not None:
             return completed["response"], completed["receipt"]
         if pending is not None:
+            if isinstance(pending.get("response"), dict) and isinstance(
+                pending.get("receipt"), dict
+            ):
+                return _accept_model_exchange(
+                    state, request, pending["response"], pending["receipt"]
+                )
             return _accept_model_exchange(
-                state, request, pending.get("response"), pending.get("receipt")
+                state,
+                request,
+                *_invoke_model(
+                    state,
+                    request,
+                    call_kind=classified_kind,
+                    messages=messages,
+                ),
             )
         return _accept_model_exchange(
             state,
             request,
-            *_invoke_model(state, request, call_kind=classified_kind),
+            *_invoke_model(
+                state, request, call_kind=classified_kind, messages=messages
+            ),
         )
     except asyncio.CancelledError:
         incomplete = state.setdefault("pending_model_exchanges", {}).get(request_id)
-        if not isinstance(incomplete, dict) or not {
-            "request",
-            "response",
-            "receipt",
-        } <= incomplete:
-            state["pending_model_exchanges"].pop(request_id, None)
+        if isinstance(incomplete, dict) and incomplete.get("dispatch_state") in {
+            "reserved",
+            "dispatched",
+        }:
+            incomplete["dispatch_state"] = "ambiguous"
         _event_once(
             state["run"], f"model:{request_id}:reserved:{classified_kind}"
         )
@@ -392,7 +553,14 @@ def _parallel_model_requests(
     ] + [item["sequence"] for item in state["receipts"]]
     next_sequence = max(used_sequences, default=0) + 1
     envelopes = []
+    messages_by_request: dict[str, Any] = {}
     for spec in requests:
+        spec = dict(spec)
+        messages = spec.pop("messages", None)
+        spec["input_hashes"] = _message_bound_hashes(
+            spec["input_hashes"], messages
+        )
+        messages_by_request[spec["request_id"]] = messages
         previous = stored.get(spec["request_id"])
         sequence = (
             previous["request"]["sequence"] if previous is not None else next_sequence
@@ -407,7 +575,18 @@ def _parallel_model_requests(
     missing = [
         (index, request)
         for index, request in enumerate(envelopes)
-        if request["request_id"] not in stored
+        if request["request_id"] not in state["model_exchanges"]
+        and not (
+            isinstance(state["pending_model_exchanges"].get(request["request_id"]), dict)
+            and isinstance(
+                state["pending_model_exchanges"][request["request_id"]].get("response"),
+                dict,
+            )
+            and isinstance(
+                state["pending_model_exchanges"][request["request_id"]].get("receipt"),
+                dict,
+            )
+        )
     ]
     start_barrier = threading.Barrier(len(missing)) if len(missing) > 1 else None
 
@@ -415,7 +594,12 @@ def _parallel_model_requests(
         started = time.monotonic_ns()
         if start_barrier is not None:
             start_barrier.wait()
-        response, receipt = _invoke_model(state, request, checkpoint=False)
+        response, receipt = _invoke_model(
+            state,
+            request,
+            checkpoint=False,
+            messages=messages_by_request[request["request_id"]],
+        )
         return response, receipt, started, time.monotonic_ns()
 
     raw: list[tuple[dict[str, Any], dict[str, Any], int, int] | None] = [
@@ -423,10 +607,23 @@ def _parallel_model_requests(
     ] * len(envelopes)
     for index, request in enumerate(envelopes):
         previous = stored.get(request["request_id"])
-        if previous is not None:
+        if previous is not None and isinstance(previous.get("response"), dict) and isinstance(
+            previous.get("receipt"), dict
+        ):
             raw[index] = (previous["response"], previous["receipt"], 0, 0)
     if missing:
         _check_budget(state)
+        _reserve_provider_calls(
+            state,
+            [
+                (
+                    request,
+                    messages_by_request[request["request_id"]],
+                    "explicit",
+                )
+                for _index, request in missing
+            ],
+        )
         _checkpoint_if_enabled(state, "model:proof-leaves:before")
         try:
             if len(missing) == 1:
@@ -449,11 +646,16 @@ def _parallel_model_requests(
         _charge_wall(state)
         for index, request in missing:
             response, receipt, _, _ = raw[index]
+            existing = state["pending_model_exchanges"].get(
+                request["request_id"], {}
+            )
             state["pending_model_exchanges"][request["request_id"]] = {
+                **existing,
                 "request": request,
                 "response": response,
                 "receipt": receipt,
                 "call_kind": "explicit",
+                "dispatch_state": "completed",
             }
             _checkpoint_if_enabled(state, f"model:{request['request_id']}:after")
 

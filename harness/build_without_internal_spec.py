@@ -41,7 +41,8 @@ Usage:
 
 --strip-comments: remove every comment from the kept Specs/ files and stubs
 (module docs `/-! -/`, docstrings `/-- -/`, block comments `/- -/`, line
-comments `--`), except the copyright header at the top of the file.  The
+comments `--`), except the copyright header at the top of the file, whose
+`Authors:` line is dropped as well.  The
 human comments carry natural-language specs and proof hints (tactic
 workarounds, timeouts) that the agent must not receive.
 
@@ -104,12 +105,13 @@ COPYRIGHT_RE = re.compile(r"\A(/-\s*\nCopyright.*?-/\n)", re.S)
 def strip_all_comments(text):
     """Remove every Lean comment (`--` to end of line, nested `/- -/` blocks
     including `/--` docstrings and `/-!` module docs) except a leading
-    copyright header; string literals are skipped.  Trailing whitespace is
+    copyright header (its `Authors:` line dropped); string literals are
+    skipped.  Trailing whitespace is
     trimmed and runs of blank lines collapsed to one.  -> (text, removed)"""
     head = ""
     m = COPYRIGHT_RE.match(text)
     if m:
-        head = m.group(1)
+        head = re.sub(r"^Authors?:[^\n]*\n", "", m.group(1), flags=re.M)
         text = text[m.end():]
     out = []
     i, n, removed = 0, len(text), 0

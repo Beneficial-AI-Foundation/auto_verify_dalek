@@ -92,9 +92,21 @@ _EVENTS = {
     "model_receipt": ("proxy:",),
     "patch": ("candidate_accepted:", "candidate_accepted_reverified:"),
     "scan": ("artifacts_exported",),
-    "build": ("clean_verifier:PASS",),
-    "replay": ("clean_verifier:PASS",),
-    "verifier": ("clean_verifier:PASS",),
+    "build": (
+        "clean_verifier:PASS",
+        "clean_verifier:INCOMPLETE",
+        "clean_verifier:FALSE_SPEC",
+    ),
+    "replay": (
+        "clean_verifier:PASS",
+        "clean_verifier:INCOMPLETE",
+        "clean_verifier:FALSE_SPEC",
+    ),
+    "verifier": (
+        "clean_verifier:PASS",
+        "clean_verifier:INCOMPLETE",
+        "clean_verifier:FALSE_SPEC",
+    ),
     "export": ("artifacts_exported",),
     "disposal": ("worker_disposed",),
 }

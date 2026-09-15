@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import copy
 import io
 import re
 import secrets
@@ -10,7 +11,15 @@ import tarfile
 from pathlib import Path, PurePosixPath
 from typing import Any
 
-from . import probes, worker
+from . import (
+    axiom_audit,
+    contracts,
+    counterexample,
+    probes,
+    terminal_verifier,
+    verifier_bundle,
+    worker,
+)
 from .verifier_bundle import (
     INVOCATION_FIELDS,
     MAX_MEMBER_BYTES,
@@ -20,6 +29,7 @@ from .verifier_bundle import (
     _safe_path,
     _sha256,
     _strict_json,
+    _valid_invocation,
     build_bundle,
     verify_bundle,
 )
@@ -32,6 +42,16 @@ REFERENCE_PATH = (
     / "diamond-reference"
     / "reference.json"
 )
+def _trusted_reference(run: dict[str, Any]) -> bytes:
+    """Compatibility facade for trusted hidden-reference selection."""
+    return counterexample.trusted_reference(run, legacy_path=REFERENCE_PATH)
+
+
+def bind_prepared_reference(
+    run: dict[str, Any], path: str | Path
+) -> dict[str, str]:
+    """Bind a trusted external reference without retaining its bytes."""
+    return counterexample.bind_reference(run, path)
 
 
 def _command_detail(completed: subprocess.CompletedProcess[bytes]) -> str:
@@ -100,6 +120,7 @@ def _runtime_argv(
     *command: str,
     workdir: str = "/project",
     runtime: str = "runsc-hardened",
+    read_only_volume: bool = False,
 ) -> tuple[str, ...]:
     return (
         "run",
@@ -130,7 +151,10 @@ def _runtime_argv(
         "--env",
         "CARGO_NET_OFFLINE=true",
         "--mount",
-        f"type=volume,src={volume},dst=/project,volume-nocopy",
+        (
+            f"type=volume,src={volume},dst=/project,volume-nocopy"
+            + (",readonly" if read_only_volume else "")
+        ),
         image,
         *command,
     )
@@ -179,13 +203,26 @@ def _run_bundle(run: dict[str, Any], state: dict[str, Any]) -> bytes:
 
 
 def _seed_file(
-    image: str, volume: str, path: str, raw: bytes, *, runtime: str
+    image: str,
+    volume: str,
+    path: str,
+    raw: bytes,
+    *,
+    runtime: str,
+    allowed_paths: set[str] | frozenset[str] = frozenset(),
 ) -> None:
     if path not in {
         "repository.bundle",
         "reference-check.lean",
         "repo/functions.json",
-    }:
+        f"repo/{axiom_audit.REFERENCE_SOURCE}",
+        f"repo/{axiom_audit.EXPECTED_SOURCE}",
+        f"repo/{axiom_audit.BASELINE_SOURCE}",
+        f"repo/{axiom_audit.AUDIT_SOURCE}",
+        "repo/AutoFVCounterexample.lean",
+        "repo/AutoFVCounterexampleAudit.lean",
+        f"repo/{counterexample.OLEAN_PATH}",
+    } | set(allowed_paths):
         raise VerifierError("clean verifier seed path is not allowlisted")
     _docker(
         "run",
@@ -208,8 +245,11 @@ def _seed_file(
         "sh",
         "-eu",
         "-c",
-        f"install -d -o 65532 -g 65532 /project; cat > /project/{path}; "
-        f"chown 65532:65532 /project/{path}; chmod 0444 /project/{path}",
+        "install -d -o 65532 -g 65532 \"$(dirname \"/project/$1\")\"; "
+        "cat > \"/project/$1\"; chown 65532:65532 \"/project/$1\"; "
+        "chmod 0444 \"/project/$1\"",
+        "autofv-seed",
+        path,
         input_bytes=raw,
     )
 
@@ -305,53 +345,8 @@ def _source_audit(
 
 
 def _reference_program(raw: bytes) -> bytes:
-    reference = _strict_json(raw, "verifier_reference")
-    leaves = reference.get("leaves")
-    if not isinstance(leaves, list) or not leaves:
-        raise VerifierError("verifier_reference_leaves_invalid")
-    modules: set[str] = set()
-    declarations: list[str] = []
-    for index, leaf in enumerate(leaves):
-        required = {
-            "declaration",
-            "spec",
-            "source",
-            "statement",
-            "statement_sha256",
-            "proof",
-            "proof_sha256",
-        }
-        if not isinstance(leaf, dict) or set(leaf) != required:
-            raise VerifierError("verifier_reference_leaf_invalid")
-        declaration = leaf["declaration"]
-        spec = leaf["spec"]
-        source = leaf["source"]
-        statement = leaf["statement"]
-        proof = leaf["proof"]
-        if not all(
-            isinstance(item, str) and item
-            for item in (declaration, spec, source, statement, proof)
-        ):
-            raise VerifierError("verifier_reference_leaf_invalid")
-        source_path = PurePosixPath(source)
-        if (
-            _sha256(statement.encode()) != leaf["statement_sha256"]
-            or _sha256(proof.encode()) != leaf["proof_sha256"]
-            or declaration not in statement
-            or re.fullmatch(r"\s*(?:True|False)\s*", statement)
-            or not _safe_path(source)
-            or source_path.suffix != ".lean"
-        ):
-            raise VerifierError("verifier_reference_meaning_invalid")
-        modules.add(".".join(source_path.with_suffix("").parts))
-        declarations.extend(
-            (
-                f"theorem hidden_{index} : {statement} := {proof}",
-                f"example : {statement} := by\n  exact {spec}",
-            )
-        )
-    imports = [f"import {module}" for module in sorted(modules)]
-    return ("\n".join((*imports, "namespace AutoFVVerifier", *declarations, "end AutoFVVerifier", ""))).encode()
+    """Compatibility facade for the controller-owned meaning-check builder."""
+    return axiom_audit.reference_program(_strict_json(raw, "verifier_reference"))
 
 
 def _probe_output(
@@ -402,35 +397,49 @@ def _clean_worker_checks(
     state: dict[str, Any],
     reference_bytes: bytes,
 ) -> dict[str, Any]:
+    state = copy.deepcopy(state)
+    permitted_incomplete_accepted = state.pop(
+        "_counterexample_incomplete_accepted", []
+    )
     lock = run["lock"]
     image = invocation["image_digest"]
     runtime = lock["tools"]["runsc"]["runtime_name"]
-    volume = f"autofv-verify-{secrets.token_hex(8)}"
-    _docker("volume", "create", volume)
+    nonce = secrets.token_hex(8)
+    volume = f"autofv-verify-{nonce}"
+    audit_volume = f"autofv-verify-audit-{nonce}"
+    reference = _strict_json(reference_bytes, "verifier_reference")
+    expected_axioms = axiom_audit.expected_inventory(state, reference)
+    artifacts = axiom_audit.olean_paths(state["graph"])
+    created = []
+
     try:
-        _seed_file(
-            image,
-            volume,
-            "repository.bundle",
-            members["accepted/repository.bundle"],
+        for isolated_volume in (audit_volume, volume):
+            _docker("volume", "create", isolated_volume)
+            created.append(isolated_volume)
+        baseline_identities = axiom_audit.prepare_auditor(
+            image=image,
+            volume=audit_volume,
+            repository_bundle=members["accepted/repository.bundle"],
+            base_commit=state["base_commit"],
+            verify_command=run["manifest"]["verify"],
+            expected=expected_axioms,
+            state=state,
+            reference=reference,
             runtime=runtime,
+            docker=_docker,
+            runtime_argv=_runtime_argv,
+            seed_file=_seed_file,
+            permitted_incomplete_accepted=permitted_incomplete_accepted,
         )
-        _docker(
-            *_runtime_argv(
-                image,
-                volume,
-                "sh",
-                "-eu",
-                "-c",
-                "mkdir repo; git init -q repo; "
-                "git -C repo fetch -q /project/repository.bundle \"$1\"; "
-                "git -C repo checkout -q --detach FETCH_HEAD; "
-                "rm /project/repository.bundle; "
-                "test \"$(git -C repo rev-parse HEAD)\" = \"$1\"",
-                "autofv-checkout",
-                invocation["accepted_commit"],
-                runtime=runtime,
-            )
+        axiom_audit.checkout_volume(
+            image=image,
+            volume=volume,
+            repository_bundle=members["accepted/repository.bundle"],
+            commit=invocation["accepted_commit"],
+            runtime=runtime,
+            docker=_docker,
+            runtime_argv=_runtime_argv,
+            seed_file=_seed_file,
         )
         commit = _docker(
             *_runtime_argv(
@@ -530,11 +539,11 @@ def _clean_worker_checks(
         final_graph = probes.parse_probe_bytes(run["manifest"], final_rust, final_aeneas)
         graph_matches = final_graph["graph_sha256"] == state["graph"]["graph_sha256"]
 
-        program = _reference_program(reference_bytes)
+        program = axiom_audit.reference_program(reference)
         _seed_file(
             image,
             volume,
-            "reference-check.lean",
+            f"repo/{axiom_audit.REFERENCE_SOURCE}",
             program,
             runtime=runtime,
         )
@@ -545,10 +554,31 @@ def _clean_worker_checks(
                 "lake",
                 "env",
                 "lean",
-                "/project/reference-check.lean",
+                "-o",
+                axiom_audit.REFERENCE_OLEAN,
+                axiom_audit.REFERENCE_SOURCE,
                 workdir="/project/repo",
                 runtime=runtime,
             )
+        )
+        axiom_inventory = axiom_audit.audit_artifacts(
+            image=image,
+            witness_volume=volume,
+            audit_volume=audit_volume,
+            artifacts=artifacts,
+            expected=expected_axioms,
+            state=state,
+            reference=reference,
+            baseline_identities=baseline_identities,
+            runtime=runtime,
+            max_artifact_bytes=MAX_MEMBER_BYTES,
+            docker=_docker,
+            runtime_argv=_runtime_argv,
+            seed_file=_seed_file,
+            permitted_incomplete_accepted=permitted_incomplete_accepted,
+        )
+        accepted_native_uses, hidden_native_uses, all_native_uses = (
+            axiom_audit.native_use_provenance(axiom_inventory)
         )
         baseline_holes, _, _ = _source_audit(base_archive, state["graph"], [])
         holes, trust_passed, observed_uses = _source_audit(
@@ -583,17 +613,21 @@ def _clean_worker_checks(
             "native_decide_policy_sha256": invocation[
                 "native_decide_policy_sha256"
             ],
-            "native_decide_uses": observed_uses,
+            "native_decide_uses": all_native_uses,
+            "accepted_native_decide_uses": observed_uses,
+            "hidden_native_decide_uses": hidden_native_uses,
             "compiler_assumptions": compiler_assumptions(lock),
+            "axiom_inventory": axiom_inventory,
             "meaning": meaning,
             "sorry_count_before": len(baseline_holes),
             "sorry_count_after": len(holes),
         }
     finally:
-        try:
-            _docker("volume", "rm", volume)
-        except VerifierError:
-            pass
+        for isolated_volume in reversed(created):
+            try:
+                _docker("volume", "rm", isolated_volume)
+            except VerifierError:
+                pass
 
 
 def verify_run(
@@ -614,14 +648,23 @@ def verify_run(
         raise VerifierInfrastructureError("clean verifier worker is not distinct")
     lock = run["lock"]
     _check_verifier_runtime(lock)
+    toolchain_lock_sha256 = _sha256(_canonical_bytes(lock))
+    if expected.get("toolchain_lock_sha256") != toolchain_lock_sha256:
+        raise VerifierError("clean verifier toolchain_lock_sha256 mismatch")
     state = verification_state or run.get("verification_state")
     if not isinstance(state, dict):
         raise VerifierInfrastructureError("clean verifier state is missing")
     bundle = _run_bundle(run, state)
-    try:
-        reference_bytes = REFERENCE_PATH.read_bytes()
-    except OSError as exc:
-        raise VerifierInfrastructureError("clean verifier reference is missing") from exc
+    reference_bytes = _trusted_reference(run)
+    reference_sha256 = _sha256(reference_bytes)
+    if (
+        isinstance(run.get("preparation_manifest"), dict)
+        and expected.get("reference_sha256") != reference_sha256
+    ) or (
+        not isinstance(run.get("preparation_manifest"), dict)
+        and expected.get("reference_sha256", reference_sha256) != reference_sha256
+    ):
+        raise VerifierError("clean verifier reference_sha256 mismatch")
     invocation = {
         "schema": "autofv-verifier-invocation/v1",
         "run_id": run["run_id"],
@@ -638,24 +681,60 @@ def verify_run(
         "native_decide_policy_sha256": expected[
             "native_decide_policy_sha256"
         ],
-        "toolchain_lock_sha256": _sha256(_canonical_bytes(lock)),
+        "axiom_scope_sha256": axiom_audit.inventory_scope_sha256(
+            axiom_audit.expected_inventory(state, _strict_json(
+                reference_bytes, "verifier_reference"
+            ))
+        ),
+        "toolchain_lock_sha256": toolchain_lock_sha256,
         "accepted_commit": expected["accepted_commit"],
         "accepted_tree_sha256": expected["accepted_tree_sha256"],
         "bundle_sha256": _sha256(bundle),
-        "reference_sha256": _sha256(reference_bytes),
+        "reference_sha256": reference_sha256,
     }
-    return verify_bundle(
-        bundle,
-        invocation,
-        reference_bytes=reference_bytes,
-        run_checks=lambda members, state, reference: _clean_worker_checks(
+    if (
+        expected.get("axiom_scope_sha256")
+        != invocation["axiom_scope_sha256"]
+    ):
+        raise VerifierError("clean verifier axiom_scope_sha256 mismatch")
+    arguments = {
+        "reference_bytes": reference_bytes,
+        "run_checks": lambda members, state, reference: _clean_worker_checks(
             run, invocation, members, state, reference
         ),
-    )
+    }
+    if isinstance(run.get("preparation_manifest"), dict):
+        return terminal_verifier.verify_terminal_bundle(
+            bundle,
+            invocation,
+            preparation_manifest=run["preparation_manifest"],
+            confirm_counterexample=lambda certificate, members, _state, obligation: (
+                terminal_verifier.confirm_counterexample_certificate(
+                    run,
+                    invocation,
+                    certificate,
+                    obligation,
+                    members,
+                    _state,
+                    docker=_docker,
+                    runtime_argv=_runtime_argv,
+                    seed_file=_seed_file,
+                )
+            ),
+            **arguments,
+        )
+    return verify_bundle(bundle, invocation, **arguments)
 
 
-def validate_report(
-    report: Any, run: dict[str, Any], expected: dict[str, Any]
+def _validate_legacy_report(
+    report: Any,
+    run: dict[str, Any],
+    expected: dict[str, Any],
+    *,
+    require_pass: bool = True,
+    require_axiom_inventory: bool = False,
+    allow_untrusted_axioms: bool = False,
+    permitted_untrusted_declarations: frozenset[str] = frozenset(),
 ) -> dict[str, Any]:
     """Accept only a distinct worker's hash-bound PASS report."""
     if "invocation_id" in expected:
@@ -664,7 +743,11 @@ def validate_report(
             "checks",
             "failures",
             "native_decide_uses",
+            "accepted_native_decide_uses",
+            "hidden_native_decide_uses",
             "compiler_assumptions",
+            "axiom_inventory",
+            "axiom_inventory_sha256",
             "meaning",
             "sorry_count_before",
             "sorry_count_after",
@@ -674,6 +757,12 @@ def validate_report(
         }
         if not isinstance(report, dict) or set(report) != required:
             raise VerifierError("clean verifier report fields mismatch")
+        _valid_invocation(
+            {
+                **{field: report[field] for field in INVOCATION_FIELDS - {"schema"}},
+                "schema": "autofv-verifier-invocation/v1",
+            }
+        )
         if report.get("schema") != "autofv-verifier-report/v1":
             raise VerifierError("clean verifier report schema mismatch")
         if (
@@ -690,18 +779,77 @@ def validate_report(
         for field, value in expected.items():
             if field != "schema" and report.get(field) != value:
                 raise VerifierError(f"clean verifier {field} mismatch")
+        failures = report.get("failures")
+        checks = report.get("checks")
+        verdict = report.get("verdict")
+        evidence_level = report.get("evidence_level")
         if (
-            report.get("verdict") != "PASS"
-            or report.get("failures") != []
-            or report.get("evidence_level") != "L4"
-            or not isinstance(report.get("checks"), dict)
-            or not report["checks"]
-            or any(value is not True for value in report["checks"].values())
+            not isinstance(failures, list)
+            or any(not isinstance(failure, str) or not failure for failure in failures)
+            or not isinstance(checks, dict)
+            or any(type(value) is not bool for value in checks.values())
+            or verdict not in {"PASS", "FAIL"}
+            or evidence_level != ("L4" if verdict == "PASS" else "L0")
+            or (verdict == "PASS") != (failures == [])
+            or (
+                require_axiom_inventory
+                and set(checks) != verifier_bundle.REPORT_CHECKS
+            )
+        ):
+            raise VerifierError("clean verifier report reduction mismatch")
+        pass_invalid = verdict == "PASS" and (
+            set(checks) != verifier_bundle.REPORT_CHECKS
+            or any(value is not True for value in checks.values())
             or type(report.get("sorry_count_before")) is not int
             or report["sorry_count_before"] < 0
             or report.get("sorry_count_after") != 0
-        ):
+        )
+        if pass_invalid or (require_pass and verdict != "PASS"):
             raise VerifierError("clean verifier did not pass")
+
+        def validate_axiom_inventory(*, allow_untrusted: bool) -> None:
+            lock = contracts.load_toolchain_lock()
+            inventory = report["axiom_inventory"]
+            axiom_audit.validate_report_inventory(
+                inventory,
+                lock=lock,
+                compiler_assumptions=report["compiler_assumptions"],
+                require_complete=require_axiom_inventory,
+                expected_scope_sha256=report["axiom_scope_sha256"],
+                expected_identity_sha256=report["axiom_inventory_sha256"],
+                accepted_native_decide_uses=report[
+                    "accepted_native_decide_uses"
+                ],
+                hidden_native_decide_uses=report[
+                    "hidden_native_decide_uses"
+                ],
+                required_native_uses=report["native_decide_uses"],
+                allow_untrusted_axioms=allow_untrusted,
+                permitted_untrusted_declarations=(
+                    permitted_untrusted_declarations
+                    if allow_untrusted
+                    else frozenset()
+                ),
+            )
+
+        try:
+            validate_axiom_inventory(allow_untrusted=False)
+        except (KeyError, TypeError, contracts.ContractError, OSError) as strict_exc:
+            if not allow_untrusted_axioms:
+                raise VerifierError(
+                    "clean verifier axiom inventory mismatch"
+                ) from strict_exc
+            try:
+                validate_axiom_inventory(allow_untrusted=True)
+            except (KeyError, TypeError, contracts.ContractError, OSError) as exc:
+                raise VerifierError(
+                    "clean verifier axiom inventory mismatch"
+                ) from exc
+            if (
+                checks.get("kernel_axioms") is not False
+                or "axiom_inventory_invalid" not in failures
+            ):
+                raise VerifierError("clean verifier axiom inventory mismatch")
         body = {key: value for key, value in report.items() if key != "report_sha256"}
         if report.get("report_sha256") != _sha256(_canonical_bytes(body)):
             raise VerifierError("clean verifier report hash mismatch")
@@ -739,3 +887,16 @@ def validate_report(
     if report["report_sha256"] != _sha256(_canonical_bytes(body)):
         raise VerifierError("clean verifier report hash mismatch")
     return report
+
+
+def validate_report(
+    report: Any, run: dict[str, Any], expected: dict[str, Any]
+) -> dict[str, Any]:
+    """Validate a Phase-1 report or its preparation-bound Phase-2 envelope."""
+    if isinstance(report, dict) and terminal_verifier.TERMINAL_REPORT_FIELDS <= set(
+        report
+    ):
+        return terminal_verifier.validate_terminal_report(
+            report, run, expected, validate_core=_validate_legacy_report
+        )
+    return _validate_legacy_report(report, run, expected)

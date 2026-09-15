@@ -9,7 +9,7 @@ import tarfile
 from pathlib import PurePosixPath
 from typing import Any, Callable
 
-from . import contracts as contract_rules, probes, worker
+from . import axiom_audit, contracts as contract_rules, probes, worker
 
 MAX_BUNDLE_BYTES = 64 * 1024 * 1024
 MAX_MEMBER_BYTES = 32 * 1024 * 1024
@@ -38,6 +38,7 @@ INVOCATION_FIELDS = frozenset(
         "image_digest",
         "control_bundle_sha256",
         "native_decide_policy_sha256",
+        "axiom_scope_sha256",
         "toolchain_lock_sha256",
         "accepted_commit",
         "accepted_tree_sha256",
@@ -64,6 +65,25 @@ MEANING_FIELDS = frozenset(
         "broken_implementation_rejected",
     }
 )
+REPORT_CHECKS = frozenset(
+    {
+        "bundle",
+        "reference_integrity",
+        "runtime_identity",
+        "exact_commit",
+        "exact_tree",
+        "fresh_cache",
+        "clean_build",
+        "target_closure",
+        "statements",
+        "scope",
+        "holes",
+        "trust",
+        "native_decide",
+        "kernel_axioms",
+        "meaning",
+    }
+)
 OBSERVED_FIELDS = frozenset(
     {
         "verifier_worker_id",
@@ -82,7 +102,10 @@ OBSERVED_FIELDS = frozenset(
         "trust_passed",
         "native_decide_policy_sha256",
         "native_decide_uses",
+        "accepted_native_decide_uses",
+        "hidden_native_decide_uses",
         "compiler_assumptions",
+        "axiom_inventory",
         "meaning",
         "sorry_count_before",
         "sorry_count_after",
@@ -259,16 +282,30 @@ def _report(
     checks: dict[str, bool] | None = None,
     state: dict[str, Any] | None = None,
     meaning: dict[str, Any] | None = None,
+    axiom_inventory: list[dict[str, Any]] | None = None,
     sorry_count_before: int | None = None,
     sorry_count_after: int | None = None,
 ) -> dict[str, Any]:
+    inventory = axiom_inventory or []
+    try:
+        accepted_uses, hidden_uses, all_uses = axiom_audit.native_use_provenance(
+            inventory
+        )
+        inventory_sha256 = axiom_audit.inventory_identity_sha256(inventory)
+    except contract_rules.ContractError:
+        accepted_uses, hidden_uses, all_uses = [], [], []
+        inventory_sha256 = _sha256(_canonical_bytes(inventory))
     body = {
         "schema": "autofv-verifier-report/v1",
         **{key: invocation[key] for key in sorted(INVOCATION_FIELDS - {"schema"})},
         "checks": checks or {},
         "failures": failures,
-        "native_decide_uses": (state or {}).get("native_decide_uses", []),
+        "native_decide_uses": all_uses,
+        "accepted_native_decide_uses": accepted_uses,
+        "hidden_native_decide_uses": hidden_uses,
         "compiler_assumptions": (state or {}).get("compiler_assumptions", []),
+        "axiom_inventory": inventory,
+        "axiom_inventory_sha256": inventory_sha256,
         "meaning": meaning or {},
         "sorry_count_before": sorry_count_before,
         "sorry_count_after": sorry_count_after,
@@ -299,6 +336,7 @@ def _valid_invocation(invocation: Any) -> dict[str, Any]:
         "graph_sha256",
         "control_bundle_sha256",
         "native_decide_policy_sha256",
+        "axiom_scope_sha256",
         "toolchain_lock_sha256",
         "accepted_tree_sha256",
         "bundle_sha256",
@@ -571,14 +609,60 @@ def verify_bundle(
     )
     _append(
         failures,
-        "native_decide_inventory_mismatch",
-        observed.get("native_decide_uses") != state["native_decide_uses"],
-    )
-    _append(
-        failures,
         "compiler_assumptions_mismatch",
         observed.get("compiler_assumptions") != state["compiler_assumptions"],
     )
+    expected_contract = axiom_audit.expected_inventory(state, reference)
+    observed_inventory = observed.get("axiom_inventory")
+    try:
+        if (
+            axiom_audit.inventory_scope_sha256(expected_contract)
+            != invocation["axiom_scope_sha256"]
+            or not isinstance(observed_inventory, list)
+        ):
+            raise contract_rules.ContractError("kernel inventory binding mismatch")
+        observed_closures = {
+            record["declaration"]: sorted(
+                {record["declaration"], *record["dependencies"]}
+            )
+            for record in observed_inventory
+            if isinstance(record, dict)
+        }
+        expected_axioms = axiom_audit.expected_inventory(
+            state,
+            reference,
+            observed_closures=observed_closures,
+        )
+        accepted_uses, hidden_uses, all_uses = (
+            axiom_audit.native_use_provenance(observed_inventory)
+        )
+        expected_hidden_uses = axiom_audit.native_use_provenance(
+            expected_contract
+        )[1]
+        if (
+            accepted_uses
+            != axiom_audit.canonical_native_uses(state["native_decide_uses"])
+            or hidden_uses != expected_hidden_uses
+            or observed.get("accepted_native_decide_uses") != accepted_uses
+            or observed.get("hidden_native_decide_uses") != hidden_uses
+            or observed.get("native_decide_uses") != all_uses
+        ):
+            raise contract_rules.ContractError(
+                "native_decide provenance mismatch"
+            )
+    except (KeyError, TypeError, contract_rules.ContractError):
+        _append(failures, "axiom_inventory_invalid", True)
+        _append(failures, "native_decide_inventory_mismatch", True)
+    else:
+        try:
+            axiom_audit.validate_inventory(
+                observed_inventory,
+                expected_axioms,
+                lock=lock,
+                compiler_assumptions=state["compiler_assumptions"],
+            )
+        except (KeyError, TypeError, contract_rules.ContractError):
+            _append(failures, "axiom_inventory_invalid", True)
     meaning = observed.get("meaning")
     _append(
         failures,
@@ -609,6 +693,7 @@ def verify_bundle(
                 "compiler_assumptions_mismatch",
             }
             & set(failures),
+            "kernel_axioms": "axiom_inventory_invalid" not in failures,
             "meaning": "meaning_incomplete" not in failures,
         }
     )
@@ -618,6 +703,11 @@ def verify_bundle(
         checks=checks,
         state=state,
         meaning=meaning if isinstance(meaning, dict) else {},
+        axiom_inventory=(
+            observed["axiom_inventory"]
+            if isinstance(observed.get("axiom_inventory"), list)
+            else []
+        ),
         sorry_count_before=observed["sorry_count_before"],
         sorry_count_after=observed["sorry_count_after"],
     )

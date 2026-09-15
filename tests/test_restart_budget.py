@@ -11,6 +11,7 @@ from unittest import mock
 
 from autofv import experiment, model, results, verifier, worker
 from tests.test_phase1_diamond import MODEL_FIXTURE, TARGET, _FixtureProxy, _Seams
+from tests.test_clean_verifier import REFERENCE, _preparation_manifest, _sha256, _terminal_state
 
 
 FIXTURE = json.loads(MODEL_FIXTURE.read_text())
@@ -441,6 +442,7 @@ class RestartTests(unittest.TestCase):
                 "verdict": "PASS",
             }
             state["verifier_invocation_id"] = "verify-old"
+            state["verifier_axiom_inventory_sha256"] = "e" * 64
             for relative in (
                 "evidence/verifier.json",
                 "evidence/l0/build.json",
@@ -471,6 +473,7 @@ class RestartTests(unittest.TestCase):
 
             self.assertNotIn("verifier_report", resumed)
             self.assertNotIn("verifier_invocation_id", resumed)
+            self.assertNotIn("verifier_axiom_inventory_sha256", resumed)
             self.assertIn(
                 "verifier_invalidated:worker_recreated", resumed["run"]["events"]
             )
@@ -483,6 +486,9 @@ class RestartTests(unittest.TestCase):
                 root, experiment._checkpoint_identities(resumed["run"])
             )
             self.assertNotIn("verifier_report", latest["state"])
+            self.assertNotIn(
+                "verifier_axiom_inventory_sha256", latest["state"]
+            )
 
 
 def _run_with_limit(root: Path, *, max_wall_seconds=300, max_cost_usd="1.000000"):
@@ -514,6 +520,77 @@ def _run_with_limit(root: Path, *, max_wall_seconds=300, max_cost_usd="1.000000"
 
 
 class BudgetTests(unittest.TestCase):
+    def test_prepared_early_exit_runs_one_final_audit_without_relabeling_cause(self):
+        cases = (
+            (
+                experiment.BudgetExhausted(
+                    "cost_usd", Decimal("1.000000"), Decimal("1.000000")
+                ),
+                "budget_exhausted",
+                "cost_budget_exhausted",
+            ),
+            (
+                experiment.ContractInconclusive("contract undecidable"),
+                "contract_inconclusive",
+                "contract_inconclusive",
+            ),
+        )
+        for cause, outcome, reason in cases:
+            with self.subTest(outcome=outcome), tempfile.TemporaryDirectory() as tmp:
+                root = Path(tmp)
+                config, seams, proxy, patches = _run_with_limit(root)
+                original_prepare = seams.prepare
+
+                def prepared(*args):
+                    run = original_prepare(*args)
+                    run["preparation_manifest"] = {
+                        "schema": "preparation-manifest/v1"
+                    }
+                    return run
+
+                terminal = _terminal_state(incomplete=True)
+
+                def stream(*_args, **_kwargs):
+                    yield {
+                        "terminal": {
+                            "graph": terminal["graph"],
+                            "target_states": terminal["target_states"],
+                            "contracts": {"frozen": terminal["frozen_contracts"]},
+                            "accepted_nodes": terminal["accepted_nodes"],
+                        }
+                    }
+                    raise cause
+
+                audit_report = {
+                    "verdict": "FAIL",
+                    "terminal_status": "unverified",
+                }
+                with (
+                    mock.patch.object(worker, "prepare_run", side_effect=prepared),
+                    patches[1],
+                    patches[2],
+                    patches[3],
+                    patches[4],
+                    patches[5],
+                    mock.patch.object(
+                        experiment._EXPERIMENT_GRAPH, "stream", side_effect=stream
+                    ),
+                    mock.patch.object(
+                        experiment,
+                        "_clean_verify",
+                        return_value={"verifier_report": audit_report},
+                    ) as clean,
+                ):
+                    result = experiment.run_experiment(
+                        TARGET,
+                        config,
+                        run_round=proxy,
+                        verifier_reference=REFERENCE,
+                    )
+                self.assertEqual(result["outcome"], outcome)
+                self.assertEqual(result["termination_reason"], reason)
+                clean.assert_called_once()
+
     def test_graph_carries_latest_checkpoint_and_exchange_state_between_nodes(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
@@ -585,58 +662,6 @@ class BudgetTests(unittest.TestCase):
             self.assertEqual(result["proxy_requests"], 0)
             probes_call.assert_not_called()
             self.assertTrue((root / "result.json").is_file())
-
-    def test_clean_verifier_pass_wins_when_budget_expires_during_verification(self):
-        with tempfile.TemporaryDirectory() as tmp:
-            state = _checkpoint_state(Path(tmp))
-            state["graph"] = {
-                "probe_rust_sha256": "4" * 64,
-                "probe_aeneas_sha256": "5" * 64,
-            }
-            state["wall_started_monotonic_ns"] = 0
-            state["wall_seconds_used"] = Decimal("0.900000")
-            state["finalization_reserve_seconds"] = Decimal("0.100000")
-            expected_report = {"verdict": "PASS", "report_sha256": "6" * 64}
-
-            with (
-                mock.patch.object(verifier, "verify_run", return_value=expected_report),
-                mock.patch.object(
-                    verifier, "validate_report", return_value=expected_report
-                ),
-                mock.patch.object(
-                    experiment.time, "monotonic_ns", return_value=2_000_000_000
-                ),
-            ):
-                update = experiment._clean_verify(state)
-
-        self.assertEqual(update["verifier_report"]["verdict"], "PASS")
-        self.assertEqual(state["verifier_report"]["verdict"], "PASS")
-
-    def test_clean_verifier_failure_is_retained_for_inspection(self):
-        with tempfile.TemporaryDirectory() as tmp:
-            state = _checkpoint_state(Path(tmp))
-            state["graph"] = {
-                "probe_rust_sha256": "4" * 64,
-                "probe_aeneas_sha256": "5" * 64,
-            }
-            report = {"verdict": "FAIL", "failures": ["scope_mismatch"]}
-
-            with (
-                mock.patch.object(verifier, "verify_run", return_value=report),
-                mock.patch.object(
-                    verifier,
-                    "validate_report",
-                    side_effect=verifier.VerifierError(
-                        "clean verifier did not pass"
-                    ),
-                ),
-                self.assertRaises(verifier.VerifierError) as rejected,
-            ):
-                experiment._clean_verify(state)
-
-        self.assertEqual(state["verifier_report"], report)
-        self.assertEqual(rejected.exception.report, report)
-
 
 def _exchange_state(root: Path) -> dict:
     state = _checkpoint_state(root)

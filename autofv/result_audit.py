@@ -10,11 +10,13 @@ from typing import Any, Callable
 
 from .contracts import ContractError, canonical_json_bytes, load_toolchain_lock
 from .evidence import FILE_LOCATIONS, SHA256
-from . import result_summary
+from . import result_summary, terminal_verifier, verifier as report_verifier
 
 
 OUTCOMES = {
     "success",
+    "unverified",
+    "false_spec",
     "budget_exhausted",
     "verification_failed",
     "infrastructure_failed",
@@ -113,11 +115,12 @@ def _validate_counts(
         "declarations": len(accepted),
         "closure": len(accepted.intersection(selected)),
     }
-    # The Phase 1 verifier is all-or-nothing: the PASS report accepted below
-    # cannot authorize a result that marks any selected declaration unaccepted.
-    if accepted != set(selected) or result["verified_counts"] != expected or (
-        smoke and any(value < 1 for value in expected.values())
-    ):
+    verified = result["verified_counts"]
+    if result.get("outcome") == "success":
+        invalid = accepted != set(selected) or verified != expected
+    else:
+        invalid = verified != {"targets": 0, "declarations": 0, "closure": 0}
+    if invalid or (smoke and any(value < 1 for value in expected.values())):
         raise AuditError("retained verifier counts mismatch")
 
 
@@ -207,33 +210,118 @@ def _validate_l0_links(
 
 
 def _validate_verifier(result: dict[str, Any], run_root: Path) -> None:
-    verifier, _ = _read(
+    report, _ = _read(
         run_root / FILE_LOCATIONS["verifier"], "verifier report"
     )
-    if not isinstance(verifier, dict):
+    if not isinstance(report, dict):
         raise AuditError("verifier report shape mismatch")
-    body = {key: value for key, value in verifier.items() if key != "report_sha256"}
-    checks = verifier.get("checks")
     accepted_commit = result.get("accepted_commit")
-    if (
-        verifier.get("schema") != "autofv-verifier-report/v1"
-        or verifier.get("run_id") != result["run_id"]
-        or verifier.get("verdict") != "PASS"
-        or verifier.get("report_sha256") != _sha(canonical_json_bytes(body))
-        or result.get("verifier_report_sha256") != verifier.get("report_sha256")
-        or not isinstance(accepted_commit, str)
+    expected = {
+        "invocation_id": result.get("verifier_invocation_id"),
+        "snapshot_sha256": result.get("snapshot_sha256"),
+        "manifest_sha256": result.get("manifest_sha256"),
+        "probe_rust_sha256": result.get("probe_rust_sha256"),
+        "probe_aeneas_sha256": result.get("probe_aeneas_sha256"),
+        "graph_sha256": result.get("graph_sha256"),
+        "image_digest": result.get("image_digest"),
+        "control_bundle_sha256": result.get("control_bundle_sha256"),
+        "native_decide_policy_sha256": result.get(
+            "native_decide_policy_sha256"
+        ),
+        "axiom_scope_sha256": result.get("axiom_scope_sha256"),
+        "axiom_inventory_sha256": result.get("axiom_inventory_sha256"),
+        "toolchain_lock_sha256": result.get("toolchain_lock_sha256"),
+        "accepted_commit": accepted_commit,
+        "accepted_tree_sha256": result.get("accepted_tree_sha256"),
+        "bundle_sha256": result.get("verifier_bundle_sha256"),
+        "reference_sha256": result.get("reference_sha256"),
+    }
+    run = {
+        "run_id": result.get("run_id"),
+        "agent_worker_id": result.get("agent_worker_id"),
+        "snapshot_sha256": result.get("snapshot_sha256"),
+    }
+    terminal = report.get("terminal_status")
+    common_invalid = (
+        not isinstance(accepted_commit, str)
         or re.fullmatch(r"[0-9a-f]{40}", accepted_commit) is None
-        or verifier.get("accepted_commit") != accepted_commit
-        or not isinstance(checks, dict)
-        or any(
-            checks.get(name) is not True
-            for name in ("clean_build", "target_closure", "holes")
+        or any(not isinstance(value, str) or not value for value in expected.values())
+        or result.get("verifier_worker_id") != report.get("verifier_worker_id")
+        or result.get("verifier_report_sha256") != report.get("report_sha256")
+        or result.get("terminal_status") != terminal
+        or result.get("native_decide_uses")
+        != report.get("native_decide_uses")
+        or result.get("accepted_native_decide_uses")
+        != report.get("accepted_native_decide_uses")
+        or result.get("hidden_native_decide_uses")
+        != report.get("hidden_native_decide_uses")
+        or result.get("preparation_manifest_sha256")
+        != report.get("preparation_manifest_sha256")
+        or result.get("preparation_tree_sha256")
+        != report.get("preparation_tree_sha256")
+        or (
+            terminal in {"verified", "unverified", "false_spec"}
+            and report.get("target_states_sha256")
+            != _sha(canonical_json_bytes(result.get("target_states")))
         )
-    ):
+    )
+    try:
+        if (
+            _sha(canonical_json_bytes(load_toolchain_lock()))
+            != result.get("toolchain_lock_sha256")
+        ):
+            common_invalid = True
+        if common_invalid:
+            raise report_verifier.VerifierError("retained identity mismatch")
+        report_verifier.validate_report(report, run, expected)
+    except (ContractError, OSError, report_verifier.VerifierError) as exc:
+        raise AuditError("retained verifier binding mismatch") from exc
+    checks = report.get("checks")
+    if result.get("outcome") == "success":
+        terminal_invalid = (
+            report.get("verdict") != "PASS"
+            or terminal not in {None, "verified"}
+            or any(
+                checks.get(name) is not True
+                for name in ("clean_build", "target_closure", "holes")
+            )
+        )
+    else:
+        terminal_invalid = (
+            report.get("verdict") != "FAIL"
+            or terminal not in {"unverified", "false_spec"}
+            or (result.get("outcome") == "false_spec" and terminal != "false_spec")
+        )
+        if terminal == "false_spec":
+            certificate = result.get("counterexample_certificate")
+            certificate_sha256 = result.get("counterexample_certificate_sha256")
+            terminal_invalid = terminal_invalid or (
+                (
+                    result.get("outcome") == "false_spec"
+                    and result.get("termination_reason")
+                    != "counterexample_confirmed"
+                )
+                or not isinstance(certificate, dict)
+                or certificate.get("certificate_sha256") != certificate_sha256
+                or report.get("counterexample_certificate_sha256")
+                != certificate_sha256
+            )
+            if not terminal_invalid:
+                try:
+                    terminal_verifier.validate_counterexample_certificate(
+                        certificate,
+                        target_states=result["target_states"],
+                        accepted_commit=accepted_commit,
+                        toolchain_lock_sha256=result.get("toolchain_lock_sha256"),
+                        confirmed_sha256=certificate_sha256,
+                    )
+                except RuntimeError:
+                    terminal_invalid = True
+    if terminal_invalid:
         raise AuditError("retained verifier binding mismatch")
     if (
         result.get("scored") is not True
-        or result.get("evidence_level") != verifier.get("evidence_level")
+        or result.get("evidence_level") != report.get("evidence_level")
     ):
         raise AuditError("retained evidence classification mismatch")
 
@@ -298,32 +386,24 @@ def _review_inventory(review: dict[str, Any]) -> tuple[set[str], set[str]]:
     return covered, approved
 
 
-def validate_full_audit(
-    path: str | Path,
-    contract_review_path: str | Path,
-    validate_l0: Callable[[Any], Any],
-) -> dict[str, Any]:
-    result = _validate_retained(path, smoke=False, validate_l0=validate_l0)
-    review, _ = _read(Path(contract_review_path), "contract semantic review")
-    if (
-        not isinstance(review, dict)
-        or review.get("schema") != "autofv-contract-semantic-review/v1"
-        or review.get("status") != "approved"
-        or review.get("accepted_commit") != result["accepted_commit"]
-    ):
-        raise AuditError("contract semantic review binding mismatch")
-    frozen = set(result["frozen_targets"])
-    final = {
-        target["contract_fingerprint"]
-        for node, target in result["target_states"].items()
-        if node not in frozen
-        and isinstance(target, dict)
-        and target.get("status") == "accepted"
-        and isinstance(target.get("contract_fingerprint"), str)
-    }
-    history = result["contract_history"]
-    inventory = set(history.get("invalidated_fingerprints", []))
-    for revision in history.get("revision_lineage", []):
+def _contract_fingerprints(
+    target_states: dict[str, Any],
+    contract_history: dict[str, Any],
+    frozen_targets: list[str],
+) -> tuple[set[str], set[str]]:
+    frozen = set(frozen_targets)
+    current: set[str] = set()
+    approved: set[str] = set()
+    for node, target in target_states.items():
+        if node in frozen or not isinstance(target, dict):
+            continue
+        fingerprint = target.get("contract_fingerprint")
+        if isinstance(fingerprint, str):
+            current.add(fingerprint)
+            if target.get("status") == "accepted":
+                approved.add(fingerprint)
+    inventory = set(contract_history.get("invalidated_fingerprints", [])) | current
+    for revision in contract_history.get("revision_lineage", []):
         if isinstance(revision, dict):
             inventory.update(
                 value
@@ -333,8 +413,180 @@ def validate_full_audit(
                 )
                 if isinstance(value, str)
             )
-    inventory.update(final)
+    return inventory, approved
+
+
+def validate_semantic_review(
+    review: Any,
+    *,
+    accepted_commit: str,
+    target_states: dict[str, Any],
+    contract_history: dict[str, Any],
+    frozen_targets: list[str],
+    required_fingerprints: set[str] | frozenset[str] = frozenset(),
+) -> dict[str, Any]:
+    """Require a canonical review of every current and superseded fingerprint."""
+    required = {
+        "schema",
+        "status",
+        "accepted_commit",
+        "fingerprints",
+        "review_sha256",
+    }
+    if not isinstance(review, dict) or set(review) != required:
+        raise AuditError("contract semantic review fields mismatch")
+    body = {key: value for key, value in review.items() if key != "review_sha256"}
+    if (
+        review.get("schema") != "contract-semantic-review/v1"
+        or review.get("status") != "approved"
+        or review.get("accepted_commit") != accepted_commit
+        or review.get("review_sha256") != _sha(canonical_json_bytes(body))
+    ):
+        raise AuditError("contract semantic review binding mismatch")
+    inventory, expected_approved = _contract_fingerprints(
+        target_states, contract_history, frozen_targets
+    )
+    if any(SHA256.fullmatch(value) is None for value in required_fingerprints):
+        raise AuditError("contract semantic review authoritative fingerprint mismatch")
+    inventory.update(required_fingerprints)
+    expected_approved.update(required_fingerprints)
     covered, approved = _review_inventory(review)
-    if covered != inventory or approved != final:
+    if covered != inventory or approved != expected_approved:
         raise AuditError("contract semantic review fingerprint mismatch")
+    return review
+
+
+def semantic_review_scope(
+    *,
+    contracts: dict[str, Any],
+    recovered_ids: list[str],
+    target_states: dict[str, Any],
+    frozen_targets: list[str],
+    contract_history: dict[str, Any],
+) -> dict[str, Any]:
+    """Derive the exact review inventory and reject missing helper metadata."""
+    def valid_fingerprint(value: Any) -> bool:
+        return isinstance(value, str) and SHA256.fullmatch(value) is not None
+
+    recovered = {
+        record.get("model_fingerprint")
+        for name, record in contracts.items()
+        if name in recovered_ids
+        and isinstance(record, dict)
+        and isinstance(record.get("model_fingerprint"), str)
+    }
+    generated_ids = [node for node in target_states if node not in set(frozen_targets)]
+    generated = {
+        target.get("contract_fingerprint")
+        for node, target in target_states.items()
+        if node in generated_ids
+        and isinstance(target, dict)
+        and isinstance(target.get("contract_fingerprint"), str)
+    }
+    invalidated = contract_history.get("invalidated_fingerprints", [])
+    revisions = contract_history.get("revision_lineage", [])
+    revised = {
+        node: target.get("contract_revision")
+        for node, target in target_states.items()
+        if isinstance(target, dict)
+        and type(target.get("contract_revision")) is int
+        and target["contract_revision"] > 0
+    }
+
+    def valid_revision_history() -> bool:
+        if not isinstance(revisions, list):
+            return False
+        if any(
+            not isinstance(revision, dict)
+            or revision.get("node") not in revised
+            or type(revision.get("revision")) is not int
+            or revision["revision"] <= 0
+            or not valid_fingerprint(revision.get("old_fingerprint"))
+            or not valid_fingerprint(revision.get("new_fingerprint"))
+            for revision in revisions
+        ):
+            return False
+        for node, final_revision in revised.items():
+            entries = sorted(
+                (revision for revision in revisions if revision["node"] == node),
+                key=lambda revision: revision["revision"],
+            )
+            if [entry["revision"] for entry in entries] != list(
+                range(1, final_revision + 1)
+            ):
+                return False
+            if any(
+                left["new_fingerprint"] != right["old_fingerprint"]
+                for left, right in zip(entries, entries[1:])
+            ):
+                return False
+            if (
+                not entries
+                or entries[-1]["new_fingerprint"]
+                != target_states[node].get("contract_fingerprint")
+            ):
+                return False
+        return True
+
+    required = bool(
+        recovered_ids or generated_ids or invalidated or revisions or revised
+    )
+    valid = (
+        all(
+            name in contracts
+            and isinstance(contracts[name], dict)
+            and valid_fingerprint(contracts[name].get("model_fingerprint"))
+            for name in recovered_ids
+        )
+        and all(
+            isinstance(target_states.get(node), dict)
+            and valid_fingerprint(
+                target_states[node].get("contract_fingerprint")
+            )
+            for node in generated_ids
+        )
+        and isinstance(invalidated, list)
+        and all(valid_fingerprint(value) for value in invalidated)
+        and {
+            revision["old_fingerprint"]
+            for revision in revisions
+            if isinstance(revision, dict)
+            and "old_fingerprint" in revision
+        }
+        <= set(invalidated)
+        and valid_revision_history()
+        and (not required or bool(recovered | generated))
+    )
+    return {
+        "recovered_fingerprints": recovered,
+        "generated_fingerprints": generated,
+        "required": required,
+        "valid": bool(valid),
+    }
+
+
+def validate_full_audit(
+    path: str | Path,
+    contract_review_path: str | Path,
+    validate_l0: Callable[[Any], Any],
+) -> dict[str, Any]:
+    result = _validate_retained(path, smoke=False, validate_l0=validate_l0)
+    review, _ = _read(Path(contract_review_path), "contract semantic review")
+    recovered = result.get("sets", {}).get("recovered_internal_specs", {})
+    final_fingerprints = result["contract_history"].get("final_fingerprints", [])
+    if (
+        not isinstance(recovered, dict)
+        or not isinstance(recovered.get("ids"), list)
+        or not isinstance(final_fingerprints, list)
+        or (recovered["ids"] and not final_fingerprints)
+    ):
+        raise AuditError("retained recovered contract fingerprint evidence missing")
+    validate_semantic_review(
+        review,
+        accepted_commit=result["accepted_commit"],
+        target_states=result["target_states"],
+        contract_history=result["contract_history"],
+        frozen_targets=result["frozen_targets"],
+        required_fingerprints=set(final_fingerprints),
+    )
     return result

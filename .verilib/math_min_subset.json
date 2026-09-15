@@ -1,10 +1,11 @@
 {
  "probe": ".verilib/probes/lean_bundle_Curve25519Dalek_0.1.0.json",
  "closure_tsv": ".verilib/math_closure.tsv",
+ "keep_assumptions": false,
  "unmapped_closure_constants": [],
  "extra_keep": [],
  "math_total": 447,
- "math_kept": 134,
+ "math_kept": 128,
  "dropped_modules": [
   "Curve25519Dalek.Math.BitList",
   "Curve25519Dalek.Math.Edwards.EightTorsion",
@@ -26,9 +27,7 @@
    "curve25519_dalek.math.abs_edwards",
    "curve25519_dalek.math.abs_edwards_sq",
    "curve25519_dalek.math.inv_sqrt_checked",
-   "curve25519_dalek.math.inv_sqrt_checked_snd",
    "curve25519_dalek.math.inv_sqrt_checked_spec",
-   "curve25519_dalek.math.inv_sqrt_checked_sq_mul",
    "curve25519_dalek.math.inv_sqrt_checked_zero",
    "curve25519_dalek.math.is_negative",
    "curve25519_dalek.math.p_sub_one_cast",
@@ -36,7 +35,6 @@
    "curve25519_dalek.math.sqrt_ad_minus_one",
    "curve25519_dalek.math.sqrt_ad_minus_one_val",
    "curve25519_dalek.math.sqrt_checked",
-   "curve25519_dalek.math.sqrt_checked_iff_isSquare",
    "curve25519_dalek.math.sqrt_checked_spec",
    "curve25519_dalek.math.sqrt_m1",
    "curve25519_dalek.math.sqrt_m1_not_square",
@@ -62,7 +60,6 @@
    "Edwards.Point.on_curve",
    "Edwards.Point.x",
    "Edwards.Point.y",
-   "Edwards.add_assoc_Ed25519",
    "Edwards.add_closure",
    "Edwards.add_closure_Ed25519",
    "Edwards.add_coords",
@@ -89,8 +86,7 @@
    "curve25519_dalek.edwards.affine.AffinePoint.IsValid.on_curve",
    "curve25519_dalek.edwards.affine.AffinePoint.instDecidableIsValid",
    "curve25519_dalek.edwards.affine.AffinePoint.isValid_iff",
-   "curve25519_dalek.edwards.affine.AffinePoint.toPoint",
-   "curve25519_dalek.math.decompress_edwards_pure"
+   "curve25519_dalek.edwards.affine.AffinePoint.toPoint"
   ],
   "Curve25519Dalek/Math/Montgomery/Curve.lean": [
    "Montgomery.Curve25519.A",
@@ -155,7 +151,6 @@
    "curve25519_dalek.math.invsqrt_a_minus_d",
    "curve25519_dalek.ristretto.CompressedRistretto.IsValid",
    "curve25519_dalek.ristretto.IsEven",
-   "curve25519_dalek.ristretto.IsEven_iff_in_doubling_image_right",
    "curve25519_dalek.ristretto.RistrettoPoint.IsValid",
    "curve25519_dalek.ristretto.RistrettoPoint.toPoint",
    "curve25519_dalek.ristretto.decompress_pure",
@@ -178,6 +173,8 @@
    "cancelR",
    "eq_abs_edwards_of_sq_eq",
    "field_from_limbs",
+   "inv_sqrt_checked_snd",
+   "inv_sqrt_checked_sq_mul",
    "is_negative_abs_edwards",
    "lift_mod_eq",
    "modEq_one_iff",
@@ -194,6 +191,7 @@
    "sqrt_ad_minus_one_eq_val",
    "sqrt_ad_minus_one_ne_zero",
    "sqrt_ad_minus_one_sq",
+   "sqrt_checked_iff_isSquare",
    "sqrt_sq"
   ],
   "Curve25519Dalek/Math/BitList.lean": [
@@ -264,6 +262,7 @@
    "four_nsmul_basepoint_ne_zero"
   ],
   "Curve25519Dalek/Math/Edwards/Curve.lean": [
+   "add_assoc_Ed25519",
    "add_comm_Ed25519",
    "add_coords_mk",
    "add_def",
@@ -325,6 +324,7 @@
    "Z_ne_zero",
    "Z_ne_zero",
    "Z_valid",
+   "decompress_edwards_pure",
    "instCoeCompletedPointPointCurveFieldEd25519",
    "instCoeProjectivePointPointCurveFieldEd25519",
    "instDecidableIsValid",
@@ -478,6 +478,7 @@
    "IsCanonicalRistrettoRep",
    "IsEven_iff_in_doubling_image",
    "IsEven_iff_in_doubling_image_left",
+   "IsEven_iff_in_doubling_image_right",
    "compress_canonical_eq",
    "compress_canonical_on_curve",
    "compress_den_inv_cancel",

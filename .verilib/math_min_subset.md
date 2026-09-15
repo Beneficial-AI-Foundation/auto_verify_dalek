@@ -3,24 +3,25 @@
 Computed by `harness/build_without_internal_spec.py --minimize-math --math-closure`:
 - roots: every declaration outside `Math/` in the bundle (Specs statements, proofs are `sorry`; Aux, TypesAux, Funs, ...)
 - edges: exact constant closure from `harness/math_closure.lean` (`.verilib/math_closure.tsv`, run in the built bundle) merged with the probe-lean graph (`.verilib/probes/lean_bundle_Curve25519Dalek_0.1.0.json`); shared `match_N` matchers do not pull in their host definition
-- kept regardless: the 11 sorry-assumptions of `harness/frozen/math_assumptions.json`, with their statement closure
+- nothing is kept for its own sake: unused sorry-assumptions of `harness/frozen/math_assumptions.json` are removed too (`--keep-math-assumptions` keeps them)
 
-Math declarations: 447 total, **134 kept**, 313 removed. `lake build` of the result passes.
+Math declarations: 447 total, **128 kept**, 319 removed. `lake build` of the result passes.
 
 | file | kept / total | lines (bundle / repo) |
 |---|---|---|
-| Math/Basic.lean | 35 / 65 | 222 / 548 |
+| Math/Basic.lean | 32 / 65 | 209 / 548 |
 | Math/BitList.lean | 0 / 60 | 0 / 514  *(dropped)* |
 | Math/Edwards/Basepoint.lean | 1 / 4 | 15 / 38 |
-| Math/Edwards/Curve.lean | 22 / 48 | 124 / 331 |
+| Math/Edwards/Curve.lean | 21 / 48 | 120 / 331 |
 | Math/Edwards/EightTorsion.lean | 0 / 6 | 0 / 67  *(dropped)* |
-| Math/Edwards/Representation.lean | 13 / 62 | 157 / 523 |
+| Math/Edwards/Representation.lean | 12 / 62 | 92 / 523 |
 | Math/Montgomery/Curve.lean | 11 / 53 | 88 / 502 |
 | Math/Montgomery/Representation.lean | 16 / 89 | 253 / 2487 |
 | Math/PrimeCerts.lean | 0 / 2 | 0 / 44  *(dropped)* |
-| Math/Ristretto/Representation.lean | 36 / 58 | 245 / 1233 |
+| Math/Ristretto/Representation.lean | 35 / 58 | 241 / 1233 |
 
 Dropped modules: BitList, Edwards.EightTorsion, PrimeCerts
+Sorry-assumptions still needed: ['Edwards.complete_addition_denominators_ne_zero', 'curve25519_dalek.math.elligator_ristretto_flavor_pure', 'curve25519_dalek.math.inv_sqrt_checked_spec', 'curve25519_dalek.math.sqrt_checked_spec']
 
 ## Kept declarations
 
@@ -40,9 +41,7 @@ Dropped modules: BitList, Edwards.EightTorsion, PrimeCerts
 - `def` `curve25519_dalek.math.abs_edwards`
 - `theorem` `curve25519_dalek.math.abs_edwards_sq`
 - `def` `curve25519_dalek.math.inv_sqrt_checked`
-- `theorem` `curve25519_dalek.math.inv_sqrt_checked_snd` *(sorry-assumption)*
 - `theorem` `curve25519_dalek.math.inv_sqrt_checked_spec` *(sorry-assumption)*
-- `theorem` `curve25519_dalek.math.inv_sqrt_checked_sq_mul` *(sorry-assumption)*
 - `theorem` `curve25519_dalek.math.inv_sqrt_checked_zero`
 - `def` `curve25519_dalek.math.is_negative`
 - `theorem` `curve25519_dalek.math.p_sub_one_cast`
@@ -50,7 +49,6 @@ Dropped modules: BitList, Edwards.EightTorsion, PrimeCerts
 - `def` `curve25519_dalek.math.sqrt_ad_minus_one`
 - `def` `curve25519_dalek.math.sqrt_ad_minus_one_val`
 - `def` `curve25519_dalek.math.sqrt_checked`
-- `theorem` `curve25519_dalek.math.sqrt_checked_iff_isSquare` *(sorry-assumption)*
 - `theorem` `curve25519_dalek.math.sqrt_checked_spec` *(sorry-assumption)*
 - `def` `curve25519_dalek.math.sqrt_m1`
 - `theorem` `curve25519_dalek.math.sqrt_m1_not_square`
@@ -77,7 +75,6 @@ Dropped modules: BitList, Edwards.EightTorsion, PrimeCerts
 - `theorem` `Edwards.Point.on_curve`
 - `projection` `Edwards.Point.x`
 - `projection` `Edwards.Point.y`
-- `theorem` `Edwards.add_assoc_Ed25519` *(sorry-assumption)*
 - `theorem` `Edwards.add_closure`
 - `theorem` `Edwards.add_closure_Ed25519`
 - `def` `Edwards.add_coords`
@@ -105,7 +102,6 @@ Dropped modules: BitList, Edwards.EightTorsion, PrimeCerts
 - `instance` `curve25519_dalek.edwards.affine.AffinePoint.instDecidableIsValid`
 - `theorem` `curve25519_dalek.edwards.affine.AffinePoint.isValid_iff`
 - `def` `curve25519_dalek.edwards.affine.AffinePoint.toPoint`
-- `def` `curve25519_dalek.math.decompress_edwards_pure` *(sorry-assumption)*
 
 ### Curve25519Dalek/Math/Montgomery/Curve.lean
 
@@ -172,7 +168,6 @@ Dropped modules: BitList, Edwards.EightTorsion, PrimeCerts
 - `def` `curve25519_dalek.math.invsqrt_a_minus_d`
 - `def` `curve25519_dalek.ristretto.CompressedRistretto.IsValid`
 - `def` `curve25519_dalek.ristretto.IsEven`
-- `theorem` `curve25519_dalek.ristretto.IsEven_iff_in_doubling_image_right` *(sorry-assumption)*
 - `def` `curve25519_dalek.ristretto.RistrettoPoint.IsValid`
 - `def` `curve25519_dalek.ristretto.RistrettoPoint.toPoint`
 - `def` `curve25519_dalek.ristretto.decompress_pure`

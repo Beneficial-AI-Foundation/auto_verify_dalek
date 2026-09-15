@@ -55,9 +55,9 @@ workarounds, timeouts) that the agent must not receive.
 bundle (same Specs selection!).  Every Math/ declaration that is not in the
 dependency closure of the declarations outside Math/ (Specs statements, Aux,
 TypesAux, ...) is cut out of its file, together with its docstring,
-attributes and `... in` prefixes.  The sorry-assumptions of
-harness/frozen/math_assumptions.json are kept (with their statement closure)
-even when nothing uses them; --math-keep NAME,... keeps further declarations
+attributes and `... in` prefixes.  Unused sorry-assumptions of
+harness/frozen/math_assumptions.json go too, unless --keep-math-assumptions;
+--math-keep NAME,... keeps further declarations
 (e.g. simp lemmas the probe graph does not record).  --math-closure TSV merges
 the exact closure computed by harness/math_closure.lean (run in a built bundle:
 `lake env lean ../harness/math_closure.lean > .verilib/math_closure.tsv`); the probe
@@ -394,7 +394,7 @@ class MathMin:
     removed:  file -> [display names cut]
     dropped_mods: Math modules left without any declaration"""
 
-    def __init__(self, probe_path, extra_names=(), closure_tsv=None):
+    def __init__(self, probe_path, extra_names=(), closure_tsv=None, keep_assumptions=False):
         with open(os.path.join(REPO, probe_path)) as fh:
             self.data = json.load(fh)["data"]
         d = self.data
@@ -405,8 +405,10 @@ class MathMin:
         self.math = {k for k, v in d.items() if path(v).startswith(MATH_DIR + "/")}
         roots = [k for k, v in d.items()
                  if v.get("is-in-package") and path(v) and k not in self.math]
-        with open(os.path.join(REPO, MATH_ASSUMPTIONS)) as fh:
-            assumptions = [a["name"] for a in json.load(fh)["assumptions"]]
+        assumptions = []
+        if keep_assumptions:
+            with open(os.path.join(REPO, MATH_ASSUMPTIONS)) as fh:
+                assumptions = [a["name"] for a in json.load(fh)["assumptions"]]
         for name in list(assumptions) + list(extra_names):
             # kernel-level `foo._proof_N` obligations are recorded under `foo` by the probe
             name = re.sub(r"\._proof_\d+$", "", name)
@@ -666,6 +668,9 @@ def main():
     ap.add_argument("--math-closure", metavar="TSV",
                     help="output of `lake env lean harness/math_closure.lean` run in a built bundle "
                          "(repo-relative); exact closure, merged into the probe closure")
+    ap.add_argument("--keep-math-assumptions", action="store_true",
+                    help="with --minimize-math: keep the sorry-assumptions of "
+                         f"{MATH_ASSUMPTIONS} even when nothing depends on them")
     ap.add_argument("--math-keep", default="",
                     help="comma-separated Math declaration names to keep in addition (--minimize-math)")
     ap.add_argument("--strip-comments", action="store_true",
@@ -696,7 +701,7 @@ def main():
     mathmin = None
     if args.minimize_math:
         extra = [n for n in args.math_keep.split(",") if n]
-        mathmin = MathMin(args.minimize_math, extra, args.math_closure)
+        mathmin = MathMin(args.minimize_math, extra, args.math_closure, args.keep_math_assumptions)
         if mathmin.unmapped:
             print(f"  warning: {len(mathmin.unmapped)} closure constant(s) not mapped to a probe "
                   f"declaration: {mathmin.unmapped[:5]}", file=sys.stderr)
@@ -797,6 +802,7 @@ def main():
         manifest["math_minimized"] = {
             "probe": args.minimize_math,
             "closure_tsv": args.math_closure,
+            "keep_assumptions": args.keep_math_assumptions,
             "unmapped_closure_constants": mathmin.unmapped,
             "extra_keep": [n for n in args.math_keep.split(",") if n],
             "math_total": len(mathmin.math),

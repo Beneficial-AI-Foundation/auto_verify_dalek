@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import copy
 import fcntl
 import hashlib
 import json
@@ -15,7 +16,7 @@ from decimal import Decimal
 from pathlib import Path
 from typing import Any
 
-from . import result_audit, result_summary, worker
+from . import result_audit, result_summary, terminal_verifier, worker
 from .contracts import canonical_json_bytes
 from .evidence import (
     EXCLUSIONS,
@@ -33,6 +34,8 @@ from .evidence import (
 
 OUTCOMES = {
     "success",
+    "unverified",
+    "false_spec",
     "budget_exhausted",
     "verification_failed",
     "infrastructure_failed",
@@ -266,6 +269,47 @@ def render_attempt(
 ) -> tuple[dict[str, Any], dict[str, Any]]:
     if outcome not in OUTCOMES or not isinstance(reason, str) or not reason:
         raise ResultError("attempt outcome or termination reason is invalid")
+    report = state.get("verifier_report", {})
+    terminal_false_spec = (
+        isinstance(report, dict) and report.get("terminal_status") == "false_spec"
+    )
+    certificate = (
+        state.get("counterexample_certificate") if terminal_false_spec else None
+    )
+    if outcome == "false_spec":
+        if reason != "counterexample_confirmed" or not terminal_false_spec:
+            raise ResultError("false_spec termination reason is invalid")
+    if terminal_false_spec:
+        try:
+            if not isinstance(report, dict):
+                raise ResultError("false_spec verifier report is invalid")
+            report_body = {
+                key: value for key, value in report.items() if key != "report_sha256"
+            }
+            target_states = state.get("target_states", {})
+            accepted = state.get("accepted") or run.get("accepted") or {}
+            if (
+                report.get("schema") != "autofv-verifier-report/v1"
+                or report.get("report_sha256") != _sha(canonical_json_bytes(report_body))
+                or report.get("run_id") != run.get("run_id")
+                or report.get("accepted_commit") != accepted.get("accepted_commit")
+                or report.get("verdict") != "FAIL"
+                or report.get("evidence_level") != "L0"
+                or report.get("terminal_status") != "false_spec"
+                or report.get("target_states") != target_states
+                or report.get("target_states_sha256")
+                != _sha(canonical_json_bytes(target_states))
+            ):
+                raise ResultError("false_spec verifier report is invalid")
+            terminal_verifier.validate_counterexample_certificate(
+                certificate,
+                target_states=target_states,
+                accepted_commit=accepted["accepted_commit"],
+                toolchain_lock_sha256=_sha(canonical_json_bytes(run["lock"])),
+                confirmed_sha256=report.get("counterexample_certificate_sha256"),
+            )
+        except (KeyError, RuntimeError) as exc:
+            raise ResultError("false_spec certificate is invalid") from exc
     if not isinstance(run.get("attempt_id"), str) or not run["attempt_id"]:
         run["attempt_id"] = run.get("run_id") or f"attempt-{secrets.token_hex(16)}"
     run.setdefault("attempt_ledger", str(Path(run["run_root"]) / "attempts.jsonl"))
@@ -274,9 +318,7 @@ def render_attempt(
 
     sources = source_values(run, state)
     receipt = render_l0(run, state)
-    report = state.get("verifier_report", {})
     assessment = assess_evidence(receipt, report)
-    claim = render_claim(assessment, run, state, outcome=outcome)
     graph = state.get("graph") if isinstance(state.get("graph"), dict) else {}
     accepted = state.get("accepted") or run.get("accepted") or {}
     contracts = state.get("contracts", {}).get("frozen", {})
@@ -288,6 +330,16 @@ def render_attempt(
         report.get("native_decide_uses", state.get("native_decide_uses", []))
         if isinstance(report, dict)
         else state.get("native_decide_uses", [])
+    )
+    accepted_native_uses = (
+        report.get("accepted_native_decide_uses", [])
+        if isinstance(report, dict)
+        else []
+    )
+    hidden_native_uses = (
+        report.get("hidden_native_decide_uses", [])
+        if isinstance(report, dict)
+        else []
     )
     assumptions = (
         report.get(
@@ -333,9 +385,44 @@ def render_attempt(
         )
     except result_summary.SummaryError as exc:
         raise ResultError(str(exc)) from exc
+    review = state.get("contract_semantic_review")
+    supplied_specs = set(
+        graph.get("supplied_specs", {}).values()
+        if isinstance(graph.get("supplied_specs"), dict)
+        else []
+    )
+    recovered_ids = sorted(set(contracts) - supplied_specs)
+    history = generic["contract_history"]
+    review_scope = result_audit.semantic_review_scope(
+        contracts=contracts,
+        recovered_ids=recovered_ids,
+        target_states=generic["target_states"],
+        frozen_targets=frozen_targets,
+        contract_history=history,
+    )
+    recovered_fingerprints = review_scope["recovered_fingerprints"]
+    history["final_fingerprints"] = sorted(recovered_fingerprints)
+    review_required = review_scope["required"]
+    metadata_valid = review_scope["valid"]
+    review_valid = not review_required and metadata_valid
+    if review_required and metadata_valid:
+        try:
+            result_audit.validate_semantic_review(
+                review,
+                accepted_commit=accepted.get("accepted_commit"),
+                target_states=generic["target_states"],
+                contract_history=history,
+                frozen_targets=frozen_targets,
+                required_fingerprints=recovered_fingerprints,
+            )
+            review_valid = True
+        except result_audit.AuditError:
+            review_valid = False
+    if not review_valid and assessment.get("level") == "L4":
+        assessment = {**assessment, "level": "L3"}
+    claim = render_claim(assessment, run, state, outcome=outcome)
     target_ids = list(frozen_targets) if isinstance(frozen_targets, list) else []
     supplied_ids = list(target_ids)
-    recovered_ids = sorted(contracts) if isinstance(contracts, dict) else []
     l0_raw = _json_file_bytes(receipt)
     result = {
         "schema": "autofv-result/v1",
@@ -348,6 +435,60 @@ def render_attempt(
         "outcome": outcome,
         "termination_reason": reason,
         "termination_detail": state.get("termination_detail"),
+        "counterexample_certificate": copy.deepcopy(certificate),
+        "counterexample_certificate_sha256": (
+            certificate.get("certificate_sha256")
+            if isinstance(certificate, dict)
+            else None
+        ),
+        "terminal_status": (
+            report.get("terminal_status") if isinstance(report, dict) else None
+        ),
+        "preparation_manifest_sha256": (
+            report.get("preparation_manifest_sha256")
+            if isinstance(report, dict)
+            else None
+        ),
+        "preparation_tree_sha256": (
+            report.get("preparation_tree_sha256")
+            if isinstance(report, dict)
+            else None
+        ),
+        "reference_sha256": (
+            report.get("reference_sha256") if isinstance(report, dict) else None
+        ),
+        "axiom_inventory_sha256": (
+            report.get("axiom_inventory_sha256")
+            if isinstance(report, dict)
+            else None
+        ),
+        "axiom_scope_sha256": (
+            report.get("axiom_scope_sha256")
+            if isinstance(report, dict)
+            else None
+        ),
+        "verifier_invocation_id": (
+            report.get("invocation_id") if isinstance(report, dict) else None
+        ),
+        "agent_worker_id": (
+            report.get("agent_worker_id") if isinstance(report, dict) else None
+        ),
+        "verifier_worker_id": (
+            report.get("verifier_worker_id") if isinstance(report, dict) else None
+        ),
+        "verifier_bundle_sha256": (
+            report.get("bundle_sha256") if isinstance(report, dict) else None
+        ),
+        "contract_semantic_review_sha256": (
+            review.get("review_sha256") if review_valid and isinstance(review, dict) else None
+        ),
+        "contract_semantic_review_status": (
+            "approved"
+            if review_required and review_valid
+            else "not_required"
+            if not review_required
+            else "withheld"
+        ),
         **generic,
         "frozen_targets": frozen_targets,
         "sets": {
@@ -355,8 +496,8 @@ def render_attempt(
             "S": {"ids": supplied_ids, "size": len(supplied_ids)},
             "W": {"ids": [], "size": 0},
             "recovered_internal_specs": {
-                "ids": recovered_ids,
-                "size": len(recovered_ids),
+                "ids": recovered_ids if review_valid else [],
+                "size": len(recovered_ids) if review_valid else 0,
             },
         },
         "targets_total": len(frozen_targets),
@@ -391,6 +532,8 @@ def render_attempt(
             "native_decide_policy_sha256"
         ),
         "native_decide_uses": native_uses,
+        "accepted_native_decide_uses": accepted_native_uses,
+        "hidden_native_decide_uses": hidden_native_uses,
         "compiler_assumptions": assumptions,
         "snapshot_sha256": input_evidence.get("snapshot_sha256"),
         "manifest_sha256": input_evidence.get("manifest_sha256"),
@@ -710,7 +853,15 @@ def invalidate_verifier_evidence(
         source.unlink()
     state.pop("verifier_report", None)
     state.pop("verifier_invocation_id", None)
+    state.pop("verifier_axiom_inventory_sha256", None)
     run["events"] = [
-        event for event in run.get("events", []) if event != "clean_verifier:PASS"
+        event
+        for event in run.get("events", [])
+        if event
+        not in {
+            "clean_verifier:PASS",
+            "clean_verifier:INCOMPLETE",
+            "clean_verifier:FALSE_SPEC",
+        }
     ]
     run["events"].append("verifier_invalidated:worker_recreated")

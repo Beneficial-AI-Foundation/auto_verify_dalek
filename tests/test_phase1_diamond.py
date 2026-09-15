@@ -12,7 +12,16 @@ from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from unittest import mock
 
-from autofv import experiment, probes, results, verifier, worker, worker_runtime
+from autofv import (
+    axiom_audit,
+    experiment,
+    probes,
+    results,
+    verifier,
+    verifier_bundle,
+    worker,
+    worker_runtime,
+)
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -20,6 +29,7 @@ TARGET = ROOT / "tests" / "fixtures" / "diamond"
 MODEL_FIXTURE = ROOT / "tests" / "fixtures" / "model-proxy" / "diamond-responses.json"
 RUST_PROBE = ROOT / "tests" / "fixtures" / "probes" / "diamond-rust.json"
 AENEAS_PROBE = ROOT / "tests" / "fixtures" / "probes" / "diamond-aeneas.json"
+REFERENCE = ROOT / "tests" / "fixtures" / "diamond-reference" / "reference.json"
 
 
 def _sha256(data):
@@ -172,6 +182,12 @@ class _Seams:
         }
 
     def verify(self, run, expected):
+        inventory = axiom_audit.expected_inventory(
+            run["verification_state"], json.loads(REFERENCE.read_text())
+        )
+        accepted_uses, hidden_uses, all_uses = (
+            axiom_audit.native_use_provenance(inventory)
+        )
         body = {
             "schema": "autofv-verifier-report/v1",
             "run_id": run["run_id"],
@@ -181,11 +197,17 @@ class _Seams:
             "bundle_sha256": "3" * 64,
             "reference_sha256": "4" * 64,
             **expected,
-            "checks": {"fixture": True},
+            "checks": {name: True for name in verifier_bundle.REPORT_CHECKS},
             "failures": [],
-            "native_decide_uses": [],
+            "native_decide_uses": all_uses,
+            "accepted_native_decide_uses": accepted_uses,
+            "hidden_native_decide_uses": hidden_uses,
             "compiler_assumptions": verifier.compiler_assumptions(
                 experiment.load_toolchain_lock()
+            ),
+            "axiom_inventory": inventory,
+            "axiom_inventory_sha256": (
+                axiom_audit.inventory_identity_sha256(inventory)
             ),
             "meaning": {
                 "reference_integrity": True,

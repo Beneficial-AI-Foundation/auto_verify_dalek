@@ -38,6 +38,10 @@ Usage:
                                           # file are cut like in a stub
   python3 harness/build_without_internal_spec.py --theorem-level --strip-comments ...
                                           # additionally remove all comments
+  python3 harness/build_without_internal_spec.py ... \
+      --minimize-math .verilib/probes/lean_bundle_Curve25519Dalek_0.1.0.json
+                                          # cut every Math/ declaration the
+                                          # bundle does not depend on
 
 --strip-comments: remove every comment from the kept Specs/ files and stubs
 (module docs `/-! -/`, docstrings `/-- -/`, block comments `/- -/`, line
@@ -46,6 +50,22 @@ comments `--`), except the copyright header at the top of the file, whose
 ...` header line is not written either (the counts are in bundle_manifest.json).  The
 human comments carry natural-language specs and proof hints (tactic
 workarounds, timeouts) that the agent must not receive.
+
+--minimize-math PROBE: PROBE is a probe-lean extract of a previously built
+bundle (same Specs selection!).  Every Math/ declaration that is not in the
+dependency closure of the declarations outside Math/ (Specs statements, Aux,
+TypesAux, ...) is cut out of its file, together with its docstring,
+attributes and `... in` prefixes.  The sorry-assumptions of
+harness/frozen/math_assumptions.json are kept (with their statement closure)
+even when nothing uses them; --math-keep NAME,... keeps further declarations
+(e.g. simp lemmas the probe graph does not record).  --math-closure TSV merges
+the exact closure computed by harness/math_closure.lean (run in a built bundle:
+`lake env lean ../harness/math_closure.lean > .verilib/math_closure.tsv`); the probe
+graph misses the `_proof_N` auxiliaries of definitions, this does not.  A Math
+file left without
+declarations is dropped and imports of it are replaced by its own imports.
+Rerun probe-lean on the result to check the closure; `lake build` is the
+final arbiter (implicit uses: simp sets, notation, deriving).
 
 --theorem-level: a kept Specs/ file keeps exactly the theorems that
 functions.json attributes to a top-level row (full name = the row's lean_name
@@ -71,6 +91,9 @@ SPECS_MOD = "Curve25519Dalek.Specs."
 COPY_TOP = ["lakefile.toml", "lake-manifest.json", "lean-toolchain", "Utils.lean"]
 COPY_DIRS = ["Utils"]
 LIB_DIR = "Curve25519Dalek"
+MATH_DIR = "Curve25519Dalek/Math"
+MATH_MOD = "Curve25519Dalek.Math."
+MATH_ASSUMPTIONS = "harness/frozen/math_assumptions.json"
 
 DECL_RE = re.compile(r"^(?:private\s+|protected\s+)?(?:theorem|lemma|example)\b", re.M)
 VOCAB_RE = re.compile(
@@ -364,18 +387,173 @@ def sorry_proofs(text):
     return "".join(out), count
 
 
+class MathMin:
+    """Minimal Math/ subset from a probe-lean extract of the bundle.
+
+    keep:     probe id -> record, the Math declarations to keep
+    removed:  file -> [display names cut]
+    dropped_mods: Math modules left without any declaration"""
+
+    def __init__(self, probe_path, extra_names=(), closure_tsv=None):
+        with open(os.path.join(REPO, probe_path)) as fh:
+            self.data = json.load(fh)["data"]
+        d = self.data
+        self.unmapped = []
+        if closure_tsv:                        # exact closure from harness/math_closure.lean
+            extra_names = list(extra_names) + self.map_lean_names(closure_tsv)
+        path = lambda v: v.get("code-path") or ""
+        self.math = {k for k, v in d.items() if path(v).startswith(MATH_DIR + "/")}
+        roots = [k for k, v in d.items()
+                 if v.get("is-in-package") and path(v) and k not in self.math]
+        with open(os.path.join(REPO, MATH_ASSUMPTIONS)) as fh:
+            assumptions = [a["name"] for a in json.load(fh)["assumptions"]]
+        for name in list(assumptions) + list(extra_names):
+            # kernel-level `foo._proof_N` obligations are recorded under `foo` by the probe
+            name = re.sub(r"\._proof_\d+$", "", name)
+            pid = "probe:" + name
+            if pid not in d:
+                sys.exit(f"--minimize-math: {name} not in probe {probe_path}")
+            roots.append(pid)
+        seen = set(roots)
+        stack = list(roots)
+        while stack:
+            k = stack.pop()
+            for x in d[k]["dependencies"]:
+                if x in d and x not in seen:
+                    seen.add(x)
+                    stack.append(x)
+        self.keep = {k for k in seen if k in self.math}
+        self.by_file = {}
+        for k in self.math:
+            self.by_file.setdefault(path(d[k]), []).append(k)
+        self.dropped_mods = {mod_of(f) for f, ks in self.by_file.items()
+                             if not any(k in self.keep for k in ks)}
+        self.removed = {}
+        self._imports = {}
+        # namespaces that exist only in dropped modules: `open X` of them must go
+        ns = lambda text: {m.group(2) for m in NS_RE.finditer(text) if m.group(1) == "namespace" and m.group(2)}
+        dropped_ns = set()
+        for mod in self.dropped_mods:
+            dropped_ns |= ns(read(path_of(mod)))
+        for r, _, fs in os.walk(os.path.join(REPO, LIB_DIR)):
+            for f in fs:
+                rel = os.path.relpath(os.path.join(r, f), REPO)
+                if f.endswith(".lean") and mod_of(rel) not in self.dropped_mods:
+                    dropped_ns -= ns(read(rel))
+        self.dropped_ns = dropped_ns
+
+    def rewrite_opens(self, text):
+        """Drop names of vanished namespaces from `open ...` lines."""
+        if not self.dropped_ns:
+            return text
+        out = []
+        for line in text.split("\n"):
+            m = re.match(r"^(\s*open(?:\s+scoped)?\s+)(.+?)(\s+in)?\s*$", line)
+            if m:
+                names = [n for n in m.group(2).split() if n not in self.dropped_ns]
+                if not names:
+                    continue
+                line = m.group(1) + " ".join(names) + (m.group(3) or "")
+            out.append(line)
+        return "\n".join(out)
+
+    def map_lean_names(self, tsv):
+        """Lean constant names (harness/math_closure.lean output) -> probe names.
+        `_private.<Mod>.0.` prefixes are dropped; auxiliaries (`foo._proof_3`,
+        `Point.mk`, `Point.rec`, `foo.match_1`, `foo.eq_1`, ...) are mapped to the
+        longest prefix the probe knows."""
+        names = []
+        for line in open(os.path.join(REPO, tsv)):
+            name = line.split("\t")[0].strip()
+            if not name:
+                continue
+            name = re.sub(r"^_private\.[\w.]+?\.\d+\.", "", name)
+            parts = name.split(".")
+            # `X.match_N` matchers are shared between definitions: reaching one does
+            # not mean X is needed (X shows up on its own line if it is)
+            if any(re.fullmatch(r"match_\d+", q) for q in parts):
+                continue
+            while parts and "probe:" + ".".join(parts) not in self.data:
+                parts.pop()
+            if parts:
+                names.append(".".join(parts))
+            else:
+                self.unmapped.append(name)
+        return names
+
+    def imports_of_mod(self, mod):
+        if mod not in self._imports:
+            self._imports[mod] = imports_of(read(path_of(mod)))
+        return self._imports[mod]
+
+    def rewrite(self, rel, text):
+        """Cut every non-kept declaration of Math file `rel`."""
+        d = self.data
+        lines = text.split("\n")
+        # line ranges shared by several (auto-generated) declarations: keep if any is kept
+        ranges = {}
+        for k in self.by_file[rel]:
+            rg = (d[k]["code-text"]["lines-start"], d[k]["code-text"]["lines-end"])
+            ranges.setdefault(rg, []).append(k)
+        cut = []                                  # (start_line, end_line) 1-based inclusive
+        names = []
+        for (a, b), ks in sorted(ranges.items()):
+            if any(k in self.keep for k in ks):
+                continue
+            off = len("\n".join(lines[:a - 1])) + (1 if a > 1 else 0)
+            start = text.count("\n", 0, decl_block_start(text, off)) + 1
+            cut.append((start, b))
+            names += [d[k]["display-name"] for k in ks]
+        removed_names = set()
+        for k in self.by_file[rel]:
+            if k not in self.keep:
+                nm = k[len("probe:"):]
+                removed_names.add(nm)
+                removed_names.add(nm.split(".")[-1])
+        gone = set()
+        for a, b in cut:
+            gone.update(range(a, b + 1))
+        out = []
+        for i, line in enumerate(lines, 1):
+            if i in gone:
+                continue
+            am = ATTR_LINE_RE.match(line)
+            if am:
+                keep_n = [n for n in am.group(2).split()
+                          if n not in removed_names and n.split(".")[-1] not in removed_names]
+                if not keep_n:
+                    continue
+                line = am.group(1) + " ".join(keep_n)
+            out.append(line)
+        new = "\n".join(out)
+        new = re.sub(r"\n{3,}", "\n\n", new)
+        self.removed[rel] = sorted(names)
+        return new
+
+
 class Closure:
     """Decide, for every Specs module reachable from the kept files, whether
     it is kept (top spec), stubbed (vocabulary only) or dropped."""
 
-    def __init__(self, kept_mods):
+    def __init__(self, kept_mods, mathmin=None):
         self.kept = set(kept_mods)
         self.stub = set()
         self.dropped = set()
         self._resolved = {}
+        self.mathmin = mathmin
 
     def resolve_import(self, mod):
         """Modules to import instead of `mod` (a list; `mod` itself if kept/stub)."""
+        if self.mathmin and mod in self.mathmin.dropped_mods:
+            if mod not in self._resolved:
+                self._resolved[mod] = []
+                res = []
+                for imp in self.mathmin.imports_of_mod(mod):
+                    for r in self.resolve_import(imp):
+                        if r not in res:
+                            res.append(r)
+                self._resolved[mod] = res
+            return self._resolved[mod]
         if not mod.startswith(SPECS_MOD) or mod in self.kept:
             return [mod]
         if mod in self._resolved:
@@ -398,6 +576,8 @@ class Closure:
     def rewrite_imports(self, text):
         lines, changed = [], []
         seen = set()
+        if self.mathmin:
+            text = self.mathmin.rewrite_opens(text)
         for line in text.split("\n"):
             m = IMPORT_RE.match(line)
             if not m:
@@ -447,11 +627,13 @@ def rewrite_stub(text, closure, strip=False):
     return header + text, n, changed
 
 
-def rewrite_root(text, keep_mods):
+def rewrite_root(text, keep_mods, dropped_math=()):
     lines = []
     for line in text.split("\n"):
         m = IMPORT_RE.match(line)
         if m and m.group(1).startswith(SPECS_MOD) and m.group(1) not in keep_mods:
+            continue
+        if m and m.group(1) in dropped_math:
             continue
         lines.append(line)
     return "\n".join(lines)
@@ -478,6 +660,14 @@ def main():
     ap.add_argument("--theorem-level", action="store_true",
                     help="keep only the top-level spec theorems inside a kept Specs file; "
                          "cut helper lemmas and specs of internal functions")
+    ap.add_argument("--minimize-math", metavar="PROBE",
+                    help="probe-lean extract of a built bundle (repo-relative); cut every Math/ "
+                         "declaration outside the dependency closure of the non-Math declarations")
+    ap.add_argument("--math-closure", metavar="TSV",
+                    help="output of `lake env lean harness/math_closure.lean` run in a built bundle "
+                         "(repo-relative); exact closure, merged into the probe closure")
+    ap.add_argument("--math-keep", default="",
+                    help="comma-separated Math declaration names to keep in addition (--minimize-math)")
     ap.add_argument("--strip-comments", action="store_true",
                     help="remove all comments (module docs, docstrings, `--`) from kept Specs "
                          "files and stubs, except the copyright header")
@@ -503,7 +693,38 @@ def main():
                     ignore=lambda d, names: [n for n in names
                                              if os.path.join(d, n) == os.path.join(REPO, SPECS_DIR)])
 
-    closure = Closure(kept_mods)
+    mathmin = None
+    if args.minimize_math:
+        extra = [n for n in args.math_keep.split(",") if n]
+        mathmin = MathMin(args.minimize_math, extra, args.math_closure)
+        if mathmin.unmapped:
+            print(f"  warning: {len(mathmin.unmapped)} closure constant(s) not mapped to a probe "
+                  f"declaration: {mathmin.unmapped[:5]}", file=sys.stderr)
+        for rel in sorted(mathmin.by_file):
+            dst = os.path.join(out, rel)
+            if mod_of(rel) in mathmin.dropped_mods:
+                os.remove(dst)
+                mathmin.removed[rel] = sorted(mathmin.data[k]["display-name"]
+                                              for k in mathmin.by_file[rel])
+                continue
+            new = mathmin.rewrite(rel, read(rel))
+            if args.strip_comments:
+                new, _ = strip_all_comments(new)
+            with open(dst, "w") as fh:
+                fh.write(new)
+        # imports between Math files / from Aux of a dropped module
+        for rel in sorted(mathmin.by_file):
+            if mod_of(rel) in mathmin.dropped_mods:
+                continue
+            dst = os.path.join(out, rel)
+            with open(dst) as fh:
+                txt = fh.read()
+            txt2, _ = Closure(set(), mathmin).rewrite_imports(txt)
+            if txt2 != txt:
+                with open(dst, "w") as fh:
+                    fh.write(txt2)
+
+    closure = Closure(kept_mods, mathmin)
     sorried = {}
     cut_from_specs = {}
     kept_theorems = {}
@@ -545,7 +766,8 @@ def main():
 
     root = read("Curve25519Dalek.lean")
     with open(os.path.join(out, "Curve25519Dalek.lean"), "w") as fh:
-        fh.write(rewrite_root(root, kept_mods | closure.stub))
+        fh.write(rewrite_root(root, kept_mods | closure.stub,
+                              mathmin.dropped_mods if mathmin else ()))
     dropped_specs = [p for p in all_specs if p not in keep and mod_of(p) not in closure.stub]
 
     os.makedirs(os.path.join(out, ".lake"))
@@ -571,6 +793,20 @@ def main():
         "unspecified_top_level": unspecified,
         "unspecified_top_level_count": len(unspecified),
     }
+    if mathmin:
+        manifest["math_minimized"] = {
+            "probe": args.minimize_math,
+            "closure_tsv": args.math_closure,
+            "unmapped_closure_constants": mathmin.unmapped,
+            "extra_keep": [n for n in args.math_keep.split(",") if n],
+            "math_total": len(mathmin.math),
+            "math_kept": len(mathmin.keep),
+            "dropped_modules": sorted(mathmin.dropped_mods),
+            "kept_declarations": {
+                f: sorted(k[len("probe:"):] for k in ks if k in mathmin.keep)
+                for f, ks in sorted(mathmin.by_file.items())},
+            "removed_declarations": mathmin.removed,
+        }
     if args.theorem_level:
         manifest["kept_theorems"] = kept_theorems
         manifest["kept_theorem_count"] = sum(len(v) for v in kept_theorems.values())
@@ -584,6 +820,9 @@ def main():
           f"theorems cut from stubs {sum(stubbed.values())}, "
           f"theorems cut from kept files {sum(cut_from_specs.values())}, "
           f"top-level rows without spec {len(unspecified)}")
+    if mathmin:
+        print(f"  Math: kept {len(mathmin.keep)}/{len(mathmin.math)} declarations, "
+              f"dropped modules {sorted(m[len(MATH_MOD):] for m in mathmin.dropped_mods)}")
 
     if args.build:
         r = subprocess.run(["lake", "build"], cwd=out)

@@ -27,6 +27,7 @@ CHECKPOINT_RUN_FIELDS = (
     "attempt_ledger",
     "run_id",
     "run_root",
+    "input_root",
     "project_dir",
     "evidence_dir",
     "volume",
@@ -59,6 +60,8 @@ CHECKPOINT_RUN_FIELDS = (
     "export_receipt",
     "disposal_receipt",
     "base_commit",
+    "preparation_manifest",
+    "verifier_reference",
     "events",
 )
 CHECKPOINT_STATE_FIELDS = (
@@ -70,6 +73,9 @@ CHECKPOINT_STATE_FIELDS = (
     "result",
     "verifier_report",
     "verifier_invocation_id",
+    "verifier_axiom_inventory_sha256",
+    "counterexample_certificate",
+    "contract_semantic_review",
     "lanes",
     "lane_intervals",
     "candidate_receipts",
@@ -107,6 +113,9 @@ class _RunState(TypedDict, total=False):
     result: dict[str, Any]
     verifier_report: dict[str, Any]
     verifier_invocation_id: str
+    verifier_axiom_inventory_sha256: str
+    counterexample_certificate: dict[str, Any]
+    contract_semantic_review: dict[str, Any]
     termination_detail: str | dict[str, str]
     lanes: list[dict[str, Any]]
     lane_intervals: dict[str, dict[str, int]]
@@ -242,6 +251,17 @@ def _checkpoint_identities(run: dict[str, Any]) -> dict[str, Any]:
     for name in ("probe_rust_sha256", "probe_aeneas_sha256", "graph_sha256"):
         if name in run:
             identities[name] = run[name]
+    preparation = run.get("preparation_manifest")
+    if isinstance(preparation, dict):
+        identities["preparation_manifest_sha256"] = preparation.get(
+            "manifest_sha256"
+        )
+    reference = run.get("verifier_reference")
+    if isinstance(reference, dict):
+        identities["verifier_reference_path"] = reference.get("reference_path")
+        identities["verifier_reference_sha256"] = reference.get(
+            "reference_sha256"
+        )
     return identities
 
 
@@ -358,6 +378,21 @@ def _valid_checkpoint(
     ):
         return None
     if any(value["identities"].get(key) != item for key, item in expected_identities.items()):
+        return None
+    preparation = run.get("preparation_manifest")
+    reference = run.get("verifier_reference")
+    if isinstance(preparation, dict) and (
+        identities.get("preparation_manifest_sha256")
+        != preparation.get("manifest_sha256")
+    ):
+        return None
+    if isinstance(reference, dict) and (
+        identities.get("verifier_reference_path") != reference.get("reference_path")
+        or identities.get("verifier_reference_sha256")
+        != reference.get("reference_sha256")
+        or reference.get("preparation_manifest_sha256")
+        != identities.get("preparation_manifest_sha256")
+    ):
         return None
     return value
 

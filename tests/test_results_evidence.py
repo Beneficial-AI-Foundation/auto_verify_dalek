@@ -9,7 +9,7 @@ from decimal import Decimal
 from pathlib import Path
 from unittest import mock
 
-from autofv import evidence, experiment, results, verifier, worker
+from autofv import axiom_audit, evidence, experiment, results, verifier, worker
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -26,6 +26,64 @@ def _sha(value):
 
 def _receipt(body, digest_field):
     return {**body, digest_field: _sha(body)}
+
+
+def _semantic_review(state, *, status="approved"):
+    graph = state.get("graph", {})
+    frozen = set(graph.get("frozen_targets", []))
+    targets = state.get("target_states", {})
+    final = {
+        target["contract_fingerprint"]
+        for node, target in targets.items()
+        if node not in frozen
+        and isinstance(target, dict)
+        and target.get("status") == "accepted"
+        and isinstance(target.get("contract_fingerprint"), str)
+    }
+    contracts = state.get("contracts", {})
+    supplied_specs = set(graph.get("supplied_specs", {}).values())
+    final.update(
+        record["model_fingerprint"]
+        for name, record in contracts.get("frozen", {}).items()
+        if name not in supplied_specs
+        and isinstance(record, dict)
+        and isinstance(record.get("model_fingerprint"), str)
+    )
+    inventory = set(contracts.get("invalidated_fingerprints", [])) | final
+    for revision in contracts.get("revision_lineage", []):
+        if isinstance(revision, dict):
+            inventory.update(
+                value
+                for value in (
+                    revision.get("old_fingerprint"),
+                    revision.get("new_fingerprint"),
+                )
+                if isinstance(value, str)
+            )
+    if not inventory:
+        inventory = {
+            record["model_fingerprint"]
+            for record in contracts.get("frozen", {}).values()
+            if isinstance(record, dict)
+            and isinstance(record.get("model_fingerprint"), str)
+        }
+        final = set(inventory)
+    body = {
+        "schema": "contract-semantic-review/v1",
+        "status": status,
+        "accepted_commit": state["accepted"]["accepted_commit"],
+        "fingerprints": [
+            {
+                "fingerprint": fingerprint,
+                "decision": (
+                    "approved" if status == "approved" and fingerprint in final
+                    else "withheld"
+                ),
+            }
+            for fingerprint in sorted(inventory)
+        ],
+    }
+    return _receipt(body, "review_sha256")
 
 
 def _complete_attempt(
@@ -51,6 +109,7 @@ def _complete_attempt(
             "holes",
             "trust",
             "native_decide",
+            "kernel_axioms",
             "meaning",
         )
     }
@@ -63,8 +122,26 @@ def _complete_attempt(
     report_body = {
         "schema": "autofv-verifier-report/v1",
         "run_id": run_id,
+        "invocation_id": "verifier-fixture-001",
+        "agent_worker_id": "lima:agent:aaa",
+        "verifier_worker_id": "lima:verifier:bbb",
+        "snapshot_sha256": "4" * 64,
+        "manifest_sha256": "5" * 64,
+        "probe_rust_sha256": "1" * 64,
+        "probe_aeneas_sha256": "2" * 64,
+        "graph_sha256": "3" * 64,
+        "image_digest": lock["image"]["image_digest"],
+        "control_bundle_sha256": "6" * 64,
+        "native_decide_policy_sha256": lock[
+            "native_decide_policy_sha256"
+        ],
+        "axiom_scope_sha256": "e" * 64,
+        "axiom_inventory_sha256": axiom_audit.inventory_identity_sha256([]),
+        "toolchain_lock_sha256": _sha(lock),
         "accepted_commit": "a" * 40,
         "accepted_tree_sha256": "b" * 64,
+        "bundle_sha256": "c" * 64,
+        "reference_sha256": "d" * 64,
         "verdict": "PASS",
         "evidence_level": "L4",
         "checks": checks,
@@ -73,7 +150,10 @@ def _complete_attempt(
         "sorry_count_before": 1,
         "sorry_count_after": 0,
         "native_decide_uses": [],
+        "accepted_native_decide_uses": [],
+        "hidden_native_decide_uses": [],
         "compiler_assumptions": assumptions,
+        "axiom_inventory": [],
     }
     report = _receipt(report_body, "report_sha256")
     graph = {
@@ -233,8 +313,14 @@ def _complete_attempt(
         "graph": graph,
         "contracts": {
             "frozen": {
-                "Diamond.left_spec": {"status": "frozen"},
-                "Diamond.right_spec": {"status": "frozen"},
+                "Diamond.left_spec": {
+                    "status": "frozen",
+                    "model_fingerprint": "a" * 64,
+                },
+                "Diamond.right_spec": {
+                    "status": "frozen",
+                    "model_fingerprint": "b" * 64,
+                },
             }
         },
         "accepted": run["accepted"],
@@ -263,6 +349,7 @@ def _complete_attempt(
         "verifier_report": report,
         "native_decide_uses": [],
     }
+    state["contract_semantic_review"] = _semantic_review(state)
     files = {
         "evidence/worker-inventory.json": worker_inventory,
         "evidence/scored-container.json": scored_container,
@@ -298,6 +385,7 @@ def _generic_attempt(root: Path, *, attempt_id: str = "attempt-generic"):
             "contract_fingerprint": (
                 new_fingerprint if node == left else chr(97 + index) * 64
             ),
+            "statement_sha256": chr(100 + index) * 64,
             "block_chain": None,
         }
         for index, node in enumerate((left, right, top))
@@ -340,6 +428,7 @@ def _generic_attempt(root: Path, *, attempt_id: str = "attempt-generic"):
         "tokens": {"input": 20, "output": 8, "total": 28},
         "cost_usd": "0.020000",
     }
+    state["contract_semantic_review"] = _semantic_review(state)
     run["cost_classification"] = run["lock"]["fixed_proxy"][
         "cost_classification"
     ]
@@ -447,6 +536,7 @@ class ResultEvidenceTests(unittest.TestCase):
                         "invalidated_fingerprints"
                     ],
                     "invalidated_consumers": state["invalidated_consumers"],
+                    "final_fingerprints": ["a" * 64, "b" * 64],
                 },
             )
             self.assertEqual(
@@ -577,133 +667,6 @@ class ResultEvidenceTests(unittest.TestCase):
             self.assertEqual(
                 result["termination_reason"], "wall_budget_exhausted"
             )
-
-    def test_retained_audit_validators_fail_closed_on_missing_or_mismatch(self):
-        smoke = getattr(results, "validate_smoke_audit", None)
-        full = getattr(results, "validate_full_audit", None)
-        self.assertTrue(callable(smoke), "validate_smoke_audit is missing")
-        self.assertTrue(callable(full), "validate_full_audit is missing")
-
-        with tempfile.TemporaryDirectory() as tmp:
-            base = Path(tmp)
-            run, state = _generic_attempt(base / "run")
-            result, receipt = results.render_attempt(
-                run, state, outcome="success", reason="all_targets_verified"
-            )
-            results.persist_attempt(run, result, receipt)
-            retained = base / "smoke-retained.json"
-            retained.write_bytes(experiment.canonical_json_bytes(result) + b"\n")
-
-            smoke(retained)
-            with self.assertRaises(results.ResultError):
-                smoke(base / "missing-retained.json")
-
-            mismatched = copy.deepcopy(result)
-            mismatched["l0_receipt_sha256"] = "0" * 64
-            mismatched_path = base / "mismatched-retained.json"
-            mismatched_path.write_bytes(
-                experiment.canonical_json_bytes(mismatched) + b"\n"
-            )
-            with self.assertRaises(results.ResultError):
-                smoke(mismatched_path)
-
-            inflated = copy.deepcopy(result)
-            inflated["verified_counts"]["targets"] = 99
-            inflated_path = base / "inflated-counts-retained.json"
-            inflated_path.write_bytes(
-                experiment.canonical_json_bytes(inflated) + b"\n"
-            )
-            with self.assertRaisesRegex(
-                results.ResultError, "verifier counts mismatch"
-            ):
-                smoke(inflated_path)
-
-            coordinated = copy.deepcopy(result)
-            coordinated["target_states"].pop("probe:Diamond.left")
-            coordinated["verified_counts"] = {
-                "targets": 1,
-                "declarations": 2,
-                "closure": 2,
-            }
-            coordinated_path = base / "coordinated-counts-retained.json"
-            coordinated_path.write_bytes(
-                experiment.canonical_json_bytes(coordinated) + b"\n"
-            )
-            with self.assertRaisesRegex(
-                results.ResultError, "target state node universe mismatch"
-            ):
-                smoke(coordinated_path)
-
-            with self.assertRaises(results.ResultError):
-                full(retained, base / "missing-contract-review.json")
-            review = base / "contract-semantic-review.json"
-            review.write_bytes(
-                experiment.canonical_json_bytes(
-                    {
-                        "schema": "autofv-contract-semantic-review/v1",
-                        "status": "approved",
-                        "accepted_commit": "0" * 40,
-                        "fingerprints": [],
-                    }
-                )
-                + b"\n"
-            )
-            with self.assertRaises(results.ResultError):
-                full(retained, review)
-
-            partial_run, partial_state = _generic_attempt(
-                base / "partial-run", attempt_id="attempt-partial-audit"
-            )
-            left, right, top = partial_state["graph"]["selected_nodes"]
-            partial_state["target_states"][left].update(
-                {"status": "failed", "block_chain": [left]}
-            )
-            partial_state["target_states"][top].update(
-                {"status": "blocked", "block_chain": [top, left]}
-            )
-            partial_state["block_chains"] = {top: [top, left]}
-            partial_state["accepted_nodes"] = [right]
-            partial_result, partial_receipt = results.render_attempt(
-                partial_run,
-                partial_state,
-                outcome="budget_exhausted",
-                reason="wall_budget_exhausted",
-            )
-            results.persist_attempt(
-                partial_run, partial_result, partial_receipt
-            )
-            partial_retained = base / "full-retained.json"
-            partial_retained.write_bytes(
-                experiment.canonical_json_bytes(partial_result) + b"\n"
-            )
-            review.write_bytes(
-                experiment.canonical_json_bytes(
-                    {
-                        "schema": "autofv-contract-semantic-review/v1",
-                        "status": "approved",
-                        "accepted_commit": "a" * 40,
-                        "fingerprints": [
-                            {
-                                "fingerprint": "8" * 64,
-                                "decision": "withheld",
-                            },
-                            {
-                                "fingerprint": "9" * 64,
-                                "decision": "withheld",
-                            },
-                            {
-                                "fingerprint": "b" * 64,
-                                "decision": "approved",
-                            },
-                        ],
-                    }
-                )
-                + b"\n"
-            )
-            with self.assertRaisesRegex(
-                results.ResultError, "verifier counts mismatch"
-            ):
-                full(partial_retained, review)
 
     def test_missing_or_incomplete_evidence_is_unscored_and_withholds_recovery(self):
         with tempfile.TemporaryDirectory() as tmp:

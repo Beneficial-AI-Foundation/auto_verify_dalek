@@ -8,7 +8,7 @@ import unittest
 from pathlib import Path
 from unittest import mock
 
-from autofv import experiment, probes, verifier, verifier_bundle, worker
+from autofv import axiom_audit, experiment, probes, verifier, verifier_bundle, worker
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -123,6 +123,11 @@ def _invocation(bundle, state=None):
             "bundle_sha256"
         ],
         "native_decide_policy_sha256": lock["native_decide_policy_sha256"],
+        "axiom_scope_sha256": axiom_audit.inventory_scope_sha256(
+            axiom_audit.expected_inventory(
+                state, json.loads(REFERENCE.read_text())
+            )
+        ),
         "toolchain_lock_sha256": _sha256(_canonical(lock)),
         "accepted_commit": "2" * 40,
         "accepted_tree_sha256": "3" * 64,
@@ -161,7 +166,12 @@ def _observed(state=None):
             "native_decide_policy_sha256"
         ],
         "native_decide_uses": state["native_decide_uses"],
+        "accepted_native_decide_uses": state["native_decide_uses"],
+        "hidden_native_decide_uses": [],
         "compiler_assumptions": state["compiler_assumptions"],
+        "axiom_inventory": axiom_audit.expected_inventory(
+            state, json.loads(REFERENCE.read_text())
+        ),
         "meaning": {
             "reference_integrity": True,
             "statement_equivalence": True,
@@ -171,6 +181,73 @@ def _observed(state=None):
         "sorry_count_before": 1,
         "sorry_count_after": 0,
     }
+
+
+def _preparation_manifest(state=None):
+    state = state or _state()
+    graph = state["graph"]
+    files = []
+    body = {
+        "schema": "preparation-manifest/v1",
+        "mode": "small",
+        "source": {
+            "repository": "https://example.invalid/dalek.git",
+            "revision": "7" * 40,
+            "tree_sha256": "8" * 64,
+        },
+        "probes": {
+            name: {
+                "repository": f"https://example.invalid/{name}.git",
+                "revision": revision * 40,
+                "tree_sha256": revision * 64,
+                "version": version,
+            }
+            for name, revision, version in (
+                ("probe-aeneas", "9", "0.19.0"),
+                ("probe-rust", "a", "0.10.0"),
+                ("probe-lean", "b", "0.15.0"),
+            )
+        },
+        "target_report_sha256": "b" * 64,
+        "probe_identities_sha256": "c" * 64,
+        "roots": graph["frozen_targets"],
+        "closures": {
+            root: graph["selected_nodes"] for root in graph["frozen_targets"]
+        },
+        "retained_declarations": graph["selected_nodes"],
+        "files": files,
+        "tree_sha256": _sha256(_canonical(files)),
+        "gates": {
+            name: "passed"
+            for name in (
+                "build",
+                "provenance",
+                "reproducibility",
+                "secret_scan",
+                "spoiler_scan",
+                "symlink_scan",
+            )
+        },
+    }
+    return {**body, "manifest_sha256": _sha256(_canonical(body))}
+
+
+def _terminal_state(*, incomplete=False):
+    state = _state()
+    state["target_states"] = {
+        node: {
+            "status": (
+                "blocked"
+                if incomplete and node == state["graph"]["frozen_targets"][0]
+                else "accepted"
+            ),
+            "statement_sha256": _sha256(node.encode()),
+        }
+        for node in state["graph"]["selected_nodes"]
+    }
+    if incomplete:
+        state["accepted_nodes"] = state["accepted_nodes"][:-1]
+    return state
 
 
 def _raw_tar(entries):
@@ -359,6 +436,9 @@ class ReportAuthorityTests(unittest.TestCase):
         self.assertIn("import Diamond.Left\n", program)
         self.assertIn("import Diamond.Right\n", program)
         self.assertNotIn("import Diamond\n", program)
+        self.assertIn("def meaning_0 : Prop :=", program)
+        self.assertIn("#check (Diamond.left_spec :", program)
+        self.assertNotIn("exact Diamond.left_spec", program)
 
     def test_only_exact_current_distinct_worker_pass_is_authoritative(self):
         bundle = verifier.build_bundle(_members())
@@ -392,7 +472,6 @@ class ReportAuthorityTests(unittest.TestCase):
         same_worker["report_sha256"] = _sha256(_canonical(body))
         with self.assertRaisesRegex(verifier.VerifierError, "distinct"):
             verifier.validate_report(same_worker, run, invocation)
-
 
 class VerifyRunWiringTests(unittest.TestCase):
     def test_verifier_runtime_mismatch_fails_before_bundle_intake(self):
@@ -461,8 +540,11 @@ class VerifyRunWiringTests(unittest.TestCase):
                 "image_digest",
                 "control_bundle_sha256",
                 "native_decide_policy_sha256",
+                "axiom_scope_sha256",
+                "toolchain_lock_sha256",
                 "accepted_commit",
                 "accepted_tree_sha256",
+                "reference_sha256",
             )
         }
         started = subprocess.CompletedProcess(
@@ -497,7 +579,6 @@ class VerifyRunWiringTests(unittest.TestCase):
         self.assertEqual(report["reference_sha256"], _sha256(REFERENCE.read_bytes()))
         runtime.assert_called_once_with(run["lock"])
         clean.assert_called_once()
-
 
 if __name__ == "__main__":
     unittest.main()

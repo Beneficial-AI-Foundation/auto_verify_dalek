@@ -1,0 +1,1989 @@
+{
+ "source_repo": "/home/zhang-liao/auto_verify_dalek",
+ "top_level_source": ".verilib/top_level_funs_probe.json",
+ "theorem_level": true,
+ "strip_comments": true,
+ "kept_spec_files": {
+  "Curve25519Dalek/Specs/Backend/Serial/CurveModels/AffineNielsPoint/Add.lean": [
+   "curve25519_dalek.Shared0EdwardsPoint.Insts.CoreOpsArithAddSharedAAffineNielsPointCompletedPoint.add"
+  ],
+  "Curve25519Dalek/Specs/Backend/Serial/CurveModels/AffineNielsPoint/AssertReceiverIsTotalEq.lean": [
+   "curve25519_dalek.backend.serial.curve_models.AffineNielsPoint.Insts.CoreCmpEq.assert_receiver_is_total_eq"
+  ],
+  "Curve25519Dalek/Specs/Backend/Serial/CurveModels/AffineNielsPoint/ConditionalAssign.lean": [
+   "curve25519_dalek.backend.serial.curve_models.AffineNielsPoint.Insts.SubtleConditionallySelectable.conditional_assign"
+  ],
+  "Curve25519Dalek/Specs/Backend/Serial/CurveModels/AffineNielsPoint/ConditionalSelect.lean": [
+   "curve25519_dalek.backend.serial.curve_models.AffineNielsPoint.Insts.SubtleConditionallySelectable.conditional_select"
+  ],
+  "Curve25519Dalek/Specs/Backend/Serial/CurveModels/AffineNielsPoint/Eq.lean": [
+   "curve25519_dalek.backend.serial.curve_models.AffineNielsPoint.Insts.CoreCmpPartialEqAffineNielsPoint.eq"
+  ],
+  "Curve25519Dalek/Specs/Backend/Serial/CurveModels/AffineNielsPoint/Sub.lean": [
+   "curve25519_dalek.Shared0EdwardsPoint.Insts.CoreOpsArithSubSharedAAffineNielsPointCompletedPoint.sub"
+  ],
+  "Curve25519Dalek/Specs/Backend/Serial/CurveModels/ProjectivePoint/AsExtended.lean": [
+   "curve25519_dalek.backend.serial.curve_models.ProjectivePoint.as_extended"
+  ],
+  "Curve25519Dalek/Specs/Backend/Serial/CurveModels/ProjectivePoint/Identity.lean": [
+   "curve25519_dalek.IdentityCurveModelsProjectivePoint.identity"
+  ],
+  "Curve25519Dalek/Specs/Backend/Serial/U64/Field/FieldElement51/AsBytes.lean": [
+   "curve25519_dalek.backend.serial.u64.field.FieldElement51.as_bytes"
+  ],
+  "Curve25519Dalek/Specs/Backend/Serial/U64/Field/FieldElement51/SubAssign.lean": [
+   "curve25519_dalek.backend.serial.u64.field.FieldElement51.Insts.CoreOpsArithSubAssignSharedAFieldElement51.sub_assign"
+  ],
+  "Curve25519Dalek/Specs/Backend/Serial/U64/Scalar/Scalar52/Square.lean": [
+   "curve25519_dalek.backend.serial.u64.scalar.Scalar52.square"
+  ],
+  "Curve25519Dalek/Specs/Edwards/Affine/AffinePoint/ConditionalSelect.lean": [
+   "curve25519_dalek.edwards.affine.AffinePoint.Insts.SubtleConditionallySelectable.conditional_select"
+  ],
+  "Curve25519Dalek/Specs/Edwards/Affine/AffinePoint/Eq.lean": [
+   "curve25519_dalek.edwards.affine.AffinePoint.Insts.CoreCmpPartialEqAffinePoint.eq"
+  ],
+  "Curve25519Dalek/Specs/Edwards/CompressedEdwardsY/CtEq.lean": [
+   "curve25519_dalek.edwards.CompressedEdwardsY.Insts.SubtleConstantTimeEq.ct_eq"
+  ],
+  "Curve25519Dalek/Specs/Edwards/EdwardsPoint/AsAffineNiels.lean": [
+   "curve25519_dalek.edwards.EdwardsPoint.as_affine_niels"
+  ],
+  "Curve25519Dalek/Specs/Edwards/EdwardsPoint/Compress.lean": [
+   "curve25519_dalek.edwards.EdwardsPoint.compress"
+  ],
+  "Curve25519Dalek/Specs/Edwards/EdwardsPoint/Double.lean": [
+   "curve25519_dalek.edwards.EdwardsPoint.double"
+  ],
+  "Curve25519Dalek/Specs/Edwards/EdwardsPoint/Eq.lean": [
+   "curve25519_dalek.edwards.EdwardsPoint.Insts.CoreCmpPartialEqEdwardsPoint.eq"
+  ],
+  "Curve25519Dalek/Specs/Edwards/EdwardsPoint/IsSmallOrder.lean": [
+   "curve25519_dalek.edwards.EdwardsPoint.is_small_order"
+  ],
+  "Curve25519Dalek/Specs/Edwards/EdwardsPoint/IsTorsionFree.lean": [
+   "curve25519_dalek.edwards.EdwardsPoint.is_torsion_free"
+  ],
+  "Curve25519Dalek/Specs/Edwards/EdwardsPoint/MulBaseClamped.lean": [
+   "curve25519_dalek.edwards.EdwardsPoint.mul_base_clamped"
+  ],
+  "Curve25519Dalek/Specs/Edwards/EdwardsPoint/MulClamped.lean": [
+   "curve25519_dalek.edwards.EdwardsPoint.mul_clamped"
+  ],
+  "Curve25519Dalek/Specs/Montgomery/MontgomeryPoint/AsBytes.lean": [
+   "curve25519_dalek.montgomery.MontgomeryPoint.as_bytes"
+  ],
+  "Curve25519Dalek/Specs/Montgomery/MontgomeryPoint/ConditionalSelect.lean": [
+   "curve25519_dalek.montgomery.MontgomeryPoint.Insts.SubtleConditionallySelectable.conditional_select"
+  ],
+  "Curve25519Dalek/Specs/Montgomery/MontgomeryPoint/ElligatorEncode.lean": [
+   "curve25519_dalek.montgomery.elligator_encode"
+  ],
+  "Curve25519Dalek/Specs/Montgomery/MontgomeryPoint/Eq.lean": [
+   "curve25519_dalek.montgomery.MontgomeryPoint.Insts.CoreCmpPartialEqMontgomeryPoint.eq"
+  ],
+  "Curve25519Dalek/Specs/Montgomery/MontgomeryPoint/Identity.lean": [
+   "curve25519_dalek.montgomery.MontgomeryPoint.Insts.Curve25519_dalekTraitsIdentity.identity"
+  ],
+  "Curve25519Dalek/Specs/Montgomery/MontgomeryPoint/Mul.lean": [
+   "curve25519_dalek.montgomery.MontgomeryPoint.Insts.CoreOpsArithMulSharedBScalarMontgomeryPoint.mul"
+  ],
+  "Curve25519Dalek/Specs/Montgomery/MontgomeryPoint/MulBaseClamped.lean": [
+   "curve25519_dalek.montgomery.MontgomeryPoint.mul_base_clamped"
+  ],
+  "Curve25519Dalek/Specs/Montgomery/MontgomeryPoint/MulClamped.lean": [
+   "curve25519_dalek.montgomery.MontgomeryPoint.mul_clamped"
+  ],
+  "Curve25519Dalek/Specs/Montgomery/MontgomeryPoint/ToBytes.lean": [
+   "curve25519_dalek.montgomery.MontgomeryPoint.to_bytes"
+  ],
+  "Curve25519Dalek/Specs/Montgomery/MontgomeryPoint/ToEdwards.lean": [
+   "curve25519_dalek.montgomery.MontgomeryPoint.to_edwards"
+  ],
+  "Curve25519Dalek/Specs/Montgomery/ProjectivePoint/ConditionalSelect.lean": [
+   "curve25519_dalek.montgomery.ProjectivePoint.Insts.SubtleConditionallySelectable.conditional_select"
+  ],
+  "Curve25519Dalek/Specs/Ristretto/CompressedRistretto/CtEq.lean": [
+   "curve25519_dalek.ristretto.CompressedRistretto.Insts.SubtleConstantTimeEq.ct_eq"
+  ],
+  "Curve25519Dalek/Specs/Ristretto/CompressedRistretto/Decompress.lean": [
+   "curve25519_dalek.ristretto.CompressedRistretto.decompress"
+  ],
+  "Curve25519Dalek/Specs/Ristretto/CompressedRistretto/ToBytes.lean": [
+   "curve25519_dalek.ristretto.CompressedRistretto.to_bytes"
+  ],
+  "Curve25519Dalek/Specs/Ristretto/RistrettoPoint/Compress.lean": [
+   "curve25519_dalek.ristretto.RistrettoPoint.compress"
+  ],
+  "Curve25519Dalek/Specs/Ristretto/RistrettoPoint/ConditionalSelect.lean": [
+   "curve25519_dalek.ristretto.RistrettoPoint.Insts.SubtleConditionallySelectable.conditional_select"
+  ],
+  "Curve25519Dalek/Specs/Ristretto/RistrettoPoint/Eq.lean": [
+   "curve25519_dalek.ristretto.RistrettoPoint.Insts.CoreCmpPartialEqRistrettoPoint.eq"
+  ],
+  "Curve25519Dalek/Specs/Ristretto/RistrettoPoint/FromUniformBytes.lean": [
+   "curve25519_dalek.ristretto.RistrettoPoint.from_uniform_bytes"
+  ],
+  "Curve25519Dalek/Specs/Ristretto/RistrettoPoint/Mul_Base.lean": [
+   "curve25519_dalek.ristretto.RistrettoPoint.mul_base"
+  ],
+  "Curve25519Dalek/Specs/Scalar/Scalar/Eq.lean": [
+   "curve25519_dalek.scalar.Scalar.Insts.CoreCmpPartialEqScalar.eq"
+  ],
+  "Curve25519Dalek/Specs/Scalar/Scalar/FromBytesModOrder.lean": [
+   "curve25519_dalek.scalar.Scalar.from_bytes_mod_order"
+  ],
+  "Curve25519Dalek/Specs/Scalar/Scalar/FromBytesModOrderWide.lean": [
+   "curve25519_dalek.scalar.Scalar.from_bytes_mod_order_wide"
+  ],
+  "Curve25519Dalek/Specs/Scalar/Scalar/FromCanonicalBytes.lean": [
+   "curve25519_dalek.scalar.Scalar.from_canonical_bytes"
+  ],
+  "Curve25519Dalek/Specs/Scalar/Scalar/FromU128.lean": [
+   "curve25519_dalek.scalar.Scalar.Insts.CoreConvertFromU128.from"
+  ],
+  "Curve25519Dalek/Specs/Scalar/Scalar/FromU16.lean": [
+   "curve25519_dalek.scalar.Scalar.Insts.CoreConvertFromU16.from"
+  ],
+  "Curve25519Dalek/Specs/Scalar/Scalar/FromU32.lean": [
+   "curve25519_dalek.scalar.Scalar.Insts.CoreConvertFromU32.from"
+  ],
+  "Curve25519Dalek/Specs/Scalar/Scalar/FromU64.lean": [
+   "curve25519_dalek.scalar.Scalar.Insts.CoreConvertFromU64.from"
+  ],
+  "Curve25519Dalek/Specs/Scalar/Scalar/FromU8.lean": [
+   "curve25519_dalek.scalar.Scalar.Insts.CoreConvertFromU8.from"
+  ],
+  "Curve25519Dalek/Specs/Scalar/Scalar/Invert.lean": [
+   "curve25519_dalek.scalar.Scalar.invert"
+  ],
+  "Curve25519Dalek/Specs/Scalar/Scalar/Mul.lean": [
+   "curve25519_dalek.SharedAScalar.Insts.CoreOpsArithMulScalarScalar.mul",
+   "curve25519_dalek.scalar.Scalar.Insts.CoreOpsArithMulScalarScalar.mul",
+   "curve25519_dalek.scalar.Scalar.Insts.CoreOpsArithMulSharedBScalarScalar.mul"
+  ],
+  "Curve25519Dalek/Specs/Scalar/Scalar/MulAssign.lean": [
+   "curve25519_dalek.scalar.Scalar.Insts.CoreOpsArithMulAssignScalar.mul_assign"
+  ],
+  "Curve25519Dalek/Specs/Scalar/Scalar/Neg.lean": [
+   "curve25519_dalek.scalar.Scalar.Insts.CoreOpsArithNegScalar.neg"
+  ],
+  "Curve25519Dalek/Specs/Scalar/Scalar/ToBytes.lean": [
+   "curve25519_dalek.scalar.Scalar.to_bytes"
+  ]
+ },
+ "kept_count": 55,
+ "stub_spec_files": {
+  "Curve25519Dalek/Specs/Backend/Serial/U64/Constants/SQRT_M1.lean": 1,
+  "Curve25519Dalek/Specs/Backend/Serial/U64/Field/FieldElement51/FromBytes.lean": 16,
+  "Curve25519Dalek/Specs/Backend/Serial/U64/Field/FieldElement51/Reduce.lean": 2,
+  "Curve25519Dalek/Specs/Backend/Serial/U64/Field/FieldElement51/ToBytes.lean": 15,
+  "Curve25519Dalek/Specs/Backend/Serial/U64/Scalar/M.lean": 1,
+  "Curve25519Dalek/Specs/Backend/Serial/U64/Scalar/Scalar52/MontgomeryInvert.lean": 7,
+  "Curve25519Dalek/Specs/Backend/Serial/U64/Scalar/Scalar52/MulInternal.lean": 1,
+  "Curve25519Dalek/Specs/Backend/Serial/U64/Scalar/Scalar52/SquareInternal.lean": 5,
+  "Curve25519Dalek/Specs/Backend/Serial/U64/Scalar/Scalar52/Sub.lean": 2,
+  "Curve25519Dalek/Specs/Backend/Serial/U64/Scalar/Scalar52/ToBytes.lean": 18,
+  "Curve25519Dalek/Specs/Field/FieldElement51/IsZero.lean": 2,
+  "Curve25519Dalek/Specs/Field/FieldElement51/SqrtRatioi.lean": 32,
+  "Curve25519Dalek/Specs/Montgomery/ProjectivePoint/DifferentialAddAndDouble.lean": 2,
+  "Curve25519Dalek/Specs/Ristretto/RistrettoPoint/ElligatorRistrettoFlavor.lean": 23,
+  "Curve25519Dalek/Specs/Scalar/ClampInteger.lean": 5,
+  "Curve25519Dalek/Specs/Backend/Serial/U64/Constants/SQRT_AD_MINUS_ONE.lean": 1,
+  "Curve25519Dalek/Specs/Backend/Serial/U64/Scalar/Scalar52/ConditionalAddL.lean": 3,
+  "Curve25519Dalek/Specs/Backend/Serial/U64/Scalar/Scalar52/SquareMultiply.lean": 2
+ },
+ "stub_count": 18,
+ "dropped_spec_files": [
+  "Curve25519Dalek/Specs/Backend/Serial/CurveModels/AffineNielsPoint/Identity.lean",
+  "Curve25519Dalek/Specs/Backend/Serial/CurveModels/AffineNielsPoint/Neg.lean",
+  "Curve25519Dalek/Specs/Backend/Serial/CurveModels/CompletedPoint/Add.lean",
+  "Curve25519Dalek/Specs/Backend/Serial/CurveModels/CompletedPoint/AsExtended.lean",
+  "Curve25519Dalek/Specs/Backend/Serial/CurveModels/CompletedPoint/AsProjective.lean",
+  "Curve25519Dalek/Specs/Backend/Serial/CurveModels/ProjectiveNielsPoint/ConditionalAssign.lean",
+  "Curve25519Dalek/Specs/Backend/Serial/CurveModels/ProjectiveNielsPoint/ConditionalSelect.lean",
+  "Curve25519Dalek/Specs/Backend/Serial/CurveModels/ProjectiveNielsPoint/Identity.lean",
+  "Curve25519Dalek/Specs/Backend/Serial/CurveModels/ProjectiveNielsPoint/Neg.lean",
+  "Curve25519Dalek/Specs/Backend/Serial/CurveModels/ProjectiveNielsPoint/Sub.lean",
+  "Curve25519Dalek/Specs/Backend/Serial/CurveModels/ProjectivePoint/Double.lean",
+  "Curve25519Dalek/Specs/Backend/Serial/ScalarMul/VartimeDoubleBase/Mul.lean",
+  "Curve25519Dalek/Specs/Backend/Serial/U64/Constants/APLUS2_OVER_FOUR.lean",
+  "Curve25519Dalek/Specs/Backend/Serial/U64/Constants/ED25519_BASEPOINT_POINT.lean",
+  "Curve25519Dalek/Specs/Backend/Serial/U64/Constants/EDWARDS_D.lean",
+  "Curve25519Dalek/Specs/Backend/Serial/U64/Constants/EDWARDS_D2.lean",
+  "Curve25519Dalek/Specs/Backend/Serial/U64/Constants/EDWARDS_D_MINUS_ONE_SQUARED.lean",
+  "Curve25519Dalek/Specs/Backend/Serial/U64/Constants/EIGHT_TORSION.lean",
+  "Curve25519Dalek/Specs/Backend/Serial/U64/Constants/INVSQRT_A_MINUS_D.lean",
+  "Curve25519Dalek/Specs/Backend/Serial/U64/Constants/L.lean",
+  "Curve25519Dalek/Specs/Backend/Serial/U64/Constants/LFACTOR.lean",
+  "Curve25519Dalek/Specs/Backend/Serial/U64/Constants/MINUS_ONE.lean",
+  "Curve25519Dalek/Specs/Backend/Serial/U64/Constants/MONTGOMERY_A.lean",
+  "Curve25519Dalek/Specs/Backend/Serial/U64/Constants/MONTGOMERY_A_NEG.lean",
+  "Curve25519Dalek/Specs/Backend/Serial/U64/Constants/ONE_MINUS_EDWARDS_D_SQUARED.lean",
+  "Curve25519Dalek/Specs/Backend/Serial/U64/Constants/R.lean",
+  "Curve25519Dalek/Specs/Backend/Serial/U64/Constants/RR.lean",
+  "Curve25519Dalek/Specs/Backend/Serial/U64/Field/FieldElement51/Add.lean",
+  "Curve25519Dalek/Specs/Backend/Serial/U64/Field/FieldElement51/AddAssign.lean",
+  "Curve25519Dalek/Specs/Backend/Serial/U64/Field/FieldElement51/ConditionalAssign.lean",
+  "Curve25519Dalek/Specs/Backend/Serial/U64/Field/FieldElement51/ConditionalSelect.lean",
+  "Curve25519Dalek/Specs/Backend/Serial/U64/Field/FieldElement51/CtEq.lean",
+  "Curve25519Dalek/Specs/Backend/Serial/U64/Field/FieldElement51/FromLimbs.lean",
+  "Curve25519Dalek/Specs/Backend/Serial/U64/Field/FieldElement51/MINUS_ONE.lean",
+  "Curve25519Dalek/Specs/Backend/Serial/U64/Field/FieldElement51/Mul.lean",
+  "Curve25519Dalek/Specs/Backend/Serial/U64/Field/FieldElement51/Neg.lean",
+  "Curve25519Dalek/Specs/Backend/Serial/U64/Field/FieldElement51/Negate.lean",
+  "Curve25519Dalek/Specs/Backend/Serial/U64/Field/FieldElement51/ONE.lean",
+  "Curve25519Dalek/Specs/Backend/Serial/U64/Field/FieldElement51/Pow2K.lean",
+  "Curve25519Dalek/Specs/Backend/Serial/U64/Field/FieldElement51/Square.lean",
+  "Curve25519Dalek/Specs/Backend/Serial/U64/Field/FieldElement51/Square2.lean",
+  "Curve25519Dalek/Specs/Backend/Serial/U64/Field/FieldElement51/Sub.lean",
+  "Curve25519Dalek/Specs/Backend/Serial/U64/Field/FieldElement51/ZERO.lean",
+  "Curve25519Dalek/Specs/Backend/Serial/U64/Scalar/Scalar52/Add.lean",
+  "Curve25519Dalek/Specs/Backend/Serial/U64/Scalar/Scalar52/AsMontgomery.lean",
+  "Curve25519Dalek/Specs/Backend/Serial/U64/Scalar/Scalar52/FromBytes.lean",
+  "Curve25519Dalek/Specs/Backend/Serial/U64/Scalar/Scalar52/FromBytesWide.lean",
+  "Curve25519Dalek/Specs/Backend/Serial/U64/Scalar/Scalar52/FromMontgomery.lean",
+  "Curve25519Dalek/Specs/Backend/Serial/U64/Scalar/Scalar52/Invert.lean",
+  "Curve25519Dalek/Specs/Backend/Serial/U64/Scalar/Scalar52/MontgomeryMul.lean",
+  "Curve25519Dalek/Specs/Backend/Serial/U64/Scalar/Scalar52/MontgomeryReduce.lean",
+  "Curve25519Dalek/Specs/Backend/Serial/U64/Scalar/Scalar52/MontgomerySquare.lean",
+  "Curve25519Dalek/Specs/Backend/Serial/U64/Scalar/Scalar52/Mul.lean",
+  "Curve25519Dalek/Specs/Backend/Serial/U64/Scalar/Scalar52/Pack.lean",
+  "Curve25519Dalek/Specs/Backend/Serial/U64/Scalar/Scalar52/Zero.lean",
+  "Curve25519Dalek/Specs/Backend/StrausMultiscalarMul.lean",
+  "Curve25519Dalek/Specs/Backend/VartimeDoubleBaseMul.lean",
+  "Curve25519Dalek/Specs/Constants/BASEPOINT_ORDER_PRIVATE.lean",
+  "Curve25519Dalek/Specs/Constants/RISTRETTO_BASEPOINT_POINT.lean",
+  "Curve25519Dalek/Specs/Edwards/Affine/AffinePoint/Compress.lean",
+  "Curve25519Dalek/Specs/Edwards/Affine/AffinePoint/CtEq.lean",
+  "Curve25519Dalek/Specs/Edwards/Affine/AffinePoint/Identity.lean",
+  "Curve25519Dalek/Specs/Edwards/Affine/AffinePoint/ToEdwards.lean",
+  "Curve25519Dalek/Specs/Edwards/CompressedEdwardsY/AsBytes.lean",
+  "Curve25519Dalek/Specs/Edwards/CompressedEdwardsY/Decompress.lean",
+  "Curve25519Dalek/Specs/Edwards/CompressedEdwardsY/FromSlice.lean",
+  "Curve25519Dalek/Specs/Edwards/CompressedEdwardsY/Identity.lean",
+  "Curve25519Dalek/Specs/Edwards/CompressedEdwardsY/Step1.lean",
+  "Curve25519Dalek/Specs/Edwards/CompressedEdwardsY/Step2.lean",
+  "Curve25519Dalek/Specs/Edwards/EdwardsPoint/Add.lean",
+  "Curve25519Dalek/Specs/Edwards/EdwardsPoint/AsProjective.lean",
+  "Curve25519Dalek/Specs/Edwards/EdwardsPoint/AsProjectiveNiels.lean",
+  "Curve25519Dalek/Specs/Edwards/EdwardsPoint/ConditionalSelect.lean",
+  "Curve25519Dalek/Specs/Edwards/EdwardsPoint/CtEq.lean",
+  "Curve25519Dalek/Specs/Edwards/EdwardsPoint/Identity.lean",
+  "Curve25519Dalek/Specs/Edwards/EdwardsPoint/Mul.lean",
+  "Curve25519Dalek/Specs/Edwards/EdwardsPoint/MulBase.lean",
+  "Curve25519Dalek/Specs/Edwards/EdwardsPoint/MulByCofactor.lean",
+  "Curve25519Dalek/Specs/Edwards/EdwardsPoint/MulByPow2.lean",
+  "Curve25519Dalek/Specs/Edwards/EdwardsPoint/Neg.lean",
+  "Curve25519Dalek/Specs/Edwards/EdwardsPoint/Sub.lean",
+  "Curve25519Dalek/Specs/Edwards/EdwardsPoint/ToAffine.lean",
+  "Curve25519Dalek/Specs/Edwards/EdwardsPoint/ToMontgomery.lean",
+  "Curve25519Dalek/Specs/Edwards/EdwardsPoint/VartimeDoubleScalarMulBasepoint.lean",
+  "Curve25519Dalek/Specs/Field/FieldElement51/InvSqrt.lean",
+  "Curve25519Dalek/Specs/Field/FieldElement51/Invert.lean",
+  "Curve25519Dalek/Specs/Field/FieldElement51/IsNegative.lean",
+  "Curve25519Dalek/Specs/Field/FieldElement51/IsZero2.lean",
+  "Curve25519Dalek/Specs/Field/FieldElement51/Pow22501.lean",
+  "Curve25519Dalek/Specs/Field/FieldElement51/PowP58.lean",
+  "Curve25519Dalek/Specs/Montgomery/MontgomeryPoint/AsAffine.lean",
+  "Curve25519Dalek/Specs/Montgomery/MontgomeryPoint/CtEq.lean",
+  "Curve25519Dalek/Specs/Montgomery/MontgomeryPoint/MulAssign.lean",
+  "Curve25519Dalek/Specs/Montgomery/MontgomeryPoint/MulBase.lean",
+  "Curve25519Dalek/Specs/Montgomery/ProjectivePoint/Identity.lean",
+  "Curve25519Dalek/Specs/Ristretto/CompressedRistretto/AsBytes.lean",
+  "Curve25519Dalek/Specs/Ristretto/CompressedRistretto/FromSlice.lean",
+  "Curve25519Dalek/Specs/Ristretto/CompressedRistretto/Identity.lean",
+  "Curve25519Dalek/Specs/Ristretto/CompressedRistretto/Step1.lean",
+  "Curve25519Dalek/Specs/Ristretto/CompressedRistretto/Step2.lean",
+  "Curve25519Dalek/Specs/Ristretto/RistrettoPoint/Add.lean",
+  "Curve25519Dalek/Specs/Ristretto/RistrettoPoint/CtEq.lean",
+  "Curve25519Dalek/Specs/Ristretto/RistrettoPoint/Identity.lean",
+  "Curve25519Dalek/Specs/Ristretto/RistrettoPoint/Mul.lean",
+  "Curve25519Dalek/Specs/Ristretto/RistrettoPoint/Sub.lean",
+  "Curve25519Dalek/Specs/Scalar/ReadLeU64Into.lean",
+  "Curve25519Dalek/Specs/Scalar/Scalar/Add.lean",
+  "Curve25519Dalek/Specs/Scalar/Scalar/AsBytes.lean",
+  "Curve25519Dalek/Specs/Scalar/Scalar/CtEq.lean",
+  "Curve25519Dalek/Specs/Scalar/Scalar/IsCanonical.lean",
+  "Curve25519Dalek/Specs/Scalar/Scalar/NonAdjacentForm.lean",
+  "Curve25519Dalek/Specs/Scalar/Scalar/One.lean",
+  "Curve25519Dalek/Specs/Scalar/Scalar/Reduce.lean",
+  "Curve25519Dalek/Specs/Scalar/Scalar/Sub.lean",
+  "Curve25519Dalek/Specs/Scalar/Scalar/Unpack.lean",
+  "Curve25519Dalek/Specs/Scalar/Scalar/Zero.lean"
+ ],
+ "dropped_count": 116,
+ "proofs_replaced_by_sorry": {
+  "Curve25519Dalek/Specs/Backend/Serial/CurveModels/AffineNielsPoint/Add.lean": 1,
+  "Curve25519Dalek/Specs/Backend/Serial/CurveModels/AffineNielsPoint/AssertReceiverIsTotalEq.lean": 1,
+  "Curve25519Dalek/Specs/Backend/Serial/CurveModels/AffineNielsPoint/ConditionalAssign.lean": 1,
+  "Curve25519Dalek/Specs/Backend/Serial/CurveModels/AffineNielsPoint/ConditionalSelect.lean": 1,
+  "Curve25519Dalek/Specs/Backend/Serial/CurveModels/AffineNielsPoint/Eq.lean": 1,
+  "Curve25519Dalek/Specs/Backend/Serial/CurveModels/AffineNielsPoint/Sub.lean": 1,
+  "Curve25519Dalek/Specs/Backend/Serial/CurveModels/ProjectivePoint/AsExtended.lean": 1,
+  "Curve25519Dalek/Specs/Backend/Serial/CurveModels/ProjectivePoint/Identity.lean": 1,
+  "Curve25519Dalek/Specs/Backend/Serial/U64/Field/FieldElement51/AsBytes.lean": 1,
+  "Curve25519Dalek/Specs/Backend/Serial/U64/Field/FieldElement51/SubAssign.lean": 1,
+  "Curve25519Dalek/Specs/Backend/Serial/U64/Scalar/Scalar52/Square.lean": 1,
+  "Curve25519Dalek/Specs/Edwards/Affine/AffinePoint/ConditionalSelect.lean": 1,
+  "Curve25519Dalek/Specs/Edwards/Affine/AffinePoint/Eq.lean": 1,
+  "Curve25519Dalek/Specs/Edwards/CompressedEdwardsY/CtEq.lean": 1,
+  "Curve25519Dalek/Specs/Edwards/EdwardsPoint/AsAffineNiels.lean": 1,
+  "Curve25519Dalek/Specs/Edwards/EdwardsPoint/Compress.lean": 1,
+  "Curve25519Dalek/Specs/Edwards/EdwardsPoint/Double.lean": 1,
+  "Curve25519Dalek/Specs/Edwards/EdwardsPoint/Eq.lean": 1,
+  "Curve25519Dalek/Specs/Edwards/EdwardsPoint/IsSmallOrder.lean": 1,
+  "Curve25519Dalek/Specs/Edwards/EdwardsPoint/IsTorsionFree.lean": 1,
+  "Curve25519Dalek/Specs/Edwards/EdwardsPoint/MulBaseClamped.lean": 1,
+  "Curve25519Dalek/Specs/Edwards/EdwardsPoint/MulClamped.lean": 1,
+  "Curve25519Dalek/Specs/Montgomery/MontgomeryPoint/AsBytes.lean": 1,
+  "Curve25519Dalek/Specs/Montgomery/MontgomeryPoint/ConditionalSelect.lean": 1,
+  "Curve25519Dalek/Specs/Montgomery/MontgomeryPoint/ElligatorEncode.lean": 1,
+  "Curve25519Dalek/Specs/Montgomery/MontgomeryPoint/Eq.lean": 1,
+  "Curve25519Dalek/Specs/Montgomery/MontgomeryPoint/Identity.lean": 1,
+  "Curve25519Dalek/Specs/Montgomery/MontgomeryPoint/Mul.lean": 1,
+  "Curve25519Dalek/Specs/Montgomery/MontgomeryPoint/MulBaseClamped.lean": 1,
+  "Curve25519Dalek/Specs/Montgomery/MontgomeryPoint/MulClamped.lean": 1,
+  "Curve25519Dalek/Specs/Montgomery/MontgomeryPoint/ToBytes.lean": 1,
+  "Curve25519Dalek/Specs/Montgomery/MontgomeryPoint/ToEdwards.lean": 1,
+  "Curve25519Dalek/Specs/Montgomery/ProjectivePoint/ConditionalSelect.lean": 1,
+  "Curve25519Dalek/Specs/Ristretto/CompressedRistretto/CtEq.lean": 1,
+  "Curve25519Dalek/Specs/Ristretto/CompressedRistretto/Decompress.lean": 1,
+  "Curve25519Dalek/Specs/Ristretto/CompressedRistretto/ToBytes.lean": 1,
+  "Curve25519Dalek/Specs/Ristretto/RistrettoPoint/Compress.lean": 1,
+  "Curve25519Dalek/Specs/Ristretto/RistrettoPoint/ConditionalSelect.lean": 1,
+  "Curve25519Dalek/Specs/Ristretto/RistrettoPoint/Eq.lean": 1,
+  "Curve25519Dalek/Specs/Ristretto/RistrettoPoint/FromUniformBytes.lean": 1,
+  "Curve25519Dalek/Specs/Ristretto/RistrettoPoint/Mul_Base.lean": 1,
+  "Curve25519Dalek/Specs/Scalar/Scalar/Eq.lean": 1,
+  "Curve25519Dalek/Specs/Scalar/Scalar/FromBytesModOrder.lean": 1,
+  "Curve25519Dalek/Specs/Scalar/Scalar/FromBytesModOrderWide.lean": 1,
+  "Curve25519Dalek/Specs/Scalar/Scalar/FromCanonicalBytes.lean": 1,
+  "Curve25519Dalek/Specs/Scalar/Scalar/FromU128.lean": 1,
+  "Curve25519Dalek/Specs/Scalar/Scalar/FromU16.lean": 1,
+  "Curve25519Dalek/Specs/Scalar/Scalar/FromU32.lean": 1,
+  "Curve25519Dalek/Specs/Scalar/Scalar/FromU64.lean": 1,
+  "Curve25519Dalek/Specs/Scalar/Scalar/FromU8.lean": 1,
+  "Curve25519Dalek/Specs/Scalar/Scalar/Invert.lean": 1,
+  "Curve25519Dalek/Specs/Scalar/Scalar/Mul.lean": 3,
+  "Curve25519Dalek/Specs/Scalar/Scalar/MulAssign.lean": 1,
+  "Curve25519Dalek/Specs/Scalar/Scalar/Neg.lean": 1,
+  "Curve25519Dalek/Specs/Scalar/Scalar/ToBytes.lean": 1
+ },
+ "proofs_replaced_total": 57,
+ "import_rewrites": {
+  "Curve25519Dalek/Specs/Backend/Serial/CurveModels/AffineNielsPoint/Add.lean": [
+   {
+    "import": "Curve25519Dalek.Specs.Backend.Serial.CurveModels.CompletedPoint.Add",
+    "replaced_by": [
+     "Curve25519Dalek.Funs",
+     "Curve25519Dalek.Math.Basic",
+     "Curve25519Dalek.Math.Edwards.Representation",
+     "Curve25519Dalek.Aux",
+     "Curve25519Dalek.Specs.Backend.Serial.U64.Field.FieldElement51.Reduce",
+     "Mathlib.Data.Nat.ModEq",
+     "Curve25519Dalek.Tactics",
+     "Curve25519Dalek.ExternallyVerified"
+    ]
+   }
+  ],
+  "Curve25519Dalek/Specs/Backend/Serial/CurveModels/AffineNielsPoint/ConditionalAssign.lean": [
+   {
+    "import": "Curve25519Dalek.Specs.Backend.Serial.U64.Field.FieldElement51.ConditionalAssign",
+    "replaced_by": [
+     "Curve25519Dalek.Funs",
+     "Mathlib.Tactic"
+    ]
+   }
+  ],
+  "Curve25519Dalek/Specs/Backend/Serial/CurveModels/AffineNielsPoint/ConditionalSelect.lean": [
+   {
+    "import": "Curve25519Dalek.Specs.Backend.Serial.U64.Field.FieldElement51.ConditionalSelect",
+    "replaced_by": [
+     "Curve25519Dalek.Funs"
+    ]
+   }
+  ],
+  "Curve25519Dalek/Specs/Backend/Serial/CurveModels/AffineNielsPoint/Eq.lean": [
+   {
+    "import": "Curve25519Dalek.Specs.Backend.Serial.U64.Field.FieldElement51.CtEq",
+    "replaced_by": [
+     "Curve25519Dalek.Funs",
+     "Curve25519Dalek.Specs.Backend.Serial.U64.Field.FieldElement51.ToBytes"
+    ]
+   }
+  ],
+  "Curve25519Dalek/Specs/Backend/Serial/CurveModels/AffineNielsPoint/Sub.lean": [
+   {
+    "import": "Curve25519Dalek.Specs.Backend.Serial.CurveModels.CompletedPoint.Add",
+    "replaced_by": [
+     "Curve25519Dalek.Funs",
+     "Curve25519Dalek.Math.Basic",
+     "Curve25519Dalek.Math.Edwards.Representation",
+     "Curve25519Dalek.Aux",
+     "Curve25519Dalek.Specs.Backend.Serial.U64.Field.FieldElement51.Reduce",
+     "Mathlib.Data.Nat.ModEq",
+     "Curve25519Dalek.Tactics",
+     "Curve25519Dalek.ExternallyVerified"
+    ]
+   }
+  ],
+  "Curve25519Dalek/Specs/Backend/Serial/CurveModels/ProjectivePoint/AsExtended.lean": [
+   {
+    "import": "Curve25519Dalek.Specs.Backend.Serial.U64.Field.FieldElement51.Mul",
+    "replaced_by": [
+     "Curve25519Dalek.Funs",
+     "Curve25519Dalek.Math.Basic",
+     "Curve25519Dalek.Aux",
+     "Curve25519Dalek.Tactics",
+     "Curve25519Dalek.ExternallyVerified"
+    ]
+   },
+   {
+    "import": "Curve25519Dalek.Specs.Backend.Serial.U64.Field.FieldElement51.Square",
+    "replaced_by": [
+     "Curve25519Dalek.Funs",
+     "Curve25519Dalek.Math.Basic",
+     "Curve25519Dalek.Aux"
+    ]
+   }
+  ],
+  "Curve25519Dalek/Specs/Backend/Serial/CurveModels/ProjectivePoint/Identity.lean": [
+   {
+    "import": "Curve25519Dalek.Specs.Backend.Serial.U64.Field.FieldElement51.ZERO",
+    "replaced_by": [
+     "Curve25519Dalek.Funs",
+     "Curve25519Dalek.Math.Basic"
+    ]
+   },
+   {
+    "import": "Curve25519Dalek.Specs.Backend.Serial.U64.Field.FieldElement51.ONE",
+    "replaced_by": [
+     "Curve25519Dalek.Funs",
+     "Curve25519Dalek.Math.Basic"
+    ]
+   }
+  ],
+  "Curve25519Dalek/Specs/Backend/Serial/U64/Field/FieldElement51/SubAssign.lean": [
+   {
+    "import": "Curve25519Dalek.Specs.Backend.Serial.U64.Field.FieldElement51.Sub",
+    "replaced_by": [
+     "Curve25519Dalek.Funs",
+     "Curve25519Dalek.Math.Basic",
+     "Curve25519Dalek.Specs.Backend.Serial.U64.Field.FieldElement51.Reduce",
+     "Mathlib.Data.Nat.ModEq"
+    ]
+   }
+  ],
+  "Curve25519Dalek/Specs/Backend/Serial/U64/Scalar/Scalar52/Square.lean": [
+   {
+    "import": "Curve25519Dalek.Specs.Backend.Serial.U64.Scalar.Scalar52.MontgomeryReduce",
+    "replaced_by": [
+     "Curve25519Dalek.Funs",
+     "Curve25519Dalek.Math.Basic",
+     "Curve25519Dalek.ExternallyVerified",
+     "Curve25519Dalek.Specs.Backend.Serial.U64.Scalar.M",
+     "Curve25519Dalek.Specs.Backend.Serial.U64.Scalar.Scalar52.Sub",
+     "Mathlib.Algebra.Polynomial.Eval.Algebra",
+     "Mathlib.Algebra.Polynomial.Eval.Coeff",
+     "Mathlib.Algebra.Polynomial.Eval.Defs",
+     "Mathlib.Algebra.Polynomial.Eval.Degree",
+     "Mathlib.Data.Nat.ModEq",
+     "Mathlib.Data.Int.ModEq",
+     "Mathlib.Data.ZMod.Basic"
+    ]
+   },
+   {
+    "import": "Curve25519Dalek.Specs.Backend.Serial.U64.Constants.RR",
+    "replaced_by": [
+     "Curve25519Dalek.Funs",
+     "Curve25519Dalek.Math.Basic"
+    ]
+   }
+  ],
+  "Curve25519Dalek/Specs/Edwards/Affine/AffinePoint/ConditionalSelect.lean": [
+   {
+    "import": "Curve25519Dalek.Specs.Backend.Serial.U64.Field.FieldElement51.ConditionalSelect",
+    "replaced_by": [
+     "Curve25519Dalek.Funs"
+    ]
+   }
+  ],
+  "Curve25519Dalek/Specs/Edwards/Affine/AffinePoint/Eq.lean": [
+   {
+    "import": "Curve25519Dalek.Specs.Edwards.Affine.AffinePoint.CtEq",
+    "replaced_by": [
+     "Curve25519Dalek.Aux",
+     "Curve25519Dalek.Funs",
+     "Curve25519Dalek.Math.Basic",
+     "Curve25519Dalek.Math.Edwards.Representation",
+     "Curve25519Dalek.Math.Montgomery.Curve",
+     "Curve25519Dalek.Specs.Backend.Serial.U64.Field.FieldElement51.ToBytes",
+     "Mathlib.Data.Nat.ModEq"
+    ]
+   }
+  ],
+  "Curve25519Dalek/Specs/Edwards/CompressedEdwardsY/CtEq.lean": [
+   {
+    "import": "Curve25519Dalek.Specs.Edwards.CompressedEdwardsY.AsBytes",
+    "replaced_by": [
+     "Curve25519Dalek.Funs"
+    ]
+   }
+  ],
+  "Curve25519Dalek/Specs/Edwards/EdwardsPoint/AsAffineNiels.lean": [
+   {
+    "import": "Curve25519Dalek.Specs.Field.FieldElement51.Invert",
+    "replaced_by": [
+     "Curve25519Dalek.Funs",
+     "Curve25519Dalek.Math.Basic",
+     "Curve25519Dalek.Aux",
+     "Curve25519Dalek.Tactics",
+     "Curve25519Dalek.ExternallyVerified",
+     "Curve25519Dalek.Math.Edwards.Curve"
+    ]
+   },
+   {
+    "import": "Curve25519Dalek.Specs.Backend.Serial.U64.Field.FieldElement51.Add",
+    "replaced_by": [
+     "Curve25519Dalek.Aux",
+     "Curve25519Dalek.Funs"
+    ]
+   },
+   {
+    "import": "Curve25519Dalek.Specs.Backend.Serial.U64.Field.FieldElement51.Mul",
+    "replaced_by": [
+     "Curve25519Dalek.Funs",
+     "Curve25519Dalek.Math.Basic",
+     "Curve25519Dalek.Aux",
+     "Curve25519Dalek.Tactics",
+     "Curve25519Dalek.ExternallyVerified"
+    ]
+   },
+   {
+    "import": "Curve25519Dalek.Specs.Backend.Serial.U64.Field.FieldElement51.Sub",
+    "replaced_by": [
+     "Curve25519Dalek.Funs",
+     "Curve25519Dalek.Math.Basic",
+     "Curve25519Dalek.Specs.Backend.Serial.U64.Field.FieldElement51.Reduce",
+     "Mathlib.Data.Nat.ModEq"
+    ]
+   },
+   {
+    "import": "Curve25519Dalek.Specs.Backend.Serial.U64.Constants.EDWARDS_D2",
+    "replaced_by": [
+     "Curve25519Dalek.Funs",
+     "Curve25519Dalek.Math.Basic"
+    ]
+   }
+  ],
+  "Curve25519Dalek/Specs/Edwards/EdwardsPoint/Compress.lean": [
+   {
+    "import": "Curve25519Dalek.Specs.Edwards.EdwardsPoint.ToAffine",
+    "replaced_by": [
+     "Curve25519Dalek.Funs",
+     "Curve25519Dalek.Math.Basic",
+     "Curve25519Dalek.Aux",
+     "Curve25519Dalek.Tactics",
+     "Curve25519Dalek.ExternallyVerified",
+     "Curve25519Dalek.Math.Edwards.Curve"
+    ]
+   }
+  ],
+  "Curve25519Dalek/Specs/Edwards/EdwardsPoint/Eq.lean": [
+   {
+    "import": "Curve25519Dalek.Specs.Edwards.EdwardsPoint.CtEq",
+    "replaced_by": [
+     "Curve25519Dalek.Aux",
+     "Curve25519Dalek.Funs",
+     "Curve25519Dalek.Math.Basic",
+     "Curve25519Dalek.Math.Edwards.Representation",
+     "Curve25519Dalek.Math.Montgomery.Curve",
+     "Curve25519Dalek.Specs.Backend.Serial.U64.Field.FieldElement51.ToBytes",
+     "Curve25519Dalek.Tactics",
+     "Curve25519Dalek.ExternallyVerified",
+     "Curve25519Dalek.Specs.Field.FieldElement51.IsZero",
+     "Mathlib.Data.Nat.ModEq"
+    ]
+   }
+  ],
+  "Curve25519Dalek/Specs/Edwards/EdwardsPoint/IsSmallOrder.lean": [
+   {
+    "import": "Curve25519Dalek.Specs.Edwards.EdwardsPoint.MulByCofactor",
+    "replaced_by": [
+     "Curve25519Dalek.Funs",
+     "Curve25519Dalek.Math.Edwards.Representation",
+     "Curve25519Dalek.ExternallyVerified"
+    ]
+   },
+   {
+    "import": "Curve25519Dalek.Specs.Edwards.EdwardsPoint.Identity",
+    "replaced_by": [
+     "Curve25519Dalek.Funs",
+     "Curve25519Dalek.Math.Basic",
+     "Curve25519Dalek.Math.Edwards.Representation"
+    ]
+   },
+   {
+    "import": "Curve25519Dalek.Specs.Edwards.EdwardsPoint.CtEq",
+    "replaced_by": [
+     "Curve25519Dalek.Aux",
+     "Curve25519Dalek.Funs",
+     "Curve25519Dalek.Math.Basic",
+     "Curve25519Dalek.Math.Edwards.Representation",
+     "Curve25519Dalek.Math.Montgomery.Curve",
+     "Curve25519Dalek.Specs.Backend.Serial.U64.Field.FieldElement51.ToBytes",
+     "Curve25519Dalek.Tactics",
+     "Curve25519Dalek.ExternallyVerified",
+     "Curve25519Dalek.Specs.Field.FieldElement51.IsZero",
+     "Mathlib.Data.Nat.ModEq"
+    ]
+   }
+  ],
+  "Curve25519Dalek/Specs/Edwards/EdwardsPoint/IsTorsionFree.lean": [
+   {
+    "import": "Curve25519Dalek.Specs.Edwards.EdwardsPoint.Mul",
+    "replaced_by": [
+     "Curve25519Dalek.Funs",
+     "Curve25519Dalek.Math.Basic",
+     "Curve25519Dalek.Math.Edwards.Representation",
+     "Curve25519Dalek.ExternallyVerified"
+    ]
+   },
+   {
+    "import": "Curve25519Dalek.Specs.Edwards.EdwardsPoint.Identity",
+    "replaced_by": [
+     "Curve25519Dalek.Funs",
+     "Curve25519Dalek.Math.Basic",
+     "Curve25519Dalek.Math.Edwards.Representation"
+    ]
+   },
+   {
+    "import": "Curve25519Dalek.Specs.Edwards.EdwardsPoint.CtEq",
+    "replaced_by": [
+     "Curve25519Dalek.Aux",
+     "Curve25519Dalek.Funs",
+     "Curve25519Dalek.Math.Basic",
+     "Curve25519Dalek.Math.Edwards.Representation",
+     "Curve25519Dalek.Math.Montgomery.Curve",
+     "Curve25519Dalek.Specs.Backend.Serial.U64.Field.FieldElement51.ToBytes",
+     "Curve25519Dalek.Tactics",
+     "Curve25519Dalek.ExternallyVerified",
+     "Curve25519Dalek.Specs.Field.FieldElement51.IsZero",
+     "Mathlib.Data.Nat.ModEq"
+    ]
+   },
+   {
+    "import": "Curve25519Dalek.Specs.Edwards.CompressedEdwardsY.Identity",
+    "replaced_by": [
+     "Curve25519Dalek.Funs",
+     "Curve25519Dalek.Math.Basic"
+    ]
+   },
+   {
+    "import": "Curve25519Dalek.Specs.Constants.BASEPOINT_ORDER_PRIVATE",
+    "replaced_by": [
+     "Curve25519Dalek.Funs",
+     "Curve25519Dalek.Math.Basic"
+    ]
+   }
+  ],
+  "Curve25519Dalek/Specs/Edwards/EdwardsPoint/MulBaseClamped.lean": [
+   {
+    "import": "Curve25519Dalek.Specs.Edwards.EdwardsPoint.MulBase",
+    "replaced_by": [
+     "Curve25519Dalek.Funs",
+     "Curve25519Dalek.Math.Basic",
+     "Curve25519Dalek.Math.Edwards.Representation",
+     "Curve25519Dalek.Math.Edwards.Basepoint",
+     "Curve25519Dalek.ExternallyVerified"
+    ]
+   }
+  ],
+  "Curve25519Dalek/Specs/Edwards/EdwardsPoint/MulClamped.lean": [
+   {
+    "import": "Curve25519Dalek.Specs.Edwards.EdwardsPoint.Mul",
+    "replaced_by": [
+     "Curve25519Dalek.Funs",
+     "Curve25519Dalek.Math.Basic",
+     "Curve25519Dalek.Math.Edwards.Representation",
+     "Curve25519Dalek.ExternallyVerified"
+    ]
+   }
+  ],
+  "Curve25519Dalek/Specs/Montgomery/MontgomeryPoint/ElligatorEncode.lean": [
+   {
+    "import": "Curve25519Dalek.Specs.Field.FieldElement51.Invert",
+    "replaced_by": [
+     "Curve25519Dalek.Funs",
+     "Curve25519Dalek.Math.Basic",
+     "Curve25519Dalek.Aux",
+     "Curve25519Dalek.Tactics",
+     "Curve25519Dalek.ExternallyVerified",
+     "Curve25519Dalek.Math.Edwards.Curve"
+    ]
+   },
+   {
+    "import": "Curve25519Dalek.Specs.Backend.Serial.U64.Field.FieldElement51.Square2",
+    "replaced_by": [
+     "Curve25519Dalek.Aux",
+     "Curve25519Dalek.Funs",
+     "Curve25519Dalek.Math.Basic"
+    ]
+   },
+   {
+    "import": "Curve25519Dalek.Specs.Backend.Serial.U64.Field.FieldElement51.Square",
+    "replaced_by": [
+     "Curve25519Dalek.Funs",
+     "Curve25519Dalek.Math.Basic",
+     "Curve25519Dalek.Aux"
+    ]
+   },
+   {
+    "import": "Curve25519Dalek.Specs.Backend.Serial.U64.Field.FieldElement51.Add",
+    "replaced_by": [
+     "Curve25519Dalek.Aux",
+     "Curve25519Dalek.Funs"
+    ]
+   },
+   {
+    "import": "Curve25519Dalek.Specs.Backend.Serial.U64.Field.FieldElement51.Mul",
+    "replaced_by": [
+     "Curve25519Dalek.Funs",
+     "Curve25519Dalek.Math.Basic",
+     "Curve25519Dalek.Aux",
+     "Curve25519Dalek.Tactics",
+     "Curve25519Dalek.ExternallyVerified"
+    ]
+   },
+   {
+    "import": "Curve25519Dalek.Specs.Backend.Serial.U64.Field.FieldElement51.Neg",
+    "replaced_by": [
+     "Curve25519Dalek.Funs",
+     "Curve25519Dalek.Math.Basic",
+     "Curve25519Dalek.Specs.Backend.Serial.U64.Field.FieldElement51.Reduce"
+    ]
+   },
+   {
+    "import": "Curve25519Dalek.Specs.Backend.Serial.U64.Field.FieldElement51.ConditionalSelect",
+    "replaced_by": [
+     "Curve25519Dalek.Funs"
+    ]
+   },
+   {
+    "import": "Curve25519Dalek.Specs.Backend.Serial.U64.Field.FieldElement51.ConditionalAssign",
+    "replaced_by": [
+     "Curve25519Dalek.Funs",
+     "Mathlib.Tactic"
+    ]
+   },
+   {
+    "import": "Curve25519Dalek.Specs.Backend.Serial.U64.Field.FieldElement51.ONE",
+    "replaced_by": [
+     "Curve25519Dalek.Funs",
+     "Curve25519Dalek.Math.Basic"
+    ]
+   },
+   {
+    "import": "Curve25519Dalek.Specs.Backend.Serial.U64.Field.FieldElement51.ZERO",
+    "replaced_by": [
+     "Curve25519Dalek.Funs",
+     "Curve25519Dalek.Math.Basic"
+    ]
+   },
+   {
+    "import": "Curve25519Dalek.Specs.Backend.Serial.U64.Constants.MONTGOMERY_A",
+    "replaced_by": [
+     "Curve25519Dalek.Funs",
+     "Curve25519Dalek.Math.Basic"
+    ]
+   },
+   {
+    "import": "Curve25519Dalek.Specs.Backend.Serial.U64.Constants.MONTGOMERY_A_NEG",
+    "replaced_by": [
+     "Curve25519Dalek.Funs",
+     "Curve25519Dalek.Math.Basic"
+    ]
+   }
+  ],
+  "Curve25519Dalek/Specs/Montgomery/MontgomeryPoint/Eq.lean": [
+   {
+    "import": "Curve25519Dalek.Specs.Montgomery.MontgomeryPoint.CtEq",
+    "replaced_by": [
+     "Curve25519Dalek.Aux",
+     "Curve25519Dalek.Funs",
+     "Curve25519Dalek.Math.Basic",
+     "Curve25519Dalek.Specs.Backend.Serial.U64.Field.FieldElement51.FromBytes",
+     "Curve25519Dalek.Specs.Backend.Serial.U64.Field.FieldElement51.ToBytes",
+     "Mathlib.Data.Nat.ModEq"
+    ]
+   }
+  ],
+  "Curve25519Dalek/Specs/Montgomery/MontgomeryPoint/Mul.lean": [
+   {
+    "import": "Curve25519Dalek.Specs.Backend.Serial.U64.Field.FieldElement51.ONE",
+    "replaced_by": [
+     "Curve25519Dalek.Funs",
+     "Curve25519Dalek.Math.Basic"
+    ]
+   },
+   {
+    "import": "Curve25519Dalek.Specs.Backend.Serial.U64.Field.FieldElement51.ZERO",
+    "replaced_by": [
+     "Curve25519Dalek.Funs",
+     "Curve25519Dalek.Math.Basic"
+    ]
+   },
+   {
+    "import": "Curve25519Dalek.Specs.Scalar.Scalar.AsBytes",
+    "replaced_by": [
+     "Curve25519Dalek.Funs"
+    ]
+   },
+   {
+    "import": "Curve25519Dalek.Specs.Montgomery.MontgomeryPoint.AsAffine",
+    "replaced_by": [
+     "Curve25519Dalek.Funs",
+     "Curve25519Dalek.Aux",
+     "Curve25519Dalek.Math.Montgomery.Representation",
+     "Curve25519Dalek.Math.Basic",
+     "Curve25519Dalek.Tactics",
+     "Curve25519Dalek.ExternallyVerified",
+     "Curve25519Dalek.Math.Edwards.Curve",
+     "Curve25519Dalek.Specs.Backend.Serial.U64.Field.FieldElement51.ToBytes"
+    ]
+   }
+  ],
+  "Curve25519Dalek/Specs/Montgomery/MontgomeryPoint/MulBaseClamped.lean": [
+   {
+    "import": "Curve25519Dalek.Specs.Montgomery.MontgomeryPoint.MulBase",
+    "replaced_by": [
+     "Curve25519Dalek.Funs",
+     "Curve25519Dalek.Math.Basic",
+     "Curve25519Dalek.Math.Montgomery.Representation",
+     "Curve25519Dalek.Math.Edwards.Representation",
+     "Curve25519Dalek.Math.Edwards.Basepoint",
+     "Curve25519Dalek.ExternallyVerified",
+     "Curve25519Dalek.Aux",
+     "Curve25519Dalek.Specs.Backend.Serial.U64.Field.FieldElement51.Reduce",
+     "Mathlib.Data.Nat.ModEq",
+     "Curve25519Dalek.Tactics",
+     "Curve25519Dalek.Math.Edwards.Curve",
+     "Curve25519Dalek.Specs.Backend.Serial.U64.Field.FieldElement51.ToBytes"
+    ]
+   }
+  ],
+  "Curve25519Dalek/Specs/Montgomery/MontgomeryPoint/ToEdwards.lean": [
+   {
+    "import": "Curve25519Dalek.Specs.Field.FieldElement51.Invert",
+    "replaced_by": [
+     "Curve25519Dalek.Funs",
+     "Curve25519Dalek.Math.Basic",
+     "Curve25519Dalek.Aux",
+     "Curve25519Dalek.Tactics",
+     "Curve25519Dalek.ExternallyVerified",
+     "Curve25519Dalek.Math.Edwards.Curve"
+    ]
+   },
+   {
+    "import": "Curve25519Dalek.Specs.Edwards.CompressedEdwardsY.Decompress",
+    "replaced_by": [
+     "Curve25519Dalek.Funs",
+     "Curve25519Dalek.Math.Basic",
+     "Curve25519Dalek.Math.Edwards.Representation",
+     "Curve25519Dalek.Math.Edwards.Curve",
+     "Curve25519Dalek.ExternallyVerified"
+    ]
+   },
+   {
+    "import": "Curve25519Dalek.Specs.Backend.Serial.U64.Field.FieldElement51.Add",
+    "replaced_by": [
+     "Curve25519Dalek.Aux",
+     "Curve25519Dalek.Funs"
+    ]
+   },
+   {
+    "import": "Curve25519Dalek.Specs.Backend.Serial.U64.Field.FieldElement51.Sub",
+    "replaced_by": [
+     "Curve25519Dalek.Funs",
+     "Curve25519Dalek.Math.Basic",
+     "Curve25519Dalek.Specs.Backend.Serial.U64.Field.FieldElement51.Reduce",
+     "Mathlib.Data.Nat.ModEq"
+    ]
+   },
+   {
+    "import": "Curve25519Dalek.Specs.Backend.Serial.U64.Field.FieldElement51.Mul",
+    "replaced_by": [
+     "Curve25519Dalek.Funs",
+     "Curve25519Dalek.Math.Basic",
+     "Curve25519Dalek.Aux",
+     "Curve25519Dalek.Tactics",
+     "Curve25519Dalek.ExternallyVerified"
+    ]
+   },
+   {
+    "import": "Curve25519Dalek.Specs.Backend.Serial.U64.Field.FieldElement51.ONE",
+    "replaced_by": [
+     "Curve25519Dalek.Funs",
+     "Curve25519Dalek.Math.Basic"
+    ]
+   },
+   {
+    "import": "Curve25519Dalek.Specs.Backend.Serial.U64.Field.FieldElement51.MINUS_ONE",
+    "replaced_by": [
+     "Curve25519Dalek.Funs",
+     "Curve25519Dalek.Math.Basic"
+    ]
+   },
+   {
+    "import": "Curve25519Dalek.Specs.Backend.Serial.U64.Field.FieldElement51.CtEq",
+    "replaced_by": [
+     "Curve25519Dalek.Funs",
+     "Curve25519Dalek.Specs.Backend.Serial.U64.Field.FieldElement51.ToBytes"
+    ]
+   }
+  ],
+  "Curve25519Dalek/Specs/Montgomery/ProjectivePoint/ConditionalSelect.lean": [
+   {
+    "import": "Curve25519Dalek.Specs.Backend.Serial.U64.Field.FieldElement51.ConditionalSelect",
+    "replaced_by": [
+     "Curve25519Dalek.Funs"
+    ]
+   }
+  ],
+  "Curve25519Dalek/Specs/Ristretto/CompressedRistretto/CtEq.lean": [
+   {
+    "import": "Curve25519Dalek.Specs.Ristretto.CompressedRistretto.AsBytes",
+    "replaced_by": [
+     "Curve25519Dalek.Funs"
+    ]
+   }
+  ],
+  "Curve25519Dalek/Specs/Ristretto/CompressedRistretto/Decompress.lean": [
+   {
+    "import": "Curve25519Dalek.Specs.Ristretto.CompressedRistretto.Step1",
+    "replaced_by": [
+     "Curve25519Dalek.Funs",
+     "Curve25519Dalek.Math.Basic",
+     "Curve25519Dalek.Math.Ristretto.Representation",
+     "Curve25519Dalek.Specs.Backend.Serial.U64.Field.FieldElement51.FromBytes",
+     "Curve25519Dalek.Specs.Backend.Serial.U64.Field.FieldElement51.ToBytes"
+    ]
+   },
+   {
+    "import": "Curve25519Dalek.Specs.Ristretto.CompressedRistretto.Step2",
+    "replaced_by": [
+     "Curve25519Dalek.Funs",
+     "Curve25519Dalek.Math.Ristretto.Representation",
+     "Curve25519Dalek.Math.Basic",
+     "Curve25519Dalek.Aux",
+     "Curve25519Dalek.Specs.Backend.Serial.U64.Field.FieldElement51.Reduce",
+     "Mathlib.Data.Nat.ModEq",
+     "Curve25519Dalek.Tactics",
+     "Curve25519Dalek.ExternallyVerified",
+     "Curve25519Dalek.Specs.Field.FieldElement51.SqrtRatioi",
+     "Curve25519Dalek.Specs.Backend.Serial.U64.Constants.SQRT_M1",
+     "Curve25519Dalek.Specs.Backend.Serial.U64.Field.FieldElement51.ToBytes",
+     "Curve25519Dalek.Specs.Field.FieldElement51.IsZero"
+    ]
+   }
+  ],
+  "Curve25519Dalek/Specs/Ristretto/RistrettoPoint/Compress.lean": [
+   {
+    "import": "Curve25519Dalek.Specs.Backend.Serial.U64.Field.FieldElement51.Add",
+    "replaced_by": [
+     "Curve25519Dalek.Aux",
+     "Curve25519Dalek.Funs"
+    ]
+   },
+   {
+    "import": "Curve25519Dalek.Specs.Backend.Serial.U64.Field.FieldElement51.Sub",
+    "replaced_by": [
+     "Curve25519Dalek.Funs",
+     "Curve25519Dalek.Math.Basic",
+     "Curve25519Dalek.Specs.Backend.Serial.U64.Field.FieldElement51.Reduce",
+     "Mathlib.Data.Nat.ModEq"
+    ]
+   },
+   {
+    "import": "Curve25519Dalek.Specs.Backend.Serial.U64.Field.FieldElement51.Mul",
+    "replaced_by": [
+     "Curve25519Dalek.Funs",
+     "Curve25519Dalek.Math.Basic",
+     "Curve25519Dalek.Aux",
+     "Curve25519Dalek.Tactics",
+     "Curve25519Dalek.ExternallyVerified"
+    ]
+   },
+   {
+    "import": "Curve25519Dalek.Specs.Backend.Serial.U64.Field.FieldElement51.Square",
+    "replaced_by": [
+     "Curve25519Dalek.Funs",
+     "Curve25519Dalek.Math.Basic",
+     "Curve25519Dalek.Aux"
+    ]
+   },
+   {
+    "import": "Curve25519Dalek.Specs.Field.FieldElement51.InvSqrt",
+    "replaced_by": [
+     "Curve25519Dalek.Funs",
+     "Curve25519Dalek.Math.Basic",
+     "Curve25519Dalek.Specs.Field.FieldElement51.SqrtRatioi",
+     "Curve25519Dalek.Specs.Backend.Serial.U64.Constants.SQRT_M1"
+    ]
+   },
+   {
+    "import": "Curve25519Dalek.Specs.Field.FieldElement51.IsNegative",
+    "replaced_by": [
+     "Curve25519Dalek.Funs",
+     "Curve25519Dalek.Math.Basic",
+     "Curve25519Dalek.Specs.Backend.Serial.U64.Field.FieldElement51.ToBytes"
+    ]
+   },
+   {
+    "import": "Curve25519Dalek.Specs.Backend.Serial.U64.Field.FieldElement51.ConditionalAssign",
+    "replaced_by": [
+     "Curve25519Dalek.Funs",
+     "Mathlib.Tactic"
+    ]
+   },
+   {
+    "import": "Curve25519Dalek.Specs.Backend.Serial.U64.Field.FieldElement51.Neg",
+    "replaced_by": [
+     "Curve25519Dalek.Funs",
+     "Curve25519Dalek.Math.Basic",
+     "Curve25519Dalek.Specs.Backend.Serial.U64.Field.FieldElement51.Reduce"
+    ]
+   },
+   {
+    "import": "Curve25519Dalek.Specs.Backend.Serial.U64.Constants.INVSQRT_A_MINUS_D",
+    "replaced_by": [
+     "Curve25519Dalek.Funs",
+     "Curve25519Dalek.Math.Basic"
+    ]
+   }
+  ],
+  "Curve25519Dalek/Specs/Ristretto/RistrettoPoint/ConditionalSelect.lean": [
+   {
+    "import": "Curve25519Dalek.Specs.Edwards.EdwardsPoint.ConditionalSelect",
+    "replaced_by": [
+     "Curve25519Dalek.Funs"
+    ]
+   }
+  ],
+  "Curve25519Dalek/Specs/Ristretto/RistrettoPoint/Eq.lean": [
+   {
+    "import": "Curve25519Dalek.Specs.Ristretto.RistrettoPoint.CtEq",
+    "replaced_by": [
+     "Curve25519Dalek.Funs",
+     "Curve25519Dalek.Math.Basic",
+     "Curve25519Dalek.Math.Ristretto.Representation",
+     "Curve25519Dalek.Specs.Backend.Serial.U64.Field.FieldElement51.ToBytes",
+     "Curve25519Dalek.Aux",
+     "Curve25519Dalek.Tactics",
+     "Curve25519Dalek.ExternallyVerified",
+     "Mathlib.Data.Nat.ModEq"
+    ]
+   }
+  ],
+  "Curve25519Dalek/Specs/Ristretto/RistrettoPoint/FromUniformBytes.lean": [
+   {
+    "import": "Curve25519Dalek.Specs.Ristretto.RistrettoPoint.Add",
+    "replaced_by": [
+     "Curve25519Dalek.Funs",
+     "Curve25519Dalek.Math.Ristretto.Representation",
+     "Curve25519Dalek.ExternallyVerified",
+     "Curve25519Dalek.Math.Edwards.Representation",
+     "Curve25519Dalek.Math.Basic",
+     "Curve25519Dalek.Math.Montgomery.Curve",
+     "Curve25519Dalek.Aux",
+     "Curve25519Dalek.Tactics",
+     "Curve25519Dalek.Specs.Backend.Serial.U64.Field.FieldElement51.Reduce",
+     "Mathlib.Data.Nat.ModEq"
+    ]
+   }
+  ],
+  "Curve25519Dalek/Specs/Ristretto/RistrettoPoint/Mul_Base.lean": [
+   {
+    "import": "Curve25519Dalek.Specs.Ristretto.RistrettoPoint.Mul",
+    "replaced_by": [
+     "Curve25519Dalek.Funs",
+     "Curve25519Dalek.Math.Basic",
+     "Curve25519Dalek.Math.Ristretto.Representation",
+     "Curve25519Dalek.Math.Edwards.Representation",
+     "Curve25519Dalek.ExternallyVerified"
+    ]
+   },
+   {
+    "import": "Curve25519Dalek.Specs.Constants.RISTRETTO_BASEPOINT_POINT",
+    "replaced_by": [
+     "Curve25519Dalek.Funs",
+     "Curve25519Dalek.Math.Ristretto.Representation",
+     "Curve25519Dalek.Math.Basic",
+     "Curve25519Dalek.Math.Edwards.Basepoint",
+     "Curve25519Dalek.Math.Edwards.Representation"
+    ]
+   }
+  ],
+  "Curve25519Dalek/Specs/Scalar/Scalar/Eq.lean": [
+   {
+    "import": "Curve25519Dalek.Specs.Scalar.Scalar.CtEq",
+    "replaced_by": [
+     "Curve25519Dalek.Funs"
+    ]
+   }
+  ],
+  "Curve25519Dalek/Specs/Scalar/Scalar/FromBytesModOrder.lean": [
+   {
+    "import": "Curve25519Dalek.Specs.Scalar.Scalar.Reduce",
+    "replaced_by": [
+     "Curve25519Dalek.Funs",
+     "Curve25519Dalek.Math.Basic",
+     "Curve25519Dalek.Specs.Backend.Serial.U64.Scalar.Scalar52.ToBytes",
+     "Curve25519Dalek.ExternallyVerified",
+     "Curve25519Dalek.Specs.Backend.Serial.U64.Scalar.Scalar52.MulInternal",
+     "Curve25519Dalek.Specs.Backend.Serial.U64.Scalar.M",
+     "Curve25519Dalek.Specs.Backend.Serial.U64.Scalar.Scalar52.Sub",
+     "Mathlib.Algebra.Polynomial.Eval.Algebra",
+     "Mathlib.Algebra.Polynomial.Eval.Coeff",
+     "Mathlib.Algebra.Polynomial.Eval.Defs",
+     "Mathlib.Algebra.Polynomial.Eval.Degree",
+     "Mathlib.Data.Nat.ModEq",
+     "Mathlib.Data.Int.ModEq",
+     "Mathlib.Data.ZMod.Basic",
+     "Curve25519Dalek.Specs.Backend.Serial.U64.Scalar.Scalar52.MontgomeryInvert",
+     "Curve25519Dalek.Aux"
+    ]
+   }
+  ],
+  "Curve25519Dalek/Specs/Scalar/Scalar/FromBytesModOrderWide.lean": [
+   {
+    "import": "Curve25519Dalek.Specs.Backend.Serial.U64.Scalar.Scalar52.FromBytesWide",
+    "replaced_by": [
+     "Curve25519Dalek.Funs",
+     "Curve25519Dalek.Math.Basic",
+     "Curve25519Dalek.ExternallyVerified"
+    ]
+   },
+   {
+    "import": "Curve25519Dalek.Specs.Backend.Serial.U64.Scalar.Scalar52.Pack",
+    "replaced_by": [
+     "Curve25519Dalek.Funs",
+     "Curve25519Dalek.Math.Basic",
+     "Curve25519Dalek.Specs.Backend.Serial.U64.Scalar.Scalar52.ToBytes"
+    ]
+   }
+  ],
+  "Curve25519Dalek/Specs/Scalar/Scalar/FromCanonicalBytes.lean": [
+   {
+    "import": "Curve25519Dalek.Specs.Scalar.Scalar.IsCanonical",
+    "replaced_by": [
+     "Curve25519Dalek.Funs",
+     "Curve25519Dalek.Math.Basic",
+     "Curve25519Dalek.Aux",
+     "Curve25519Dalek.Specs.Backend.Serial.U64.Scalar.Scalar52.ToBytes",
+     "Curve25519Dalek.ExternallyVerified",
+     "Curve25519Dalek.Specs.Backend.Serial.U64.Scalar.Scalar52.MulInternal",
+     "Curve25519Dalek.Specs.Backend.Serial.U64.Scalar.M",
+     "Curve25519Dalek.Specs.Backend.Serial.U64.Scalar.Scalar52.Sub",
+     "Mathlib.Algebra.Polynomial.Eval.Algebra",
+     "Mathlib.Algebra.Polynomial.Eval.Coeff",
+     "Mathlib.Algebra.Polynomial.Eval.Defs",
+     "Mathlib.Algebra.Polynomial.Eval.Degree",
+     "Mathlib.Data.Nat.ModEq",
+     "Mathlib.Data.Int.ModEq",
+     "Mathlib.Data.ZMod.Basic",
+     "Curve25519Dalek.Specs.Backend.Serial.U64.Scalar.Scalar52.MontgomeryInvert"
+    ]
+   }
+  ],
+  "Curve25519Dalek/Specs/Scalar/Scalar/Invert.lean": [
+   {
+    "import": "Curve25519Dalek.Specs.Scalar.Scalar.Unpack",
+    "replaced_by": [
+     "Curve25519Dalek.Funs",
+     "Curve25519Dalek.Math.Basic",
+     "Curve25519Dalek.Specs.Backend.Serial.U64.Scalar.Scalar52.ToBytes",
+     "Curve25519Dalek.ExternallyVerified"
+    ]
+   },
+   {
+    "import": "Curve25519Dalek.Specs.Backend.Serial.U64.Scalar.Scalar52.Invert",
+    "replaced_by": [
+     "Curve25519Dalek.Funs",
+     "Curve25519Dalek.Math.Basic",
+     "Curve25519Dalek.Specs.Backend.Serial.U64.Scalar.Scalar52.MulInternal",
+     "Curve25519Dalek.ExternallyVerified",
+     "Curve25519Dalek.Specs.Backend.Serial.U64.Scalar.M",
+     "Curve25519Dalek.Specs.Backend.Serial.U64.Scalar.Scalar52.Sub",
+     "Mathlib.Algebra.Polynomial.Eval.Algebra",
+     "Mathlib.Algebra.Polynomial.Eval.Coeff",
+     "Mathlib.Algebra.Polynomial.Eval.Defs",
+     "Mathlib.Algebra.Polynomial.Eval.Degree",
+     "Mathlib.Data.Nat.ModEq",
+     "Mathlib.Data.Int.ModEq",
+     "Mathlib.Data.ZMod.Basic",
+     "Curve25519Dalek.Specs.Backend.Serial.U64.Scalar.Scalar52.MontgomeryInvert",
+     "Curve25519Dalek.Aux"
+    ]
+   },
+   {
+    "import": "Curve25519Dalek.Specs.Backend.Serial.U64.Scalar.Scalar52.Pack",
+    "replaced_by": [
+     "Curve25519Dalek.Funs",
+     "Curve25519Dalek.Math.Basic",
+     "Curve25519Dalek.Specs.Backend.Serial.U64.Scalar.Scalar52.ToBytes"
+    ]
+   }
+  ],
+  "Curve25519Dalek/Specs/Scalar/Scalar/Mul.lean": [
+   {
+    "import": "Curve25519Dalek.Specs.Backend.Serial.U64.Scalar.Scalar52.FromBytes",
+    "replaced_by": [
+     "Curve25519Dalek.Funs",
+     "Curve25519Dalek.Math.Basic",
+     "Curve25519Dalek.ExternallyVerified"
+    ]
+   },
+   {
+    "import": "Curve25519Dalek.Specs.Backend.Serial.U64.Scalar.Scalar52.Mul",
+    "replaced_by": [
+     "Curve25519Dalek.Funs",
+     "Curve25519Dalek.Math.Basic",
+     "Curve25519Dalek.Specs.Backend.Serial.U64.Scalar.Scalar52.MulInternal",
+     "Curve25519Dalek.ExternallyVerified",
+     "Curve25519Dalek.Specs.Backend.Serial.U64.Scalar.M",
+     "Curve25519Dalek.Specs.Backend.Serial.U64.Scalar.Scalar52.Sub",
+     "Mathlib.Algebra.Polynomial.Eval.Algebra",
+     "Mathlib.Algebra.Polynomial.Eval.Coeff",
+     "Mathlib.Algebra.Polynomial.Eval.Defs",
+     "Mathlib.Algebra.Polynomial.Eval.Degree",
+     "Mathlib.Data.Nat.ModEq",
+     "Mathlib.Data.Int.ModEq",
+     "Mathlib.Data.ZMod.Basic"
+    ]
+   },
+   {
+    "import": "Curve25519Dalek.Specs.Backend.Serial.U64.Scalar.Scalar52.Pack",
+    "replaced_by": [
+     "Curve25519Dalek.Funs",
+     "Curve25519Dalek.Math.Basic",
+     "Curve25519Dalek.Specs.Backend.Serial.U64.Scalar.Scalar52.ToBytes"
+    ]
+   }
+  ],
+  "Curve25519Dalek/Specs/Scalar/Scalar/MulAssign.lean": [
+   {
+    "import": "Curve25519Dalek.Specs.Backend.Serial.U64.Scalar.Scalar52.FromBytes",
+    "replaced_by": [
+     "Curve25519Dalek.Funs",
+     "Curve25519Dalek.Math.Basic",
+     "Curve25519Dalek.ExternallyVerified"
+    ]
+   },
+   {
+    "import": "Curve25519Dalek.Specs.Backend.Serial.U64.Scalar.Scalar52.Mul",
+    "replaced_by": [
+     "Curve25519Dalek.Funs",
+     "Curve25519Dalek.Math.Basic",
+     "Curve25519Dalek.Specs.Backend.Serial.U64.Scalar.Scalar52.MulInternal",
+     "Curve25519Dalek.ExternallyVerified",
+     "Curve25519Dalek.Specs.Backend.Serial.U64.Scalar.M",
+     "Curve25519Dalek.Specs.Backend.Serial.U64.Scalar.Scalar52.Sub",
+     "Mathlib.Algebra.Polynomial.Eval.Algebra",
+     "Mathlib.Algebra.Polynomial.Eval.Coeff",
+     "Mathlib.Algebra.Polynomial.Eval.Defs",
+     "Mathlib.Algebra.Polynomial.Eval.Degree",
+     "Mathlib.Data.Nat.ModEq",
+     "Mathlib.Data.Int.ModEq",
+     "Mathlib.Data.ZMod.Basic"
+    ]
+   },
+   {
+    "import": "Curve25519Dalek.Specs.Backend.Serial.U64.Scalar.Scalar52.Pack",
+    "replaced_by": [
+     "Curve25519Dalek.Funs",
+     "Curve25519Dalek.Math.Basic",
+     "Curve25519Dalek.Specs.Backend.Serial.U64.Scalar.Scalar52.ToBytes"
+    ]
+   }
+  ],
+  "Curve25519Dalek/Specs/Scalar/Scalar/Neg.lean": [
+   {
+    "import": "Curve25519Dalek.Specs.Backend.Serial.U64.Scalar.Scalar52.FromBytes",
+    "replaced_by": [
+     "Curve25519Dalek.Funs",
+     "Curve25519Dalek.Math.Basic",
+     "Curve25519Dalek.ExternallyVerified"
+    ]
+   },
+   {
+    "import": "Curve25519Dalek.Specs.Backend.Serial.U64.Scalar.Scalar52.MontgomeryReduce",
+    "replaced_by": [
+     "Curve25519Dalek.Funs",
+     "Curve25519Dalek.Math.Basic",
+     "Curve25519Dalek.ExternallyVerified",
+     "Curve25519Dalek.Specs.Backend.Serial.U64.Scalar.M",
+     "Curve25519Dalek.Specs.Backend.Serial.U64.Scalar.Scalar52.Sub",
+     "Mathlib.Algebra.Polynomial.Eval.Algebra",
+     "Mathlib.Algebra.Polynomial.Eval.Coeff",
+     "Mathlib.Algebra.Polynomial.Eval.Defs",
+     "Mathlib.Algebra.Polynomial.Eval.Degree",
+     "Mathlib.Data.Nat.ModEq",
+     "Mathlib.Data.Int.ModEq",
+     "Mathlib.Data.ZMod.Basic"
+    ]
+   },
+   {
+    "import": "Curve25519Dalek.Specs.Backend.Serial.U64.Scalar.Scalar52.Pack",
+    "replaced_by": [
+     "Curve25519Dalek.Funs",
+     "Curve25519Dalek.Math.Basic",
+     "Curve25519Dalek.Specs.Backend.Serial.U64.Scalar.Scalar52.ToBytes"
+    ]
+   },
+   {
+    "import": "Curve25519Dalek.Specs.Backend.Serial.U64.Scalar.Scalar52.Zero",
+    "replaced_by": [
+     "Curve25519Dalek.Math.Basic",
+     "Curve25519Dalek.Funs"
+    ]
+   },
+   {
+    "import": "Curve25519Dalek.Specs.Backend.Serial.U64.Constants.R",
+    "replaced_by": [
+     "Curve25519Dalek.Funs",
+     "Curve25519Dalek.Math.Basic"
+    ]
+   }
+  ],
+  "Curve25519Dalek/Specs/Backend/Serial/U64/Scalar/Scalar52/MontgomeryInvert.lean": [
+   {
+    "import": "Curve25519Dalek.Specs.Backend.Serial.U64.Scalar.Scalar52.MontgomeryMul",
+    "replaced_by": [
+     "Curve25519Dalek.Funs",
+     "Curve25519Dalek.Math.Basic",
+     "Curve25519Dalek.Specs.Backend.Serial.U64.Scalar.Scalar52.MulInternal",
+     "Curve25519Dalek.ExternallyVerified",
+     "Curve25519Dalek.Specs.Backend.Serial.U64.Scalar.M",
+     "Curve25519Dalek.Specs.Backend.Serial.U64.Scalar.Scalar52.Sub",
+     "Mathlib.Algebra.Polynomial.Eval.Algebra",
+     "Mathlib.Algebra.Polynomial.Eval.Coeff",
+     "Mathlib.Algebra.Polynomial.Eval.Defs",
+     "Mathlib.Algebra.Polynomial.Eval.Degree",
+     "Mathlib.Data.Nat.ModEq",
+     "Mathlib.Data.Int.ModEq",
+     "Mathlib.Data.ZMod.Basic"
+    ]
+   },
+   {
+    "import": "Curve25519Dalek.Specs.Backend.Serial.U64.Scalar.Scalar52.MontgomerySquare",
+    "replaced_by": [
+     "Curve25519Dalek.Funs",
+     "Curve25519Dalek.Math.Basic",
+     "Curve25519Dalek.Specs.Backend.Serial.U64.Scalar.Scalar52.SquareInternal",
+     "Curve25519Dalek.ExternallyVerified",
+     "Curve25519Dalek.Specs.Backend.Serial.U64.Scalar.M",
+     "Curve25519Dalek.Specs.Backend.Serial.U64.Scalar.Scalar52.Sub",
+     "Mathlib.Algebra.Polynomial.Eval.Algebra",
+     "Mathlib.Algebra.Polynomial.Eval.Coeff",
+     "Mathlib.Algebra.Polynomial.Eval.Defs",
+     "Mathlib.Algebra.Polynomial.Eval.Degree",
+     "Mathlib.Data.Nat.ModEq",
+     "Mathlib.Data.Int.ModEq",
+     "Mathlib.Data.ZMod.Basic"
+    ]
+   }
+  ],
+  "Curve25519Dalek/Specs/Backend/Serial/U64/Scalar/Scalar52/Sub.lean": [
+   {
+    "import": "Curve25519Dalek.Specs.Backend.Serial.U64.Scalar.Scalar52.Zero",
+    "replaced_by": [
+     "Curve25519Dalek.Math.Basic",
+     "Curve25519Dalek.Funs"
+    ]
+   }
+  ],
+  "Curve25519Dalek/Specs/Field/FieldElement51/SqrtRatioi.lean": [
+   {
+    "import": "Curve25519Dalek.Specs.Backend.Serial.U64.Field.FieldElement51.Square",
+    "replaced_by": [
+     "Curve25519Dalek.Funs",
+     "Curve25519Dalek.Math.Basic",
+     "Curve25519Dalek.Aux"
+    ]
+   },
+   {
+    "import": "Curve25519Dalek.Specs.Backend.Serial.U64.Field.FieldElement51.Mul",
+    "replaced_by": [
+     "Curve25519Dalek.Funs",
+     "Curve25519Dalek.Math.Basic",
+     "Curve25519Dalek.Aux",
+     "Curve25519Dalek.Tactics",
+     "Curve25519Dalek.ExternallyVerified"
+    ]
+   },
+   {
+    "import": "Curve25519Dalek.Specs.Field.FieldElement51.PowP58",
+    "replaced_by": [
+     "Curve25519Dalek.Funs",
+     "Curve25519Dalek.Math.Basic",
+     "Curve25519Dalek.Aux",
+     "Curve25519Dalek.Tactics",
+     "Curve25519Dalek.ExternallyVerified"
+    ]
+   },
+   {
+    "import": "Curve25519Dalek.Specs.Field.FieldElement51.IsNegative",
+    "replaced_by": [
+     "Curve25519Dalek.Funs",
+     "Curve25519Dalek.Math.Basic",
+     "Curve25519Dalek.Specs.Backend.Serial.U64.Field.FieldElement51.ToBytes"
+    ]
+   },
+   {
+    "import": "Curve25519Dalek.Specs.Backend.Serial.U64.Field.FieldElement51.CtEq",
+    "replaced_by": [
+     "Curve25519Dalek.Funs",
+     "Curve25519Dalek.Specs.Backend.Serial.U64.Field.FieldElement51.ToBytes"
+    ]
+   },
+   {
+    "import": "Curve25519Dalek.Specs.Backend.Serial.U64.Field.FieldElement51.Neg",
+    "replaced_by": [
+     "Curve25519Dalek.Funs",
+     "Curve25519Dalek.Math.Basic",
+     "Curve25519Dalek.Specs.Backend.Serial.U64.Field.FieldElement51.Reduce"
+    ]
+   },
+   {
+    "import": "Curve25519Dalek.Specs.Backend.Serial.U64.Field.FieldElement51.ConditionalAssign",
+    "replaced_by": [
+     "Curve25519Dalek.Funs",
+     "Mathlib.Tactic"
+    ]
+   },
+   {
+    "import": "Curve25519Dalek.Specs.Backend.Serial.U64.Field.FieldElement51.ConditionalSelect",
+    "replaced_by": [
+     "Curve25519Dalek.Funs"
+    ]
+   },
+   {
+    "import": "Curve25519Dalek.Specs.Field.FieldElement51.Invert",
+    "replaced_by": [
+     "Curve25519Dalek.Funs",
+     "Curve25519Dalek.Math.Basic",
+     "Curve25519Dalek.Aux",
+     "Curve25519Dalek.Tactics",
+     "Curve25519Dalek.ExternallyVerified",
+     "Curve25519Dalek.Math.Edwards.Curve"
+    ]
+   }
+  ],
+  "Curve25519Dalek/Specs/Montgomery/ProjectivePoint/DifferentialAddAndDouble.lean": [
+   {
+    "import": "Curve25519Dalek.Specs.Backend.Serial.U64.Field.FieldElement51.Add",
+    "replaced_by": [
+     "Curve25519Dalek.Aux",
+     "Curve25519Dalek.Funs"
+    ]
+   },
+   {
+    "import": "Curve25519Dalek.Specs.Backend.Serial.U64.Field.FieldElement51.Sub",
+    "replaced_by": [
+     "Curve25519Dalek.Funs",
+     "Curve25519Dalek.Math.Basic",
+     "Curve25519Dalek.Specs.Backend.Serial.U64.Field.FieldElement51.Reduce",
+     "Mathlib.Data.Nat.ModEq"
+    ]
+   },
+   {
+    "import": "Curve25519Dalek.Specs.Backend.Serial.U64.Field.FieldElement51.Mul",
+    "replaced_by": [
+     "Curve25519Dalek.Funs",
+     "Curve25519Dalek.Math.Basic",
+     "Curve25519Dalek.Aux",
+     "Curve25519Dalek.Tactics",
+     "Curve25519Dalek.ExternallyVerified"
+    ]
+   },
+   {
+    "import": "Curve25519Dalek.Specs.Backend.Serial.U64.Field.FieldElement51.Square",
+    "replaced_by": [
+     "Curve25519Dalek.Funs",
+     "Curve25519Dalek.Math.Basic",
+     "Curve25519Dalek.Aux"
+    ]
+   },
+   {
+    "import": "Curve25519Dalek.Specs.Backend.Serial.U64.Constants.APLUS2_OVER_FOUR",
+    "replaced_by": [
+     "Curve25519Dalek.Funs",
+     "Curve25519Dalek.Aux",
+     "Curve25519Dalek.Math.Basic"
+    ]
+   }
+  ],
+  "Curve25519Dalek/Specs/Ristretto/RistrettoPoint/ElligatorRistrettoFlavor.lean": [
+   {
+    "import": "Curve25519Dalek.Specs.Backend.Serial.U64.Field.FieldElement51.Square",
+    "replaced_by": [
+     "Curve25519Dalek.Funs",
+     "Curve25519Dalek.Math.Basic",
+     "Curve25519Dalek.Aux"
+    ]
+   },
+   {
+    "import": "Curve25519Dalek.Specs.Backend.Serial.U64.Field.FieldElement51.Mul",
+    "replaced_by": [
+     "Curve25519Dalek.Funs",
+     "Curve25519Dalek.Math.Basic",
+     "Curve25519Dalek.Aux",
+     "Curve25519Dalek.Tactics",
+     "Curve25519Dalek.ExternallyVerified"
+    ]
+   },
+   {
+    "import": "Curve25519Dalek.Specs.Backend.Serial.U64.Field.FieldElement51.Add",
+    "replaced_by": [
+     "Curve25519Dalek.Aux",
+     "Curve25519Dalek.Funs"
+    ]
+   },
+   {
+    "import": "Curve25519Dalek.Specs.Backend.Serial.U64.Field.FieldElement51.Sub",
+    "replaced_by": [
+     "Curve25519Dalek.Funs",
+     "Curve25519Dalek.Math.Basic",
+     "Curve25519Dalek.Specs.Backend.Serial.U64.Field.FieldElement51.Reduce",
+     "Mathlib.Data.Nat.ModEq"
+    ]
+   },
+   {
+    "import": "Curve25519Dalek.Specs.Backend.Serial.U64.Field.FieldElement51.Neg",
+    "replaced_by": [
+     "Curve25519Dalek.Funs",
+     "Curve25519Dalek.Math.Basic",
+     "Curve25519Dalek.Specs.Backend.Serial.U64.Field.FieldElement51.Reduce"
+    ]
+   },
+   {
+    "import": "Curve25519Dalek.Specs.Backend.Serial.U64.Field.FieldElement51.ConditionalAssign",
+    "replaced_by": [
+     "Curve25519Dalek.Funs",
+     "Mathlib.Tactic"
+    ]
+   },
+   {
+    "import": "Curve25519Dalek.Specs.Field.FieldElement51.IsNegative",
+    "replaced_by": [
+     "Curve25519Dalek.Funs",
+     "Curve25519Dalek.Math.Basic",
+     "Curve25519Dalek.Specs.Backend.Serial.U64.Field.FieldElement51.ToBytes"
+    ]
+   },
+   {
+    "import": "Curve25519Dalek.Specs.Backend.Serial.U64.Field.FieldElement51.ONE",
+    "replaced_by": [
+     "Curve25519Dalek.Funs",
+     "Curve25519Dalek.Math.Basic"
+    ]
+   },
+   {
+    "import": "Curve25519Dalek.Specs.Backend.Serial.CurveModels.CompletedPoint.AsExtended",
+    "replaced_by": [
+     "Curve25519Dalek.Funs",
+     "Curve25519Dalek.Math.Basic",
+     "Curve25519Dalek.Math.Edwards.Representation",
+     "Curve25519Dalek.Math.Montgomery.Curve",
+     "Curve25519Dalek.Aux",
+     "Curve25519Dalek.Tactics",
+     "Curve25519Dalek.ExternallyVerified"
+    ]
+   },
+   {
+    "import": "Curve25519Dalek.Specs.Backend.Serial.U64.Constants.ONE_MINUS_EDWARDS_D_SQUARED",
+    "replaced_by": [
+     "Curve25519Dalek.Funs",
+     "Curve25519Dalek.Math.Basic"
+    ]
+   },
+   {
+    "import": "Curve25519Dalek.Specs.Backend.Serial.U64.Constants.EDWARDS_D",
+    "replaced_by": [
+     "Curve25519Dalek.Funs",
+     "Curve25519Dalek.Math.Basic"
+    ]
+   },
+   {
+    "import": "Curve25519Dalek.Specs.Backend.Serial.U64.Constants.MINUS_ONE",
+    "replaced_by": [
+     "Curve25519Dalek.Funs",
+     "Curve25519Dalek.Math.Basic"
+    ]
+   },
+   {
+    "import": "Curve25519Dalek.Specs.Backend.Serial.U64.Constants.EDWARDS_D_MINUS_ONE_SQUARED",
+    "replaced_by": [
+     "Curve25519Dalek.Funs",
+     "Curve25519Dalek.Math.Basic"
+    ]
+   }
+  ],
+  "Curve25519Dalek/Specs/Backend/Serial/U64/Scalar/Scalar52/ConditionalAddL.lean": [
+   {
+    "import": "Curve25519Dalek.Specs.Backend.Serial.U64.Constants.L",
+    "replaced_by": [
+     "Curve25519Dalek.Funs",
+     "Curve25519Dalek.Math.Basic"
+    ]
+   }
+  ],
+  "Curve25519Dalek/Specs/Backend/Serial/U64/Scalar/Scalar52/SquareMultiply.lean": [
+   {
+    "import": "Curve25519Dalek.Specs.Backend.Serial.U64.Scalar.Scalar52.MontgomeryMul",
+    "replaced_by": [
+     "Curve25519Dalek.Funs",
+     "Curve25519Dalek.Math.Basic",
+     "Curve25519Dalek.Specs.Backend.Serial.U64.Scalar.Scalar52.MulInternal",
+     "Curve25519Dalek.ExternallyVerified",
+     "Curve25519Dalek.Specs.Backend.Serial.U64.Scalar.M",
+     "Curve25519Dalek.Specs.Backend.Serial.U64.Scalar.Scalar52.Sub",
+     "Mathlib.Algebra.Polynomial.Eval.Algebra",
+     "Mathlib.Algebra.Polynomial.Eval.Coeff",
+     "Mathlib.Algebra.Polynomial.Eval.Defs",
+     "Mathlib.Algebra.Polynomial.Eval.Degree",
+     "Mathlib.Data.Nat.ModEq",
+     "Mathlib.Data.Int.ModEq",
+     "Mathlib.Data.ZMod.Basic"
+    ]
+   },
+   {
+    "import": "Curve25519Dalek.Specs.Backend.Serial.U64.Scalar.Scalar52.MontgomerySquare",
+    "replaced_by": [
+     "Curve25519Dalek.Funs",
+     "Curve25519Dalek.Math.Basic",
+     "Curve25519Dalek.Specs.Backend.Serial.U64.Scalar.Scalar52.SquareInternal",
+     "Curve25519Dalek.ExternallyVerified",
+     "Curve25519Dalek.Specs.Backend.Serial.U64.Scalar.M",
+     "Curve25519Dalek.Specs.Backend.Serial.U64.Scalar.Scalar52.Sub",
+     "Mathlib.Algebra.Polynomial.Eval.Algebra",
+     "Mathlib.Algebra.Polynomial.Eval.Coeff",
+     "Mathlib.Algebra.Polynomial.Eval.Defs",
+     "Mathlib.Algebra.Polynomial.Eval.Degree",
+     "Mathlib.Data.Nat.ModEq",
+     "Mathlib.Data.Int.ModEq",
+     "Mathlib.Data.ZMod.Basic"
+    ]
+   }
+  ]
+ },
+ "unspecified_top_level": [
+  "curve25519_dalek.SharedAEdwardsPoint.Insts.CoreOpsArithAddEdwardsPointEdwardsPoint.add",
+  "curve25519_dalek.SharedAEdwardsPoint.Insts.CoreOpsArithSubEdwardsPointEdwardsPoint.sub",
+  "curve25519_dalek.SharedAMontgomeryPoint.Insts.CoreOpsArithMulScalarMontgomeryPoint.mul",
+  "curve25519_dalek.SharedARistrettoPoint.Insts.CoreOpsArithAddRistrettoPointRistrettoPoint.add",
+  "curve25519_dalek.SharedARistrettoPoint.Insts.CoreOpsArithMulScalarRistrettoPoint.mul",
+  "curve25519_dalek.SharedARistrettoPoint.Insts.CoreOpsArithSubRistrettoPointRistrettoPoint.sub",
+  "curve25519_dalek.SharedAScalar.Insts.CoreOpsArithAddScalarScalar.add",
+  "curve25519_dalek.SharedAScalar.Insts.CoreOpsArithMulMontgomeryPointMontgomeryPoint.mul",
+  "curve25519_dalek.SharedAScalar.Insts.CoreOpsArithSubScalarScalar.sub",
+  "curve25519_dalek.backend.serial.curve_models.AffineNielsPoint.Insts.CoreCloneClone.clone",
+  "curve25519_dalek.backend.serial.curve_models.AffineNielsPoint.Insts.CoreDefaultDefault.default",
+  "curve25519_dalek.backend.serial.curve_models.AffineNielsPoint.Insts.CoreOpsArithNegAffineNielsPoint.neg",
+  "curve25519_dalek.backend.serial.curve_models.AffineNielsPoint.Insts.ZeroizeZeroize.zeroize",
+  "curve25519_dalek.backend.serial.curve_models.CompletedPoint.Insts.CoreCloneClone.clone",
+  "curve25519_dalek.backend.serial.curve_models.ProjectiveNielsPoint.Insts.CoreDefaultDefault.default",
+  "curve25519_dalek.backend.serial.curve_models.ProjectiveNielsPoint.Insts.ZeroizeZeroize.zeroize",
+  "curve25519_dalek.backend.serial.u64.field.FieldElement51.Insts.CoreCloneClone.clone",
+  "curve25519_dalek.backend.serial.u64.field.FieldElement51.Insts.CoreOpsArithMulAssignSharedAFieldElement51.mul_assign",
+  "curve25519_dalek.backend.serial.u64.field.FieldElement51.Insts.SubtleConditionallySelectable.conditional_swap",
+  "curve25519_dalek.edwards.CompressedEdwardsY.Insts.CoreCloneClone.clone",
+  "curve25519_dalek.edwards.CompressedEdwardsY.Insts.CoreCmpEq.assert_receiver_is_total_eq",
+  "curve25519_dalek.edwards.CompressedEdwardsY.Insts.CoreCmpPartialEqCompressedEdwardsY.eq",
+  "curve25519_dalek.edwards.CompressedEdwardsY.Insts.CoreConvertTryFromShared0SliceU8TryFromSliceError.try_from",
+  "curve25519_dalek.edwards.CompressedEdwardsY.Insts.CoreDefaultDefault.default",
+  "curve25519_dalek.edwards.CompressedEdwardsY.to_bytes",
+  "curve25519_dalek.edwards.EdwardsPoint.Insts.CoreCloneClone.clone",
+  "curve25519_dalek.edwards.EdwardsPoint.Insts.CoreDefaultDefault.default",
+  "curve25519_dalek.edwards.EdwardsPoint.Insts.CoreOpsArithAddAssignEdwardsPoint.add_assign",
+  "curve25519_dalek.edwards.EdwardsPoint.Insts.CoreOpsArithAddSharedBEdwardsPointEdwardsPoint.add",
+  "curve25519_dalek.edwards.EdwardsPoint.Insts.CoreOpsArithMulAssignScalar.mul_assign",
+  "curve25519_dalek.edwards.EdwardsPoint.Insts.CoreOpsArithNegEdwardsPoint.neg",
+  "curve25519_dalek.edwards.EdwardsPoint.Insts.CoreOpsArithSubAssignEdwardsPoint.sub_assign",
+  "curve25519_dalek.edwards.EdwardsPoint.Insts.CoreOpsArithSubSharedBEdwardsPointEdwardsPoint.sub",
+  "curve25519_dalek.edwards.EdwardsPoint.Insts.Curve25519_dalekTraitsValidityCheck.is_valid",
+  "curve25519_dalek.edwards.affine.AffinePoint.Insts.CoreCloneClone.clone",
+  "curve25519_dalek.edwards.affine.AffinePoint.Insts.CoreDefaultDefault.default",
+  "curve25519_dalek.montgomery.MontgomeryPoint.Insts.CoreCloneClone.clone",
+  "curve25519_dalek.montgomery.MontgomeryPoint.Insts.CoreDefaultDefault.default",
+  "curve25519_dalek.montgomery.MontgomeryPoint.Insts.CoreOpsArithMulAssignScalar.mul_assign",
+  "curve25519_dalek.montgomery.MontgomeryPoint.Insts.CoreOpsArithMulScalarMontgomeryPoint.mul",
+  "curve25519_dalek.montgomery.MontgomeryPoint.Insts.ZeroizeZeroize.zeroize",
+  "curve25519_dalek.montgomery.ProjectivePoint.Insts.CoreCloneClone.clone",
+  "curve25519_dalek.montgomery.ProjectivePoint.Insts.CoreDefaultDefault.default",
+  "curve25519_dalek.ristretto.CompressedRistretto.Insts.CoreCloneClone.clone",
+  "curve25519_dalek.ristretto.CompressedRistretto.Insts.CoreCmpEq.assert_receiver_is_total_eq",
+  "curve25519_dalek.ristretto.CompressedRistretto.Insts.CoreCmpPartialEqCompressedRistretto.eq",
+  "curve25519_dalek.ristretto.CompressedRistretto.Insts.CoreConvertTryFromShared0SliceU8TryFromSliceError.try_from",
+  "curve25519_dalek.ristretto.CompressedRistretto.Insts.CoreDefaultDefault.default",
+  "curve25519_dalek.ristretto.RistrettoPoint.Insts.CoreCloneClone.clone",
+  "curve25519_dalek.ristretto.RistrettoPoint.Insts.CoreDefaultDefault.default",
+  "curve25519_dalek.ristretto.RistrettoPoint.Insts.CoreOpsArithAddAssignRistrettoPoint.add_assign",
+  "curve25519_dalek.ristretto.RistrettoPoint.Insts.CoreOpsArithAddSharedBRistrettoPointRistrettoPoint.add",
+  "curve25519_dalek.ristretto.RistrettoPoint.Insts.CoreOpsArithMulAssignScalar.mul_assign",
+  "curve25519_dalek.ristretto.RistrettoPoint.Insts.CoreOpsArithMulScalarRistrettoPoint.mul",
+  "curve25519_dalek.ristretto.RistrettoPoint.Insts.CoreOpsArithMulSharedBScalarRistrettoPoint.mul",
+  "curve25519_dalek.ristretto.RistrettoPoint.Insts.CoreOpsArithNegRistrettoPoint.neg",
+  "curve25519_dalek.ristretto.RistrettoPoint.Insts.CoreOpsArithSubAssignRistrettoPoint.sub_assign",
+  "curve25519_dalek.ristretto.RistrettoPoint.Insts.CoreOpsArithSubRistrettoPointRistrettoPoint.sub",
+  "curve25519_dalek.ristretto.RistrettoPoint.Insts.CoreOpsArithSubSharedBRistrettoPointRistrettoPoint.sub",
+  "curve25519_dalek.ristretto.RistrettoPoint.coset4",
+  "curve25519_dalek.scalar.Scalar.Insts.CoreCloneClone.clone",
+  "curve25519_dalek.scalar.Scalar.Insts.CoreDefaultDefault.default",
+  "curve25519_dalek.scalar.Scalar.Insts.CoreOpsArithAddAssignScalar.add_assign",
+  "curve25519_dalek.scalar.Scalar.Insts.CoreOpsArithAddScalarScalar.add",
+  "curve25519_dalek.scalar.Scalar.Insts.CoreOpsArithMulAffinePointEdwardsPoint.mul",
+  "curve25519_dalek.scalar.Scalar.Insts.CoreOpsArithMulRistrettoPointRistrettoPoint.mul",
+  "curve25519_dalek.scalar.Scalar.Insts.CoreOpsArithMulSharedBEdwardsPointEdwardsPoint.mul",
+  "curve25519_dalek.scalar.Scalar.Insts.CoreOpsArithMulSharedBMontgomeryPointMontgomeryPoint.mul",
+  "curve25519_dalek.scalar.Scalar.Insts.CoreOpsArithMulSharedBRistrettoPointRistrettoPoint.mul",
+  "curve25519_dalek.scalar.Scalar.Insts.CoreOpsArithSubAssignScalar.sub_assign",
+  "curve25519_dalek.scalar.Scalar.Insts.CoreOpsArithSubScalarScalar.sub",
+  "curve25519_dalek.scalar.Scalar.Insts.SubtleConditionallySelectable.conditional_select",
+  "curve25519_dalek.scalar.Scalar.Insts.ZeroizeZeroize.zeroize",
+  "curve25519_dalek.scalar.Scalar.as_radix_2w",
+  "curve25519_dalek.scalar.Scalar.batch_invert",
+  "curve25519_dalek.scalar.Scalar.non_adjacent_form",
+  "curve25519_dalek.scalar.Scalar.to_radix_2w_size_hint"
+ ],
+ "unspecified_top_level_count": 77,
+ "kept_theorems": {
+  "Curve25519Dalek/Specs/Backend/Serial/CurveModels/AffineNielsPoint/Add.lean": [
+   "curve25519_dalek.Shared0EdwardsPoint.Insts.CoreOpsArithAddSharedAAffineNielsPointCompletedPoint.add_spec"
+  ],
+  "Curve25519Dalek/Specs/Backend/Serial/CurveModels/AffineNielsPoint/AssertReceiverIsTotalEq.lean": [
+   "curve25519_dalek.backend.serial.curve_models.AffineNielsPoint.Insts.CoreCmpEq.assert_receiver_is_total_eq_spec"
+  ],
+  "Curve25519Dalek/Specs/Backend/Serial/CurveModels/AffineNielsPoint/ConditionalAssign.lean": [
+   "curve25519_dalek.backend.serial.curve_models.AffineNielsPoint.Insts.SubtleConditionallySelectable.conditional_assign_spec"
+  ],
+  "Curve25519Dalek/Specs/Backend/Serial/CurveModels/AffineNielsPoint/ConditionalSelect.lean": [
+   "curve25519_dalek.backend.serial.curve_models.AffineNielsPoint.Insts.SubtleConditionallySelectable.conditional_select_spec"
+  ],
+  "Curve25519Dalek/Specs/Backend/Serial/CurveModels/AffineNielsPoint/Eq.lean": [
+   "curve25519_dalek.backend.serial.curve_models.AffineNielsPoint.Insts.CoreCmpPartialEqAffineNielsPoint.eq_spec"
+  ],
+  "Curve25519Dalek/Specs/Backend/Serial/CurveModels/AffineNielsPoint/Sub.lean": [
+   "curve25519_dalek.Shared0EdwardsPoint.Insts.CoreOpsArithSubSharedAAffineNielsPointCompletedPoint.sub_spec"
+  ],
+  "Curve25519Dalek/Specs/Backend/Serial/CurveModels/ProjectivePoint/AsExtended.lean": [
+   "curve25519_dalek.backend.serial.curve_models.ProjectivePoint.as_extended_spec"
+  ],
+  "Curve25519Dalek/Specs/Backend/Serial/CurveModels/ProjectivePoint/Identity.lean": [
+   "curve25519_dalek.IdentityCurveModelsProjectivePoint.identity_spec"
+  ],
+  "Curve25519Dalek/Specs/Backend/Serial/U64/Field/FieldElement51/AsBytes.lean": [
+   "curve25519_dalek.backend.serial.u64.field.FieldElement51.as_bytes_spec"
+  ],
+  "Curve25519Dalek/Specs/Backend/Serial/U64/Field/FieldElement51/SubAssign.lean": [
+   "curve25519_dalek.backend.serial.u64.field.FieldElement51.Insts.CoreOpsArithSubAssignSharedAFieldElement51.sub_assign_spec"
+  ],
+  "Curve25519Dalek/Specs/Backend/Serial/U64/Scalar/Scalar52/Square.lean": [
+   "curve25519_dalek.backend.serial.u64.scalar.Scalar52.square_spec"
+  ],
+  "Curve25519Dalek/Specs/Edwards/Affine/AffinePoint/ConditionalSelect.lean": [
+   "curve25519_dalek.edwards.affine.AffinePoint.Insts.SubtleConditionallySelectable.conditional_select_spec"
+  ],
+  "Curve25519Dalek/Specs/Edwards/Affine/AffinePoint/Eq.lean": [
+   "curve25519_dalek.edwards.affine.AffinePoint.Insts.CoreCmpPartialEqAffinePoint.eq_spec"
+  ],
+  "Curve25519Dalek/Specs/Edwards/CompressedEdwardsY/CtEq.lean": [
+   "curve25519_dalek.edwards.CompressedEdwardsY.Insts.SubtleConstantTimeEq.ct_eq_spec"
+  ],
+  "Curve25519Dalek/Specs/Edwards/EdwardsPoint/AsAffineNiels.lean": [
+   "curve25519_dalek.edwards.EdwardsPoint.as_affine_niels_spec"
+  ],
+  "Curve25519Dalek/Specs/Edwards/EdwardsPoint/Compress.lean": [
+   "curve25519_dalek.edwards.EdwardsPoint.compress_spec"
+  ],
+  "Curve25519Dalek/Specs/Edwards/EdwardsPoint/Double.lean": [
+   "curve25519_dalek.edwards.EdwardsPoint.double_spec"
+  ],
+  "Curve25519Dalek/Specs/Edwards/EdwardsPoint/Eq.lean": [
+   "curve25519_dalek.edwards.EdwardsPoint.Insts.CoreCmpPartialEqEdwardsPoint.eq_spec"
+  ],
+  "Curve25519Dalek/Specs/Edwards/EdwardsPoint/IsSmallOrder.lean": [
+   "curve25519_dalek.edwards.EdwardsPoint.is_small_order_spec"
+  ],
+  "Curve25519Dalek/Specs/Edwards/EdwardsPoint/IsTorsionFree.lean": [
+   "curve25519_dalek.edwards.EdwardsPoint.is_torsion_free_spec"
+  ],
+  "Curve25519Dalek/Specs/Edwards/EdwardsPoint/MulBaseClamped.lean": [
+   "curve25519_dalek.edwards.EdwardsPoint.mul_base_clamped_spec"
+  ],
+  "Curve25519Dalek/Specs/Edwards/EdwardsPoint/MulClamped.lean": [
+   "curve25519_dalek.edwards.EdwardsPoint.mul_clamped_spec"
+  ],
+  "Curve25519Dalek/Specs/Montgomery/MontgomeryPoint/AsBytes.lean": [
+   "curve25519_dalek.montgomery.MontgomeryPoint.as_bytes_spec"
+  ],
+  "Curve25519Dalek/Specs/Montgomery/MontgomeryPoint/ConditionalSelect.lean": [
+   "curve25519_dalek.montgomery.MontgomeryPoint.Insts.SubtleConditionallySelectable.conditional_select_spec"
+  ],
+  "Curve25519Dalek/Specs/Montgomery/MontgomeryPoint/ElligatorEncode.lean": [
+   "curve25519_dalek.montgomery.elligator_encode_spec"
+  ],
+  "Curve25519Dalek/Specs/Montgomery/MontgomeryPoint/Eq.lean": [
+   "curve25519_dalek.montgomery.MontgomeryPoint.Insts.CoreCmpPartialEqMontgomeryPoint.eq_spec"
+  ],
+  "Curve25519Dalek/Specs/Montgomery/MontgomeryPoint/Identity.lean": [
+   "curve25519_dalek.montgomery.MontgomeryPoint.Insts.Curve25519_dalekTraitsIdentity.identity_spec"
+  ],
+  "Curve25519Dalek/Specs/Montgomery/MontgomeryPoint/Mul.lean": [
+   "curve25519_dalek.montgomery.MontgomeryPoint.Insts.CoreOpsArithMulSharedBScalarMontgomeryPoint.mul_spec"
+  ],
+  "Curve25519Dalek/Specs/Montgomery/MontgomeryPoint/MulBaseClamped.lean": [
+   "curve25519_dalek.montgomery.MontgomeryPoint.mul_base_clamped_spec"
+  ],
+  "Curve25519Dalek/Specs/Montgomery/MontgomeryPoint/MulClamped.lean": [
+   "curve25519_dalek.montgomery.MontgomeryPoint.mul_clamped_spec"
+  ],
+  "Curve25519Dalek/Specs/Montgomery/MontgomeryPoint/ToBytes.lean": [
+   "curve25519_dalek.montgomery.MontgomeryPoint.to_bytes_spec"
+  ],
+  "Curve25519Dalek/Specs/Montgomery/MontgomeryPoint/ToEdwards.lean": [
+   "curve25519_dalek.montgomery.MontgomeryPoint.to_edwards_spec"
+  ],
+  "Curve25519Dalek/Specs/Montgomery/ProjectivePoint/ConditionalSelect.lean": [
+   "curve25519_dalek.montgomery.ProjectivePoint.Insts.SubtleConditionallySelectable.conditional_select_spec"
+  ],
+  "Curve25519Dalek/Specs/Ristretto/CompressedRistretto/CtEq.lean": [
+   "curve25519_dalek.ristretto.CompressedRistretto.Insts.SubtleConstantTimeEq.ct_eq_spec"
+  ],
+  "Curve25519Dalek/Specs/Ristretto/CompressedRistretto/Decompress.lean": [
+   "curve25519_dalek.ristretto.CompressedRistretto.decompress_spec"
+  ],
+  "Curve25519Dalek/Specs/Ristretto/CompressedRistretto/ToBytes.lean": [
+   "curve25519_dalek.ristretto.CompressedRistretto.to_bytes_spec"
+  ],
+  "Curve25519Dalek/Specs/Ristretto/RistrettoPoint/Compress.lean": [
+   "curve25519_dalek.ristretto.RistrettoPoint.compress_spec"
+  ],
+  "Curve25519Dalek/Specs/Ristretto/RistrettoPoint/ConditionalSelect.lean": [
+   "curve25519_dalek.ristretto.RistrettoPoint.Insts.SubtleConditionallySelectable.conditional_select_spec"
+  ],
+  "Curve25519Dalek/Specs/Ristretto/RistrettoPoint/Eq.lean": [
+   "curve25519_dalek.ristretto.RistrettoPoint.Insts.CoreCmpPartialEqRistrettoPoint.eq_spec"
+  ],
+  "Curve25519Dalek/Specs/Ristretto/RistrettoPoint/FromUniformBytes.lean": [
+   "curve25519_dalek.ristretto.RistrettoPoint.from_uniform_bytes_spec"
+  ],
+  "Curve25519Dalek/Specs/Ristretto/RistrettoPoint/Mul_Base.lean": [
+   "curve25519_dalek.ristretto.RistrettoPoint.mul_base_spec"
+  ],
+  "Curve25519Dalek/Specs/Scalar/Scalar/Eq.lean": [
+   "curve25519_dalek.scalar.Scalar.Insts.CoreCmpPartialEqScalar.eq_spec"
+  ],
+  "Curve25519Dalek/Specs/Scalar/Scalar/FromBytesModOrder.lean": [
+   "curve25519_dalek.scalar.Scalar.from_bytes_mod_order_spec"
+  ],
+  "Curve25519Dalek/Specs/Scalar/Scalar/FromBytesModOrderWide.lean": [
+   "curve25519_dalek.scalar.Scalar.from_bytes_mod_order_wide_spec"
+  ],
+  "Curve25519Dalek/Specs/Scalar/Scalar/FromCanonicalBytes.lean": [
+   "curve25519_dalek.scalar.Scalar.from_canonical_bytes_spec"
+  ],
+  "Curve25519Dalek/Specs/Scalar/Scalar/FromU128.lean": [
+   "curve25519_dalek.scalar.Scalar.Insts.CoreConvertFromU128.from_spec"
+  ],
+  "Curve25519Dalek/Specs/Scalar/Scalar/FromU16.lean": [
+   "curve25519_dalek.scalar.Scalar.Insts.CoreConvertFromU16.from_spec"
+  ],
+  "Curve25519Dalek/Specs/Scalar/Scalar/FromU32.lean": [
+   "curve25519_dalek.scalar.Scalar.Insts.CoreConvertFromU32.from_spec"
+  ],
+  "Curve25519Dalek/Specs/Scalar/Scalar/FromU64.lean": [
+   "curve25519_dalek.scalar.Scalar.Insts.CoreConvertFromU64.from_spec"
+  ],
+  "Curve25519Dalek/Specs/Scalar/Scalar/FromU8.lean": [
+   "curve25519_dalek.scalar.Scalar.Insts.CoreConvertFromU8.from_spec"
+  ],
+  "Curve25519Dalek/Specs/Scalar/Scalar/Invert.lean": [
+   "curve25519_dalek.scalar.Scalar.invert_spec"
+  ],
+  "Curve25519Dalek/Specs/Scalar/Scalar/Mul.lean": [
+   "curve25519_dalek.SharedAScalar.Insts.CoreOpsArithMulScalarScalar.mul_spec",
+   "curve25519_dalek.scalar.Scalar.Insts.CoreOpsArithMulScalarScalar.mul_spec",
+   "curve25519_dalek.scalar.Scalar.Insts.CoreOpsArithMulSharedBScalarScalar.mul_spec"
+  ],
+  "Curve25519Dalek/Specs/Scalar/Scalar/MulAssign.lean": [
+   "curve25519_dalek.scalar.Scalar.Insts.CoreOpsArithMulAssignScalar.mul_assign_spec"
+  ],
+  "Curve25519Dalek/Specs/Scalar/Scalar/Neg.lean": [
+   "curve25519_dalek.scalar.Scalar.Insts.CoreOpsArithNegScalar.neg_spec"
+  ],
+  "Curve25519Dalek/Specs/Scalar/Scalar/ToBytes.lean": [
+   "curve25519_dalek.scalar.Scalar.to_bytes_spec"
+  ]
+ },
+ "kept_theorem_count": 57,
+ "theorems_cut_from_kept_files": {
+  "Curve25519Dalek/Specs/Backend/Serial/CurveModels/AffineNielsPoint/Add.lean": 0,
+  "Curve25519Dalek/Specs/Backend/Serial/CurveModels/AffineNielsPoint/AssertReceiverIsTotalEq.lean": 0,
+  "Curve25519Dalek/Specs/Backend/Serial/CurveModels/AffineNielsPoint/ConditionalAssign.lean": 0,
+  "Curve25519Dalek/Specs/Backend/Serial/CurveModels/AffineNielsPoint/ConditionalSelect.lean": 0,
+  "Curve25519Dalek/Specs/Backend/Serial/CurveModels/AffineNielsPoint/Eq.lean": 1,
+  "Curve25519Dalek/Specs/Backend/Serial/CurveModels/AffineNielsPoint/Sub.lean": 0,
+  "Curve25519Dalek/Specs/Backend/Serial/CurveModels/ProjectivePoint/AsExtended.lean": 0,
+  "Curve25519Dalek/Specs/Backend/Serial/CurveModels/ProjectivePoint/Identity.lean": 0,
+  "Curve25519Dalek/Specs/Backend/Serial/U64/Field/FieldElement51/AsBytes.lean": 0,
+  "Curve25519Dalek/Specs/Backend/Serial/U64/Field/FieldElement51/SubAssign.lean": 0,
+  "Curve25519Dalek/Specs/Backend/Serial/U64/Scalar/Scalar52/Square.lean": 1,
+  "Curve25519Dalek/Specs/Edwards/Affine/AffinePoint/ConditionalSelect.lean": 0,
+  "Curve25519Dalek/Specs/Edwards/Affine/AffinePoint/Eq.lean": 2,
+  "Curve25519Dalek/Specs/Edwards/CompressedEdwardsY/CtEq.lean": 0,
+  "Curve25519Dalek/Specs/Edwards/EdwardsPoint/AsAffineNiels.lean": 4,
+  "Curve25519Dalek/Specs/Edwards/EdwardsPoint/Compress.lean": 0,
+  "Curve25519Dalek/Specs/Edwards/EdwardsPoint/Double.lean": 0,
+  "Curve25519Dalek/Specs/Edwards/EdwardsPoint/Eq.lean": 2,
+  "Curve25519Dalek/Specs/Edwards/EdwardsPoint/IsSmallOrder.lean": 0,
+  "Curve25519Dalek/Specs/Edwards/EdwardsPoint/IsTorsionFree.lean": 2,
+  "Curve25519Dalek/Specs/Edwards/EdwardsPoint/MulBaseClamped.lean": 0,
+  "Curve25519Dalek/Specs/Edwards/EdwardsPoint/MulClamped.lean": 0,
+  "Curve25519Dalek/Specs/Montgomery/MontgomeryPoint/AsBytes.lean": 0,
+  "Curve25519Dalek/Specs/Montgomery/MontgomeryPoint/ConditionalSelect.lean": 0,
+  "Curve25519Dalek/Specs/Montgomery/MontgomeryPoint/ElligatorEncode.lean": 24,
+  "Curve25519Dalek/Specs/Montgomery/MontgomeryPoint/Eq.lean": 0,
+  "Curve25519Dalek/Specs/Montgomery/MontgomeryPoint/Identity.lean": 0,
+  "Curve25519Dalek/Specs/Montgomery/MontgomeryPoint/Mul.lean": 10,
+  "Curve25519Dalek/Specs/Montgomery/MontgomeryPoint/MulBaseClamped.lean": 0,
+  "Curve25519Dalek/Specs/Montgomery/MontgomeryPoint/MulClamped.lean": 0,
+  "Curve25519Dalek/Specs/Montgomery/MontgomeryPoint/ToBytes.lean": 0,
+  "Curve25519Dalek/Specs/Montgomery/MontgomeryPoint/ToEdwards.lean": 1,
+  "Curve25519Dalek/Specs/Montgomery/ProjectivePoint/ConditionalSelect.lean": 0,
+  "Curve25519Dalek/Specs/Ristretto/CompressedRistretto/CtEq.lean": 0,
+  "Curve25519Dalek/Specs/Ristretto/CompressedRistretto/Decompress.lean": 1,
+  "Curve25519Dalek/Specs/Ristretto/CompressedRistretto/ToBytes.lean": 0,
+  "Curve25519Dalek/Specs/Ristretto/RistrettoPoint/Compress.lean": 13,
+  "Curve25519Dalek/Specs/Ristretto/RistrettoPoint/ConditionalSelect.lean": 0,
+  "Curve25519Dalek/Specs/Ristretto/RistrettoPoint/Eq.lean": 0,
+  "Curve25519Dalek/Specs/Ristretto/RistrettoPoint/FromUniformBytes.lean": 0,
+  "Curve25519Dalek/Specs/Ristretto/RistrettoPoint/Mul_Base.lean": 0,
+  "Curve25519Dalek/Specs/Scalar/Scalar/Eq.lean": 0,
+  "Curve25519Dalek/Specs/Scalar/Scalar/FromBytesModOrder.lean": 0,
+  "Curve25519Dalek/Specs/Scalar/Scalar/FromBytesModOrderWide.lean": 0,
+  "Curve25519Dalek/Specs/Scalar/Scalar/FromCanonicalBytes.lean": 1,
+  "Curve25519Dalek/Specs/Scalar/Scalar/FromU128.lean": 10,
+  "Curve25519Dalek/Specs/Scalar/Scalar/FromU16.lean": 5,
+  "Curve25519Dalek/Specs/Scalar/Scalar/FromU32.lean": 5,
+  "Curve25519Dalek/Specs/Scalar/Scalar/FromU64.lean": 5,
+  "Curve25519Dalek/Specs/Scalar/Scalar/FromU8.lean": 0,
+  "Curve25519Dalek/Specs/Scalar/Scalar/Invert.lean": 0,
+  "Curve25519Dalek/Specs/Scalar/Scalar/Mul.lean": 1,
+  "Curve25519Dalek/Specs/Scalar/Scalar/MulAssign.lean": 1,
+  "Curve25519Dalek/Specs/Scalar/Scalar/Neg.lean": 3,
+  "Curve25519Dalek/Specs/Scalar/Scalar/ToBytes.lean": 0
+ }
+}

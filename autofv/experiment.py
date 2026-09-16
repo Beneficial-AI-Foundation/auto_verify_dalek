@@ -23,7 +23,6 @@ from .contracts import (
     ContractError,
     ContractInconclusive,
     DECIMAL_USD,
-    HEX_SHA256,
     NATIVE_DECIDE_CRITERIA,
     TOOLCHAIN_LOCK,
     _absolute_path,
@@ -63,6 +62,12 @@ from .model import (
     _validate_model_exchange,
     _validate_model_response,
     agentproc,
+)
+from .preflight import (
+    DETERMINISTIC_PREFLIGHT_CASES,
+    DETERMINISTIC_PREFLIGHT_GATES,
+    require_deterministic_preflight,
+    write_deterministic_preflight,
 )
 from .run_state import (
     CHECKPOINT_RUN_FIELDS,

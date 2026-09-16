@@ -759,5 +759,103 @@ class ProxyAccountingTests(unittest.TestCase):
         self.assertIsNone(worker.inspect_lima_instance(worker.AGENT_VM))
 
 
+class DeterministicPreflightTests(unittest.TestCase):
+    def _inputs(self):
+        cases = {
+            name: hashlib.sha256(f"case:{name}".encode()).hexdigest()
+            for name in experiment.DETERMINISTIC_PREFLIGHT_CASES
+        }
+        gates = {
+            name: hashlib.sha256(f"gate:{name}".encode()).hexdigest()
+            for name in experiment.DETERMINISTIC_PREFLIGHT_GATES
+        }
+        identities = {
+            "image_digest": "sha256:" + "1" * 64,
+            "runtime_sha256": "2" * 64,
+            "native_decide_policy_sha256": "3" * 64,
+            "tool_schema_sha256": "4" * 64,
+            "provider_identity_sha256": "5" * 64,
+        }
+        return cases, gates, identities
+
+    def test_fresh_green_preflight_names_every_case_gate_and_identity(self):
+        cases, gates, identities = self._inputs()
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "preflight.json"
+            written = experiment.write_deterministic_preflight(
+                path,
+                suite_sha256="6" * 64,
+                case_evidence=cases,
+                gate_evidence=gates,
+                identities=identities,
+                zero_secret_scan_sha256="7" * 64,
+                source_head="8" * 40,
+                completed_at_unix=1_700_000_000,
+            )
+            loaded = experiment.require_deterministic_preflight(
+                path,
+                expected_identities=identities,
+                expected_source_head="8" * 40,
+                now_unix=1_700_000_120,
+                max_age_seconds=300,
+            )
+
+        self.assertEqual(written, loaded)
+        self.assertEqual(written["readiness"], "ready")
+        self.assertEqual(set(written["cases"]), set(cases))
+        self.assertEqual(set(written["gates"]), set(gates))
+        self.assertEqual(written["identities"], identities)
+        self.assertEqual(
+            written["preflight_sha256"],
+            hashlib.sha256(
+                experiment.canonical_json_bytes(
+                    {
+                        key: value
+                        for key, value in written.items()
+                        if key != "preflight_sha256"
+                    }
+                )
+            ).hexdigest(),
+        )
+
+    def test_preflight_rejects_stale_red_partial_or_tampered_evidence(self):
+        cases, gates, identities = self._inputs()
+        mutations = ("stale", "red", "partial", "tampered")
+        for mutation in mutations:
+            with self.subTest(mutation=mutation), tempfile.TemporaryDirectory() as tmp:
+                path = Path(tmp) / "preflight.json"
+                experiment.write_deterministic_preflight(
+                    path,
+                    suite_sha256="6" * 64,
+                    case_evidence=cases,
+                    gate_evidence=gates,
+                    identities=identities,
+                    zero_secret_scan_sha256="7" * 64,
+                    source_head="8" * 40,
+                    completed_at_unix=1_700_000_000,
+                )
+                now = 1_700_000_120
+                if mutation != "stale":
+                    record = json.loads(path.read_text(encoding="utf-8"))
+                    if mutation == "red":
+                        record["readiness"] = "red"
+                    elif mutation == "partial":
+                        record["cases"].pop(next(iter(record["cases"])))
+                    else:
+                        record["suite_sha256"] = "9" * 64
+                    path.write_bytes(experiment.canonical_json_bytes(record) + b"\n")
+                else:
+                    now = 1_700_000_301
+
+                with self.assertRaises(experiment.ContractError):
+                    experiment.require_deterministic_preflight(
+                        path,
+                        expected_identities=identities,
+                        expected_source_head="8" * 40,
+                        now_unix=now,
+                        max_age_seconds=300,
+                    )
+
+
 if __name__ == "__main__":
     unittest.main()

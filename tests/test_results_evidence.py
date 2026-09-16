@@ -9,7 +9,27 @@ from decimal import Decimal
 from pathlib import Path
 from unittest import mock
 
-from autofv import axiom_audit, evidence, experiment, results, verifier, worker
+from autofv import (
+    axiom_audit,
+    evidence,
+    experiment,
+    model,
+    provider_config,
+    provider_service,
+    provider_transport,
+    results,
+    verifier,
+    worker,
+    worker_proxy,
+)
+from tests.test_provider_receipts import (
+    RUN_TOKEN,
+    _environment,
+    _messages,
+    _Reply,
+    _reply,
+    _tools,
+)
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -98,6 +118,7 @@ def _complete_attempt(
         name: True
         for name in (
             "bundle",
+            "runtime_identity",
             "reference_integrity",
             "exact_commit",
             "exact_tree",
@@ -119,6 +140,38 @@ def _complete_attempt(
         "non_vacuity": True,
         "broken_implementation_rejected": True,
     }
+    inventory = sorted(
+        [
+            {
+                "declaration": "Diamond.left_spec",
+                "origin": "accepted_spec",
+                "type_sha256": "a" * 64,
+                "semantic_dependencies": [],
+                "dependencies": [],
+                "axioms": [],
+                "native_decide_uses": [],
+            },
+            {
+                "declaration": "AutoFVVerifier.hidden_0",
+                "origin": "hidden_reference",
+                "type_sha256": "b" * 64,
+                "semantic_dependencies": [],
+                "dependencies": [],
+                "axioms": [],
+                "native_decide_uses": [],
+            },
+            {
+                "declaration": "AutoFVVerifier.meaning_0",
+                "origin": "meaning_check",
+                "type_sha256": "c" * 64,
+                "semantic_dependencies": [],
+                "dependencies": [],
+                "axioms": [],
+                "native_decide_uses": [],
+            },
+        ],
+        key=lambda item: (item["declaration"], item["origin"]),
+    )
     report_body = {
         "schema": "autofv-verifier-report/v1",
         "run_id": run_id,
@@ -135,8 +188,10 @@ def _complete_attempt(
         "native_decide_policy_sha256": lock[
             "native_decide_policy_sha256"
         ],
-        "axiom_scope_sha256": "e" * 64,
-        "axiom_inventory_sha256": axiom_audit.inventory_identity_sha256([]),
+        "axiom_scope_sha256": axiom_audit.inventory_scope_sha256(inventory),
+        "axiom_inventory_sha256": axiom_audit.inventory_identity_sha256(
+            inventory
+        ),
         "toolchain_lock_sha256": _sha(lock),
         "accepted_commit": "a" * 40,
         "accepted_tree_sha256": "b" * 64,
@@ -153,7 +208,7 @@ def _complete_attempt(
         "accepted_native_decide_uses": [],
         "hidden_native_decide_uses": [],
         "compiler_assumptions": assumptions,
-        "axiom_inventory": [],
+        "axiom_inventory": inventory,
     }
     report = _receipt(report_body, "report_sha256")
     graph = {
@@ -438,7 +493,74 @@ def _generic_attempt(root: Path, *, attempt_id: str = "attempt-generic"):
     return run, state
 
 
+def _provider_attempt(root: Path, *, provider_reports_cost: bool = False):
+    run, state = _generic_attempt(root, attempt_id="attempt-provider")
+    run["fixed_proxy_sha256"] = provider_config.canonical_sha256(
+        run["lock"]["fixed_proxy"]
+    )
+    environment = _environment(root, "provider-result-secret")
+    with mock.patch.dict(os.environ, {"AUTOFV_RUN_TOKEN": RUN_TOKEN}, clear=False):
+        provider_config.configure_provider(
+            run, env_path=environment, tool_schemas=_tools()
+        )
+    run["proxy_base"] = "http://127.0.0.1:19082"
+    run.pop("proxy_policy_sha256", None)
+    run.pop("proxy_policy_receipt", None)
+    policy = worker_proxy._record_proxy_policy(run)
+    egress = copy.deepcopy(run["egress_receipt"])
+    egress["fixed_proxy_sha256"] = run["fixed_proxy_sha256"]
+    egress["proxy_policy_sha256"] = policy["policy_sha256"]
+    egress.pop("evidence_sha256")
+    egress = _receipt(egress, "evidence_sha256")
+    run["egress_receipt"] = egress
+    (root / "evidence" / "egress.json").write_bytes(
+        experiment.canonical_json_bytes(egress) + b"\n"
+    )
+
+    messages = _messages()
+    request = model._model_envelope(
+        state,
+        request_id="provider-result-request-001",
+        role="scout",
+        input_hashes=[worker_proxy.provider_messages_sha256(messages)],
+    )
+    worker_proxy.stage_provider_messages(run, request, messages)
+    provider_reply = _reply('{"path":"Diamond/Left.lean"}')
+    if not provider_reports_cost:
+        provider_reply["usage"].pop("cost")
+        provider_reply["usage"].pop("cost_details")
+    with mock.patch(
+        "autofv.provider_transport._open_upstream",
+        return_value=_Reply(provider_reply),
+    ):
+        response, receipt = provider_service.dispatch(
+            run, request, run_token=RUN_TOKEN
+        )
+    state["receipts"] = [receipt]
+    state["model_exchanges"] = {
+        request["request_id"]: {
+            "request": request,
+            "response": response,
+            "receipt": receipt,
+            "call_kind": "explicit",
+        }
+    }
+    state["receipt_rejections"] = []
+    state["pending_model_exchanges"] = {}
+    state["cost"] = Decimal(receipt["cost"]["amount"])
+    for name in results.PERSISTED_SOURCE_ITEMS:
+        (root / results.FILE_LOCATIONS[name]).unlink(missing_ok=True)
+    results.persist_l0_sources(run, state)
+    return run, state
+
+
 class ResultEvidenceTests(unittest.TestCase):
+    def tearDown(self) -> None:
+        for binding in list(provider_config._BINDINGS.values()):
+            provider_config.release_provider(
+                {"provider_binding_sha256": binding.public["binding_sha256"]}
+            )
+
     def test_complete_l0_and_l4_are_required_for_a_recovery_claim(self):
         with tempfile.TemporaryDirectory() as tmp:
             run, state = _complete_attempt(Path(tmp) / "run")
@@ -504,6 +626,30 @@ class ResultEvidenceTests(unittest.TestCase):
         )
         self.assertIn("cryptographic_security", result["exclusions"])
         self.assertEqual(results.validate_l0(receipt), receipt)
+
+    def test_legacy_synthetic_result_defaults_new_accounting_fields_offline(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp) / "run"
+            run, state = _generic_attempt(root)
+            result, receipt = results.render_attempt(
+                run, state, outcome="success", reason="all_targets_verified"
+            )
+            for name in (
+                "accounting_complete",
+                "unresolved_provider_requests",
+                "unknown_provider_spend",
+            ):
+                result.pop(name)
+            review_path = root / "contract-semantic-review.json"
+            review_path.write_bytes(
+                experiment.canonical_json_bytes(state["contract_semantic_review"])
+                + b"\n"
+            )
+            results.persist_attempt(run, result, receipt)
+
+            audited = results.validate_full_audit(root / "result.json", review_path)
+            self.assertEqual(audited["cost_classification"], "synthetic_fixture")
+            self.assertNotIn("accounting_complete", audited)
 
     def test_generic_complete_result_retains_progress_timing_and_accounting(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -589,13 +735,15 @@ class ResultEvidenceTests(unittest.TestCase):
 
             relabeled = copy.deepcopy(run)
             relabeled["cost_classification"] = "provider_authenticated"
-            with self.assertRaises(results.ResultError):
-                results.render_attempt(
-                    relabeled,
-                    state,
-                    outcome="success",
-                    reason="all_targets_verified",
-                )
+            relabeled_result, _ = results.render_attempt(
+                relabeled,
+                state,
+                outcome="success",
+                reason="all_targets_verified",
+            )
+            self.assertEqual(
+                relabeled_result["cost_classification"], "synthetic_fixture"
+            )
 
             for mutation in ("missing_exchange", "tampered_signature"):
                 hostile = copy.deepcopy(state)
@@ -614,6 +762,438 @@ class ResultEvidenceTests(unittest.TestCase):
                         outcome="success",
                         reason="all_targets_verified",
                     )
+
+    def test_provider_result_persists_truthful_accounting_and_audits_offline(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp) / "run"
+            run, state = _provider_attempt(root)
+            result, receipt = results.render_attempt(
+                run, state, outcome="success", reason="all_targets_verified"
+            )
+            review_path = root / "contract-semantic-review.json"
+            review_path.write_bytes(
+                experiment.canonical_json_bytes(state["contract_semantic_review"])
+                + b"\n"
+            )
+            results.persist_attempt(run, result, receipt)
+            provider_config.release_provider(run)
+
+            audited = results.validate_full_audit(root / "result.json", review_path)
+            self.assertEqual(audited["cost_classification"], "provider_authenticated")
+            self.assertEqual(
+                audited["provider_binding_sha256"],
+                audited["provider_binding"]["binding_sha256"],
+            )
+            self.assertEqual(audited["accounting"]["synthetic"]["requests"], 0)
+            self.assertEqual(
+                audited["accounting"]["provider_authenticated"],
+                {
+                    "requests": 1,
+                    "tokens": {"input": 120, "output": 40, "total": 160},
+                    "cost_usd": "0.000000",
+                },
+            )
+            self.assertEqual(
+                audited["accounting"]["estimated"],
+                {
+                    "requests": 1,
+                    "tokens": {"input": 120, "output": 40, "total": 160},
+                    "cost_usd": "0.000380",
+                },
+            )
+            self.assertEqual(
+                audited["verified_counts"],
+                {"targets": 1, "declarations": 3, "closure": 3},
+            )
+
+            result_path = root / "result.json"
+            policy_path = root / "evidence" / "fixed-proxy-policy.json"
+            preflight_path = root / "evidence" / "provider-preflight.json"
+            journal_path = next((root / "evidence" / "provider-journal").iterdir())
+            originals = {
+                result_path: result_path.read_bytes(),
+                policy_path: policy_path.read_bytes(),
+                preflight_path: preflight_path.read_bytes(),
+                journal_path: journal_path.read_bytes(),
+            }
+
+            def missing_policy() -> None:
+                policy_path.unlink()
+
+            def missing_preflight() -> None:
+                preflight_path.unlink()
+
+            def missing_journal() -> None:
+                journal_path.unlink()
+
+            def tampered_policy() -> None:
+                value = json.loads(policy_path.read_bytes())
+                value["route_id"] = "attacker-route"
+                policy_path.write_bytes(experiment.canonical_json_bytes(value) + b"\n")
+
+            def tampered_signature() -> None:
+                value = json.loads(preflight_path.read_bytes())
+                value["receipt"]["auth"]["signature"] = "AAAA"
+                body = {
+                    key: item
+                    for key, item in value.items()
+                    if key != "preflight_sha256"
+                }
+                value["preflight_sha256"] = _sha(body)
+                preflight_path.write_bytes(
+                    experiment.canonical_json_bytes(value) + b"\n"
+                )
+
+            def tampered_preflight() -> None:
+                value = json.loads(preflight_path.read_bytes())
+                value["response"]["content"] = "attacker-content"
+                body = {
+                    key: item
+                    for key, item in value.items()
+                    if key != "preflight_sha256"
+                }
+                value["preflight_sha256"] = _sha(body)
+                preflight_path.write_bytes(
+                    experiment.canonical_json_bytes(value) + b"\n"
+                )
+
+            def tampered_journal() -> None:
+                value = json.loads(journal_path.read_bytes())
+                value["response"]["content"] = "attacker-content"
+                signed = {
+                    key: item for key, item in value.items() if key != "record_sha256"
+                }
+                value["record_sha256"] = _sha(signed)
+                journal_path.write_bytes(
+                    experiment.canonical_json_bytes(value) + b"\n"
+                )
+
+            def missing_binding() -> None:
+                value = json.loads(result_path.read_bytes())
+                value.pop("provider_binding")
+                result_path.write_bytes(experiment.canonical_json_bytes(value) + b"\n")
+
+            def tampered_binding() -> None:
+                value = json.loads(result_path.read_bytes())
+                value["provider_binding"]["model_id"] = "attacker-model"
+                result_path.write_bytes(experiment.canonical_json_bytes(value) + b"\n")
+
+            def tampered_digest() -> None:
+                value = json.loads(result_path.read_bytes())
+                value["provider_preflight_sha256"] = "0" * 64
+                result_path.write_bytes(experiment.canonical_json_bytes(value) + b"\n")
+
+            attacks = {
+                "missing-policy": missing_policy,
+                "missing-preflight": missing_preflight,
+                "missing-journal": missing_journal,
+                "tampered-policy": tampered_policy,
+                "tampered-preflight": tampered_preflight,
+                "tampered-journal": tampered_journal,
+                "tampered-signature": tampered_signature,
+                "missing-binding": missing_binding,
+                "tampered-binding": tampered_binding,
+                "tampered-digest": tampered_digest,
+            }
+            for name, attack in attacks.items():
+                with self.subTest(attack=name):
+                    for path, raw in originals.items():
+                        path.write_bytes(raw)
+                    attack()
+                    with self.assertRaises(results.ResultError):
+                        results.validate_full_audit(result_path, review_path)
+
+    def test_completed_provider_result_renders_after_private_binding_release(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp) / "run"
+            run, state = _provider_attempt(root)
+            review_path = root / "contract-semantic-review.json"
+            review_path.write_bytes(
+                experiment.canonical_json_bytes(state["contract_semantic_review"])
+                + b"\n"
+            )
+            provider_config.release_provider(run)
+
+            with mock.patch.object(
+                provider_config,
+                "provider_binding",
+                side_effect=AssertionError("private provider state consulted"),
+            ):
+                result, receipt = results.render_attempt(
+                    run,
+                    state,
+                    outcome="success",
+                    reason="all_targets_verified",
+                )
+            results.persist_attempt(run, result, receipt)
+
+            audited = results.validate_full_audit(
+                root / "result.json", review_path
+            )
+            self.assertEqual(
+                audited["provider_binding_sha256"],
+                run["provider_binding_sha256"],
+            )
+            self.assertEqual(audited["proxy_requests"], 1)
+
+    def test_finalization_reconciles_provider_before_release_then_audits_offline(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp) / "run"
+            run, state = _provider_attempt(root)
+            run["worker_disposed"] = False
+            run["base_commit"] = run["accepted"]["accepted_commit"]
+            (root / "contract-semantic-review.json").write_bytes(
+                experiment.canonical_json_bytes(state["contract_semantic_review"])
+                + b"\n"
+            )
+            events: list[str] = []
+            reconcile = results.reconcile_provider_finalization
+
+            def observed_reconcile(*args, **kwargs):
+                events.append("reconciled")
+                return reconcile(*args, **kwargs)
+
+            def dispose(candidate, *, interrupted):
+                self.assertFalse(interrupted)
+                self.assertIsNotNone(candidate.get("provider_preflight_sha256"))
+                events.append("released")
+                provider_service.release(candidate)
+                candidate["worker_disposed"] = True
+                return candidate["disposal_receipt"]
+
+            with mock.patch.object(
+                results,
+                "reconcile_provider_finalization",
+                side_effect=observed_reconcile,
+            ), mock.patch.object(
+                worker, "dispose_run", side_effect=dispose
+            ), mock.patch.object(results, "materialize_accepted"):
+                result = experiment._finish_attempt(
+                    run,
+                    state,
+                    outcome="success",
+                    reason="all_targets_verified",
+                )
+
+            self.assertEqual(events, ["reconciled", "released"])
+            with self.assertRaises(provider_config.ProviderConfigError):
+                provider_config.provider_binding(run)
+            audited = results.validate_full_audit(
+                root / "result.json", root / "contract-semantic-review.json"
+            )
+            self.assertEqual(audited["outcome"], result["outcome"])
+            self.assertEqual(audited["proxy_requests"], 1)
+
+    def test_provider_result_rejects_a_dropped_completed_paid_call(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            run, state = _provider_attempt(Path(tmp) / "run")
+            messages = _messages()
+            request = model._model_envelope(
+                state,
+                request_id="provider-result-request-002",
+                role="scout",
+                input_hashes=[worker_proxy.provider_messages_sha256(messages)],
+            )
+            worker_proxy.stage_provider_messages(run, request, messages)
+            with mock.patch(
+                "autofv.provider_transport._open_upstream",
+                return_value=_Reply(_reply('{"path":"Diamond/Right.lean"}')),
+            ):
+                provider_service.dispatch(run, request, run_token=RUN_TOKEN)
+
+            with self.assertRaisesRegex(results.ResultError, "journal"):
+                results.render_attempt(
+                    run,
+                    state,
+                    outcome="success",
+                    reason="all_targets_verified",
+                )
+
+    def test_ambiguous_provider_call_persists_unscored_partial_accounting(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp) / "run"
+            run, state = _provider_attempt(root)
+            messages = _messages()
+            request = model._model_envelope(
+                state,
+                request_id="provider-result-request-002",
+                role="scout",
+                input_hashes=[worker_proxy.provider_messages_sha256(messages)],
+            )
+            worker_proxy.stage_provider_messages(run, request, messages)
+            with mock.patch(
+                "autofv.provider_transport._open_upstream",
+                side_effect=RuntimeError("simulated crash after dispatch"),
+            ), self.assertRaisesRegex(RuntimeError, "after dispatch"):
+                provider_service.dispatch(run, request, run_token=RUN_TOKEN)
+            state["pending_model_exchanges"] = {
+                request["request_id"]: {
+                    "request": request,
+                    "call_kind": "explicit",
+                    "reservation_usd": "0.032880",
+                    "dispatch_state": "ambiguous",
+                }
+            }
+
+            with self.assertRaises(results.ResultError):
+                results.render_attempt(
+                    run, state, outcome="success", reason="all_targets_verified"
+                )
+            result, receipt = results.render_attempt(
+                run,
+                state,
+                outcome="infrastructure_failed",
+                reason="worker_failed",
+            )
+            results.persist_attempt(run, result, receipt)
+
+            self.assertFalse(result["scored"])
+            self.assertIsNone(result["evidence_level"])
+            self.assertFalse(result["accounting_complete"])
+            self.assertTrue(result["unknown_provider_spend"])
+            self.assertEqual(result["claim"]["status"], "withheld")
+            self.assertEqual(
+                result["verified_counts"],
+                {"targets": 0, "declarations": 0, "closure": 0},
+            )
+            self.assertEqual(
+                result["accounting"]["estimated"]["cost_usd"], "0.000380"
+            )
+            self.assertEqual(
+                result["unresolved_provider_requests"],
+                [
+                    {
+                        "request_id": request["request_id"],
+                        "sequence": request["sequence"],
+                        "status": "ambiguous",
+                        "reservation_usd": "0.032880",
+                        "request_sha256": provider_config.canonical_sha256(request),
+                        "record_sha256": run["provider_journal"][request["request_id"]],
+                    }
+                ],
+            )
+            self.assertTrue((root / "result.json").is_file())
+
+    def test_first_provider_call_ambiguity_persists_without_a_preflight(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp) / "run"
+            run, state = _provider_attempt(root)
+            for path in (root / "evidence" / "provider-journal").iterdir():
+                path.unlink()
+            (root / "evidence" / "provider-preflight.json").unlink()
+            run["provider_journal"] = {}
+            run.pop("provider_preflight_sha256")
+            state["receipts"] = []
+            state["model_exchanges"] = {}
+            state["pending_model_exchanges"] = {}
+            state["cost"] = Decimal("0.000000")
+            messages = _messages()
+            request = model._model_envelope(
+                state,
+                request_id="provider-first-ambiguous-001",
+                role="scout",
+                input_hashes=[worker_proxy.provider_messages_sha256(messages)],
+            )
+            worker_proxy.stage_provider_messages(run, request, messages)
+            with mock.patch(
+                "autofv.provider_transport._open_upstream",
+                side_effect=RuntimeError("simulated first dispatch crash"),
+            ), self.assertRaisesRegex(RuntimeError, "first dispatch"):
+                provider_service.dispatch(run, request, run_token=RUN_TOKEN)
+            state["pending_model_exchanges"] = {
+                request["request_id"]: {
+                    "request": request,
+                    "call_kind": "explicit",
+                    "reservation_usd": "0.032880",
+                    "dispatch_state": "ambiguous",
+                }
+            }
+
+            results.reconcile_provider_finalization(
+                run, state, outcome="infrastructure_failed"
+            )
+            provider_service.release(run)
+            with mock.patch.object(
+                provider_config,
+                "provider_binding",
+                side_effect=AssertionError("private provider state consulted"),
+            ):
+                result, receipt = results.render_attempt(
+                    run,
+                    state,
+                    outcome="infrastructure_failed",
+                    reason="worker_failed",
+                )
+            results.persist_attempt(run, result, receipt)
+
+            self.assertFalse(result["scored"])
+            self.assertFalse(result["accounting_complete"])
+            self.assertTrue(result["unknown_provider_spend"])
+            self.assertEqual(
+                result["accounting"]["provider_authenticated"]["requests"], 0
+            )
+            self.assertEqual(result["accounting"]["estimated"]["requests"], 0)
+            self.assertIsNone(result["provider_preflight_sha256"])
+            self.assertEqual(
+                result["unresolved_provider_requests"][0]["request_id"],
+                request["request_id"],
+            )
+            self.assertTrue((root / "result.json").is_file())
+
+    def test_signed_completed_pending_call_is_known_in_unscored_subtotal(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            run, state = _provider_attempt(Path(tmp) / "run")
+            request_id, exchange = next(iter(state["model_exchanges"].items()))
+            state["model_exchanges"] = {}
+            state["receipts"] = []
+            state["pending_model_exchanges"] = {
+                request_id: {
+                    **exchange,
+                    "reservation_usd": exchange["receipt"]["cost"]["amount"],
+                    "dispatch_state": "completed",
+                }
+            }
+
+            result, _receipt = results.render_attempt(
+                run,
+                state,
+                outcome="infrastructure_failed",
+                reason="worker_failed",
+            )
+
+            self.assertFalse(result["scored"])
+            self.assertFalse(result["accounting_complete"])
+            self.assertFalse(result["unknown_provider_spend"])
+            self.assertEqual(result["unresolved_provider_requests"], [])
+            self.assertEqual(
+                result["accounting"]["estimated"]["requests"], 1
+            )
+            self.assertEqual(result["proxy_requests"], 1)
+
+    def test_provider_reported_cost_stays_in_the_billed_bucket(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            run, state = _provider_attempt(
+                Path(tmp) / "run", provider_reports_cost=True
+            )
+            result, _ = results.render_attempt(
+                run, state, outcome="success", reason="all_targets_verified"
+            )
+            self.assertEqual(
+                result["accounting"]["provider_authenticated"],
+                {
+                    "requests": 1,
+                    "tokens": {"input": 120, "output": 40, "total": 160},
+                    "cost_usd": "0.000380",
+                },
+            )
+            self.assertEqual(
+                result["accounting"]["estimated"],
+                {
+                    "requests": 0,
+                    "tokens": {"input": 0, "output": 0, "total": 0},
+                    "cost_usd": "0.000000",
+                },
+            )
 
     def test_generic_partial_result_retains_blocked_and_invalidated_state(self):
         with tempfile.TemporaryDirectory() as tmp:

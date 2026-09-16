@@ -3,11 +3,15 @@
 from __future__ import annotations
 
 import hashlib
+import json
+import os
 import re
+import stat
 from pathlib import Path
 from typing import Any
 
 from .contracts import canonical_json_bytes
+from . import provider_config, provider_receipts
 from .worker_runtime import NETWORK_ENFORCER
 
 
@@ -42,6 +46,34 @@ ISOLATION_ASSUMPTIONS = (
     "the clean verifier ran on a distinct worker without agent caches",
 )
 SHA256 = re.compile(r"[0-9a-f]{64}")
+
+_PROVIDER_POLICY_FIELDS = {
+    "schema",
+    "run_id",
+    "proxy_id",
+    "route_id",
+    "method",
+    "path",
+    "auth_scope",
+    "provider_authorization_location",
+    "proxy_endpoint_sha256",
+    "proxy_client_identity_sha256",
+    "receipt_schema_sha256",
+    "fixed_proxy_sha256",
+    "image_digest",
+    "control_bundle_sha256",
+    "native_decide_policy_sha256",
+    "worker_inventory_sha256",
+    "provider_binding",
+    "provider_endpoint_sha256",
+    "provider_receipt_schema",
+    "policy_sha256",
+}
+_SYNTHETIC_POLICY_FIELDS = _PROVIDER_POLICY_FIELDS - {
+    "provider_binding",
+    "provider_endpoint_sha256",
+    "provider_receipt_schema",
+}
 
 FILE_LOCATIONS = {
     "input": "evidence/l0/input.json",
@@ -114,6 +146,352 @@ _EVENTS = {
 
 def _sha(raw: bytes) -> str:
     return hashlib.sha256(raw).hexdigest()
+
+
+def _read_provider_artifact(path: Path, label: str) -> tuple[dict[str, Any], bytes]:
+    flags = (
+        os.O_RDONLY
+        | getattr(os, "O_CLOEXEC", 0)
+        | getattr(os, "O_NOFOLLOW", 0)
+        | getattr(os, "O_NONBLOCK", 0)
+    )
+    try:
+        descriptor = os.open(path, flags)
+        try:
+            metadata = os.fstat(descriptor)
+            if not stat.S_ISREG(metadata.st_mode) or metadata.st_size > 2_000_000:
+                raise provider_config.ProviderConfigError(
+                    f"{label} is missing or unsafe"
+                )
+            with os.fdopen(descriptor, "rb", closefd=False) as source:
+                raw = source.read(2_000_001)
+        finally:
+            os.close(descriptor)
+        value = json.loads(raw)
+        if (
+            len(raw) > 2_000_000
+            or not isinstance(value, dict)
+            or raw != canonical_json_bytes(value) + b"\n"
+        ):
+            raise provider_config.ProviderConfigError(f"{label} is not canonical")
+    except (OSError, UnicodeError, ValueError, json.JSONDecodeError, RecursionError) as exc:
+        raise provider_config.ProviderConfigError(f"{label} is unreadable") from exc
+    return value, raw
+
+
+def validate_retained_provider_policy(
+    run: dict[str, Any],
+) -> tuple[dict[str, Any], bytes] | None:
+    """Authenticate a retained fixed policy and classify provider-only content."""
+    evidence_dir = Path(run.get("evidence_dir", ""))
+    policy_path = evidence_dir / "fixed-proxy-policy.json"
+    try:
+        policy, policy_raw = _read_provider_artifact(
+            policy_path, "fixed proxy policy"
+        )
+    except provider_config.ProviderConfigError:
+        if not os.path.lexists(policy_path):
+            return None
+        raise
+    provider_fields = {
+        "provider_binding",
+        "provider_endpoint_sha256",
+        "provider_receipt_schema",
+    }
+    has_provider_content = bool(set(policy) & provider_fields)
+    legacy_synthetic_fields = {"schema", "run_id", "route_id", "policy_sha256"}
+    if not has_provider_content and set(policy) == legacy_synthetic_fields:
+        body = {key: value for key, value in policy.items() if key != "policy_sha256"}
+        if (
+            policy.get("schema") != "autofv-fixed-proxy-policy/v1"
+            or policy.get("run_id") != run.get("run_id")
+            or not isinstance(policy.get("route_id"), str)
+            or not policy["route_id"]
+            or policy.get("policy_sha256")
+            != provider_config.canonical_sha256(body)
+            or policy.get("policy_sha256") != run.get("proxy_policy_sha256")
+        ):
+            raise provider_config.ProviderConfigError(
+                "fixed proxy policy binding mismatch"
+            )
+        return None
+    expected_fields = (
+        _PROVIDER_POLICY_FIELDS if has_provider_content else _SYNTHETIC_POLICY_FIELDS
+    )
+    policy = provider_config.exact_dict(
+        policy, expected_fields, "fixed proxy policy"
+    )
+    route = run.get("lock", {}).get("fixed_proxy")
+    if not isinstance(route, dict):
+        raise provider_config.ProviderConfigError("fixed route is missing")
+    fixed_proxy_sha256 = provider_config.canonical_sha256(route)
+    expected_route = {
+        "proxy_id": route.get("proxy_id"),
+        "route_id": route.get("route_id"),
+        "method": route.get("method"),
+        "path": route.get("path"),
+        "provider_authorization_location": route.get(
+            "provider_authorization_location"
+        ),
+    }
+    policy_body = {
+        key: value for key, value in policy.items() if key != "policy_sha256"
+    }
+    receipt_schema = (
+        provider_receipts.PROVIDER_RECEIPT_SCHEMA
+        if has_provider_content
+        else route.get("receipt_schema")
+    )
+    if (
+        policy.get("schema") != "autofv-fixed-proxy-policy/v1"
+        or policy.get("run_id") != run.get("run_id")
+        or any(policy.get(name) != value for name, value in expected_route.items())
+        or policy.get("auth_scope") != "run-scoped-fixed-inference"
+        or policy.get("policy_sha256")
+        != provider_config.canonical_sha256(policy_body)
+        or policy.get("policy_sha256") != run.get("proxy_policy_sha256")
+        or policy.get("fixed_proxy_sha256") != fixed_proxy_sha256
+        or run.get("fixed_proxy_sha256") != fixed_proxy_sha256
+        or policy.get("receipt_schema_sha256")
+        != provider_config.canonical_sha256(receipt_schema)
+        or any(
+            policy.get(name) != run.get(name)
+            for name in (
+                "image_digest",
+                "control_bundle_sha256",
+                "native_decide_policy_sha256",
+                "worker_inventory_sha256",
+            )
+        )
+        or not isinstance(policy.get("proxy_endpoint_sha256"), str)
+        or SHA256.fullmatch(policy["proxy_endpoint_sha256"]) is None
+        or not isinstance(policy.get("proxy_client_identity_sha256"), str)
+        or SHA256.fullmatch(policy["proxy_client_identity_sha256"]) is None
+    ):
+        raise provider_config.ProviderConfigError("fixed proxy policy binding mismatch")
+    if not has_provider_content:
+        return None
+
+    binding = provider_config.validate_public_binding(run.get("provider_binding"))
+    binding_sha256 = run.get("provider_binding_sha256")
+    if binding_sha256 != binding["binding_sha256"]:
+        raise provider_config.ProviderConfigError("provider binding digest mismatch")
+    if (
+        binding.get("fixed_proxy_sha256") != fixed_proxy_sha256
+        or binding.get("run_id") != run.get("run_id")
+        or binding.get("proxy_id") != route.get("proxy_id")
+        or binding.get("route_id") != route.get("route_id")
+        or policy.get("provider_binding") != binding
+        or policy.get("provider_endpoint_sha256") != binding.get("endpoint_sha256")
+        or policy.get("proxy_client_identity_sha256")
+        != binding.get("client_identity_sha256")
+        or policy.get("provider_receipt_schema")
+        != provider_receipts.PROVIDER_RECEIPT_SCHEMA
+    ):
+        raise provider_config.ProviderConfigError(
+            "provider fixed proxy policy binding mismatch"
+        )
+    return policy, policy_raw
+
+
+def authenticate_provider_evidence(
+    run: dict[str, Any], *, allow_missing_preflight: bool = False
+) -> dict[str, Any] | None:
+    """Derive provider authentication only from retained public evidence."""
+    evidence_dir = Path(run.get("evidence_dir", ""))
+    policy_path = evidence_dir / "fixed-proxy-policy.json"
+    preflight_path = evidence_dir / "provider-preflight.json"
+    validated_policy = validate_retained_provider_policy(run)
+    provider_marked = any(
+        run.get(name) is not None
+        for name in (
+            "provider_binding",
+            "provider_binding_sha256",
+            "provider_preflight_sha256",
+            "provider_journal",
+        )
+    ) or os.path.lexists(preflight_path)
+    if validated_policy is None:
+        if provider_marked:
+            raise provider_config.ProviderConfigError(
+                "provider fixed proxy policy is missing"
+            )
+        return None
+    policy, policy_raw = validated_policy
+    binding = provider_config.validate_public_binding(run.get("provider_binding"))
+    binding_sha256 = run.get("provider_binding_sha256")
+
+    expected_preflight_sha256 = run.get("provider_preflight_sha256")
+    if allow_missing_preflight and expected_preflight_sha256 is None:
+        if os.path.lexists(preflight_path):
+            preflight = provider_receipts.validate_preflight(
+                preflight_path, expected_binding=binding
+            )
+            preflight_sha256 = preflight.get("preflight_sha256")
+            preflight_raw = canonical_json_bytes(preflight) + b"\n"
+        else:
+            preflight = None
+            preflight_sha256 = None
+            preflight_raw = None
+    else:
+        preflight = provider_receipts.validate_preflight(
+            preflight_path, expected_binding=binding
+        )
+        preflight_sha256 = preflight.get("preflight_sha256")
+        preflight_raw = canonical_json_bytes(preflight) + b"\n"
+    if preflight_sha256 != expected_preflight_sha256:
+        raise provider_config.ProviderConfigError("provider preflight digest mismatch")
+    journal = run.get("provider_journal")
+    if not isinstance(journal, dict) or not journal or any(
+        not isinstance(request_id, str)
+        or not isinstance(digest, str)
+        or SHA256.fullmatch(digest) is None
+        for request_id, digest in journal.items()
+    ):
+        raise provider_config.ProviderConfigError(
+            "provider journal identity is invalid"
+        )
+    files = {
+        "policy": {
+            "path": "evidence/fixed-proxy-policy.json",
+            "sha256": _sha(policy_raw),
+            "size": len(policy_raw),
+            "type": "application/json",
+        },
+    }
+    if preflight_raw is not None:
+        files["preflight"] = {
+            "path": "evidence/provider-preflight.json",
+            "sha256": _sha(preflight_raw),
+            "size": len(preflight_raw),
+            "type": "application/json",
+        }
+    return {
+        "schema": "autofv-provider-evidence/v1",
+        "provider_binding": json.loads(canonical_json_bytes(binding)),
+        "provider_binding_sha256": binding_sha256,
+        "provider_preflight_sha256": preflight_sha256,
+        "provider_journal": json.loads(canonical_json_bytes(journal)),
+        "provider_journal_sha256": provider_config.canonical_sha256(journal),
+        "proxy_policy_sha256": policy["policy_sha256"],
+        "route_id": binding["route_id"],
+        "model_id": binding["model_id"],
+        "files": files,
+    }
+
+
+def authenticate_provider_transport_evidence(
+    run: dict[str, Any],
+) -> dict[str, Any]:
+    """Authenticate old provider route, egress, and firewall evidence for rotation."""
+    validated_policy = validate_retained_provider_policy(run)
+    if validated_policy is None:
+        raise provider_config.ProviderConfigError(
+            "provider transport policy is missing"
+        )
+    policy, policy_raw = validated_policy
+    if run.get("proxy_policy_receipt") != policy:
+        raise provider_config.ProviderConfigError(
+            "provider transport policy memory mismatch"
+        )
+    evidence_dir = Path(run.get("evidence_dir", ""))
+    egress, egress_raw = _read_provider_artifact(
+        evidence_dir / "egress.json", "provider egress evidence"
+    )
+    egress_body = {
+        key: value for key, value in egress.items() if key != "evidence_sha256"
+    }
+    egress_policy = egress.get("policy")
+    egress_policy_body = (
+        {
+            key: value
+            for key, value in egress_policy.items()
+            if key != "policy_sha256"
+        }
+        if isinstance(egress_policy, dict)
+        else None
+    )
+    upstream = egress.get("upstream_policy")
+    upstream_body = (
+        {key: value for key, value in upstream.items() if key != "policy_sha256"}
+        if isinstance(upstream, dict)
+        else None
+    )
+    firewall = (
+        egress_policy.get("firewall")
+        if isinstance(egress_policy, dict)
+        else None
+    )
+    retained_firewall = run.get("proxy_firewall")
+    firewall_fields = {
+        "base",
+        "network_id",
+        "internal_address",
+        "bridge_address",
+        "upstream_address",
+        "upstream_port",
+    }
+    if (
+        egress != run.get("egress_receipt")
+        or egress.get("schema") != "autofv-egress-evidence/v1"
+        or egress.get("run_id") != run.get("run_id")
+        or egress.get("evidence_sha256")
+        != provider_config.canonical_sha256(egress_body)
+        or not isinstance(egress_policy_body, dict)
+        or egress_policy.get("schema") != "autofv-egress-policy/v1"
+        or egress_policy.get("enforcer") != NETWORK_ENFORCER
+        or egress_policy.get("policy_sha256")
+        != provider_config.canonical_sha256(egress_policy_body)
+        or egress_policy.get("policy_sha256") != run.get("egress_policy_sha256")
+        or not isinstance(upstream_body, dict)
+        or upstream.get("schema") != "autofv-upstream-egress-policy/v1"
+        or upstream.get("run_id") != run.get("run_id")
+        or upstream.get("policy_sha256")
+        != provider_config.canonical_sha256(upstream_body)
+        or upstream.get("policy_sha256") != run.get("upstream_policy_sha256")
+        or egress_policy.get("upstream_policy_sha256")
+        != upstream.get("policy_sha256")
+        or egress.get("fixed_proxy_sha256") != run.get("fixed_proxy_sha256")
+        or egress.get("proxy_policy_sha256") != policy.get("policy_sha256")
+        or not isinstance(firewall, dict)
+        or not isinstance(retained_firewall, dict)
+        or any(
+            firewall.get(name) != retained_firewall.get(name)
+            for name in firewall_fields
+        )
+    ):
+        raise provider_config.ProviderConfigError(
+            "provider transport egress binding mismatch"
+        )
+    files = {
+        "fixed-proxy-policy.json": policy_raw,
+        "egress.json": egress_raw,
+    }
+    matrix_path = evidence_dir / "proxy-policy-matrix.json"
+    if os.path.lexists(matrix_path):
+        matrix, matrix_raw = _read_provider_artifact(
+            matrix_path, "provider proxy policy matrix"
+        )
+        matrix_body = {
+            key: value for key, value in matrix.items() if key != "matrix_sha256"
+        }
+        if (
+            matrix.get("schema") != "autofv-proxy-policy-matrix/v1"
+            or matrix.get("run_id") != run.get("run_id")
+            or matrix.get("proxy_policy_sha256") != policy.get("policy_sha256")
+            or matrix.get("matrix_sha256")
+            != provider_config.canonical_sha256(matrix_body)
+        ):
+            raise provider_config.ProviderConfigError(
+                "provider proxy policy matrix binding mismatch"
+            )
+        files["proxy-policy-matrix.json"] = matrix_raw
+    return {
+        "policy": policy,
+        "egress": egress,
+        "firewall": retained_firewall,
+        "files": files,
+    }
 
 
 def _event(events: list[Any], names: tuple[str, ...]) -> str | None:

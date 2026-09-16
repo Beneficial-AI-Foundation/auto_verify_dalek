@@ -23,7 +23,14 @@ from unittest import mock
 from cryptography.hazmat.primitives import serialization
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
 
-from autofv import experiment, provider_config, provider_service, provider_transport, worker_proxy
+from autofv import (
+    experiment,
+    provider_config,
+    provider_receipts,
+    provider_service,
+    provider_transport,
+    worker_proxy,
+)
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -174,6 +181,12 @@ class _TrackedServer(_InertServer):
 
     def server_close(self) -> None:
         self.events.append("listener_closed")
+
+
+class _PortServer(_TrackedServer):
+    def __init__(self, events: list[str], port: int):
+        super().__init__(events)
+        self.server_port = port
 
 
 class ProviderServiceTests(unittest.TestCase):
@@ -358,6 +371,172 @@ class ProviderServiceTests(unittest.TestCase):
             self.assertEqual(api_key, bytearray(len(api_key)))
             self.assertEqual(client_token, bytearray(len(client_token)))
             self.assertEqual(binding.pending_messages, {})
+
+    def test_stable_provider_rebind_rotates_transient_listener_port(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            first_events: list[str] = []
+            second_events: list[str] = []
+            first = _PortServer(first_events, 19082)
+            second = _PortServer(second_events, 19083)
+            run = _run(root)
+            with mock.patch.dict(
+                os.environ, {"AUTOFV_RUN_TOKEN": RUN_TOKEN}, clear=False
+            ), mock.patch(
+                "autofv.provider_service._serve", return_value=first
+            ):
+                worker_proxy.configure_provider(
+                    run, env_path=_environment(root), tool_schemas=_tools()
+                )
+            stable_binding = copy.deepcopy(run["provider_binding"])
+            stale_base = run["proxy_base"]
+
+            with mock.patch(
+                "autofv.provider_service._serve", return_value=second
+            ):
+                refreshed = provider_service.rebind(run)
+
+            self.assertEqual(run["provider_binding"], stable_binding)
+            self.assertNotEqual(refreshed, stale_base)
+            self.assertEqual(refreshed, "http://127.0.0.1:19083")
+            self.assertEqual(run["provider_service"]["port"], 19083)
+            self.assertEqual(
+                first_events,
+                ["shutdown", "connections_closed", "listener_closed"],
+            )
+
+    def test_same_port_rebind_dispatches_and_accounts_against_restored_state(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            run, request = self._configured(root)
+            restored = copy.deepcopy(run)
+            digest = run["provider_binding_sha256"]
+
+            with mock.patch.object(provider_service, "_serve") as serve:
+                provider_service.rebind(restored, required_port=19083)
+            serve.assert_not_called()
+
+            with provider_service._SERVICES_LOCK:
+                context = provider_service._SERVICES[digest].context
+            with mock.patch(
+                "autofv.provider_transport._open_upstream", return_value=_Reply()
+            ):
+                response, receipt = context.dispatch(
+                    request, run_token=RUN_TOKEN
+                )
+
+            self.assertNotIn(request["request_id"], run.get("provider_journal", {}))
+            self.assertIn(request["request_id"], restored["provider_journal"])
+            reduced = provider_receipts.reduce_accounting(
+                restored,
+                {
+                    "config": {"model": MODEL_ID},
+                    "receipts": [receipt],
+                    "model_exchanges": {
+                        request["request_id"]: {
+                            "request": request,
+                            "response": response,
+                            "receipt": receipt,
+                            "call_kind": "explicit",
+                        }
+                    },
+                    "pending_model_exchanges": {},
+                },
+                binding=restored["provider_binding"],
+            )
+            self.assertTrue(reduced["accounting_complete"])
+            self.assertEqual(reduced["requests"], 1)
+
+    def test_surviving_service_rebinds_the_checkpoint_listener_port(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            initial = _PortServer([], 19082)
+            run = _run(root)
+            with mock.patch.dict(
+                os.environ, {"AUTOFV_RUN_TOKEN": RUN_TOKEN}, clear=False
+            ), mock.patch(
+                "autofv.provider_service._serve", return_value=initial
+            ):
+                worker_proxy.configure_provider(
+                    run, env_path=_environment(root), tool_schemas=_tools()
+                )
+            digest = run["provider_binding_sha256"]
+            with provider_service._SERVICES_LOCK:
+                stopped = provider_service._SERVICES.pop(digest)
+            provider_service._stop_service(stopped)
+            replacement = _PortServer([], 19082)
+
+            with mock.patch(
+                "autofv.provider_service._serve", return_value=replacement
+            ) as serve:
+                refreshed = provider_service.rebind(run, required_port=19082)
+
+            self.assertEqual(refreshed, "http://127.0.0.1:19082")
+            serve.assert_called_once_with(mock.ANY, 19082)
+
+    def test_surviving_service_fails_closed_if_checkpoint_port_is_unavailable(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            initial = _PortServer([], 19082)
+            run = _run(root)
+            with mock.patch.dict(
+                os.environ, {"AUTOFV_RUN_TOKEN": RUN_TOKEN}, clear=False
+            ), mock.patch(
+                "autofv.provider_service._serve", return_value=initial
+            ):
+                worker_proxy.configure_provider(
+                    run, env_path=_environment(root), tool_schemas=_tools()
+                )
+            digest = run["provider_binding_sha256"]
+            with provider_service._SERVICES_LOCK:
+                stopped = provider_service._SERVICES.pop(digest)
+            provider_service._stop_service(stopped)
+            wrong_events: list[str] = []
+            wrong = _PortServer(wrong_events, 19083)
+
+            with mock.patch(
+                "autofv.provider_service._serve", return_value=wrong
+            ), self.assertRaisesRegex(
+                provider_transport.ProviderError, "required listener port"
+            ):
+                provider_service.rebind(run, required_port=19082)
+
+            self.assertEqual(wrong_events, ["listener_closed"])
+            self.assertNotIn(digest, provider_service._SERVICES)
+
+    def test_recreated_service_refuses_the_checkpoint_transport_port(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            initial = _PortServer([], 19082)
+            run = _run(root)
+            with mock.patch.dict(
+                os.environ, {"AUTOFV_RUN_TOKEN": RUN_TOKEN}, clear=False
+            ), mock.patch(
+                "autofv.provider_service._serve", return_value=initial
+            ):
+                worker_proxy.configure_provider(
+                    run, env_path=_environment(root), tool_schemas=_tools()
+                )
+            digest = run["provider_binding_sha256"]
+            with provider_service._SERVICES_LOCK:
+                stopped = provider_service._SERVICES.pop(digest)
+            provider_service._stop_service(stopped)
+            refused_events: list[str] = []
+            refused = _PortServer(refused_events, 19082)
+            replacement = _PortServer([], 19083)
+
+            with mock.patch(
+                "autofv.provider_service._serve",
+                side_effect=[refused, replacement],
+            ):
+                refreshed = provider_service.rebind(
+                    run, forbidden_ports=frozenset({19082})
+                )
+
+            self.assertEqual(refreshed, "http://127.0.0.1:19083")
+            self.assertEqual(refused_events, ["listener_closed"])
 
     def test_actual_host_service_is_reached_only_through_simulated_runsc_relay(self) -> None:
         upstream_requests: list[dict] = []

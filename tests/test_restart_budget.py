@@ -9,7 +9,7 @@ from decimal import Decimal
 from pathlib import Path
 from unittest import mock
 
-from autofv import experiment, model, results, verifier, worker
+from autofv import experiment, model, provider_config, results, verifier, worker, worker_proxy
 from tests.test_phase1_diamond import MODEL_FIXTURE, TARGET, _FixtureProxy, _Seams
 from tests.test_clean_verifier import REFERENCE, _preparation_manifest, _sha256, _terminal_state
 
@@ -72,6 +72,39 @@ def _checkpoint_state(root: Path) -> dict:
 
 
 class RestartTests(unittest.TestCase):
+    def test_synthetic_fixed_proxy_policy_does_not_trigger_provider_rebind(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            state = _checkpoint_state(root)
+            run = state["run"]
+            run["fixed_proxy_sha256"] = provider_config.canonical_sha256(
+                LOCK["fixed_proxy"]
+            )
+            run["proxy_base"] = "http://127.0.0.1:19081"
+            run["proxy_client_identity_sha256"] = "9" * 64
+            worker_proxy._record_proxy_policy(run)
+            experiment._write_checkpoint(state, "synthetic:prepared")
+            loaded = experiment._load_checkpoint(
+                root, experiment._checkpoint_identities(run)
+            )
+            observed = {**state["working"], "valid": True, "dirty": False}
+
+            with mock.patch.object(
+                worker, "inspect_resume_state", return_value=observed
+            ), mock.patch.object(
+                worker_proxy, "rebind_provider_transport"
+            ) as rebind:
+                resumed = experiment._restore_checkpoint(
+                    loaded,
+                    manifest=state["manifest"],
+                    config=state["config"],
+                    lock=LOCK,
+                    run_round=state["run_round"],
+                )
+
+            self.assertEqual(resumed["recovery_source"], "working")
+            rebind.assert_not_called()
+
     def test_completed_model_exchange_reuses_its_original_sequence(self):
         self.assertIn(
             "call_kind",
@@ -217,7 +250,10 @@ class RestartTests(unittest.TestCase):
                 )
 
             self.assertEqual(state["receipts"], [])
-            self.assertEqual(state.get("pending_model_exchanges", {}), {})
+            pending = state["pending_model_exchanges"]["scout-001"]
+            self.assertEqual(pending["request"], entry["request"])
+            self.assertEqual(pending["call_kind"], "framework")
+            self.assertEqual(pending["dispatch_state"], "ambiguous")
             self.assertEqual(state.get("model_exchanges", {}), {})
             self.assertEqual(state["accepted"], accepted)
             self.assertIn(

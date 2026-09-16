@@ -195,6 +195,12 @@ def _finish_attempt(
     except (Exception, KeyboardInterrupt) as exc:
         failed_finalization(exc)
 
+    try:
+        results.reconcile_provider_finalization(run, state, outcome=outcome)
+        _checkpoint_if_enabled(state, "provider:reconciled")
+    except (Exception, KeyboardInterrupt) as exc:
+        failed_finalization(exc)
+
     if (
         run.get("execution_tier") == "sealed_runsc"
         and not run.get("worker_disposed")

@@ -4,9 +4,10 @@ from __future__ import annotations
 
 import copy
 import hashlib
+import json
 import re
 from collections.abc import Callable, Mapping
-from pathlib import Path, PurePosixPath
+from pathlib import PurePosixPath
 from typing import Any
 
 from . import model, worker
@@ -21,6 +22,7 @@ _MAX_PATCH_BYTES = 1_000_000
 _MAX_EVIDENCE_CHARS = 4096
 _MAX_TOOL_OUTPUT_BYTES = 16_384
 _MAX_ROLE_TURNS = 16
+_MAX_ROLE_CONTEXT_BYTES = 65_536
 
 _ROLES = frozenset(
     {
@@ -47,6 +49,7 @@ _JOB_FIELDS = frozenset(
         "contract_fingerprint",
         "input_hashes",
         "accepted_commit",
+        "role_context",
     }
 )
 _CANDIDATE_FIELDS = frozenset(
@@ -61,6 +64,7 @@ _CANDIDATE_FIELDS = frozenset(
         "contract_fingerprint",
         "input_hashes",
         "accepted_commit",
+        "role_context_sha256",
         "patch",
         "claimed_status",
         "evidence",
@@ -192,7 +196,21 @@ def validate_role_job(job: Any) -> dict[str, Any]:
         or _GIT_COMMIT.fullmatch(job["accepted_commit"]) is None
     ):
         raise worker.WorkerError("role job accepted commit is invalid")
+    role_context_sha256(job["role_context"])
     return copy.deepcopy(job)
+
+
+def role_context_sha256(value: Any) -> str:
+    """Validate and identify bounded, actual role input without retaining prose elsewhere."""
+    if not isinstance(value, dict) or not value:
+        raise worker.WorkerError("role context is invalid")
+    try:
+        raw = canonical_json_bytes(value)
+    except Exception as exc:
+        raise worker.WorkerError("role context is invalid") from exc
+    if len(raw) > _MAX_ROLE_CONTEXT_BYTES:
+        raise worker.WorkerError("role context exceeds its bound")
+    return hashlib.sha256(raw).hexdigest()
 
 
 def _validate_evidence(value: Any) -> list[str]:
@@ -223,6 +241,10 @@ def validate_candidate(candidate: Any, job: Any) -> dict[str, Any]:
     ):
         if candidate[field] != trusted_job[field]:
             raise worker.WorkerError(f"lane candidate {field} mismatch")
+    if candidate["role_context_sha256"] != role_context_sha256(
+        trusted_job["role_context"]
+    ):
+        raise worker.WorkerError("lane candidate role context mismatch")
     patch = _text(candidate["patch"], "lane candidate patch")
     if len(patch.encode("utf-8")) > _MAX_PATCH_BYTES:
         raise worker.WorkerError("lane candidate patch exceeds its bound")
@@ -243,27 +265,6 @@ def _bounded_output(value: Any, label: str) -> str:
     if len(raw) <= _MAX_TOOL_OUTPUT_BYTES:
         return value
     return raw[:_MAX_TOOL_OUTPUT_BYTES].decode("utf-8", "ignore")
-
-
-def _resolved_lane_file(lane_root: Path, relative: str) -> Path:
-    if lane_root.is_symlink():
-        raise worker.WorkerError("lane root must not be a symlink")
-    try:
-        root = lane_root.resolve(strict=True)
-    except OSError as exc:
-        raise worker.WorkerError("lane root is unavailable") from exc
-    current = root
-    for part in PurePosixPath(relative).parts:
-        current /= part
-        if current.is_symlink():
-            raise worker.WorkerError("lane path must not contain a symlink")
-    try:
-        resolved = current.resolve(strict=True)
-    except OSError as exc:
-        raise worker.WorkerError("lane path is unavailable") from exc
-    if not resolved.is_relative_to(root) or not resolved.is_file():
-        raise worker.WorkerError("lane path escapes its root or is not a file")
-    return resolved
 
 
 def _candidate(job: dict[str, Any], arguments: dict[str, Any]) -> dict[str, Any]:
@@ -287,6 +288,7 @@ def _candidate(job: dict[str, Any], arguments: dict[str, Any]) -> dict[str, Any]
                 "accepted_commit",
             )
         },
+        "role_context_sha256": role_context_sha256(job["role_context"]),
         "patch": patch,
         "claimed_status": arguments["claimed_status"],
         "evidence": copy.deepcopy(arguments["evidence"]),
@@ -297,7 +299,7 @@ def _candidate(job: dict[str, Any], arguments: dict[str, Any]) -> dict[str, Any]
 def build_lane_tools(
     job: Any,
     *,
-    lane_root: Path,
+    lane_root: Any = None,
     read_file: Callable[[str], Any],
     search_files: Callable[[str], Any],
     edit_assigned: Callable[[str], Any],
@@ -305,24 +307,19 @@ def build_lane_tools(
 ) -> dict[str, dict[str, Any]]:
     """Build the five tools for one job without granting acceptance authority."""
     trusted_job = validate_role_job(job)
-    root = Path(lane_root)
     allowed_paths = frozenset(trusted_job["allowed_read_paths"])
 
     def read_allowed(arguments: dict[str, Any]) -> str:
         relative = _safe_relative_path(arguments["path"], "read path")
         if relative not in allowed_paths:
             raise worker.WorkerError("read path is not allowlisted")
-        _resolved_lane_file(root, relative)
         return _bounded_output(read_file(relative), "read tool")
 
     def search_allowed(arguments: dict[str, Any]) -> str:
         query = _text(arguments["query"], "search query", limit=_MAX_QUERY_CHARS)
-        for relative in allowed_paths:
-            _resolved_lane_file(root, relative)
         return _bounded_output(search_files(query), "search tool")
 
     def edit_only_assigned(arguments: dict[str, Any]) -> str:
-        _resolved_lane_file(root, trusted_job["assigned_path"])
         worker.validate_assigned_patch(trusted_job["assigned_path"], arguments["patch"])
         return _bounded_output(edit_assigned(arguments["patch"]), "edit tool")
 
@@ -408,6 +405,7 @@ def role_conversation_spec(job: Any) -> dict[str, Any]:
         "contract_fingerprint",
         "input_hashes",
         "accepted_commit",
+        "role_context",
     )
     identity = hashlib.sha256(canonical_json_bytes(trusted_job)).hexdigest()
     role = trusted_job["role"]
@@ -425,6 +423,28 @@ def role_conversation_spec(job: Any) -> dict[str, Any]:
             field: copy.deepcopy(trusted_job[field]) for field in context_fields
         },
     }
+
+
+def initial_role_messages(spec: Any) -> list[dict[str, str]]:
+    """Construct the bounded system/user transcript visible to every role."""
+    if not isinstance(spec, dict) or spec.get("schema") != "autofv-role-conversation/v1":
+        raise worker.WorkerError("role conversation spec is invalid")
+    messages = [
+        {"role": "system", "content": _text(spec.get("system_prompt"), "system prompt")},
+        {
+            "role": "user",
+            "content": canonical_json_bytes(
+                {
+                    "conversation_id": spec.get("conversation_id"),
+                    "role": spec.get("role"),
+                    "context": spec.get("context"),
+                }
+            ).decode("utf-8"),
+        },
+    ]
+    if len(canonical_json_bytes(messages)) > _MAX_ROLE_CONTEXT_BYTES:
+        raise worker.WorkerError("role messages exceed their bound")
+    return messages
 
 
 def _conversation_action(response: Any) -> tuple[str, dict[str, Any]]:
@@ -454,7 +474,29 @@ async def run_role_conversation(
     if events is not None:
         events.append(f"role:{trusted_job['role']}:started")
     spec = role_conversation_spec(trusted_job)
+    progress = state.setdefault("role_progress", {})
+    identity = spec["conversation_id"]
+    prior_progress = progress.get(identity)
+    progress_identity = {
+        "conversation_id": identity,
+        "job_sha256": hashlib.sha256(canonical_json_bytes(trusted_job)).hexdigest(),
+        "role": trusted_job["role"],
+        "declaration": trusted_job["declaration"],
+    }
+    if isinstance(prior_progress, dict) and any(
+        prior_progress.get(key) != value for key, value in progress_identity.items()
+    ):
+        raise worker.WorkerError("resumed role progress identity changed")
+    progress[identity] = {
+        **progress_identity,
+        "status": "running",
+        "last_turn": int((prior_progress or {}).get("last_turn", 0)),
+        "last_request_id": (prior_progress or {}).get("last_request_id"),
+        "last_tool": (prior_progress or {}).get("last_tool"),
+        "candidate_sha256": (prior_progress or {}).get("candidate_sha256"),
+    }
     schemas = capture_tool_schemas(tools)
+    messages: list[dict[str, Any]] = initial_role_messages(spec)
     context_hashes = set(trusted_job["input_hashes"])
     context_hashes.update(
         {
@@ -470,12 +512,16 @@ async def run_role_conversation(
 
     for turn in range(1, _MAX_ROLE_TURNS + 1):
         request_id = f"lane-{spec['conversation_id'][:16]}-{turn:03d}"
+        progress[identity].update(
+            {"last_turn": turn, "last_request_id": request_id}
+        )
         response, _receipt = model._model_request(
             state,
             request_id=request_id,
             role=trusted_job["role"],
             input_hashes=sorted(context_hashes),
             call_kind=call_kind,
+            messages=copy.deepcopy(messages),
         )
         try:
             name, arguments = _conversation_action(response)
@@ -492,11 +538,49 @@ async def run_role_conversation(
         result = invoke_lane_tool(tools, name, arguments)
         if events is not None:
             events.append(f"lane_tool:{trusted_job['role']}:{name}")
+        progress[identity]["last_tool"] = name
         if name == "submit_candidate":
             candidate = validate_candidate(result, trusted_job)
+            progress[identity].update(
+                {
+                    "status": "completed",
+                    "candidate_sha256": hashlib.sha256(
+                        canonical_json_bytes(candidate)
+                    ).hexdigest(),
+                }
+            )
             if events is not None:
                 events.append(f"role:{trusted_job['role']}:candidate")
             return candidate
+        tool_call_id = f"{request_id}-tool"
+        messages.extend(
+            (
+                {
+                    "role": "assistant",
+                    "content": None,
+                    "tool_calls": [
+                        {
+                            "id": tool_call_id,
+                            "type": "function",
+                            "function": {
+                                "name": name,
+                                "arguments": json.dumps(
+                                    arguments,
+                                    sort_keys=True,
+                                    separators=(",", ":"),
+                                    ensure_ascii=False,
+                                ),
+                            },
+                        }
+                    ],
+                },
+                {
+                    "role": "tool",
+                    "tool_call_id": tool_call_id,
+                    "content": result,
+                },
+            )
+        )
         context_hashes.add(
             hashlib.sha256(
                 canonical_json_bytes({"tool": name, "result": result})

@@ -43,6 +43,11 @@ from .run_state import (
 
 
 def _statement_fingerprint(run: dict[str, Any], graph: dict[str, Any]) -> str:
+    return _supplied_statement(run, graph)["model_fingerprint"]
+
+
+def _supplied_statement(run: dict[str, Any], graph: dict[str, Any]) -> dict[str, str]:
+    """Extract the actual supplied theorem statement and verifier fingerprint."""
     spec = graph["supplied_specs"][graph["frozen_targets"][0]]
     source = worker.read_project_file(run, graph["source_paths"][spec]).decode("utf-8")
     name = spec.removeprefix("probe:").rsplit(".", 1)[-1]
@@ -61,7 +66,12 @@ def _statement_fingerprint(run: dict[str, Any], graph: dict[str, Any]) -> str:
         statement.append(line)
     else:
         raise ContractError("supplied target statement has no theorem body")
-    return hashlib.sha256("\n".join(statement).encode("utf-8")).hexdigest()
+    canon = "\n".join(statement)
+    return {
+        "declaration": spec.removeprefix("probe:"),
+        "canon": canon,
+        "model_fingerprint": hashlib.sha256(canon.encode("utf-8")).hexdigest(),
+    }
 
 
 def _statement_record(response: dict[str, Any], policy_sha256: str) -> dict[str, Any]:
@@ -385,6 +395,21 @@ def _checkpoint_candidate(
             return reject("candidate_did_not_advance")
 
         status = "accepted_reverified" if stale else "accepted"
+        state["inflight_transition"].update(
+            {
+                "status": status,
+                "accepted": accepted,
+                "local_gate_receipt_sha256": candidate[
+                    "local_gate_receipt_sha256"
+                ],
+            }
+        )
+        # Persist the worker-authoritative tree before publishing dependent
+        # scheduler state. Recovery can now finish this exact transition rather
+        # than rolling back and applying the patch a second time.
+        _checkpoint_if_enabled(
+            state, f"candidate:{candidate['request_id']}:applied"
+        )
         transition = {
             "sequence": len(state.setdefault("accepted_sequence", [])) + 1,
             "candidate_sha256": digest,
@@ -447,6 +472,15 @@ def _repair_contracts(
                 ["probe:Diamond.top", "probe:Diamond.left"],
                 ["probe:Diamond.top", "probe:Diamond.right"],
             ],
+            "source_paths": {
+                "probe:Diamond.left": "Diamond/Left.lean",
+                "probe:Diamond.right": "Diamond/Right.lean",
+                "probe:Diamond.top": "Diamond/Top.lean",
+                "probe:Diamond.top_spec": "Diamond/Top.lean",
+            },
+            "supplied_specs": {
+                "probe:Diamond.top": "probe:Diamond.top_spec"
+            },
         }
     targets = set(graph["frozen_targets"])
     if len(targets) != 1:
@@ -523,17 +557,35 @@ def _repair_contracts(
     _event_once(run, "provisional_contracts_applied")
 
     def check_feasibility(label: str) -> dict[str, Any]:
+        root_node = next(iter(targets))
+        if graph.get("supplied_specs") and run.get("project_dir"):
+            root_record = _supplied_statement(run, graph)
+        else:
+            root_record = {
+                "declaration": graph.get("supplied_specs", {}).get(
+                    root_node, f"{root_node.removeprefix('probe:')}_spec"
+                ).removeprefix("probe:"),
+                "canon": f"-- supplied statement fingerprint {top_fingerprint}",
+                "model_fingerprint": top_fingerprint,
+            }
+        records_by_node = {
+            root_node: {
+                **root_record,
+                "status": "supplied",
+            },
+            **{
+                node: contracts["provisional"][
+                    f"{node.removeprefix('probe:')}_spec"
+                ]
+                for node in contract_nodes
+            },
+        }
         result = _external_call(
             state,
             label,
             lambda: worker.check_contract_feasibility(
                 run,
-                [
-                    contracts["provisional"][f"{node.removeprefix('probe:')}_spec"][
-                        "canon"
-                    ]
-                    for node in contract_nodes
-                ],
+                worker.contract_feasibility_request(graph, records_by_node),
             ),
         )
         contracts["feasibility"].append(result)

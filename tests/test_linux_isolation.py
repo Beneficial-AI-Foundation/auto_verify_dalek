@@ -16,6 +16,8 @@ from unittest import mock
 
 from autofv import (
     experiment,
+    model,
+    preflight,
     results,
     worker,
     worker_artifacts,
@@ -761,12 +763,35 @@ class ProxyAccountingTests(unittest.TestCase):
 
 class DeterministicPreflightTests(unittest.TestCase):
     def _inputs(self):
+        suite_sha256 = hashlib.sha256(
+            b"python -m unittest selected deterministic suite: all passed"
+        ).hexdigest()
         cases = {
-            name: hashlib.sha256(f"case:{name}".encode()).hexdigest()
+            name: experiment.named_check_evidence(
+                f"tests.deterministic::{name}",
+                f"PASS tests.deterministic::{name}\n".encode(),
+                suite_sha256=suite_sha256,
+                evidence_kind="unittest",
+                applicability="simulated_static",
+            )
             for name in experiment.DETERMINISTIC_PREFLIGHT_CASES
         }
         gates = {
-            name: hashlib.sha256(f"gate:{name}".encode()).hexdigest()
+            name: experiment.named_check_evidence(
+                f"tests.isolation::{name}",
+                f"PASS tests.isolation::{name}\n".encode(),
+                suite_sha256=suite_sha256,
+                evidence_kind=(
+                    "sealed_runtime"
+                    if name in {"fixed_egress_path", "distinct_terminal_verifier"}
+                    else "static_policy"
+                ),
+                applicability=(
+                    "applicable_sealed_runtime"
+                    if name in {"fixed_egress_path", "distinct_terminal_verifier"}
+                    else "simulated_static"
+                ),
+            )
             for name in experiment.DETERMINISTIC_PREFLIGHT_GATES
         }
         identities = {
@@ -776,15 +801,15 @@ class DeterministicPreflightTests(unittest.TestCase):
             "tool_schema_sha256": "4" * 64,
             "provider_identity_sha256": "5" * 64,
         }
-        return cases, gates, identities
+        return suite_sha256, cases, gates, identities
 
     def test_fresh_green_preflight_names_every_case_gate_and_identity(self):
-        cases, gates, identities = self._inputs()
+        suite_sha256, cases, gates, identities = self._inputs()
         with tempfile.TemporaryDirectory() as tmp:
             path = Path(tmp) / "preflight.json"
             written = experiment.write_deterministic_preflight(
                 path,
-                suite_sha256="6" * 64,
+                suite_sha256=suite_sha256,
                 case_evidence=cases,
                 gate_evidence=gates,
                 identities=identities,
@@ -796,6 +821,7 @@ class DeterministicPreflightTests(unittest.TestCase):
                 path,
                 expected_identities=identities,
                 expected_source_head="8" * 40,
+                expected_suite_sha256=suite_sha256,
                 now_unix=1_700_000_120,
                 max_age_seconds=300,
             )
@@ -819,14 +845,14 @@ class DeterministicPreflightTests(unittest.TestCase):
         )
 
     def test_preflight_rejects_stale_red_partial_or_tampered_evidence(self):
-        cases, gates, identities = self._inputs()
+        suite_sha256, cases, gates, identities = self._inputs()
         mutations = ("stale", "red", "partial", "tampered")
         for mutation in mutations:
             with self.subTest(mutation=mutation), tempfile.TemporaryDirectory() as tmp:
                 path = Path(tmp) / "preflight.json"
                 experiment.write_deterministic_preflight(
                     path,
-                    suite_sha256="6" * 64,
+                    suite_sha256=suite_sha256,
                     case_evidence=cases,
                     gate_evidence=gates,
                     identities=identities,
@@ -852,9 +878,61 @@ class DeterministicPreflightTests(unittest.TestCase):
                         path,
                         expected_identities=identities,
                         expected_source_head="8" * 40,
+                        expected_suite_sha256=suite_sha256,
                         now_unix=now,
                         max_age_seconds=300,
                     )
+
+    def test_external_provider_boundary_requires_current_suite_authorization(self):
+        suite_sha256, cases, gates, identities = self._inputs()
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "preflight.json"
+            record = experiment.write_deterministic_preflight(
+                path,
+                suite_sha256=suite_sha256,
+                case_evidence=cases,
+                gate_evidence=gates,
+                identities=identities,
+                zero_secret_scan_sha256="7" * 64,
+                source_head="8" * 40,
+                completed_at_unix=1_700_000_000,
+            )
+            run = {
+                "deterministic_preflight": {
+                    "path": str(path),
+                    "identities": identities,
+                    "source_head": "8" * 40,
+                    "suite_sha256": suite_sha256,
+                    "max_age_seconds": 300,
+                }
+            }
+            with mock.patch("autofv.preflight.time.time", return_value=1_700_000_120):
+                authorized = preflight.authorize_external_action(run)
+
+            self.assertEqual(authorized, record)
+            self.assertEqual(
+                run["deterministic_preflight_sha256"], record["preflight_sha256"]
+            )
+            run["deterministic_preflight"]["suite_sha256"] = "9" * 64
+            with (
+                mock.patch("autofv.preflight.time.time", return_value=1_700_000_120),
+                self.assertRaises(experiment.ContractError),
+            ):
+                preflight.authorize_external_action(run)
+
+    def test_model_provider_action_fails_before_runner_without_preflight(self):
+        runner = mock.Mock()
+        state = {
+            "run": {"provider_binding": {"binding_sha256": "1" * 64}},
+            "run_round": runner,
+        }
+        request = {"request_id": "provider-action-001"}
+
+        with self.assertRaisesRegex(
+            experiment.ContractError, "requires deterministic preflight"
+        ):
+            model._invoke_model(state, request, checkpoint=False)
+        runner.assert_not_called()
 
 
 if __name__ == "__main__":

@@ -8,7 +8,15 @@ import unittest
 from pathlib import Path
 from unittest import mock
 
-from autofv import axiom_audit, experiment, probes, verifier, verifier_bundle, worker
+from autofv import (
+    axiom_audit,
+    experiment,
+    generic_role_runtime,
+    probes,
+    verifier,
+    verifier_bundle,
+    worker,
+)
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -419,6 +427,36 @@ class CleanStateMutationTests(unittest.TestCase):
                 report = self._verify(observed=observed)
                 self.assertEqual(report["verdict"], "FAIL")
                 self.assertIn(reason, report["failures"])
+
+    def test_generic_contract_preserves_verifier_statement_fingerprint(self):
+        state = _state()
+        statement = state["frozen_contracts"]["Diamond.left_spec"]["canon"]
+        candidate = {
+            "claimed_status": "candidate",
+            "evidence": ["statement:" + statement],
+            "candidate_identity": "different from statement identity",
+        }
+        record = generic_role_runtime._contract_record(
+            candidate,
+            "Diamond.left_spec",
+            experiment.load_toolchain_lock()["native_decide_policy_sha256"],
+            [],
+        )
+        state["frozen_contracts"]["Diamond.left_spec"] = {
+            **record,
+            "status": "frozen",
+        }
+        bundle = verifier.build_bundle(_members(state))
+        report = verifier.verify_bundle(
+            bundle,
+            _invocation(bundle, state),
+            reference_bytes=REFERENCE.read_bytes(),
+            run_checks=lambda *_: _observed(state),
+        )
+
+        self.assertEqual(record["model_fingerprint"], _sha256(statement.encode()))
+        self.assertNotEqual(record["candidate_sha256"], record["model_fingerprint"])
+        self.assertEqual(report["verdict"], "PASS", report)
 
     def test_hidden_reference_is_required_and_bound_after_bundle_integrity(self):
         missing = self._verify(reference=b"")

@@ -66,6 +66,7 @@ from .model import (
 from .preflight import (
     DETERMINISTIC_PREFLIGHT_CASES,
     DETERMINISTIC_PREFLIGHT_GATES,
+    named_check_evidence,
     require_deterministic_preflight,
     write_deterministic_preflight,
 )

@@ -13,7 +13,7 @@ from decimal import Decimal
 from types import SimpleNamespace
 from typing import Any
 
-from . import worker, worker_proxy
+from . import preflight, worker, worker_proxy
 from .contracts import (
     BudgetExhausted,
     ContractError,
@@ -272,13 +272,15 @@ def _invoke_model(
     call_kind: str = "explicit",
     messages: Any = None,
 ) -> tuple[dict[str, Any], dict[str, Any]]:
+    provider_bound = isinstance(state["run"].get("provider_binding"), dict)
+    if provider_bound:
+        preflight.authorize_external_action(state["run"])
     if checkpoint:
         _check_budget(state)
         _reserve_provider_calls(state, [(request, messages, call_kind)])
         _checkpoint_if_enabled(state, f"model:{request['request_id']}:before")
     pending = state.setdefault("pending_model_exchanges", {})
     reservation = pending.get(request["request_id"])
-    provider_bound = isinstance(state["run"].get("provider_binding"), dict)
     if reservation is None:
         reservation = {
             "request": request,

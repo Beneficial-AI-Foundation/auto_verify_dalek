@@ -4,6 +4,7 @@ import copy
 import hashlib
 import json
 import os
+import socket
 import subprocess
 import tempfile
 import time
@@ -36,6 +37,16 @@ MODEL_FIXTURE = json.loads(MODEL_FIXTURE_PATH.read_text(encoding="utf-8"))
 FIRST_REQUEST = MODEL_FIXTURE["entries"][0]["request"]
 
 
+def _require_loopback_bind(test_case: unittest.TestCase) -> None:
+    reservation = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    try:
+        reservation.bind(("127.0.0.1", 0))
+    except PermissionError as exc:
+        test_case.skipTest(f"managed sandbox forbids loopback bind: {exc}")
+    finally:
+        reservation.close()
+
+
 class UpstreamPolicyTests(unittest.TestCase):
     def test_seatbelt_profile_allows_only_the_worker_and_proxy_ports(self) -> None:
         profile = worker_runtime._seatbelt_profile(
@@ -60,6 +71,7 @@ class LinuxIsolationTests(unittest.TestCase):
         self.manifest = json.loads((TARGET / "autofv.json").read_text(encoding="utf-8"))
 
     def prepare(self, run_id: str = "fixture-diamond-run-0001") -> dict:
+        _require_loopback_bind(self)
         with mock.patch.dict(os.environ, {"AUTOFV_RUN_ID": run_id}, clear=False):
             return worker.prepare_run(TARGET, self.manifest, LOCK)
 
@@ -125,6 +137,7 @@ class LinuxIsolationTests(unittest.TestCase):
         self.assertIsNone(worker.inspect_lima_instance(worker.AGENT_VM))
 
     def test_runtime_inspection_and_external_deny_matrix(self) -> None:
+        _require_loopback_bind(self)
         route = LOCK["fixed_proxy"]
         with _trusted_proxy(MODEL_FIXTURE, route) as (base_url, _, audit):
             port = urllib.parse.urlsplit(base_url).port
@@ -341,6 +354,7 @@ class LinuxIsolationTests(unittest.TestCase):
             }
             with (
                 mock.patch.object(worker, "dispose_run") as dispose,
+                mock.patch.object(results, "materialize_accepted"),
                 mock.patch.object(results, "persist_attempt") as persist,
             ):
                 result = experiment._finish_attempt(
@@ -564,6 +578,7 @@ class ProxyAccountingTests(unittest.TestCase):
             self.assertEqual(len(state["receipt_rejections"]), 1)
 
     def test_real_proxy_policy_accounting_and_retained_surface_scans(self) -> None:
+        _require_loopback_bind(self)
         provider_marker = "synthetic-provider-secret-never-forward"
         fixture_marker = MODEL_FIXTURE_PATH.read_bytes()
         surface_marker = "synthetic-retained-surface-leak"

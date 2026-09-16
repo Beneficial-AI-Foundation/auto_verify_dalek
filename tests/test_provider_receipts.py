@@ -8,6 +8,7 @@ import json
 import os
 import io
 import subprocess
+import sys
 import tarfile
 import tempfile
 import threading
@@ -197,6 +198,55 @@ class ProviderReceiptTests(unittest.TestCase):
         for binding in list(provider_config._BINDINGS.values()):
             run = {"provider_binding_sha256": binding.public["binding_sha256"]}
             provider_config.release_provider(run)
+
+    def test_preflight_fifo_is_rejected_without_blocking(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            fifo = Path(temporary) / "provider-preflight.fifo"
+            os.mkfifo(fifo)
+            completed = subprocess.run(
+                [
+                    sys.executable,
+                    "-c",
+                    (
+                        "from autofv.provider_receipts import validate_preflight; "
+                        "validate_preflight(__import__('sys').argv[1])"
+                    ),
+                    str(fifo),
+                ],
+                cwd=ROOT,
+                env={**os.environ, "PYTHONPATH": str(ROOT)},
+                capture_output=True,
+                text=True,
+                timeout=1,
+                check=False,
+            )
+            self.assertNotEqual(completed.returncode, 0)
+            self.assertIn("provider preflight is missing or unsafe", completed.stderr)
+
+    def test_canonical_journal_fifo_is_rejected_without_blocking(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            fifo = Path(temporary) / "provider-journal.json"
+            os.mkfifo(fifo)
+            completed = subprocess.run(
+                [
+                    sys.executable,
+                    "-c",
+                    (
+                        "from pathlib import Path; "
+                        "from autofv.provider_receipts import _read_canonical; "
+                        "_read_canonical(Path(__import__('sys').argv[1]), 'provider journal')"
+                    ),
+                    str(fifo),
+                ],
+                cwd=ROOT,
+                env={**os.environ, "PYTHONPATH": str(ROOT)},
+                capture_output=True,
+                text=True,
+                timeout=1,
+                check=False,
+            )
+            self.assertNotEqual(completed.returncode, 0)
+            self.assertIn("provider journal is missing or unsafe", completed.stderr)
 
     def _configured(
         self,

@@ -9,8 +9,14 @@ from pathlib import Path
 from typing import Any, Callable
 
 from .contracts import ContractError, canonical_json_bytes, load_toolchain_lock
-from .evidence import FILE_LOCATIONS, SHA256
-from . import result_summary, terminal_verifier, verifier as report_verifier
+from .evidence import FILE_LOCATIONS, SHA256, authenticate_provider_evidence
+from . import (
+    provider_config,
+    provider_receipts,
+    result_summary,
+    terminal_verifier,
+    verifier as report_verifier,
+)
 
 
 OUTCOMES = {
@@ -124,7 +130,9 @@ def _validate_counts(
         raise AuditError("retained verifier counts mismatch")
 
 
-def _validate_accounting(result: dict[str, Any], evidence: Any) -> None:
+def _validate_accounting(
+    result: dict[str, Any], evidence: Any, run_root: Path
+) -> None:
     if not isinstance(evidence, list) or not evidence:
         raise AuditError("retained accounting provenance mismatch")
     exchanges = {}
@@ -143,25 +151,81 @@ def _validate_accounting(result: dict[str, Any], evidence: Any) -> None:
         raise AuditError("retained accounting lock is invalid") from exc
     if result.get("toolchain_lock_sha256") != _sha(canonical_json_bytes(lock)):
         raise AuditError("retained accounting lock mismatch")
+    run = {
+        "run_id": result["run_id"],
+        "run_root": str(run_root),
+        "evidence_dir": str(run_root / "evidence"),
+        "lock": lock,
+        "fixed_proxy_sha256": result.get("fixed_proxy_sha256"),
+        "proxy_policy_sha256": result.get("proxy_policy_sha256"),
+        "provider_binding": result.get("provider_binding"),
+        "provider_binding_sha256": result.get("provider_binding_sha256"),
+        "provider_preflight_sha256": result.get("provider_preflight_sha256"),
+        "provider_journal": result.get("provider_journal"),
+        "image_digest": result.get("image_digest"),
+        "control_bundle_sha256": result.get("control_bundle_sha256"),
+        "native_decide_policy_sha256": result.get(
+            "native_decide_policy_sha256"
+        ),
+        "worker_inventory_sha256": result.get("worker_inventory_sha256"),
+    }
+    state = {
+        "config": {"model": result.get("model_id")},
+        "receipts": receipts,
+        "model_exchanges": exchanges,
+        "pending_model_exchanges": {},
+        "estimated_accounting": result["accounting"].get("estimated"),
+    }
     try:
-        reduced = result_summary.reduce_accounting(
-            {
-                "run_id": result["run_id"],
-                "cost_classification": result.get("cost_classification"),
-                "lock": lock,
-            },
-            {
-                "config": {"model": result.get("model_id")},
-                "receipts": receipts,
-                "model_exchanges": exchanges,
-                "pending_model_exchanges": {},
-                "estimated_accounting": result["accounting"].get("estimated"),
-            },
-        )
-    except result_summary.SummaryError as exc:
+        provider_evidence = authenticate_provider_evidence(run)
+        if provider_evidence is not None:
+            if (
+                result.get("provider_evidence") != provider_evidence
+                or result.get("provider_journal_sha256")
+                != provider_evidence["provider_journal_sha256"]
+            ):
+                raise AuditError("retained provider evidence summary mismatch")
+            reduced = provider_receipts.reduce_accounting(
+                run, state, binding=provider_evidence["provider_binding"]
+            )
+        else:
+            if any(
+                result.get(name) is not None
+                for name in (
+                    "provider_evidence",
+                    "provider_binding",
+                    "provider_binding_sha256",
+                    "provider_preflight_sha256",
+                    "provider_journal",
+                    "provider_journal_sha256",
+                )
+            ):
+                raise AuditError("retained provider evidence is incomplete")
+            route = lock.get("fixed_proxy")
+            run["cost_classification"] = (
+                route.get("cost_classification")
+                if isinstance(route, dict)
+                else None
+            )
+            reduced = result_summary.reduce_accounting(run, state)
+    except (provider_config.ProviderConfigError, result_summary.SummaryError) as exc:
         raise AuditError("retained accounting authentication failed") from exc
+    legacy_synthetic = provider_evidence is None
+    observed_complete = result.get(
+        "accounting_complete", True if legacy_synthetic else None
+    )
+    observed_unresolved = result.get(
+        "unresolved_provider_requests", [] if legacy_synthetic else None
+    )
+    observed_unknown = result.get(
+        "unknown_provider_spend", False if legacy_synthetic else None
+    )
     if (
-        result["accounting"] != reduced["accounting"]
+        result.get("cost_classification") != reduced["classification"]
+        or result["accounting"] != reduced["accounting"]
+        or observed_complete != reduced.get("accounting_complete", True)
+        or observed_unresolved != reduced.get("unresolved_requests", [])
+        or observed_unknown != reduced.get("unknown_provider_spend", False)
         or result.get("tokens") != reduced["tokens"]
         or result.get("cost_usd") != f"{reduced['cost']:.6f}"
         or result.get("proxy_requests") != reduced["requests"]
@@ -341,7 +405,7 @@ def _validate_retained(
         raise AuditError("retained run root mismatch")
     sources = _validate_l0_links(result, run_root, validate_l0)
     _validate_counts(result, sources.get("probe"), smoke=smoke)
-    _validate_accounting(result, sources.get("model_receipt"))
+    _validate_accounting(result, sources.get("model_receipt"), run_root)
     run_result, run_raw = _read(run_root / "result.json", "run result")
     if run_result != result or run_raw != retained_raw:
         raise AuditError("retained result does not match run result")

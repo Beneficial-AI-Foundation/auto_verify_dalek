@@ -32,6 +32,35 @@ class _Service:
     server: http.server.ThreadingHTTPServer
     thread: threading.Thread
     local_base: str
+    context: "_DispatchContext"
+
+
+class _DispatchContext:
+    """Serialize dispatch with checkpoint-state reattachment."""
+
+    def __init__(
+        self, run: dict[str, Any], binding: provider_config.ProviderBinding
+    ) -> None:
+        self._binding_sha256 = binding.public["binding_sha256"]
+        self._run = run
+        self._lock = threading.Lock()
+
+    def reattach(
+        self, run: dict[str, Any], binding: provider_config.ProviderBinding
+    ) -> None:
+        if binding.public["binding_sha256"] != self._binding_sha256:
+            raise provider_transport.ProviderError(
+                "provider service binding changed",
+                classification="upstream_error",
+            )
+        with self._lock:
+            self._run = run
+
+    def dispatch(
+        self, request: dict[str, Any], *, run_token: str
+    ) -> tuple[dict[str, Any], dict[str, Any]]:
+        with self._lock:
+            return dispatch(self._run, request, run_token=run_token)
 
 
 _SERVICES: dict[str, _Service] = {}
@@ -290,7 +319,9 @@ def _validate_completed_exchange(
     )
 
 
-def _handler(run: dict[str, Any], binding: provider_config.ProviderBinding):
+def _handler(
+    context: _DispatchContext, binding: provider_config.ProviderBinding
+):
     route_path = binding.route_path
 
     class Handler(http.server.BaseHTTPRequestHandler):
@@ -325,8 +356,8 @@ def _handler(run: dict[str, Any], binding: provider_config.ProviderBinding):
                 if len(raw) != length:
                     raise ValueError("incomplete request body")
                 request = provider_messages.strict_request_json(raw)
-                response, receipt = dispatch(
-                    run, request, run_token=self.headers.get("X-AutoFV-Run-Token", "")
+                response, receipt = context.dispatch(
+                    request, run_token=self.headers.get("X-AutoFV-Run-Token", "")
                 )
             except provider_transport.ProviderError as exc:
                 status = {
@@ -354,8 +385,30 @@ def _handler(run: dict[str, Any], binding: provider_config.ProviderBinding):
     return Handler
 
 
-def _serve(handler):
-    return _BoundedHTTPServer(("0.0.0.0", 0), handler)
+def _serve(handler, port: int = 0):
+    return _BoundedHTTPServer(("0.0.0.0", port), handler)
+
+
+def _stop_service(service: _Service) -> None:
+    stopper = threading.Thread(target=service.server.shutdown, daemon=True)
+    stopper.start()
+    stopper.join(timeout=1)
+    close_active = getattr(service.server, "close_active", None)
+    if callable(close_active):
+        close_active()
+    service.server.server_close()
+    service.thread.join(timeout=1)
+
+
+def _record_service(run: dict[str, Any], digest: str, service: _Service) -> str:
+    run["provider_service"] = {
+        "schema": "autofv-provider-service/v1",
+        "binding_sha256": digest,
+        "local_base_sha256": hashlib.sha256(service.local_base.encode()).hexdigest(),
+        "port": service.server.server_port,
+    }
+    run["proxy_base"] = service.local_base
+    return service.local_base
 
 
 def start(run: dict[str, Any]) -> str:
@@ -366,9 +419,11 @@ def start(run: dict[str, Any]) -> str:
     with _SERVICES_LOCK:
         existing = _SERVICES.get(digest)
         if existing is not None:
-            return existing.local_base
+            existing.context.reattach(run, binding)
+            return _record_service(run, digest, existing)
+        context = _DispatchContext(run, binding)
         try:
-            server = _serve(_handler(run, binding))
+            server = _serve(_handler(context, binding))
         except OSError as exc:
             raise provider_transport.ProviderError(
                 "provider service unavailable", classification="upstream_error"
@@ -379,7 +434,7 @@ def start(run: dict[str, Any]) -> str:
             daemon=True,
         )
         local_base = f"http://127.0.0.1:{server.server_port}"
-        _SERVICES[digest] = _Service(server, thread, local_base)
+        _SERVICES[digest] = _Service(server, thread, local_base, context)
         try:
             thread.start()
         except RuntimeError as exc:
@@ -388,14 +443,95 @@ def start(run: dict[str, Any]) -> str:
             raise provider_transport.ProviderError(
                 "provider service unavailable", classification="upstream_error"
             ) from exc
-    run["provider_service"] = {
-        "schema": "autofv-provider-service/v1",
-        "binding_sha256": digest,
-        "local_base_sha256": hashlib.sha256(local_base.encode()).hexdigest(),
-        "port": server.server_port,
-    }
-    run["proxy_base"] = local_base
-    return local_base
+    return _record_service(run, digest, _SERVICES[digest])
+
+
+def rebind(
+    run: dict[str, Any],
+    *,
+    required_port: int | None = None,
+    forbidden_ports: frozenset[int] = frozenset(),
+) -> str:
+    """Rotate only transient listener state while preserving stable provider identity."""
+    if (
+        required_port is not None
+        and (
+            type(required_port) is not int
+            or not 1 <= required_port <= 65535
+            or forbidden_ports
+        )
+    ):
+        raise provider_transport.ProviderError(
+            "provider service listener requirement is invalid",
+            classification="upstream_error",
+        )
+    binding = provider_config.provider_binding(run)
+    if binding is None:
+        raise provider_transport.ProviderError("provider binding is unavailable")
+    digest = binding.public["binding_sha256"]
+    with _SERVICES_LOCK:
+        previous = _SERVICES.get(digest)
+        if (
+            previous is not None
+            and required_port is not None
+            and previous.server.server_port == required_port
+        ):
+            previous.context.reattach(run, binding)
+            return _record_service(run, digest, previous)
+        server = None
+        context = _DispatchContext(run, binding)
+        attempts = 1 if required_port is not None else 16
+        for _attempt in range(attempts):
+            try:
+                candidate = (
+                    _serve(_handler(context, binding), required_port)
+                    if required_port is not None
+                    else _serve(_handler(context, binding))
+                )
+            except OSError as exc:
+                raise provider_transport.ProviderError(
+                    "provider service unavailable", classification="upstream_error"
+                ) from exc
+            if (
+                required_port is not None
+                and candidate.server_port != required_port
+            ):
+                candidate.server_close()
+                raise provider_transport.ProviderError(
+                    "provider service did not bind its required listener port",
+                    classification="upstream_error",
+                )
+            if required_port is not None or candidate.server_port not in forbidden_ports:
+                server = candidate
+                break
+            candidate.server_close()
+        if server is None:
+            raise provider_transport.ProviderError(
+                "provider service could not rotate its transient port",
+                classification="upstream_error",
+            )
+        thread = threading.Thread(
+            target=server.serve_forever,
+            name=f"autofv-provider-{digest[:12]}",
+            daemon=True,
+        )
+        replacement = _Service(
+            server,
+            thread,
+            f"http://127.0.0.1:{server.server_port}",
+            context,
+        )
+        try:
+            thread.start()
+        except RuntimeError as exc:
+            server.server_close()
+            raise provider_transport.ProviderError(
+                "provider service unavailable", classification="upstream_error"
+            ) from exc
+        _SERVICES[digest] = replacement
+    if previous is not None:
+        _stop_service(previous)
+    return _record_service(run, digest, replacement)
 
 
 def relay_base(run: dict[str, Any], host_address: str) -> str:
@@ -472,12 +608,5 @@ def release(run: dict[str, Any]) -> None:
     with _SERVICES_LOCK:
         service = _SERVICES.pop(digest, None)
     if service is not None:
-        stopper = threading.Thread(target=service.server.shutdown, daemon=True)
-        stopper.start()
-        stopper.join(timeout=1)
-        close_active = getattr(service.server, "close_active", None)
-        if callable(close_active):
-            close_active()
-        service.server.server_close()
-        service.thread.join(timeout=1)
+        _stop_service(service)
     provider_config.release_provider(run)

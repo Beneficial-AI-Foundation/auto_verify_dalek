@@ -5,13 +5,14 @@ from __future__ import annotations
 import hashlib
 import hmac
 import os
+import re
 import threading
 import time
 from decimal import Decimal
 from pathlib import Path
 from typing import Any, TypedDict
 
-from . import results, worker
+from . import evidence, provider_config, provider_receipts, results, worker, worker_proxy
 from .contracts import (
     BudgetExhausted,
     ContractError,
@@ -45,13 +46,17 @@ CHECKPOINT_RUN_FIELDS = (
     "scored_container_receipt",
     "fixed_proxy_sha256",
     "proxy_model_id",
-    "proxy_base",
     "proxy_firewall",
     "proxy_network",
     "proxy_relay",
     "proxy_client_identity_sha256",
     "proxy_policy_sha256",
     "proxy_policy_receipt",
+    "provider_binding",
+    "provider_binding_sha256",
+    "provider_preflight_sha256",
+    "provider_journal",
+    "provider_transport_rebind",
     "upstream_policy_sha256",
     "upstream_policy_receipt",
     "egress_policy_sha256",
@@ -248,6 +253,17 @@ def _checkpoint_identities(run: dict[str, Any]) -> dict[str, Any]:
     lock = run.get("lock")
     if isinstance(lock, dict):
         identities["toolchain_lock_sha256"] = _canonical_sha256(lock)
+    if isinstance(run.get("provider_binding"), dict):
+        identities["provider_binding_sha256"] = run.get(
+            "provider_binding_sha256"
+        )
+    if isinstance(run.get("provider_preflight_sha256"), str):
+        identities["provider_preflight_sha256"] = run[
+            "provider_preflight_sha256"
+        ]
+    journal = run.get("provider_journal")
+    if isinstance(journal, dict):
+        identities["provider_journal_sha256"] = _canonical_sha256(journal)
     for name in ("probe_rust_sha256", "probe_aeneas_sha256", "graph_sha256"):
         if name in run:
             identities[name] = run[name]
@@ -379,6 +395,45 @@ def _valid_checkpoint(
         return None
     if any(value["identities"].get(key) != item for key, item in expected_identities.items()):
         return None
+    binding = run.get("provider_binding")
+    binding_sha256 = run.get("provider_binding_sha256")
+    if (binding is None) != (binding_sha256 is None):
+        return None
+    if binding is not None:
+        if (
+            not isinstance(binding, dict)
+            or not isinstance(binding_sha256, str)
+            or re.fullmatch(r"[0-9a-f]{64}", binding_sha256) is None
+        ):
+            return None
+        try:
+            public = provider_config.validate_public_binding(binding)
+        except (KeyError, TypeError, provider_config.ProviderConfigError):
+            return None
+        if (
+            public.get("binding_sha256") != binding_sha256
+            or identities.get("provider_binding_sha256") != binding_sha256
+        ):
+            return None
+    preflight_sha256 = run.get("provider_preflight_sha256")
+    if preflight_sha256 is not None and (
+        not isinstance(preflight_sha256, str)
+        or re.fullmatch(r"[0-9a-f]{64}", preflight_sha256) is None
+        or identities.get("provider_preflight_sha256") != preflight_sha256
+    ):
+        return None
+    journal = run.get("provider_journal")
+    if journal is not None and (
+        not isinstance(journal, dict)
+        or any(
+            not isinstance(request_id, str)
+            or not isinstance(digest, str)
+            or re.fullmatch(r"[0-9a-f]{64}", digest) is None
+            for request_id, digest in journal.items()
+        )
+        or identities.get("provider_journal_sha256") != _canonical_sha256(journal)
+    ):
+        return None
     preparation = run.get("preparation_manifest")
     reference = run.get("verifier_reference")
     if isinstance(preparation, dict) and (
@@ -476,6 +531,81 @@ def _recover_checkpoint_state(
     return state
 
 
+def _provider_recovery_marked(
+    run: dict[str, Any], state: _RunState, identities: dict[str, Any]
+) -> bool:
+    direct_marker = any(
+        name in run
+        for name in (
+            "provider_binding",
+            "provider_binding_sha256",
+            "provider_preflight_sha256",
+            "provider_journal",
+        )
+    ) or any(
+        name in identities
+        for name in (
+            "provider_binding_sha256",
+            "provider_preflight_sha256",
+            "provider_journal_sha256",
+        )
+    )
+    evidence_dir = run.get("evidence_dir")
+    if isinstance(evidence_dir, str):
+        retained = Path(evidence_dir)
+        if "provider_transport_rebind" not in run:
+            policy = evidence.validate_retained_provider_policy(run)
+            if policy is not None:
+                direct_marker = True
+        if any(
+            os.path.lexists(retained / relative)
+            for relative in (
+                "provider-preflight.json",
+                "provider-journal",
+            )
+        ):
+            direct_marker = True
+    receipts = state.get("receipts")
+    if isinstance(receipts, list) and any(
+        isinstance(receipt, dict)
+        and receipt.get("schema") == provider_receipts.PROVIDER_RECEIPT_SCHEMA
+        for receipt in receipts
+    ):
+        direct_marker = True
+    for name in ("pending_model_exchanges", "model_exchanges"):
+        exchanges = state.get(name)
+        if isinstance(exchanges, dict) and any(
+            isinstance(exchange, dict)
+            and isinstance(exchange.get("receipt"), dict)
+            and exchange["receipt"].get("schema")
+            == provider_receipts.PROVIDER_RECEIPT_SCHEMA
+            for exchange in exchanges.values()
+        ):
+            direct_marker = True
+    return direct_marker
+
+
+def _validate_provider_recovery(
+    run: dict[str, Any], state: _RunState, identities: dict[str, Any]
+) -> bool:
+    """Authenticate stable provider state before inspecting a recreated worker."""
+    if not _provider_recovery_marked(run, state, identities):
+        return False
+    if not isinstance(run.get("provider_binding"), dict):
+        raise ContractError("provider binding is missing from checkpoint")
+    try:
+        public = provider_config.validate_public_binding(run["provider_binding"])
+        pinned = provider_config.provider_binding(run)
+        if pinned is None or pinned.public != public:
+            raise provider_config.ProviderConfigError(
+                "provider binding is not process-pinned"
+            )
+        provider_receipts.validate_recovery_artifacts(run, state, binding=pinned)
+    except (KeyError, TypeError, provider_config.ProviderConfigError) as exc:
+        raise ContractError(f"provider binding recovery failed: {exc}") from exc
+    return True
+
+
 def _restore_checkpoint(
     checkpoint: dict[str, Any],
     *,
@@ -508,12 +638,71 @@ def _restore_checkpoint(
             "_accept_lock": threading.Lock(),
         }
     )
+    provider_recovery = _validate_provider_recovery(
+        run, state, checkpoint["identities"]
+    )
     if isinstance(state.get("result"), dict):
         state["recovery_source"] = "terminal"
         return state
+    rebind_transport = (
+        provider_recovery and worker_proxy.has_retained_provider_transport(run)
+    )
     previous_agent_worker_id = run.get("agent_worker_id")
     try:
-        recovered = _recover_checkpoint_state(state, run, manifest)
+        if rebind_transport:
+            worker_proxy.prepare_provider_transport_rebind(run)
+            _write_checkpoint(state, "provider_transport_rebind:intent")
+        intent = run.get("provider_transport_rebind")
+        rebind_phase = intent.get("phase") if isinstance(intent, dict) else None
+        if rebind_transport and rebind_phase == "transport_restored":
+            # A retained marker proves the last process completed restoration;
+            # it does not prove that its listener or worker is still live. Roll
+            # the authenticated transport into a fresh durable recovery cycle.
+            worker_proxy.finish_provider_transport_rebind(run)
+            worker_proxy.prepare_provider_transport_rebind(run)
+            _write_checkpoint(
+                state, "provider_transport_rebind:revalidation-intent"
+            )
+            rebind_phase = "intent"
+        if rebind_transport and rebind_phase == "recreated_service_rebound":
+            worker_proxy.rebind_provider_transport(run, worker_recreated=True)
+            _write_checkpoint(state, "provider_transport_rebind:recreated-service")
+            validation = run["provider_transport_rebind"].get("validation", {})
+            run["proxy_policy_sha256"] = validation.get("proxy_policy_sha256")
+            worker.force_destroy_worker(run)
+            recovered = _recover_checkpoint_state(state, run, manifest)
+        else:
+            if rebind_transport:
+                worker_proxy.rebind_provider_transport(run)
+                _write_checkpoint(state, "provider_transport_rebind:service")
+            recovered = _recover_checkpoint_state(state, run, manifest)
+            if (
+                rebind_transport
+                and run.get("agent_worker_id") != previous_agent_worker_id
+            ):
+                worker_proxy.rebind_provider_transport(
+                    run, worker_recreated=True
+                )
+                _write_checkpoint(
+                    recovered, "provider_transport_rebind:recreated-service"
+                )
+                validation = run["provider_transport_rebind"].get(
+                    "validation", {}
+                )
+                run["proxy_policy_sha256"] = validation.get(
+                    "proxy_policy_sha256"
+                )
+                worker.force_destroy_worker(run)
+                recovered = _recover_checkpoint_state(
+                    recovered, run, manifest
+                )
+        if rebind_transport:
+            worker_proxy.restore_provider_transport(run)
+            _write_checkpoint(
+                recovered, "provider_transport_rebind:restored"
+            )
+            worker_proxy.finish_provider_transport_rebind(run)
+            _write_checkpoint(recovered, "provider_transport_rebind:complete")
         if run.get("agent_worker_id") != previous_agent_worker_id:
             results.invalidate_verifier_evidence(run, recovered)
             _write_checkpoint(recovered, "verifier_invalidated:worker_recreated")

@@ -10,7 +10,7 @@ import secrets
 from pathlib import Path
 from typing import Any
 
-from . import provider_config, provider_service, provider_transport
+from . import evidence, provider_config, provider_service, provider_transport
 from .worker_runtime import (
     AGENT_UID,
     FORWARD_CHAIN,
@@ -671,6 +671,345 @@ def configure_provider(
         provider_config.abort_configuration(run)
         raise WorkerError(str(exc), run=run) from exc
     return public
+
+
+def has_retained_provider_transport(run: dict[str, Any]) -> bool:
+    return "provider_transport_rebind" in run or any(
+        name in run
+        for name in (
+            "proxy_firewall",
+            "proxy_network",
+            "proxy_relay",
+            "proxy_policy_sha256",
+            "proxy_policy_receipt",
+            "egress_policy_sha256",
+            "egress_receipt",
+        )
+    )
+
+
+_TRANSPORT_REBIND_FIELDS = {
+    "schema",
+    "binding_sha256",
+    "phase",
+    "stale",
+    "validation",
+    "replacement_port",
+    "files",
+}
+_TRANSPORT_STALE_FIELDS = (
+    "proxy_firewall",
+    "proxy_network",
+    "proxy_relay",
+)
+_TRANSPORT_REPLACED_FIELDS = (
+    "proxy_firewall",
+    "proxy_network",
+    "proxy_relay",
+    "proxy_policy_sha256",
+    "proxy_policy_receipt",
+    "egress_policy_sha256",
+    "egress_receipt",
+)
+_TRANSPORT_VALIDATION_FIELDS = (
+    "run_id",
+    "provider_binding",
+    "provider_binding_sha256",
+    "fixed_proxy_sha256",
+    "proxy_client_identity_sha256",
+    "proxy_policy_sha256",
+    "proxy_policy_receipt",
+    "image_digest",
+    "control_bundle_sha256",
+    "native_decide_policy_sha256",
+    "worker_inventory_sha256",
+    "upstream_policy_sha256",
+    "upstream_policy_receipt",
+    "egress_policy_sha256",
+    "egress_receipt",
+    "proxy_firewall",
+)
+
+
+def _transport_history(run: dict[str, Any], intent: dict[str, Any]) -> Path:
+    validation = intent.get("validation")
+    files = intent.get("files")
+    binding_sha256 = intent.get("binding_sha256")
+    policy_sha256 = (
+        validation.get("proxy_policy_sha256")
+        if isinstance(validation, dict)
+        else None
+    )
+    if (
+        not isinstance(binding_sha256, str)
+        or SHA256.fullmatch(binding_sha256) is None
+        or not isinstance(policy_sha256, str)
+        or SHA256.fullmatch(policy_sha256) is None
+        or not isinstance(files, dict)
+    ):
+        raise WorkerError("provider transport policy identity is invalid")
+    try:
+        generation_sha256 = _sha256(
+            _canonical_bytes(
+                {
+                    "schema": "autofv-provider-transport-generation/v1",
+                    "binding_sha256": binding_sha256,
+                    "validation": validation,
+                    "files": files,
+                }
+            )
+        )
+    except (TypeError, ValueError, RecursionError) as exc:
+        raise WorkerError("provider transport generation identity is invalid") from exc
+    return (
+        Path(run["evidence_dir"])
+        / "history"
+        / "provider-transport"
+        / binding_sha256
+        / policy_sha256
+        / generation_sha256
+    )
+
+
+def _provider_transport_intent(run: dict[str, Any]) -> dict[str, Any]:
+    intent = run.get("provider_transport_rebind")
+    if not isinstance(intent, dict) or set(intent) != _TRANSPORT_REBIND_FIELDS:
+        raise WorkerError("provider transport rebind intent is invalid")
+    binding_sha256 = run.get("provider_binding_sha256")
+    files = intent.get("files")
+    validation = intent.get("validation")
+    if (
+        intent.get("schema") != "autofv-provider-transport-rebind/v1"
+        or intent.get("binding_sha256") != binding_sha256
+        or not isinstance(binding_sha256, str)
+        or SHA256.fullmatch(binding_sha256) is None
+        or intent.get("phase")
+        not in {
+            "intent",
+            "service_rebound",
+            "recreated_service_rebound",
+            "transport_restored",
+        }
+        or not isinstance(intent.get("stale"), dict)
+        or not isinstance(validation, dict)
+        or set(validation)
+        != {*_TRANSPORT_VALIDATION_FIELDS, "fixed_proxy_route"}
+        or not isinstance(files, dict)
+        or set(files) not in (
+            {"fixed-proxy-policy.json", "egress.json"},
+            {
+                "fixed-proxy-policy.json",
+                "egress.json",
+                "proxy-policy-matrix.json",
+            },
+        )
+    ):
+        raise WorkerError("provider transport rebind intent is invalid")
+    replacement_port = intent.get("replacement_port")
+    if (
+        replacement_port is not None
+        and (type(replacement_port) is not int or not 1 <= replacement_port <= 65535)
+    ) or (
+        intent.get("phase") == "recreated_service_rebound"
+        and replacement_port is None
+    ):
+        raise WorkerError("provider replacement listener identity is invalid")
+    for name, metadata in files.items():
+        if (
+            not isinstance(metadata, dict)
+            or set(metadata) != {"sha256", "size"}
+            or not isinstance(metadata.get("sha256"), str)
+            or SHA256.fullmatch(metadata["sha256"]) is None
+            or type(metadata.get("size")) is not int
+            or not 0 < metadata["size"] <= 2_000_000
+        ):
+            raise WorkerError("provider transport archive identity is invalid")
+        try:
+            _value, raw = evidence._read_provider_artifact(
+                _transport_history(run, intent) / name,
+                "provider transport history",
+            )
+        except provider_config.ProviderConfigError as exc:
+            raise WorkerError(str(exc), run=run) from exc
+        if len(raw) != metadata["size"] or _sha256(raw) != metadata["sha256"]:
+            raise WorkerError("provider transport history changed")
+    current_lock = run.get("lock")
+    fixed_proxy_route = validation.get("fixed_proxy_route")
+    if not isinstance(current_lock, dict) or not isinstance(fixed_proxy_route, dict):
+        raise WorkerError("provider transport validation identity is invalid")
+    archived_run = {
+        **run,
+        **validation,
+        "lock": {**current_lock, "fixed_proxy": fixed_proxy_route},
+        "evidence_dir": str(_transport_history(run, intent)),
+    }
+    try:
+        evidence.authenticate_provider_transport_evidence(archived_run)
+    except provider_config.ProviderConfigError as exc:
+        raise WorkerError(str(exc), run=run) from exc
+    return intent
+
+
+def prepare_provider_transport_rebind(run: dict[str, Any]) -> None:
+    """Authenticate and durably archive stale transport before rotating it."""
+    if "provider_transport_rebind" in run:
+        _provider_transport_intent(run)
+        return
+    binding = provider_config.provider_binding(run)
+    if binding is None or binding.public != run.get("provider_binding"):
+        raise WorkerError("provider transport binding is not process-pinned")
+    try:
+        authenticated = evidence.authenticate_provider_transport_evidence(run)
+    except provider_config.ProviderConfigError as exc:
+        raise WorkerError(str(exc), run=run) from exc
+    stale = {}
+    for name in _TRANSPORT_STALE_FIELDS:
+        value = run.get(name)
+        if value is None:
+            continue
+        stale[name] = (
+            json.loads(_canonical_bytes(value))
+            if isinstance(value, (dict, list))
+            else value
+        )
+    validation = {}
+    for name in _TRANSPORT_VALIDATION_FIELDS:
+        if name not in run:
+            raise WorkerError(
+                f"provider transport validation identity is missing {name}"
+            )
+        value = run[name]
+        validation[name] = (
+            json.loads(_canonical_bytes(value))
+            if isinstance(value, (dict, list))
+            else value
+        )
+    route = run.get("lock", {}).get("fixed_proxy")
+    if not isinstance(route, dict):
+        raise WorkerError("provider transport fixed route identity is missing")
+    validation["fixed_proxy_route"] = json.loads(_canonical_bytes(route))
+    intent = {
+        "schema": "autofv-provider-transport-rebind/v1",
+        "binding_sha256": binding.public["binding_sha256"],
+        "phase": "intent",
+        "stale": stale,
+        "validation": validation,
+        "replacement_port": None,
+        "files": {
+            name: {"sha256": _sha256(raw), "size": len(raw)}
+            for name, raw in authenticated["files"].items()
+        },
+    }
+    history = _transport_history(run, intent)
+    for name, raw in authenticated["files"].items():
+        destination = history / name
+        if os.path.lexists(destination):
+            try:
+                _value, retained = evidence._read_provider_artifact(
+                    destination, "provider transport history"
+                )
+            except provider_config.ProviderConfigError as exc:
+                raise WorkerError(str(exc), run=run) from exc
+            if retained != raw:
+                raise WorkerError("provider transport history changed")
+        else:
+            _atomic_write(destination, raw)
+    run["provider_transport_rebind"] = intent
+
+
+def rebind_provider_transport(
+    run: dict[str, Any], *, worker_recreated: bool = False
+) -> None:
+    """Rotate provider service while retaining durable stale-resource identity."""
+    intent = _provider_transport_intent(run)
+    binding = provider_config.provider_binding(run)
+    if binding is None or binding.public["binding_sha256"] != intent["binding_sha256"]:
+        raise WorkerError("provider transport binding is not process-pinned")
+    stale = intent["stale"]
+    firewall = stale.get("proxy_firewall")
+    stale_port = firewall.get("upstream_port") if isinstance(firewall, dict) else None
+    if type(stale_port) is not int:
+        raise WorkerError("stale provider listener identity is invalid")
+    try:
+        if worker_recreated:
+            replacement_port = intent.get("replacement_port")
+            if replacement_port is None:
+                replacement_base = provider_service.rebind(
+                    run, forbidden_ports=frozenset({stale_port})
+                )
+                _address, replacement_port = _proxy_endpoint(replacement_base)
+                if replacement_port == stale_port:
+                    raise WorkerError(
+                        "recreated provider listener reused stale transport"
+                    )
+                intent["replacement_port"] = replacement_port
+            else:
+                provider_service.rebind(run, required_port=replacement_port)
+        else:
+            provider_service.rebind(run, required_port=stale_port)
+    except provider_transport.ProviderError as exc:
+        raise WorkerError(str(exc), run=run) from exc
+    for name in _TRANSPORT_REPLACED_FIELDS:
+        run.pop(name, None)
+    intent["phase"] = (
+        "recreated_service_rebound" if worker_recreated else "service_rebound"
+    )
+    if "provider_transport_rebound" not in run.setdefault("events", []):
+        run["events"].append("provider_transport_rebound")
+
+
+def restore_provider_transport(run: dict[str, Any]) -> None:
+    """Replace owned relay/firewall resources after the worker is recoverable."""
+    intent = _provider_transport_intent(run)
+    stale = intent["stale"]
+    firewall = stale.get("proxy_firewall")
+    if isinstance(firewall, dict):
+        try:
+            network_id = firewall["network_id"]
+            internal_address = firewall["internal_address"]
+            bridge_address = firewall["bridge_address"]
+            upstream_address = firewall["upstream_address"]
+            upstream_port = firewall["upstream_port"]
+            old_rules = (
+                (
+                    "-i", f"br-{network_id[:12]}", "-d", f"{internal_address}/32",
+                    "-p", "tcp", "--dport", str(RELAY_PORT), "-j", "ACCEPT",
+                ),
+                (
+                    "-s", f"{bridge_address}/32", "-d", f"{upstream_address}/32",
+                    "-p", "tcp", "--dport", str(upstream_port), "-j", "ACCEPT",
+                ),
+            )
+        except (KeyError, TypeError):
+            raise WorkerError("stale provider firewall identity is invalid")
+        for rule in old_rules:
+            _firewall("iptables", "-D", FORWARD_CHAIN, *rule, check=False)
+    relay = stale.get("proxy_relay")
+    if isinstance(relay, str) and _resource_matches("relay", relay, run):
+        _docker("container", "rm", "--force", relay)
+    network = stale.get("proxy_network")
+    if isinstance(network, str) and _resource_matches("network", network, run):
+        _docker("network", "rm", network)
+    matrix = Path(run["evidence_dir"]) / "proxy-policy-matrix.json"
+    if os.path.lexists(matrix):
+        try:
+            matrix.unlink()
+        except OSError as exc:
+            raise WorkerError("stale provider policy matrix cleanup failed") from exc
+    verify_egress(run)
+    intent["phase"] = "transport_restored"
+
+
+def finish_provider_transport_rebind(run: dict[str, Any]) -> None:
+    """Forget stale resources only after replacement evidence was checkpointed."""
+    intent = _provider_transport_intent(run)
+    if intent["phase"] != "transport_restored":
+        raise WorkerError("provider transport rebind is incomplete")
+    try:
+        evidence.authenticate_provider_transport_evidence(run)
+    except provider_config.ProviderConfigError as exc:
+        raise WorkerError(str(exc), run=run) from exc
+    run.pop("provider_transport_rebind")
 
 
 validate_provider_receipt = provider_service.validate_pinned_receipt

@@ -16,7 +16,14 @@ from decimal import Decimal
 from pathlib import Path
 from typing import Any
 
-from . import result_audit, result_summary, terminal_verifier, worker
+from . import (
+    provider_config,
+    provider_receipts,
+    result_audit,
+    result_summary,
+    terminal_verifier,
+    worker,
+)
 from .contracts import canonical_json_bytes
 from .evidence import (
     EXCLUSIONS,
@@ -25,6 +32,7 @@ from .evidence import (
     PERSISTED_SOURCE_ITEMS,
     REQUIRED_L0_ITEMS,
     SHA256,
+    authenticate_provider_evidence,
     assess_evidence,
     render_claim,
     render_l0,
@@ -56,6 +64,61 @@ def _sha(raw: bytes) -> str:
 
 def _json_file_bytes(value: Any) -> bytes:
     return canonical_json_bytes(value) + b"\n"
+
+
+def _reduce_accounting(
+    run: dict[str, Any],
+    state: dict[str, Any],
+    *,
+    outcome: str,
+    private_reconciliation: bool = False,
+) -> tuple[dict[str, Any], dict[str, Any] | None]:
+    incomplete = outcome == "infrastructure_failed"
+    provider_evidence = authenticate_provider_evidence(
+        run, allow_missing_preflight=incomplete
+    )
+    if provider_evidence is not None:
+        reducer = (
+            provider_receipts.reduce_incomplete_accounting
+            if incomplete
+            else provider_receipts.reduce_accounting
+        )
+        accounting_binding = provider_evidence["provider_binding"]
+        if (
+            private_reconciliation
+            and incomplete
+            and run.get("provider_preflight_sha256") is None
+        ):
+            pinned = provider_config.provider_binding(run)
+            if pinned is not None:
+                accounting_binding = pinned
+        reduced = reducer(
+            run,
+            state,
+            binding=accounting_binding,
+        )
+        provider_evidence = authenticate_provider_evidence(
+            run,
+            allow_missing_preflight=(
+                incomplete and run.get("provider_preflight_sha256") is None
+            ),
+        )
+        return reduced, provider_evidence
+    normalized = dict(run)
+    route = run.get("lock", {}).get("fixed_proxy")
+    normalized["cost_classification"] = (
+        route.get("cost_classification") if isinstance(route, dict) else None
+    )
+    return result_summary.reduce_accounting(normalized, state), None
+
+
+def reconcile_provider_finalization(
+    run: dict[str, Any], state: dict[str, Any], *, outcome: str
+) -> None:
+    """Reconcile durable provider state while private process state still exists."""
+    _reduce_accounting(
+        run, state, outcome=outcome, private_reconciliation=True
+    )
 
 
 def default_attempt_identity() -> dict[str, str]:
@@ -349,11 +412,13 @@ def render_attempt(
         else state.get("compiler_assumptions", [])
     )
     try:
-        reduced_accounting = result_summary.reduce_accounting(run, state)
+        reduced_accounting, provider_evidence = _reduce_accounting(
+            run, state, outcome=outcome
+        )
         cost = reduced_accounting["cost"]
         tokens = reduced_accounting["tokens"]
         model_summary = result_summary.model_summary(state)
-    except result_summary.SummaryError as exc:
+    except (provider_config.ProviderConfigError, result_summary.SummaryError) as exc:
         raise ResultError(str(exc)) from exc
     input_evidence = sources["input"] if isinstance(sources["input"], dict) else {}
     image_evidence = sources["image"] if isinstance(sources["image"], dict) else {}
@@ -374,7 +439,7 @@ def render_attempt(
     verifier_item = next(
         (item for item in receipt["items"] if item["name"] == "verifier"), {}
     )
-    verifier_bound = verifier_item.get("status") == "present"
+    verifier_bound = verifier_item.get("status") == "present" and outcome == "success"
     try:
         generic = result_summary.render_generic_summary(
             run,
@@ -418,7 +483,13 @@ def render_attempt(
             review_valid = True
         except result_audit.AuditError:
             review_valid = False
-    if not review_valid and assessment.get("level") == "L4":
+    if reduced_accounting.get("accounting_complete") is False:
+        assessment = {
+            "level": None,
+            "scored": False,
+            "missing": ["provider_accounting_unresolved"],
+        }
+    elif not review_valid and assessment.get("level") == "L4":
         assessment = {**assessment, "level": "L3"}
     claim = render_claim(assessment, run, state, outcome=outcome)
     target_ids = list(frozen_targets) if isinstance(frozen_targets, list) else []
@@ -431,7 +502,40 @@ def render_attempt(
         "run_root": run["run_root"],
         "attempt_ledger": run["attempt_ledger"],
         "execution_tier": run.get("execution_tier"),
-        "cost_classification": run.get("cost_classification"),
+        "cost_classification": reduced_accounting["classification"],
+        "provider_evidence": copy.deepcopy(provider_evidence),
+        "provider_binding": (
+            copy.deepcopy(provider_evidence["provider_binding"])
+            if provider_evidence is not None
+            else None
+        ),
+        "provider_binding_sha256": (
+            provider_evidence["provider_binding_sha256"]
+            if provider_evidence is not None
+            else None
+        ),
+        "provider_preflight_sha256": (
+            provider_evidence["provider_preflight_sha256"]
+            if provider_evidence is not None
+            else None
+        ),
+        "provider_journal": (
+            copy.deepcopy(provider_evidence["provider_journal"])
+            if provider_evidence is not None
+            else None
+        ),
+        "provider_journal_sha256": (
+            provider_evidence["provider_journal_sha256"]
+            if provider_evidence is not None
+            else None
+        ),
+        "accounting_complete": reduced_accounting.get("accounting_complete", True),
+        "unresolved_provider_requests": copy.deepcopy(
+            reduced_accounting.get("unresolved_requests", [])
+        ),
+        "unknown_provider_spend": reduced_accounting.get(
+            "unknown_provider_spend", False
+        ),
         "outcome": outcome,
         "termination_reason": reason,
         "termination_detail": state.get("termination_detail"),

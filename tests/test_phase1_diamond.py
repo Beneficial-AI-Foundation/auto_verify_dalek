@@ -3,6 +3,7 @@ import hashlib
 import json
 import os
 import shutil
+import socket
 import subprocess
 import tempfile
 import threading
@@ -548,6 +549,13 @@ class Phase1DiamondTests(unittest.TestCase):
 
         fixture = json.loads(MODEL_FIXTURE.read_text())
         lock = experiment.load_toolchain_lock()
+        reservation = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        try:
+            reservation.bind(("127.0.0.1", 0))
+        except PermissionError as exc:
+            self.skipTest(f"managed sandbox forbids loopback bind: {exc}")
+        finally:
+            reservation.close()
         ledger_root = Path(tempfile.mkdtemp(prefix="autofv-phase1-ledger-"))
         ledger = ledger_root / "attempts.jsonl"
         barrier = threading.Barrier(2)

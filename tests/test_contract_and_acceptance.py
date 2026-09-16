@@ -95,15 +95,12 @@ class ContractRepairTests(unittest.TestCase):
         class LaterReceiptFirst(_FixtureProxy):
             def __init__(self, fixture):
                 super().__init__(fixture)
-                self.right_finished = threading.Event()
+                self.right_accepted = threading.Event()
 
             def __call__(self, request):
                 if request["request_id"] == "proof-left-001":
-                    self.assert_true(self.right_finished.wait(1))
-                exchange = super().__call__(request)
-                if request["request_id"] == "proof-right-001":
-                    self.right_finished.set()
-                return exchange
+                    self.assert_true(self.right_accepted.wait(5))
+                return super().__call__(request)
 
             @staticmethod
             def assert_true(value):
@@ -123,7 +120,10 @@ class ContractRepairTests(unittest.TestCase):
                     request_id, {receipt["request_id"] for receipt in state["receipts"]}
                 )
                 checkpointed.append(request_id)
-                return original(state, candidate, manifest)
+                transition = original(state, candidate, manifest)
+                if request_id == "proof-right-001":
+                    proxy.right_accepted.set()
+                return transition
 
             with (
                 mock.patch.object(worker, "prepare_run", seams.prepare),

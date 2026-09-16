@@ -189,11 +189,6 @@ theorem sqrt_checked_spec (u : ZMod p) {r : ZMod p} {b : Bool} :
   intro h_call h_true
   sorry
 
-theorem sqrt_checked_iff_isSquare (u : ZMod p) {r : ZMod p} {b : Bool} :
-  sqrt_checked u = (r, b) → (b = true ↔ IsSquare u) := by
-  intro h_call
-  sorry
-
 noncomputable def inv_sqrt_checked (u : ZMod p) : (ZMod p × Bool) :=
   if u = 0 then (0, false)
   else
@@ -208,15 +203,7 @@ theorem inv_sqrt_checked_spec (arg : ZMod p) {I : ZMod p} {was_square : Bool} :
 
   sorry
 
-theorem inv_sqrt_checked_sq_mul (u : ZMod p) (h : IsSquare u) (h_ne : u ≠ 0) :
-    (inv_sqrt_checked u).1 ^ 2 * u = 1 := by
-  sorry
-
 lemma inv_sqrt_checked_zero : inv_sqrt_checked (0 : ZMod p) = ((0 : ZMod p), false) := by
   delta inv_sqrt_checked; rw [if_pos rfl]
-
-lemma inv_sqrt_checked_snd (u : ZMod p) (hu : u ≠ 0) :
-    (inv_sqrt_checked u).2 = (sqrt_checked u).2 := by
-  sorry
 
 end curve25519_dalek.math

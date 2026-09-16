@@ -117,8 +117,4 @@ def nsmul_Ed25519 (n : ℕ) (p : Point Ed25519) : Point Ed25519 :=
 
 instance : SMul ℕ (Point Ed25519) := ⟨nsmul_Ed25519⟩
 
-theorem add_assoc_Ed25519 (p q r : Point Ed25519) : p + q + r = p + (q + r) := by
-
-  sorry
-
 end Edwards

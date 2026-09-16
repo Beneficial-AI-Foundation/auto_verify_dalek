@@ -91,10 +91,6 @@ open curve25519_dalek.math
 def IsEven (P : Point Ed25519) : Prop :=
   IsSquare (1 - P.y^2)
 
-theorem IsEven_iff_in_doubling_image_right (P : Point Ed25519) :
-    IsEven P → ∃ Q : Point Ed25519, P = Q + Q := by
-  sorry
-
 def RistrettoPoint.IsValid (r : RistrettoPoint) : Prop :=
 
   EdwardsPoint.IsValid r ∧

@@ -1,5 +1,7 @@
 import asyncio
 import copy
+import json
+import subprocess
 import tempfile
 import unittest
 from pathlib import Path
@@ -26,10 +28,62 @@ def _job() -> dict:
         **HASHES,
         "input_hashes": ["4" * 64, "5" * 64],
         "accepted_commit": "a" * 40,
+        "role_context": {
+            "contract": "theorem Example.left_spec (n : Nat) : Example.left n = n",
+            "candidate": "diff --git a/Example/Left.lean b/Example/Left.lean\n",
+            "diagnostics": ["declaration uses the immediate consumer contract"],
+        },
     }
 
 
 class AgentLaneBoundaryTests(unittest.TestCase):
+    def test_worker_owned_lane_operations_apply_real_patch_and_reject_symlink(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp) / "lane"
+            (root / "Diamond").mkdir(parents=True)
+            source = root / "Diamond" / "Left.lean"
+            source.write_text("source\n")
+            subprocess.run(("git", "init", "-q"), cwd=root, check=True)
+            subprocess.run(("git", "add", "--all"), cwd=root, check=True)
+            subprocess.run(
+                (
+                    "git", "-c", "user.name=AutoFV", "-c",
+                    "user.email=autofv@invalid", "commit", "-q", "-m", "base",
+                ),
+                cwd=root,
+                check=True,
+            )
+            lane = {
+                "lane_id": "proof-left-001",
+                "assigned_path": "Diamond/Left.lean",
+                "worktree_path": str(root),
+            }
+            run = {"execution_tier": "simulation"}
+            allowed = ["Diamond/Left.lean"]
+            patch = (
+                "diff --git a/Diamond/Left.lean b/Diamond/Left.lean\n"
+                "--- a/Diamond/Left.lean\n"
+                "+++ b/Diamond/Left.lean\n"
+                "@@ -1 +1 @@\n-source\n+proved\n"
+            )
+
+            self.assertEqual(worker.read_lane_file(run, lane, allowed[0], allowed), "source\n")
+            self.assertIn("Diamond/Left.lean:1", worker.search_lane_files(
+                run, lane, "source", allowed
+            ))
+            applied = worker.edit_lane_file(run, lane, patch)
+            diagnostic = worker.check_lane(run, lane, {"verify": ["lake", "build"]})
+
+            self.assertTrue(applied.startswith("applied:"))
+            self.assertEqual(source.read_text(), "proved\n")
+            self.assertTrue(diagnostic.startswith("simulation_static:exit=0:"))
+            outside = Path(tmp) / "outside.lean"
+            outside.write_text("secret\n")
+            source.unlink()
+            source.symlink_to(outside)
+            with self.assertRaisesRegex(worker.WorkerError, "symlink"):
+                worker.read_lane_file(run, lane, allowed[0], allowed)
+
     def test_role_job_has_exact_hash_bound_identity(self):
         job = _job()
 
@@ -45,6 +99,7 @@ class AgentLaneBoundaryTests(unittest.TestCase):
             "contract_fingerprint",
             "input_hashes",
             "accepted_commit",
+            "role_context",
         ):
             with self.subTest(missing=field), self.assertRaises(worker.WorkerError):
                 agent_lane.validate_role_job(
@@ -210,6 +265,10 @@ class AgentLaneBoundaryTests(unittest.TestCase):
         self.assertEqual(candidate["contract_fingerprint"], job["contract_fingerprint"])
         self.assertNotIn("accepted", candidate)
         self.assertNotIn("accepted_tree_sha256", candidate)
+        self.assertEqual(
+            candidate["role_context_sha256"],
+            agent_lane.role_context_sha256(job["role_context"]),
+        )
 
 
 class RoleConversationTests(unittest.TestCase):
@@ -253,9 +312,15 @@ class RoleConversationTests(unittest.TestCase):
                         "contract_fingerprint",
                         "input_hashes",
                         "accepted_commit",
+                        "role_context",
                     },
                 )
-                self.assertNotIn("messages", first)
+                messages = agent_lane.initial_role_messages(first)
+                self.assertEqual([item["role"] for item in messages], ["system", "user"])
+                visible_context = json.loads(messages[1]["content"])["context"][
+                    "role_context"
+                ]
+                self.assertEqual(visible_context, job["role_context"])
                 conversation_ids.add(first["conversation_id"])
 
         self.assertEqual(len(conversation_ids), len(ceilings))
@@ -327,7 +392,18 @@ class RoleConversationTests(unittest.TestCase):
         callbacks["edit_assigned"].assert_not_called()
         self.assertEqual(candidate["claimed_status"], "candidate")
         self.assertNotIn("accepted", candidate)
+        progress = next(iter(state["role_progress"].values()))
+        self.assertEqual(progress["status"], "completed")
+        self.assertEqual(progress["last_turn"], 3)
+        self.assertEqual(progress["last_tool"], "submit_candidate")
+        self.assertEqual(len(progress["candidate_sha256"]), 64)
         self.assertEqual(request.call_count, 3)
+        first_messages = request.call_args_list[0].kwargs["messages"]
+        second_messages = request.call_args_list[1].kwargs["messages"]
+        self.assertEqual([item["role"] for item in first_messages], ["system", "user"])
+        self.assertEqual(second_messages[:2], first_messages)
+        self.assertEqual(second_messages[-1]["role"], "tool")
+        self.assertIn("source", second_messages[-1]["content"])
         self.assertEqual(
             [call.kwargs["call_kind"] for call in request.call_args_list],
             ["explicit", "explicit", "explicit"],
@@ -371,6 +447,59 @@ class RoleConversationTests(unittest.TestCase):
             [call.kwargs["call_kind"] for call in request.call_args_list],
             ["explicit", "schema_correction", "schema_correction"],
         )
+
+    def test_managed_lane_tools_perform_read_edit_check_and_submit_without_host_path_access(self):
+        job = _job()
+        patch = (
+            "diff --git a/Diamond/Left.lean b/Diamond/Left.lean\n"
+            "--- a/Diamond/Left.lean\n"
+            "+++ b/Diamond/Left.lean\n"
+            "@@ -1 +1 @@\n"
+            "-source\n"
+            "+proved\n"
+        )
+        operations = mock.Mock()
+        operations.read.return_value = "source\n"
+        operations.search.return_value = "Diamond/Left.lean:1:source"
+        operations.edit.return_value = "applied:" + "9" * 64
+        operations.check.return_value = "simulation_static: git diff --check passed"
+        tools = agent_lane.build_lane_tools(
+            job,
+            read_file=operations.read,
+            search_files=operations.search,
+            edit_assigned=operations.edit,
+            check_lean=operations.check,
+        )
+
+        self.assertEqual(
+            agent_lane.invoke_lane_tool(
+                tools, "read_allowed", {"path": "Diamond/Left.lean"}
+            ),
+            "source\n",
+        )
+        self.assertIn(
+            "Diamond/Left.lean",
+            agent_lane.invoke_lane_tool(
+                tools, "search_allowed", {"query": "source"}
+            ),
+        )
+        self.assertTrue(
+            agent_lane.invoke_lane_tool(
+                tools, "edit_assigned", {"patch": patch}
+            ).startswith("applied:")
+        )
+        diagnostic = agent_lane.invoke_lane_tool(tools, "check_lean", {})
+        candidate = agent_lane.invoke_lane_tool(
+            tools,
+            "submit_candidate",
+            {"patch": patch, "claimed_status": "candidate", "evidence": [diagnostic]},
+        )
+
+        operations.read.assert_called_once_with("Diamond/Left.lean")
+        operations.search.assert_called_once_with("source")
+        operations.edit.assert_called_once_with(patch)
+        operations.check.assert_called_once_with()
+        self.assertEqual(candidate["patch"], patch)
 
 
 if __name__ == "__main__":

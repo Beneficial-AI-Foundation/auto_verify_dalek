@@ -55,6 +55,9 @@ CHECKPOINT_RUN_FIELDS = (
     "provider_binding",
     "provider_binding_sha256",
     "provider_preflight_sha256",
+    "deterministic_preflight",
+    "deterministic_preflight_sha256",
+    "deterministic_suite_sha256",
     "provider_journal",
     "provider_transport_rebind",
     "upstream_policy_sha256",
@@ -97,6 +100,7 @@ CHECKPOINT_STATE_FIELDS = (
     "release_events",
     "pending_model_exchanges",
     "model_exchanges",
+    "role_progress",
     "inflight_transition",
     "receipt_rejections",
     "compiler_assumptions",
@@ -142,6 +146,7 @@ class _RunState(TypedDict, total=False):
     working: dict[str, Any]
     pending_model_exchanges: dict[str, dict[str, Any]]
     model_exchanges: dict[str, dict[str, Any]]
+    role_progress: dict[str, dict[str, Any]]
     inflight_transition: dict[str, Any]
     wall_seconds_used: Decimal
     finalization_reserve_seconds: Decimal
@@ -164,6 +169,7 @@ def _node_update(state: _RunState, **values: Any) -> dict[str, Any]:
         "wall_started_monotonic_ns",
         "pending_model_exchanges",
         "model_exchanges",
+        "role_progress",
         "receipt_rejections",
         "immutable_graph_sha256",
         "target_states",
@@ -261,6 +267,12 @@ def _checkpoint_identities(run: dict[str, Any]) -> dict[str, Any]:
         identities["provider_preflight_sha256"] = run[
             "provider_preflight_sha256"
         ]
+    for name in (
+        "deterministic_preflight_sha256",
+        "deterministic_suite_sha256",
+    ):
+        if isinstance(run.get(name), str):
+            identities[name] = run[name]
     journal = run.get("provider_journal")
     if isinstance(journal, dict):
         identities["provider_journal_sha256"] = _canonical_sha256(journal)
@@ -499,13 +511,69 @@ def _recover_checkpoint_state(
     inflight = state.pop("inflight_transition", None)
     if isinstance(inflight, dict) and inflight.get("kind") == "candidate_accept":
         digest = inflight.get("candidate_sha256")
-        processed = state.setdefault("processed_candidate_sha256", [])
-        if digest in processed:
-            processed.remove(digest)
-        for lane in state.get("lanes", []):
-            if lane.get("node") == inflight.get("node"):
-                lane["status"] = "interrupted"
-                lane["requeueable"] = True
+        accepted_transition = inflight.get("accepted")
+        if isinstance(accepted_transition, dict) and _resume_record_matches(
+            observed, accepted_transition
+        ):
+            processed = state.setdefault("processed_candidate_sha256", [])
+            if digest not in processed:
+                processed.append(digest)
+            node = inflight.get("node")
+            transition = {
+                "sequence": len(state.setdefault("accepted_sequence", [])) + 1,
+                "candidate_sha256": digest,
+                "node": node,
+                "status": inflight.get("status"),
+                "base_commit": inflight.get("base_commit"),
+                "previous_accepted_commit": inflight.get(
+                    "previous_accepted_commit"
+                ),
+                "accepted_commit": accepted_transition["accepted_commit"],
+            }
+            transition["transition_sha256"] = _canonical_sha256(transition)
+            if not any(
+                item.get("candidate_sha256") == digest
+                for item in state["accepted_sequence"]
+            ):
+                state["accepted_sequence"].append(transition)
+            state["accepted"] = accepted_transition
+            state["working"] = dict(accepted_transition)
+            run["accepted"] = accepted_transition
+            accepted_nodes = state.setdefault("accepted_nodes", [])
+            if node not in accepted_nodes:
+                accepted_nodes.append(node)
+            if not any(
+                item.get("candidate_sha256") == digest
+                for item in state.setdefault("candidate_receipts", [])
+            ):
+                state["candidate_receipts"].append(
+                    {
+                        "candidate_sha256": digest,
+                        "node": node,
+                        "status": inflight.get("status"),
+                        "reason": None,
+                        "local_gate_receipt_sha256": inflight.get(
+                            "local_gate_receipt_sha256"
+                        ),
+                        "accepted_commit": accepted_transition[
+                            "accepted_commit"
+                        ],
+                    }
+                )
+            for lane in state.get("lanes", []):
+                if lane.get("node") == node:
+                    lane["status"] = "accepted"
+                    lane.pop("requeueable", None)
+        else:
+            processed = state.setdefault("processed_candidate_sha256", [])
+            if digest in processed:
+                processed.remove(digest)
+            for lane in state.get("lanes", []):
+                if lane.get("node") == inflight.get("node"):
+                    lane["status"] = "interrupted"
+                    lane["requeueable"] = True
+    accepted = state.get("accepted")
+    working = state.get("working") or accepted
     if isinstance(working, dict) and _resume_record_matches(observed, working):
         source = "working"
     else:

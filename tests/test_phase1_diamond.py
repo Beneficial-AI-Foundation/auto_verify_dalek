@@ -21,8 +21,10 @@ from autofv import (
     axiom_audit,
     contracts,
     experiment,
+    generic_role_runtime,
     probes,
     results,
+    run_state,
     verifier,
     verifier_bundle,
     worker,
@@ -81,9 +83,17 @@ def _generic_graph():
 
 
 class _SignedRoleProvider:
-    def __init__(self, private_key):
+    def __init__(
+        self,
+        private_key,
+        *,
+        reject_first_proof_review=False,
+        reject_repair=False,
+    ):
         self.private_key = private_key
         self.calls = []
+        self.reject_first_proof_review = reject_first_proof_review
+        self.reject_repair = reject_repair
 
     @staticmethod
     def _patch(path, before, after):
@@ -124,6 +134,10 @@ class _SignedRoleProvider:
                 patch = MODEL_FIXTURE_DATA["entries"][7]["response"]["payload"][
                     "patch"
                 ]
+        elif role == "repair":
+            patch = MODEL_FIXTURE_DATA["entries"][5]["response"]["payload"][
+                "patch"
+            ]
         elif role == "verification_adviser":
             patch = MODEL_FIXTURE_DATA["entries"][7]["response"]["payload"][
                 "patch"
@@ -133,7 +147,7 @@ class _SignedRoleProvider:
             if role in {"specifier", "spec_reviewer"}:
                 path = (
                     "Diamond/Left.lean"
-                    if role == "specifier" and occurrence == 1
+                    if occurrence == 1
                     else "Diamond/Right.lean"
                 )
             patch = self._patch(path, "namespace Diamond", "namespace Diamond")
@@ -148,12 +162,28 @@ class _SignedRoleProvider:
             ]
         elif role == "spec_reviewer":
             evidence = [
-                "statement:theorem Diamond.right_spec (n : Nat) : "
-                "Diamond.right n = n * (Nat.succ 1)"
+                (
+                    "statement:theorem Diamond.left_spec (n : Nat) : "
+                    "Diamond.left n = Nat.succ n"
+                    if occurrence == 1
+                    else "statement:theorem Diamond.right_spec (n : Nat) : "
+                    "Diamond.right n = n * (Nat.succ 1)"
+                )
             ]
+        claimed_status = "candidate"
+        if (
+            role == "proof_reviewer"
+            and occurrence == 0
+            and self.reject_first_proof_review
+        ):
+            claimed_status = "blocked"
+            evidence = ["review diagnostic: proof requires repair"]
+        if role == "repair" and self.reject_repair:
+            claimed_status = "blocked"
+            evidence = ["repair diagnostic: bounded repair exhausted"]
         return {
             "patch": patch,
-            "claimed_status": "candidate",
+            "claimed_status": claimed_status,
             "evidence": evidence,
         }
 
@@ -334,9 +364,17 @@ class _Seams:
         run["events"].extend(("probe_rust", "probe_aeneas"))
         return rust, aeneas
 
-    def check_contract_feasibility(self, run, statements):
+    def check_contract_feasibility(self, run, request):
         self.feasibility_calls += 1
-        passed = self.feasibility_calls == 2
+        generic_chain = any(
+            item.get("node") == "probe:Diamond.left"
+            and any(
+                consumer.get("node") == "probe:Diamond.right"
+                for consumer in item.get("immediate_consumers", [])
+            )
+            for item in request.get("obligations", [])
+        )
+        passed = generic_chain or self.feasibility_calls == 2
         detail = "consumer proof compiled" if passed else "left equality is unavailable"
         return {
             "status": "passed" if passed else "failed",
@@ -426,7 +464,10 @@ class _Seams:
             "evidence_level": "L4",
             "verdict": "PASS",
         }
-        return {**body, "report_sha256": _sha256(experiment.canonical_json_bytes(body))}
+        return {
+            **body,
+            "report_sha256": _sha256(experiment.canonical_json_bytes(body)),
+        }
 
     def persist(self, run, result, receipt):
         (self.root / "result.json").write_bytes(experiment.canonical_json_bytes(result) + b"\n")
@@ -712,9 +753,6 @@ class TracerTests(unittest.TestCase):
                     "check_contract_feasibility",
                     seams.check_contract_feasibility,
                 ),
-                mock.patch.object(worker, "accept_candidate", seams.accept),
-                mock.patch.object(worker, "prepare_lanes", return_value=None),
-                mock.patch.object(worker, "persist_lane_result", return_value=None),
                 mock.patch.object(results, "persist_attempt", seams.persist),
                 mock.patch.object(verifier, "verify_run", seams.verify),
                 mock.patch.object(probes, "parse_probe_bytes", return_value=graph),
@@ -734,15 +772,18 @@ class TracerTests(unittest.TestCase):
         )
         self.assertEqual(result["graph_sha256"], graph["graph_sha256"])
         self.assertEqual(result["native_decide_policy"], "allow_audited")
-        self.assertEqual(result["proxy_requests"], 12)
-        self.assertEqual(result["model_attempts"], 12)
+        self.assertEqual(result["proxy_requests"], 13)
+        self.assertEqual(result["model_attempts"], 13)
         self.assertEqual(result["internal_specs_accepted"], 2)
         self.assertEqual(result["internal_proofs_accepted"], 2)
-        self.assertEqual(len(seams.accepted_commits), 3)
-        self.assertEqual(result["accepted_commit"], seams.accepted_commits[-1])
+        self.assertEqual(len(result["accepted_sequence"]), 3)
+        self.assertEqual(
+            result["accepted_commit"],
+            result["accepted_sequence"][-1]["accepted_commit"],
+        )
         self.assertEqual(len(result["processed_candidate_sha256"]), 3)
         self.assertEqual(
-            [call["sequence"] for call in provider.calls], list(range(1, 13))
+            [call["sequence"] for call in provider.calls], list(range(1, 14))
         )
         self.assertNotEqual(
             result["agent_worker_id"], result["verifier_worker_id"]
@@ -759,6 +800,7 @@ class TracerTests(unittest.TestCase):
                 "scout",
                 "dependency_planner",
                 "specifier",
+                "spec_reviewer",
                 "specifier",
                 "spec_reviewer",
                 "prover",
@@ -780,6 +822,7 @@ class TracerTests(unittest.TestCase):
             "scout",
             "dependency_planner",
             "specifier",
+            "spec_reviewer",
             "specifier",
             "spec_reviewer",
             "prover",
@@ -820,6 +863,78 @@ class TracerTests(unittest.TestCase):
             )
         )
         self.assertEqual(role_events, expected_events)
+
+    def test_proof_reviewer_rejection_runs_bounded_repair_before_acceptance(self):
+        private_key = Ed25519PrivateKey.from_private_bytes(bytes(range(1, 33)))
+        lock = _role_test_lock(private_key)
+        provider = _SignedRoleProvider(
+            private_key, reject_first_proof_review=True
+        )
+        with tempfile.TemporaryDirectory() as tmp:
+            seams = _Seams(Path(tmp), self.fixture)
+            with (
+                mock.patch.object(worker, "prepare_run", seams.prepare),
+                mock.patch.object(worker, "run_probes", seams.run_probes),
+                mock.patch.object(
+                    worker,
+                    "check_contract_feasibility",
+                    seams.check_contract_feasibility,
+                ),
+                mock.patch.object(results, "persist_attempt", seams.persist),
+                mock.patch.object(verifier, "verify_run", seams.verify),
+                mock.patch.object(probes, "parse_probe_bytes", return_value=_generic_graph()),
+                mock.patch.object(experiment, "load_toolchain_lock", return_value=lock),
+                mock.patch.object(contracts, "load_toolchain_lock", return_value=lock),
+            ):
+                result = experiment.run_experiment(
+                    TARGET, TARGET / "run.json", run_round=provider
+                )
+
+        roles = [call["role"] for call in provider.calls]
+        first_review = roles.index("proof_reviewer")
+        self.assertEqual(roles[first_review + 1], "repair")
+        self.assertEqual(result["outcome"], "success", result)
+        self.assertEqual(len(result["accepted_sequence"]), 3)
+
+    def test_exhausted_proof_repair_records_blocked_consumer_chain(self):
+        private_key = Ed25519PrivateKey.from_private_bytes(bytes(range(1, 33)))
+        lock = _role_test_lock(private_key)
+        provider = _SignedRoleProvider(
+            private_key,
+            reject_first_proof_review=True,
+            reject_repair=True,
+        )
+        with tempfile.TemporaryDirectory() as tmp:
+            seams = _Seams(Path(tmp), self.fixture)
+            with (
+                mock.patch.object(worker, "prepare_run", seams.prepare),
+                mock.patch.object(worker, "run_probes", seams.run_probes),
+                mock.patch.object(
+                    worker,
+                    "check_contract_feasibility",
+                    seams.check_contract_feasibility,
+                ),
+                mock.patch.object(results, "persist_attempt", seams.persist),
+                mock.patch.object(verifier, "verify_run", seams.verify),
+                mock.patch.object(probes, "parse_probe_bytes", return_value=_generic_graph()),
+                mock.patch.object(experiment, "load_toolchain_lock", return_value=lock),
+                mock.patch.object(contracts, "load_toolchain_lock", return_value=lock),
+            ):
+                result = experiment.run_experiment(
+                    TARGET, TARGET / "run.json", run_round=provider
+                )
+
+        self.assertNotEqual(result["outcome"], "success")
+        self.assertEqual(
+            result["target_states"]["probe:Diamond.left"]["status"], "failed"
+        )
+        self.assertEqual(
+            result["target_states"]["probe:Diamond.right"]["status"], "blocked"
+        )
+        self.assertEqual(
+            result["block_chains"]["probe:Diamond.top"],
+            ["probe:Diamond.top", "probe:Diamond.right", "probe:Diamond.left"],
+        )
 
     def test_controller_interrupt_persists_an_explicit_failure(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -865,6 +980,147 @@ class TracerTests(unittest.TestCase):
                 result["termination_reason"],
                 "clean_verifier_infrastructure_failed",
             )
+
+
+class GenericFeasibilityTests(unittest.TestCase):
+    def test_role_identity_replays_after_accepted_tree_advances(self):
+        lane = {
+            "node": "probe:Numbers.increment",
+            "assigned_path": "Numbers/Increment.lean",
+            "base_commit": "a" * 40,
+            "worktree_path": "/volume/lanes/proof-increment-001/work",
+        }
+        graph = {
+            "graph_sha256": "1" * 64,
+            "source_paths": {
+                "probe:Numbers.increment": "Numbers/Increment.lean"
+            },
+        }
+        state = {
+            "run": {"run_id": "run-replay", "base_commit": "a" * 40},
+            "manifest": {"verify": ["lake", "build"]},
+            "accepted": {"accepted_commit": "b" * 40},
+        }
+        returned = {"role": "prover", "patch": "candidate"}
+        with mock.patch(
+            "autofv.generic_role_runtime.agent_lane.run_role_conversation",
+            new=mock.AsyncMock(return_value=returned),
+        ) as conversation:
+            first = generic_role_runtime._run_role_lane(
+                state,
+                graph,
+                lane,
+                "prover",
+                statement_sha256="2" * 64,
+                contract_fingerprint="3" * 64,
+                input_hashes=["4" * 64],
+                role_context={"contract": "theorem Numbers.increment_spec : True"},
+            )
+            state["accepted"] = {"accepted_commit": "c" * 40}
+            second = generic_role_runtime._run_role_lane(
+                state,
+                graph,
+                lane,
+                "prover",
+                statement_sha256="2" * 64,
+                contract_fingerprint="3" * 64,
+                input_hashes=["4" * 64],
+                role_context={"contract": "theorem Numbers.increment_spec : True"},
+            )
+
+        jobs = [call.args[1] for call in conversation.await_args_list]
+        self.assertEqual(first, second)
+        self.assertEqual(jobs[0], jobs[1])
+        self.assertEqual(jobs[0]["accepted_commit"], lane["base_commit"])
+
+    def test_recovery_finalizes_durable_accepted_transition_without_reapply(self):
+        old = {"accepted_commit": "a" * 40, "accepted_tree_sha256": "1" * 64}
+        new = {"accepted_commit": "b" * 40, "accepted_tree_sha256": "2" * 64}
+        digest = "3" * 64
+        state = {
+            "accepted": old,
+            "working": old,
+            "processed_candidate_sha256": [digest],
+            "accepted_sequence": [],
+            "accepted_nodes": [],
+            "candidate_receipts": [],
+            "lanes": [{"node": "probe:Numbers.increment", "status": "running"}],
+            "inflight_transition": {
+                "kind": "candidate_accept",
+                "candidate_sha256": digest,
+                "request_id": "proof-increment-001",
+                "node": "probe:Numbers.increment",
+                "base_commit": "a" * 40,
+                "previous_accepted_commit": "a" * 40,
+                "status": "accepted",
+                "accepted": new,
+                "local_gate_receipt_sha256": "4" * 64,
+            },
+        }
+        run = {"events": [], "accepted": old}
+        with (
+            mock.patch.object(
+                worker, "inspect_resume_state", return_value={"valid": True, **new}
+            ),
+            mock.patch.object(worker, "restore_accepted") as restore,
+            mock.patch.object(run_state, "_write_checkpoint"),
+        ):
+            recovered = run_state._recover_checkpoint_state(state, run, {})
+
+        restore.assert_not_called()
+        self.assertEqual(recovered["accepted"], new)
+        self.assertEqual(recovered["accepted_nodes"], ["probe:Numbers.increment"])
+        self.assertEqual(recovered["lanes"][0]["status"], "accepted")
+        self.assertEqual(len(recovered["accepted_sequence"]), 1)
+
+    def test_request_uses_actual_modules_declarations_and_immediate_consumers(self):
+        graph = {
+            "graph_sha256": "a" * 64,
+            "selected_nodes": [
+                "probe:Numbers.increment",
+                "probe:Pipeline.finish",
+            ],
+            "term_dependencies": [
+                ["probe:Pipeline.finish", "probe:Numbers.increment"]
+            ],
+            "source_paths": {
+                "probe:Numbers.increment": "Numbers/Increment.lean",
+                "probe:Pipeline.finish": "Pipeline/Finish.lean",
+            },
+        }
+        records = {
+            "probe:Numbers.increment": {
+                "declaration": "Numbers.increment_spec",
+                "canon": "theorem Numbers.increment_spec (n : Nat) : Numbers.increment n = n + 1",
+                "model_fingerprint": "1" * 64,
+            },
+            "probe:Pipeline.finish": {
+                "declaration": "Pipeline.finish_spec",
+                "canon": "theorem Pipeline.finish_spec (n : Nat) : Pipeline.finish n = n + 1",
+                "model_fingerprint": "2" * 64,
+            },
+        }
+
+        request = worker.contract_feasibility_request(graph, records)
+        leaf = request["obligations"][0]
+        self.assertEqual(request["modules"], ["Numbers.Increment", "Pipeline.Finish"])
+        self.assertEqual(
+            leaf["immediate_consumers"][0]["canon"],
+            records["probe:Pipeline.finish"]["canon"],
+        )
+        self.assertNotIn("Diamond", repr(request))
+
+        completed = subprocess.CompletedProcess(
+            args=[], returncode=0, stdout=b"\nAUTOFV_FEASIBILITY_EXIT=0\n", stderr=b""
+        )
+        run = {"lock": experiment.load_toolchain_lock(), "volume": "managed-volume"}
+        with mock.patch.object(worker_runtime, "_docker", return_value=completed) as docker:
+            outcome = worker.check_contract_feasibility(run, request)
+        source = docker.call_args.kwargs["input_bytes"].decode()
+        self.assertEqual(outcome["status"], "passed")
+        self.assertIn("import Numbers.Increment", source)
+        self.assertIn(records["probe:Numbers.increment"]["canon"], source)
+        self.assertNotIn("Diamond", source)
 
 
 class Phase1DiamondTests(unittest.TestCase):

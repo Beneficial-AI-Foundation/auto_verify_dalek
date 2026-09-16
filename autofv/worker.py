@@ -347,6 +347,169 @@ def persist_lane_result(
     )
 
 
+def _lane_path(lane: dict[str, Any], relative: str, allowed: set[str]) -> tuple[str, str]:
+    """Validate a worker-owned lane path without consulting a host mount."""
+    pure = PurePosixPath(relative) if isinstance(relative, str) else None
+    root = lane.get("worktree_path")
+    if (
+        pure is None
+        or pure.is_absolute()
+        or pure.as_posix() != relative
+        or any(part in {"", ".", ".."} for part in pure.parts)
+        or relative not in allowed
+        or not isinstance(root, str)
+    ):
+        raise WorkerError("lane path is outside its allowlist")
+    return root, f"{root}/{relative}"
+
+
+def _local_lane_file(root_text: str, relative: str) -> Path:
+    """Resolve one simulation-lane file while rejecting every symlink hop."""
+    root = Path(root_text)
+    if root.is_symlink():
+        raise WorkerError("lane root must not be a symlink")
+    try:
+        resolved_root = root.resolve(strict=True)
+    except OSError as exc:
+        raise WorkerError("lane root is unavailable") from exc
+    current = resolved_root
+    for part in PurePosixPath(relative).parts:
+        current /= part
+        if current.is_symlink():
+            raise WorkerError("lane path must not contain a symlink")
+    try:
+        resolved = current.resolve(strict=True)
+    except OSError as exc:
+        raise WorkerError("lane path is unavailable") from exc
+    if not resolved.is_relative_to(resolved_root) or not resolved.is_file():
+        raise WorkerError("lane path escapes its root or is not a file")
+    return resolved
+
+
+def read_lane_file(
+    run: dict[str, Any], lane: dict[str, Any], relative: str, allowed_paths: list[str]
+) -> str:
+    """Read one allowlisted private-lane file through the worker boundary."""
+    root, sealed_path = _lane_path(lane, relative, set(allowed_paths))
+    if run.get("execution_tier") == "simulation":
+        return _local_lane_file(root, relative).read_text(encoding="utf-8")
+    if not root.startswith(f"/volume/lanes/{lane.get('lane_id')}/"):
+        raise WorkerError("lane root escapes the managed volume")
+    completed = _runtime._docker(
+        *_runtime._runtime_argv(
+            run["lock"],
+            run["volume"],
+            "python",
+            "-c",
+            (
+                "import os,sys; root=os.path.realpath(sys.argv[1]); "
+                "path=os.path.realpath(os.path.join(root,sys.argv[2])); "
+                "assert os.path.commonpath((root,path))==root; "
+                "assert not any(os.path.islink(os.path.join(root,*sys.argv[2].split('/')[:i])) "
+                "for i in range(1,len(sys.argv[2].split('/'))+1)); "
+                "sys.stdout.buffer.write(open(path,'rb').read())"
+            ),
+            root,
+            relative,
+        )
+    )
+    try:
+        return completed.stdout.decode("utf-8")
+    except UnicodeDecodeError as exc:
+        raise WorkerError("lane file is not UTF-8") from exc
+
+
+def search_lane_files(
+    run: dict[str, Any], lane: dict[str, Any], query: str, allowed_paths: list[str]
+) -> str:
+    """Search only allowlisted lane sources using worker-owned reads."""
+    matches: list[str] = []
+    for relative in sorted(set(allowed_paths)):
+        text = read_lane_file(run, lane, relative, allowed_paths)
+        for number, line in enumerate(text.splitlines(), 1):
+            if query in line:
+                matches.append(f"{relative}:{number}:{line}")
+    return "\n".join(matches)
+
+
+def edit_lane_file(
+    run: dict[str, Any], lane: dict[str, Any], patch: str
+) -> str:
+    """Apply a validated one-file patch only inside its private lane."""
+    validate_assigned_patch(lane["assigned_path"], patch)
+    raw = patch.encode("utf-8")
+    root = lane["worktree_path"]
+    if run.get("execution_tier") == "simulation":
+        _local_lane_file(root, lane["assigned_path"])
+        for check in (True, False):
+            command = ["git", "apply"]
+            if check:
+                command.append("--check")
+            command.append("-")
+            completed = subprocess.run(
+                command, cwd=root, input=raw, capture_output=True
+            )
+            if completed.returncode:
+                raise WorkerError(
+                    "private lane patch failed: "
+                    + (completed.stdout + completed.stderr).decode("utf-8", "replace")[-2000:]
+                )
+    else:
+        if not root.startswith(f"/volume/lanes/{lane.get('lane_id')}/"):
+            raise WorkerError("lane root escapes the managed volume")
+        for check in (True, False):
+            argv = ["git", "-C", root, "apply"]
+            if check:
+                argv.append("--check")
+            argv.append("-")
+            _runtime._docker(
+                *_runtime._runtime_argv(run["lock"], run["volume"], *argv),
+                input_bytes=raw,
+            )
+    return f"applied:{_runtime._sha256(raw)}"
+
+
+def check_lane(
+    run: dict[str, Any], lane: dict[str, Any], manifest: dict[str, Any]
+) -> str:
+    """Return an actual worker diagnostic, honestly classified by execution tier."""
+    root = lane["worktree_path"]
+    if run.get("execution_tier") == "simulation":
+        completed = subprocess.run(
+            ("git", "diff", "--check"), cwd=root, capture_output=True, text=True
+        )
+        diagnostic = (completed.stdout + completed.stderr)[-4000:]
+        return (
+            f"simulation_static:exit={completed.returncode}:"
+            f"diagnostic_sha256={_runtime._sha256(diagnostic.encode())}"
+        )
+    if not root.startswith(f"/volume/lanes/{lane.get('lane_id')}/"):
+        raise WorkerError("lane root escapes the managed volume")
+    verify = manifest.get("verify")
+    if not isinstance(verify, list) or not verify:
+        raise WorkerError("lane diagnostic command is unavailable")
+    completed = _runtime._docker(
+        *_runtime._runtime_argv(
+            run["lock"],
+            run["volume"],
+            "sh",
+            "-eu",
+            "-c",
+            'cd "$1"; shift; "$@"',
+            "sh",
+            root,
+            *verify,
+        ),
+        check=False,
+    )
+    diagnostic = (completed.stdout + completed.stderr)[-4000:]
+    return (
+        f"sealed_runtime:exit={completed.returncode}:"
+        f"diagnostic_sha256={_runtime._sha256(diagnostic)}:"
+        + diagnostic.decode("utf-8", "replace")
+    )
+
+
 def run_probes(run: dict[str, Any]) -> tuple[bytes, bytes]:
     """Run both probes in runsc and export only their raw evidence bytes."""
     lock = run["lock"]
@@ -407,17 +570,88 @@ def run_probes(run: dict[str, Any]) -> tuple[bytes, bytes]:
     (evidence / "probe-aeneas.json").write_bytes(aeneas_raw)
     run["events"].extend(("probe_rust", "probe_aeneas"))
     return rust_raw, aeneas_raw
-def check_contract_feasibility(
-    run: dict[str, Any], statements: list[str]
+def contract_feasibility_request(
+    graph: dict[str, Any], records_by_node: dict[str, dict[str, Any]]
 ) -> dict[str, Any]:
-    """Try the V1 diamond consumer proof against provisional statements."""
+    """Bind provisional statements to their real graph consumers and modules."""
+    selected = graph.get("selected_nodes")
+    if not isinstance(selected, list) or set(records_by_node) != set(selected):
+        raise WorkerError("contract feasibility nodes mismatch")
+    modules = sorted(
+        {
+            str(PurePosixPath(path).with_suffix("")).replace("/", ".")
+            for path in graph.get("source_paths", {}).values()
+            if isinstance(path, str) and path.endswith(".lean")
+        }
+    )
+    obligations = []
+    for node in selected:
+        record = records_by_node[node]
+        consumers = sorted(
+            consumer
+            for consumer, dependency in graph.get("term_dependencies", [])
+            if dependency == node
+        )
+        obligations.append(
+            {
+                "node": node,
+                "declaration": record.get("declaration"),
+                "canon": record.get("canon"),
+                "model_fingerprint": record.get("model_fingerprint"),
+                "immediate_consumers": [
+                    {
+                        "node": consumer,
+                        "declaration": records_by_node[consumer].get("declaration"),
+                        "canon": records_by_node[consumer].get("canon"),
+                        "model_fingerprint": records_by_node[consumer].get(
+                            "model_fingerprint"
+                        ),
+                    }
+                    for consumer in consumers
+                ],
+            }
+        )
+    body = {
+        "schema": "autofv-contract-feasibility/v1",
+        "graph_sha256": graph.get("graph_sha256"),
+        "modules": modules,
+        "obligations": obligations,
+    }
+    return {**body, "request_sha256": _runtime._sha256(_runtime._canonical_bytes(body))}
+
+
+def check_contract_feasibility(
+    run: dict[str, Any], request: dict[str, Any]
+) -> dict[str, Any]:
+    """Compile graph-derived provisional statements in the managed worker."""
+    if not isinstance(request, dict) or request.get("schema") != "autofv-contract-feasibility/v1":
+        raise WorkerError("contract feasibility request is invalid")
+    body = {key: value for key, value in request.items() if key != "request_sha256"}
+    if request.get("request_sha256") != _runtime._sha256(_runtime._canonical_bytes(body)):
+        raise WorkerError("contract feasibility request hash mismatch")
+    modules = request.get("modules")
+    obligations = request.get("obligations")
+    if (
+        not isinstance(modules, list)
+        or not modules
+        or any(not isinstance(module, str) or not module for module in modules)
+        or not isinstance(obligations, list)
+        or not obligations
+    ):
+        raise WorkerError("contract feasibility request is incomplete")
+    statements = []
+    for item in obligations:
+        if not isinstance(item, dict) or not isinstance(item.get("canon"), str):
+            raise WorkerError("contract feasibility obligation is invalid")
+        # A supplied declaration already exists in its imported source. Only
+        # provisional helper statements are restated in this isolated check.
+        if item.get("immediate_consumers"):
+            statements.append(item["canon"])
     source = (
-        "import Diamond.Top\n\n"
+        "\n".join(f"import {module}" for module in modules)
+        + "\n\n"
         + "\n".join(f"{statement} := by sorry" for statement in statements)
-        + "\n\nexample (input : Nat) : Diamond.top input = input * 3 + 1 := by\n"
-        "  rw [Diamond.top, Diamond.left_spec, Diamond.right_spec]\n"
-        "  simp [Nat.succ_eq_add_one, Nat.mul_succ, Nat.add_assoc, "
-        "Nat.add_comm, Nat.add_left_comm]\n"
+        + "\n"
     )
     completed = _runtime._docker(
         *_runtime._runtime_argv(
@@ -446,6 +680,7 @@ def check_contract_feasibility(
         "reason": None if exit_code == 0 else "consumer_proof_failed",
         "diagnostic_sha256": _runtime._sha256(diagnostic),
         "diagnostic": text,
+        "request_sha256": request["request_sha256"],
     }
 
 
@@ -492,6 +727,85 @@ def accept_candidate(
     if any(marker in patch for marker in ("\n+axiom ", "\n+sorry", "\n+unsafe ")):
         raise WorkerError("candidate violates the trust gate")
     raw_patch = patch.encode()
+    if run.get("execution_tier") == "simulation":
+        project = Path(run["project_dir"])
+        for check in (True, False):
+            command = ["git", "apply"]
+            if check:
+                command.append("--check")
+            command.append("-")
+            completed = subprocess.run(
+                command, cwd=project, input=raw_patch, capture_output=True
+            )
+            if completed.returncode:
+                raise WorkerError(
+                    "simulation candidate patch failed: "
+                    + (completed.stdout + completed.stderr).decode(
+                        "utf-8", "replace"
+                    )[-2000:]
+                )
+        subprocess.run(("git", "add", "--", path), cwd=project, check=True)
+        structural = subprocess.run(
+            ("git", "diff", "--cached", "--check"),
+            cwd=project,
+            capture_output=True,
+        )
+        if structural.returncode:
+            subprocess.run(
+                ("git", "apply", "--reverse", "-"),
+                cwd=project,
+                input=raw_patch,
+                check=True,
+            )
+            raise WorkerError("simulation static candidate check failed")
+        committed = subprocess.run(
+            (
+                "git",
+                "-c",
+                "user.name=AutoFV",
+                "-c",
+                "user.email=autofv@invalid",
+                "commit",
+                "-q",
+                "--no-gpg-sign",
+                "-m",
+                candidate["request_id"],
+            ),
+            cwd=project,
+            capture_output=True,
+        )
+        if committed.returncode:
+            raise WorkerError(
+                "simulation candidate commit failed: "
+                + (committed.stdout + committed.stderr).decode("utf-8", "replace")[-2000:]
+            )
+        commit = subprocess.run(
+            ("git", "rev-parse", "HEAD"),
+            cwd=project,
+            check=True,
+            capture_output=True,
+            text=True,
+        ).stdout.strip()
+        tree = subprocess.run(
+            ("git", "archive", "--format=tar", "HEAD"),
+            cwd=project,
+            check=True,
+            capture_output=True,
+        ).stdout
+        run["events"].append(f"accepted:{path}")
+        return {
+            "accepted_commit": commit,
+            "accepted_tree_sha256": _runtime._sha256(tree),
+            "checks": [
+                "assigned_path_scope",
+                "base_commit",
+                "patch_sha256",
+                "patch_applies",
+                "forbidden_source_markers",
+                "simulation_static_diff_check",
+            ],
+            "evidence_classification": "simulation_static",
+        }
     _runtime._git(run, "apply", "--check", "-", input_bytes=raw_patch)
     _runtime._git(run, "apply", "-", input_bytes=raw_patch)
     _runtime._git(run, "add", "--", path)

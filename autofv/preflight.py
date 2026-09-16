@@ -7,6 +7,7 @@ import hmac
 import os
 import re
 import secrets
+import time
 from pathlib import Path
 from typing import Any
 
@@ -64,6 +65,8 @@ _RECORD_FIELDS = frozenset(
     }
 )
 _MAX_BYTES = 256_000
+_EVIDENCE_KINDS = frozenset({"unittest", "static_policy", "sealed_runtime"})
+_APPLICABILITY = frozenset({"simulated_static", "applicable_sealed_runtime"})
 
 
 def _digest(value: Any, label: str) -> str:
@@ -72,24 +75,68 @@ def _digest(value: Any, label: str) -> str:
     return value
 
 
+def named_check_evidence(
+    check_id: str,
+    artifact: bytes,
+    *,
+    suite_sha256: str,
+    evidence_kind: str,
+    applicability: str,
+) -> dict[str, str]:
+    """Create evidence from one named check and its actual retained output bytes."""
+    if not isinstance(check_id, str) or not check_id or "case:" in check_id:
+        raise ContractError("deterministic preflight check id is invalid")
+    if not isinstance(artifact, bytes) or not artifact:
+        raise ContractError("deterministic preflight artifact is empty")
+    if evidence_kind not in _EVIDENCE_KINDS or applicability not in _APPLICABILITY:
+        raise ContractError("deterministic preflight evidence classification is invalid")
+    return {
+        "check_id": check_id,
+        "evidence_kind": evidence_kind,
+        "applicability": applicability,
+        "suite_sha256": _digest(suite_sha256, "evidence suite digest"),
+        "artifact_sha256": hashlib.sha256(artifact).hexdigest(),
+    }
+
+
 def _evidence(
-    value: Any, expected_names: tuple[str, ...], label: str
+    value: Any, expected_names: tuple[str, ...], label: str, suite_sha256: str
 ) -> dict[str, dict[str, str]]:
     if not isinstance(value, dict) or set(value) != set(expected_names):
         raise ContractError(f"{label} evidence set is incomplete")
-    return {
-        name: {
-            "status": "green",
-            "evidence_sha256": _digest(value[name], f"{label} {name}"),
+    result = {}
+    for name in expected_names:
+        entry = value[name]
+        fields = {
+            "check_id",
+            "evidence_kind",
+            "applicability",
+            "suite_sha256",
+            "artifact_sha256",
         }
-        for name in expected_names
-    }
+        if not isinstance(entry, dict) or set(entry) != fields:
+            raise ContractError(f"{label} {name} evidence fields mismatch")
+        if (
+            not isinstance(entry["check_id"], str)
+            or not entry["check_id"]
+            or entry["evidence_kind"] not in _EVIDENCE_KINDS
+            or entry["applicability"] not in _APPLICABILITY
+            or entry["suite_sha256"] != suite_sha256
+        ):
+            raise ContractError(f"{label} {name} evidence is not applicable")
+        _digest(entry["artifact_sha256"], f"{label} {name} artifact")
+        body = {"status": "green", **entry}
+        result[name] = {
+            **body,
+            "evidence_sha256": hashlib.sha256(canonical_json_bytes(body)).hexdigest(),
+        }
+    return result
 
 
 def _validate(record: Any) -> dict[str, Any]:
     if not isinstance(record, dict) or set(record) != _RECORD_FIELDS:
         raise ContractError("deterministic preflight fields mismatch")
-    if record["schema"] != "autofv-deterministic-preflight/v1":
+    if record["schema"] != "autofv-deterministic-preflight/v2":
         raise ContractError("deterministic preflight schema mismatch")
     if record["readiness"] != "ready":
         raise ContractError("deterministic preflight is not green")
@@ -120,11 +167,30 @@ def _validate(record: Any) -> dict[str, Any]:
         for item_name, item in entries.items():
             if (
                 not isinstance(item, dict)
-                or set(item) != {"status", "evidence_sha256"}
+                or set(item)
+                != {
+                    "status",
+                    "check_id",
+                    "evidence_kind",
+                    "applicability",
+                    "suite_sha256",
+                    "artifact_sha256",
+                    "evidence_sha256",
+                }
                 or item["status"] != "green"
+                or item["evidence_kind"] not in _EVIDENCE_KINDS
+                or item["applicability"] not in _APPLICABILITY
+                or item["suite_sha256"] != record["suite_sha256"]
             ):
                 raise ContractError(f"deterministic preflight {name} are not green")
             _digest(item["evidence_sha256"], f"{name} {item_name}")
+            evidence_body = {
+                key: value for key, value in item.items() if key != "evidence_sha256"
+            }
+            if item["evidence_sha256"] != hashlib.sha256(
+                canonical_json_bytes(evidence_body)
+            ).hexdigest():
+                raise ContractError(f"deterministic preflight {name} evidence mismatch")
     body = {key: value for key, value in record.items() if key != "preflight_sha256"}
     expected_digest = hashlib.sha256(canonical_json_bytes(body)).hexdigest()
     if not hmac.compare_digest(
@@ -154,11 +220,15 @@ def write_deterministic_preflight(
     except OSError as exc:
         raise ContractError("deterministic preflight parent is unavailable") from exc
     body = {
-        "schema": "autofv-deterministic-preflight/v1",
+        "schema": "autofv-deterministic-preflight/v2",
         "readiness": "ready",
         "suite_sha256": _digest(suite_sha256, "suite digest"),
-        "cases": _evidence(case_evidence, DETERMINISTIC_PREFLIGHT_CASES, "case"),
-        "gates": _evidence(gate_evidence, DETERMINISTIC_PREFLIGHT_GATES, "gate"),
+        "cases": _evidence(
+            case_evidence, DETERMINISTIC_PREFLIGHT_CASES, "case", suite_sha256
+        ),
+        "gates": _evidence(
+            gate_evidence, DETERMINISTIC_PREFLIGHT_GATES, "gate", suite_sha256
+        ),
         "identities": dict(identities),
         "zero_secret_scan_sha256": _digest(
             zero_secret_scan_sha256, "zero-secret scan digest"
@@ -189,6 +259,7 @@ def require_deterministic_preflight(
     *,
     expected_identities: dict[str, str],
     expected_source_head: str,
+    expected_suite_sha256: str,
     now_unix: int,
     max_age_seconds: int,
 ) -> dict[str, Any]:
@@ -204,6 +275,10 @@ def require_deterministic_preflight(
     if raw != canonical_json_bytes(record) + b"\n":
         raise ContractError("deterministic preflight is not canonical")
     record = _validate(record)
+    if record["suite_sha256"] != _digest(
+        expected_suite_sha256, "expected suite digest"
+    ):
+        raise ContractError("deterministic preflight suite evidence is stale")
     if record["identities"] != expected_identities:
         raise ContractError("deterministic preflight identity is stale")
     if record["source_head"] != expected_source_head:
@@ -213,4 +288,28 @@ def require_deterministic_preflight(
     age = now_unix - record["completed_at_unix"]
     if age < 0 or age > max_age_seconds:
         raise ContractError("deterministic preflight is stale")
+    return record
+
+
+def authorize_external_action(run: dict[str, Any]) -> dict[str, Any]:
+    """Mandatory authorization immediately before any authenticated provider action."""
+    authorization = run.get("deterministic_preflight")
+    if not isinstance(authorization, dict) or set(authorization) != {
+        "path",
+        "identities",
+        "source_head",
+        "suite_sha256",
+        "max_age_seconds",
+    }:
+        raise ContractError("external action requires deterministic preflight")
+    record = require_deterministic_preflight(
+        authorization["path"],
+        expected_identities=authorization["identities"],
+        expected_source_head=authorization["source_head"],
+        expected_suite_sha256=authorization["suite_sha256"],
+        now_unix=int(time.time()),
+        max_age_seconds=authorization["max_age_seconds"],
+    )
+    run["deterministic_preflight_sha256"] = record["preflight_sha256"]
+    run["deterministic_suite_sha256"] = record["suite_sha256"]
     return record

@@ -8,6 +8,7 @@ import json
 import os
 import subprocess
 import tempfile
+import time
 import unittest
 import urllib.request
 from concurrent.futures import ThreadPoolExecutor
@@ -207,6 +208,46 @@ def _configured_provider(
     _configure_provider(
         run, env_path=_provider_env(root), tool_schemas=_provider_tools()
     )
+    suite_sha256 = hashlib.sha256(b"provider transport deterministic suite passed").hexdigest()
+    evidence = lambda prefix, name: experiment.named_check_evidence(
+        f"tests.test_provider_transport::{prefix}_{name}",
+        f"PASS {prefix} {name}\n".encode(),
+        suite_sha256=suite_sha256,
+        evidence_kind="unittest",
+        applicability="simulated_static",
+    )
+    identities = {
+        "image_digest": lock["image"]["image_digest"],
+        "runtime_sha256": "2" * 64,
+        "native_decide_policy_sha256": lock["native_decide_policy_sha256"],
+        "tool_schema_sha256": _canonical_sha256(_provider_tools()),
+        "provider_identity_sha256": run["provider_binding_sha256"],
+    }
+    completed_at = int(time.time())
+    path = root / "deterministic-preflight.json"
+    experiment.write_deterministic_preflight(
+        path,
+        suite_sha256=suite_sha256,
+        case_evidence={
+            name: evidence("case", name)
+            for name in experiment.DETERMINISTIC_PREFLIGHT_CASES
+        },
+        gate_evidence={
+            name: evidence("gate", name)
+            for name in experiment.DETERMINISTIC_PREFLIGHT_GATES
+        },
+        identities=identities,
+        zero_secret_scan_sha256=hashlib.sha256(b"zero secret scan passed").hexdigest(),
+        source_head=base_commit,
+        completed_at_unix=completed_at,
+    )
+    run["deterministic_preflight"] = {
+        "path": str(path),
+        "identities": identities,
+        "source_head": base_commit,
+        "suite_sha256": suite_sha256,
+        "max_age_seconds": 300,
+    }
     messages = _provider_messages()
     request = copy.deepcopy(_strict_json(FIXTURE_PATH.read_bytes())["entries"][0]["request"])
     request["input_hashes"] = sorted(

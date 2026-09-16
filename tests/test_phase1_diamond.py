@@ -1,3 +1,4 @@
+import base64
 import copy
 import hashlib
 import json
@@ -13,8 +14,12 @@ from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from unittest import mock
 
+from cryptography.hazmat.primitives import serialization
+from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
+
 from autofv import (
     axiom_audit,
+    contracts,
     experiment,
     probes,
     results,
@@ -35,6 +40,206 @@ REFERENCE = ROOT / "tests" / "fixtures" / "diamond-reference" / "reference.json"
 
 def _sha256(data):
     return hashlib.sha256(data).hexdigest()
+
+
+def _generic_graph():
+    graph = {
+        "frozen_targets": ["probe:Diamond.top"],
+        "selected_nodes": [
+            "probe:Diamond.left",
+            "probe:Diamond.right",
+            "probe:Diamond.top",
+        ],
+        "term_dependencies": [
+            ["probe:Diamond.right", "probe:Diamond.left"],
+            ["probe:Diamond.top", "probe:Diamond.right"],
+        ],
+        "type_dependencies": [],
+        "source_paths": {
+            "probe:Diamond.left": "Diamond/Left.lean",
+            "probe:Diamond.right": "Diamond/Right.lean",
+            "probe:Diamond.top": "Diamond/Top.lean",
+            "probe:Diamond.top_spec": "Diamond/Top.lean",
+        },
+        "supplied_specs": {"probe:Diamond.top": "probe:Diamond.top_spec"},
+        "probe_rust_sha256": "1" * 64,
+        "probe_aeneas_sha256": "2" * 64,
+    }
+    immutable = {
+        key: graph[key]
+        for key in (
+            "frozen_targets",
+            "selected_nodes",
+            "term_dependencies",
+            "type_dependencies",
+            "source_paths",
+            "supplied_specs",
+        )
+    }
+    graph["graph_sha256"] = _sha256(experiment.canonical_json_bytes(immutable))
+    return graph
+
+
+class _SignedRoleProvider:
+    def __init__(self, private_key):
+        self.private_key = private_key
+        self.calls = []
+
+    @staticmethod
+    def _patch(path, before, after):
+        return (
+            f"diff --git a/{path} b/{path}\n"
+            f"--- a/{path}\n"
+            f"+++ b/{path}\n"
+            "@@ -1,1 +1,1 @@\n"
+            f"-{before}\n"
+            f"+{after}\n"
+        )
+
+    def _arguments(self, role):
+        occurrence = sum(call["role"] == role for call in self.calls)
+        if role == "prover":
+            if occurrence == 0:
+                patch = MODEL_FIXTURE_DATA["entries"][5]["response"]["payload"][
+                    "patch"
+                ]
+            elif occurrence == 1:
+                patch = MODEL_FIXTURE_DATA["entries"][6]["response"]["payload"][
+                    "patch"
+                ]
+            else:
+                patch = MODEL_FIXTURE_DATA["entries"][7]["response"]["payload"][
+                    "patch"
+                ]
+        elif role == "proof_reviewer":
+            if occurrence == 0:
+                patch = MODEL_FIXTURE_DATA["entries"][5]["response"]["payload"][
+                    "patch"
+                ]
+            elif occurrence == 1:
+                patch = MODEL_FIXTURE_DATA["entries"][6]["response"]["payload"][
+                    "patch"
+                ]
+            else:
+                patch = MODEL_FIXTURE_DATA["entries"][7]["response"]["payload"][
+                    "patch"
+                ]
+        elif role == "verification_adviser":
+            patch = MODEL_FIXTURE_DATA["entries"][7]["response"]["payload"][
+                "patch"
+            ]
+        else:
+            path = "Diamond/Top.lean"
+            if role in {"specifier", "spec_reviewer"}:
+                path = (
+                    "Diamond/Left.lean"
+                    if role == "specifier" and occurrence == 1
+                    else "Diamond/Right.lean"
+                )
+            patch = self._patch(path, "namespace Diamond", "namespace Diamond")
+        evidence = [f"deterministic:{role}"]
+        if role == "specifier":
+            evidence = [
+                "statement:theorem Diamond.left_spec (n : Nat) : "
+                "Diamond.left n = Nat.succ n"
+                if occurrence == 1
+                else "statement:theorem Diamond.right_spec (n : Nat) : n ≤ "
+                "Diamond.right n"
+            ]
+        elif role == "spec_reviewer":
+            evidence = [
+                "statement:theorem Diamond.right_spec (n : Nat) : "
+                "Diamond.right n = n * (Nat.succ 1)"
+            ]
+        return {
+            "patch": patch,
+            "claimed_status": "candidate",
+            "evidence": evidence,
+        }
+
+    def __call__(self, request):
+        role = request["role"]
+        payload = {
+            "schema": "autofv-lane-tool-call/v1",
+            "name": "submit_candidate",
+            "arguments": self._arguments(role),
+        }
+        response = {
+            "schema": "autofv-model-response/v1",
+            **{
+                key: copy.deepcopy(request[key])
+                for key in (
+                    "run_id",
+                    "sequence",
+                    "batch_id",
+                    "request_id",
+                    "role",
+                    "model_id",
+                    "input_hashes",
+                    "prompt_sha256",
+                )
+            },
+            "kind": "tool_call",
+            "assigned_path": None,
+            "base_commit": MODEL_FIXTURE_DATA["git"]["base_commit"],
+            "statement_fingerprints": [],
+            "payload": payload,
+            "payload_sha256": _sha256(experiment.canonical_json_bytes(payload)),
+        }
+        request_sha256 = _sha256(experiment.canonical_json_bytes(request))
+        response_sha256 = _sha256(experiment.canonical_json_bytes(response))
+        unsigned = {
+            "schema": "autofv-model-proxy-receipt/v1",
+            "proxy_id": "autofv-local-fixture-proxy-v1",
+            "route_id": "autofv-infer-v1",
+            "run_id": request["run_id"],
+            "sequence": request["sequence"],
+            "request_id": request["request_id"],
+            "model_id": request["model_id"],
+            "request_sha256": request_sha256,
+            "response_sha256": response_sha256,
+            "status": "ok",
+            "usage": {"input_tokens": 1, "output_tokens": 1, "total_tokens": 2},
+            "cost": {"amount": "0.000001", "currency": "USD"},
+            "auth": {
+                "algorithm": "Ed25519",
+                "key_id": "autofv-role-test-ed25519-v1",
+            },
+        }
+        signed = experiment.canonical_json_bytes(unsigned)
+        receipt = copy.deepcopy(unsigned)
+        receipt["auth"]["signature"] = base64.b64encode(
+            self.private_key.sign(signed)
+        ).decode("ascii")
+        receipt["receipt_sha256"] = _sha256(signed)
+        self.calls.append(copy.deepcopy(request))
+        return response, receipt
+
+
+MODEL_FIXTURE_DATA = json.loads(MODEL_FIXTURE.read_text())
+
+
+def _role_test_lock(private_key):
+    lock = copy.deepcopy(experiment.load_toolchain_lock())
+    public_key = private_key.public_key()
+    public_pem = public_key.public_bytes(
+        serialization.Encoding.PEM,
+        serialization.PublicFormat.SubjectPublicKeyInfo,
+    ).decode("ascii")
+    public_der = public_key.public_bytes(
+        serialization.Encoding.DER,
+        serialization.PublicFormat.SubjectPublicKeyInfo,
+    )
+    auth = lock["fixed_proxy"]["receipt_schema"]["authentication"]
+    auth.update(
+        {
+            "algorithm": "Ed25519",
+            "key_id": "autofv-role-test-ed25519-v1",
+            "public_key_pem": public_pem,
+            "public_key_der_sha256": _sha256(public_der),
+        }
+    )
+    return lock
 
 
 class _FixtureProxy:
@@ -491,6 +696,130 @@ class TracerTests(unittest.TestCase):
                 else:
                     self.assertEqual(result["proxy_requests"], 0)
                     self.assertEqual(result["cost_usd"], "0.000000")
+
+    def test_generic_full_role_slice_preserves_acceptance_and_verifier_order(self):
+        private_key = Ed25519PrivateKey.from_private_bytes(bytes(range(1, 33)))
+        lock = _role_test_lock(private_key)
+        graph = _generic_graph()
+        provider = _SignedRoleProvider(private_key)
+        with tempfile.TemporaryDirectory() as tmp:
+            seams = _Seams(Path(tmp), self.fixture)
+            with (
+                mock.patch.object(worker, "prepare_run", seams.prepare),
+                mock.patch.object(worker, "run_probes", seams.run_probes),
+                mock.patch.object(
+                    worker,
+                    "check_contract_feasibility",
+                    seams.check_contract_feasibility,
+                ),
+                mock.patch.object(worker, "accept_candidate", seams.accept),
+                mock.patch.object(worker, "prepare_lanes", return_value=None),
+                mock.patch.object(worker, "persist_lane_result", return_value=None),
+                mock.patch.object(results, "persist_attempt", seams.persist),
+                mock.patch.object(verifier, "verify_run", seams.verify),
+                mock.patch.object(probes, "parse_probe_bytes", return_value=graph),
+                mock.patch.object(experiment, "load_toolchain_lock", return_value=lock),
+                mock.patch.object(contracts, "load_toolchain_lock", return_value=lock),
+            ):
+                result = experiment.run_experiment(
+                    TARGET, TARGET / "run.json", run_round=provider
+                )
+            result_exists = (Path(tmp) / "result.json").is_file()
+            l0_exists = (Path(tmp) / "evidence" / "l0.json").is_file()
+
+        self.assertEqual(
+            (result["outcome"], result["termination_reason"]),
+            ("success", "all_targets_verified"),
+            result,
+        )
+        self.assertEqual(result["graph_sha256"], graph["graph_sha256"])
+        self.assertEqual(result["native_decide_policy"], "allow_audited")
+        self.assertEqual(result["proxy_requests"], 12)
+        self.assertEqual(result["model_attempts"], 12)
+        self.assertEqual(result["internal_specs_accepted"], 2)
+        self.assertEqual(result["internal_proofs_accepted"], 2)
+        self.assertEqual(len(seams.accepted_commits), 3)
+        self.assertEqual(result["accepted_commit"], seams.accepted_commits[-1])
+        self.assertEqual(len(result["processed_candidate_sha256"]), 3)
+        self.assertEqual(
+            [call["sequence"] for call in provider.calls], list(range(1, 13))
+        )
+        self.assertNotEqual(
+            result["agent_worker_id"], result["verifier_worker_id"]
+        )
+        self.assertTrue(result_exists)
+        self.assertTrue(l0_exists)
+        self.assertEqual(
+            [item["status"] for item in result["accepted_sequence"]],
+            ["accepted", "accepted_reverified", "accepted_reverified"],
+        )
+        self.assertEqual(
+            [call["role"] for call in provider.calls],
+            [
+                "scout",
+                "dependency_planner",
+                "specifier",
+                "specifier",
+                "spec_reviewer",
+                "prover",
+                "proof_reviewer",
+                "prover",
+                "proof_reviewer",
+                "prover",
+                "proof_reviewer",
+                "verification_adviser",
+            ],
+        )
+        role_events = [
+            event
+            for event in result["events"]
+            if event.startswith(("role:", "lane_tool:", "candidate_", "clean_verifier:"))
+        ]
+        expected_events = []
+        for role in (
+            "scout",
+            "dependency_planner",
+            "specifier",
+            "specifier",
+            "spec_reviewer",
+            "prover",
+            "proof_reviewer",
+        ):
+            expected_events.extend(
+                (
+                    f"role:{role}:started",
+                    f"lane_tool:{role}:submit_candidate",
+                    f"role:{role}:candidate",
+                )
+            )
+        expected_events.append("candidate_accepted:proof-left-001")
+        for role in ("prover", "proof_reviewer"):
+            expected_events.extend(
+                (
+                    f"role:{role}:started",
+                    f"lane_tool:{role}:submit_candidate",
+                    f"role:{role}:candidate",
+                )
+            )
+        expected_events.append("candidate_accepted_reverified:proof-right-001")
+        for role in ("prover", "proof_reviewer"):
+            expected_events.extend(
+                (
+                    f"role:{role}:started",
+                    f"lane_tool:{role}:submit_candidate",
+                    f"role:{role}:candidate",
+                )
+            )
+        expected_events.append("candidate_accepted_reverified:proof-top-001")
+        expected_events.extend(
+            (
+                "role:verification_adviser:started",
+                "lane_tool:verification_adviser:submit_candidate",
+                "role:verification_adviser:candidate",
+                "clean_verifier:PASS",
+            )
+        )
+        self.assertEqual(role_events, expected_events)
 
     def test_controller_interrupt_persists_an_explicit_failure(self):
         with tempfile.TemporaryDirectory() as tmp:

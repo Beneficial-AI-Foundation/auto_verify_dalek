@@ -449,6 +449,10 @@ async def run_role_conversation(
 ) -> dict[str, Any]:
     """Run one bounded job-local tool loop through the receipted model seam."""
     trusted_job = validate_role_job(job)
+    run = state.get("run")
+    events = run.setdefault("events", []) if isinstance(run, dict) else None
+    if events is not None:
+        events.append(f"role:{trusted_job['role']}:started")
     spec = role_conversation_spec(trusted_job)
     schemas = capture_tool_schemas(tools)
     context_hashes = set(trusted_job["input_hashes"])
@@ -486,8 +490,13 @@ async def run_role_conversation(
             continue
 
         result = invoke_lane_tool(tools, name, arguments)
+        if events is not None:
+            events.append(f"lane_tool:{trusted_job['role']}:{name}")
         if name == "submit_candidate":
-            return validate_candidate(result, trusted_job)
+            candidate = validate_candidate(result, trusted_job)
+            if events is not None:
+                events.append(f"role:{trusted_job['role']}:candidate")
+            return candidate
         context_hashes.add(
             hashlib.sha256(
                 canonical_json_bytes({"tool": name, "result": result})

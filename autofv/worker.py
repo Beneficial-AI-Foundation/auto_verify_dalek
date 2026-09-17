@@ -10,6 +10,14 @@ import tempfile
 from pathlib import Path, PurePosixPath
 from typing import Any
 
+from . import candidate_lane as _candidate, lane_snapshot as _snapshots
+from .candidate_lane import (
+    _local_lane_file,
+    _sealed_lane_root,
+    _sealed_lane_exec,
+    _simulation_git_snapshot,
+    _restore_simulation_git_snapshot,
+)
 from . import worker_runtime as _runtime
 from .worker_artifacts import (
     dispose_run,
@@ -72,7 +80,7 @@ def prepare_run(
     archive, control_manifest, snapshot_sha256 = _runtime._seed_archive(target, lock)
     run_id = _runtime._new_run_id()
     volume = f"autofv-{secrets.token_hex(8)}"
-    run_root = Path(tempfile.mkdtemp(prefix=f"{run_id}-"))
+    run_root = Path(tempfile.mkdtemp(prefix=f"{run_id}-")).resolve(strict=True)
     run = {
         "run_id": run_id,
         "run_root": str(run_root),
@@ -274,19 +282,36 @@ def prepare_lanes(run: dict[str, Any], lanes: list[dict[str, Any]]) -> None:
 
     project = Path(run["project_dir"])
     local = project.is_dir()
-    local_root = (Path(run["run_root"]) / "lanes").resolve() if local else None
+    local_root = Path(run["run_root"]) / "lanes" if local else None
     for lane in lanes:
         if set(lane) != keys or lane["schema"] != "autofv-proof-lane/v1":
             raise WorkerError("proof lane descriptor is invalid")
+        _snapshots._lane_descriptor(
+            {**run, "execution_tier": "simulation" if local else "sealed_runsc"}, lane
+        )
         worktree = lane["worktree_path"]
         cache = lane["cache_path"]
         result_parent = str(PurePosixPath(lane["result_path"]).parent)
         if local:
             paths = [Path(worktree), Path(cache), Path(lane["result_path"])]
-            if any(not path.resolve().is_relative_to(local_root) for path in paths):
+            if any(not path.is_relative_to(local_root) for path in paths):
                 raise WorkerError("proof lane path escapes the run")
-            Path(cache).mkdir(parents=True)
-            Path(lane["result_path"]).parent.mkdir(parents=True)
+            for directory in (Path(cache), Path(result_parent)):
+                current = Path(run["run_root"])
+                for part in directory.relative_to(current).parts:
+                    if current.is_symlink():
+                        raise WorkerError("proof lane parent contains a symlink")
+                    current /= part
+                    if current.is_symlink():
+                        raise WorkerError("proof lane parent contains a symlink")
+                    current.mkdir(exist_ok=True)
+            if os.path.lexists(worktree):
+                _local_lane_file(run, lane, lane["assigned_path"])
+                head = subprocess.run(("git", "rev-parse", "HEAD"), cwd=worktree, capture_output=True, check=True).stdout.decode().strip()
+                dirty = subprocess.run(("git", "status", "--porcelain"), cwd=worktree, capture_output=True, check=True).stdout.strip()
+                if head != lane["base_commit"] or dirty:
+                    raise WorkerError("initial lane differs from its immutable base")
+                continue
             completed = subprocess.run(
                 ("git", "worktree", "add", "--detach", worktree, lane["base_commit"]),
                 cwd=project,
@@ -305,13 +330,53 @@ def prepare_lanes(run: dict[str, Any], lanes: list[dict[str, Any]]) -> None:
                 raise WorkerError("proof lane path escapes the managed volume")
             _runtime._docker(
                 *_runtime._runtime_argv(
-                    run["lock"], run["volume"], "mkdir", "-p", cache, result_parent
+                    run["lock"], run["volume"], "python", "-c",
+                    "import os,sys\n"
+                    "for path in sys.argv[1:]:\n"
+                    " fd=os.open('/',os.O_RDONLY|os.O_DIRECTORY|os.O_NOFOLLOW)\n"
+                    " try:\n"
+                    "  for part in path.split('/')[1:]:\n"
+                    "   if not part or part in {'.','..'}: raise RuntimeError('invalid lane path')\n"
+                    "   try: os.mkdir(part,dir_fd=fd)\n"
+                    "   except FileExistsError: pass\n"
+                    "   child=os.open(part,os.O_RDONLY|os.O_DIRECTORY|os.O_NOFOLLOW,dir_fd=fd)\n"
+                    "   os.close(fd); fd=child\n"
+                    " finally: os.close(fd)",
+                    cache, result_parent,
                 )
             )
+            exists = _runtime._docker(*_runtime._runtime_argv(
+                run["lock"], run["volume"], "test", "-e", worktree
+            ), check=False).returncode == 0
+            if exists:
+                def inspect(*args):
+                    return _runtime._docker(*_runtime._runtime_argv(
+                        run["lock"], run["volume"],
+                        *_sealed_lane_exec(_sealed_lane_root(lane), lane["assigned_path"], "git", *args),
+                    )).stdout.decode().strip()
+                if inspect("rev-parse", "HEAD") != lane["base_commit"] or inspect("status", "--porcelain"):
+                    raise WorkerError("initial lane differs from its immutable base")
+                continue
             _runtime._git(
                 run, "worktree", "add", "--detach", worktree, lane["base_commit"]
             )
-    run["events"].append("proof_lanes:prepared")
+    if "proof_lanes:prepared" not in run["events"]:
+        run["events"].append("proof_lanes:prepared")
+
+
+def save_lane_snapshot(run: dict[str, Any], lane: dict[str, Any], *, initial: bool = False) -> dict[str, Any]:
+    """Persist the private source view outside candidate mounts."""
+    return _snapshots.save_lane_snapshot(run, lane, initial=initial)
+
+
+def restore_lane_snapshot(
+    run: dict[str, Any], lane: dict[str, Any], *,
+    expected_receipt: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    """Authenticate and restore a private lane through the snapshot boundary."""
+    return _snapshots.restore_lane_snapshot(
+        run, lane, expected_receipt=expected_receipt, _prepare_lanes=prepare_lanes
+    )
 
 
 def persist_lane_result(
@@ -363,54 +428,21 @@ def _lane_path(lane: dict[str, Any], relative: str, allowed: set[str]) -> tuple[
     return root, f"{root}/{relative}"
 
 
-def _local_lane_file(root_text: str, relative: str) -> Path:
-    """Resolve one simulation-lane file while rejecting every symlink hop."""
-    root = Path(root_text)
-    if root.is_symlink():
-        raise WorkerError("lane root must not be a symlink")
-    try:
-        resolved_root = root.resolve(strict=True)
-    except OSError as exc:
-        raise WorkerError("lane root is unavailable") from exc
-    current = resolved_root
-    for part in PurePosixPath(relative).parts:
-        current /= part
-        if current.is_symlink():
-            raise WorkerError("lane path must not contain a symlink")
-    try:
-        resolved = current.resolve(strict=True)
-    except OSError as exc:
-        raise WorkerError("lane path is unavailable") from exc
-    if not resolved.is_relative_to(resolved_root) or not resolved.is_file():
-        raise WorkerError("lane path escapes its root or is not a file")
-    return resolved
 
 
 def read_lane_file(
     run: dict[str, Any], lane: dict[str, Any], relative: str, allowed_paths: list[str]
 ) -> str:
     """Read one allowlisted private-lane file through the worker boundary."""
-    root, sealed_path = _lane_path(lane, relative, set(allowed_paths))
+    root, _ = _lane_path(lane, relative, set(allowed_paths))
     if run.get("execution_tier") == "simulation":
-        return _local_lane_file(root, relative).read_text(encoding="utf-8")
-    if not root.startswith(f"/volume/lanes/{lane.get('lane_id')}/"):
-        raise WorkerError("lane root escapes the managed volume")
+        return _local_lane_file(run, lane, relative).read_text(encoding="utf-8")
+    root = _sealed_lane_root(lane)
     completed = _runtime._docker(
         *_runtime._runtime_argv(
             run["lock"],
             run["volume"],
-            "python",
-            "-c",
-            (
-                "import os,sys; root=os.path.realpath(sys.argv[1]); "
-                "path=os.path.realpath(os.path.join(root,sys.argv[2])); "
-                "assert os.path.commonpath((root,path))==root; "
-                "assert not any(os.path.islink(os.path.join(root,*sys.argv[2].split('/')[:i])) "
-                "for i in range(1,len(sys.argv[2].split('/'))+1)); "
-                "sys.stdout.buffer.write(open(path,'rb').read())"
-            ),
-            root,
-            relative,
+            *_sealed_lane_exec(root, relative, "cat", "--", relative),
         )
     )
     try:
@@ -440,7 +472,7 @@ def edit_lane_file(
     raw = patch.encode("utf-8")
     root = lane["worktree_path"]
     if run.get("execution_tier") == "simulation":
-        _local_lane_file(root, lane["assigned_path"])
+        _local_lane_file(run, lane, lane["assigned_path"])
         for check in (True, False):
             command = ["git", "apply"]
             if check:
@@ -454,18 +486,29 @@ def edit_lane_file(
                     "private lane patch failed: "
                     + (completed.stdout + completed.stderr).decode("utf-8", "replace")[-2000:]
                 )
+        _local_lane_file(run, lane, lane["assigned_path"])
     else:
-        if not root.startswith(f"/volume/lanes/{lane.get('lane_id')}/"):
-            raise WorkerError("lane root escapes the managed volume")
+        root = _sealed_lane_root(lane)
         for check in (True, False):
-            argv = ["git", "-C", root, "apply"]
+            argv = ["git", "apply"]
             if check:
                 argv.append("--check")
             argv.append("-")
             _runtime._docker(
-                *_runtime._runtime_argv(run["lock"], run["volume"], *argv),
+                *_runtime._runtime_argv(
+                    run["lock"],
+                    run["volume"],
+                    *_sealed_lane_exec(root, lane["assigned_path"], *argv),
+                ),
                 input_bytes=raw,
             )
+        _runtime._docker(
+            *_runtime._runtime_argv(
+                run["lock"],
+                run["volume"],
+                *_sealed_lane_exec(root, lane["assigned_path"], "true"),
+            )
+        )
     return f"applied:{_runtime._sha256(raw)}"
 
 
@@ -475,6 +518,7 @@ def check_lane(
     """Return an actual worker diagnostic, honestly classified by execution tier."""
     root = lane["worktree_path"]
     if run.get("execution_tier") == "simulation":
+        _local_lane_file(run, lane, lane["assigned_path"])
         completed = subprocess.run(
             ("git", "diff", "--check"), cwd=root, capture_output=True, text=True
         )
@@ -483,22 +527,25 @@ def check_lane(
             f"simulation_static:exit={completed.returncode}:"
             f"diagnostic_sha256={_runtime._sha256(diagnostic.encode())}"
         )
-    if not root.startswith(f"/volume/lanes/{lane.get('lane_id')}/"):
-        raise WorkerError("lane root escapes the managed volume")
+    root = _sealed_lane_root(lane)
     verify = manifest.get("verify")
     if not isinstance(verify, list) or not verify:
         raise WorkerError("lane diagnostic command is unavailable")
-    completed = _runtime._docker(
+    _runtime._docker(
         *_runtime._runtime_argv(
             run["lock"],
             run["volume"],
-            "sh",
-            "-eu",
-            "-c",
-            'cd "$1"; shift; "$@"',
-            "sh",
-            root,
-            *verify,
+            *_sealed_lane_exec(root, lane["assigned_path"], "true"),
+        )
+    )
+    completed = _runtime._docker(
+        *_runtime._candidate_runtime_argv(
+            run["lock"],
+            run["volume"],
+            lane["lane_id"],
+            *_sealed_lane_exec(
+                ".", lane["assigned_path"], *verify, detach_git=True
+            ),
         ),
         check=False,
     )
@@ -595,6 +642,7 @@ def contract_feasibility_request(
         obligations.append(
             {
                 "node": node,
+                "source_path": graph["source_paths"][node],
                 "declaration": record.get("declaration"),
                 "canon": record.get("canon"),
                 "model_fingerprint": record.get("model_fingerprint"),
@@ -639,31 +687,16 @@ def check_contract_feasibility(
         or not obligations
     ):
         raise WorkerError("contract feasibility request is incomplete")
-    statements = []
+    from .contract_feasibility import compile_source, consumer_source
+    sources = {}
     for item in obligations:
-        if not isinstance(item, dict) or not isinstance(item.get("canon"), str):
-            raise WorkerError("contract feasibility obligation is invalid")
-        # A supplied declaration already exists in its imported source. Only
-        # provisional helper statements are restated in this isolated check.
-        if item.get("immediate_consumers"):
-            statements.append(item["canon"])
-    source = (
-        "\n".join(f"import {module}" for module in modules)
-        + "\n\n"
-        + "\n".join(f"{statement} := by sorry" for statement in statements)
-        + "\n"
-    )
-    completed = _runtime._docker(
-        *_runtime._runtime_argv(
-            run["lock"],
-            run["volume"],
-            "sh",
-            "-c",
-            "lake env lean --stdin 2>&1; code=$?; "
-            "printf '\\nAUTOFV_FEASIBILITY_EXIT=%s\\n' \"$code\"",
-        ),
-        input_bytes=source.encode("utf-8"),
-    )
+        path = item.get("source_path")
+        if not isinstance(path, str) or path.startswith("/") or ".." in PurePosixPath(path).parts:
+            raise WorkerError("contract feasibility source path is invalid")
+        if path not in sources:
+            sources[path] = _runtime._git(run, "show", f"{run['base_commit']}:{path}").decode("utf-8")
+    source = consumer_source(request, sources)
+    completed = compile_source(run, source, obligations[0]["source_path"])
     marker = b"\nAUTOFV_FEASIBILITY_EXIT="
     if marker not in completed.stdout:
         raise WorkerError("provisional consumer check returned no exit marker")
@@ -729,69 +762,84 @@ def accept_candidate(
     raw_patch = patch.encode()
     if run.get("execution_tier") == "simulation":
         project = Path(run["project_dir"])
-        for check in (True, False):
-            command = ["git", "apply"]
-            if check:
-                command.append("--check")
-            command.append("-")
-            completed = subprocess.run(
-                command, cwd=project, input=raw_patch, capture_output=True
+        check = subprocess.run(
+            ("git", "apply", "--check", "-"),
+            cwd=project,
+            input=raw_patch,
+            capture_output=True,
+        )
+        if check.returncode:
+            raise WorkerError(
+                "simulation candidate patch failed: "
+                + (check.stdout + check.stderr).decode("utf-8", "replace")[-2000:]
             )
-            if completed.returncode:
+        snapshot = _simulation_git_snapshot(project, path)
+        try:
+            applied = subprocess.run(
+                ("git", "apply", "-"),
+                cwd=project,
+                input=raw_patch,
+                capture_output=True,
+            )
+            if applied.returncode:
                 raise WorkerError(
                     "simulation candidate patch failed: "
-                    + (completed.stdout + completed.stderr).decode(
+                    + (applied.stdout + applied.stderr).decode(
                         "utf-8", "replace"
                     )[-2000:]
                 )
-        subprocess.run(("git", "add", "--", path), cwd=project, check=True)
-        structural = subprocess.run(
-            ("git", "diff", "--cached", "--check"),
-            cwd=project,
-            capture_output=True,
-        )
-        if structural.returncode:
-            subprocess.run(
-                ("git", "apply", "--reverse", "-"),
+            subprocess.run(("git", "add", "--", path), cwd=project, check=True)
+            structural = subprocess.run(
+                ("git", "diff", "--cached", "--check"),
                 cwd=project,
-                input=raw_patch,
+                capture_output=True,
+            )
+            if structural.returncode:
+                raise WorkerError("simulation static candidate check failed")
+            committed = subprocess.run(
+                (
+                    "git",
+                    "-c",
+                    "user.name=AutoFV",
+                    "-c",
+                    "user.email=autofv@invalid",
+                    "commit",
+                    "-q",
+                    "--no-gpg-sign",
+                    "-m",
+                    candidate["request_id"],
+                ),
+                cwd=project,
+                capture_output=True,
+            )
+            if committed.returncode:
+                raise WorkerError(
+                    "simulation candidate commit failed: "
+                    + (committed.stdout + committed.stderr).decode(
+                        "utf-8", "replace"
+                    )[-2000:]
+                )
+            commit = subprocess.run(
+                ("git", "rev-parse", "HEAD"),
+                cwd=project,
                 check=True,
-            )
-            raise WorkerError("simulation static candidate check failed")
-        committed = subprocess.run(
-            (
-                "git",
-                "-c",
-                "user.name=AutoFV",
-                "-c",
-                "user.email=autofv@invalid",
-                "commit",
-                "-q",
-                "--no-gpg-sign",
-                "-m",
-                candidate["request_id"],
-            ),
-            cwd=project,
-            capture_output=True,
-        )
-        if committed.returncode:
-            raise WorkerError(
-                "simulation candidate commit failed: "
-                + (committed.stdout + committed.stderr).decode("utf-8", "replace")[-2000:]
-            )
-        commit = subprocess.run(
-            ("git", "rev-parse", "HEAD"),
-            cwd=project,
-            check=True,
-            capture_output=True,
-            text=True,
-        ).stdout.strip()
-        tree = subprocess.run(
-            ("git", "archive", "--format=tar", "HEAD"),
-            cwd=project,
-            check=True,
-            capture_output=True,
-        ).stdout
+                capture_output=True,
+                text=True,
+            ).stdout.strip()
+            tree = subprocess.run(
+                ("git", "archive", "--format=tar", "HEAD"),
+                cwd=project,
+                check=True,
+                capture_output=True,
+            ).stdout
+        except BaseException as exc:
+            try:
+                _restore_simulation_git_snapshot(snapshot)
+            except BaseException as restore_exc:
+                raise WorkerError(
+                    f"{exc}; simulation candidate rollback failed: {restore_exc}"
+                ) from exc
+            raise
         run["events"].append(f"accepted:{path}")
         return {
             "accepted_commit": commit,
@@ -806,46 +854,4 @@ def accept_candidate(
             ],
             "evidence_classification": "simulation_static",
         }
-    _runtime._git(run, "apply", "--check", "-", input_bytes=raw_patch)
-    _runtime._git(run, "apply", "-", input_bytes=raw_patch)
-    _runtime._git(run, "add", "--", path)
-    try:
-        verify = manifest["verify"]
-        _runtime._docker(*_runtime._runtime_argv(run["lock"], run["volume"], *verify))
-        _runtime._docker(
-            *_runtime._runtime_argv(
-                run["lock"],
-                run["volume"],
-                "git",
-                "-C",
-                "/volume/work/project",
-                "-c",
-                "user.name=AutoFV",
-                "-c",
-                "user.email=autofv@invalid",
-                "commit",
-                "-q",
-                "--no-gpg-sign",
-                "-m",
-                candidate["request_id"],
-            )
-        )
-    except BaseException:
-        _runtime._git(run, "apply", "--reverse", "-", input_bytes=raw_patch)
-        _runtime._git(run, "add", "--", path)
-        raise
-    commit = _runtime._git(run, "rev-parse", "HEAD").decode().strip()
-    tree = _runtime._git(run, "archive", "--format=tar", "HEAD")
-    run["events"].append(f"accepted:{path}")
-    return {
-        "accepted_commit": commit,
-        "accepted_tree_sha256": _runtime._sha256(tree),
-        "checks": [
-            "assigned_path_scope",
-            "base_commit",
-            "patch_sha256",
-            "patch_applies",
-            "forbidden_source_markers",
-            "configured_build",
-        ],
-    }
+    return _candidate.accept_sealed_candidate(run, candidate, manifest, path, raw_patch)

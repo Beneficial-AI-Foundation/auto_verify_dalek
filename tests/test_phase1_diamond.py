@@ -273,11 +273,12 @@ def _role_test_lock(private_key):
 
 
 class _FixtureProxy:
-    def __init__(self, fixture):
+    def __init__(self, fixture, *, parallel_proofs=False):
         self.entries = {
             entry["request"]["request_id"]: entry for entry in fixture["entries"]
         }
         self.seen = []
+        self.proof_barrier = threading.Barrier(2) if parallel_proofs else None
 
     def __call__(self, request):
         request_id = request["request_id"]
@@ -287,14 +288,16 @@ class _FixtureProxy:
         ):
             raise AssertionError(f"request mismatch for {request_id}")
         self.seen.append(request_id)
+        if self.proof_barrier is not None and request_id in {"proof-left-001", "proof-right-001"}:
+            self.proof_barrier.wait(timeout=5)
         return copy.deepcopy(entry["response"]), copy.deepcopy(entry["receipt"])
 
 
 class _Seams:
     def __init__(self, root, fixture):
-        self.root = root
+        self.root = root.resolve()
         self.fixture = fixture
-        self.project = root / "work" / "diamond"
+        self.project = self.root / "work" / "diamond"
         self.accepted_commits = []
         self.feasibility_calls = 0
 
@@ -618,7 +621,7 @@ class TracerTests(unittest.TestCase):
     def test_one_command_crosses_the_sealed_tracer_and_needs_clean_pass(self):
         with tempfile.TemporaryDirectory() as tmp:
             seams = _Seams(Path(tmp), self.fixture)
-            proxy = _FixtureProxy(self.fixture)
+            proxy = _FixtureProxy(self.fixture, parallel_proofs=True)
             with (
                 mock.patch.object(worker, "prepare_run", seams.prepare),
                 mock.patch.object(worker, "run_probes", seams.run_probes),
@@ -692,7 +695,7 @@ class TracerTests(unittest.TestCase):
         for mutation in mutations:
             with self.subTest(mutation=mutation), tempfile.TemporaryDirectory() as tmp:
                 seams = _Seams(Path(tmp), self.fixture)
-                proxy = _FixtureProxy(self.fixture)
+                proxy = _FixtureProxy(self.fixture, parallel_proofs=True)
                 verify = seams.verify
                 if mutation == "verifier":
                     def verify(run, expected):
@@ -1113,13 +1116,21 @@ class GenericFeasibilityTests(unittest.TestCase):
         completed = subprocess.CompletedProcess(
             args=[], returncode=0, stdout=b"\nAUTOFV_FEASIBILITY_EXIT=0\n", stderr=b""
         )
-        run = {"lock": experiment.load_toolchain_lock(), "volume": "managed-volume"}
-        with mock.patch.object(worker_runtime, "_docker", return_value=completed) as docker:
+        from tests.test_contract_feasibility import fixture
+        sources = fixture()[2]
+        run = {"lock": experiment.load_toolchain_lock(), "volume": "managed-volume", "base_commit": "a" * 40}
+        def git_source(_run, *args):
+            return b'archive-fixture' if args[0] == 'archive' else sources[args[-1].split(':', 1)[1]].encode()
+        def boundary(*args, **kwargs):
+            return completed if any('lake env lean' in arg for arg in args) else subprocess.CompletedProcess(args, 0, b'a' * 64 + b'\n', b'')
+        with mock.patch.object(worker_runtime, "_git", side_effect=git_source), mock.patch.object(worker_runtime, "_docker", side_effect=boundary) as docker:
             outcome = worker.check_contract_feasibility(run, request)
-        source = docker.call_args.kwargs["input_bytes"].decode()
+        source = next(call.kwargs['input_bytes'].decode() for call in docker.call_args_list if any('lake env lean' in arg for arg in call.args))
         self.assertEqual(outcome["status"], "passed")
         self.assertIn("import Numbers.Increment", source)
-        self.assertIn(records["probe:Numbers.increment"]["canon"], source)
+        self.assertIn("#check (∀ (n : Nat), Numbers.increment n = n + 1 : Prop)", source)
+        self.assertIn("example (_autofv_dep_0", source)
+        self.assertNotIn("sorry", source)
         self.assertNotIn("Diamond", source)
 
 

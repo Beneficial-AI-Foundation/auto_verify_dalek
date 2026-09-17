@@ -8,6 +8,7 @@ import os
 import re
 import threading
 import time
+from functools import wraps
 from decimal import Decimal
 from pathlib import Path
 from typing import Any, TypedDict
@@ -75,6 +76,7 @@ CHECKPOINT_RUN_FIELDS = (
 CHECKPOINT_STATE_FIELDS = (
     "graph",
     "contracts",
+    "frozen_contract_baseline",
     "receipts",
     "accepted",
     "working",
@@ -101,6 +103,9 @@ CHECKPOINT_STATE_FIELDS = (
     "pending_model_exchanges",
     "model_exchanges",
     "role_progress",
+    "role_tool_outcomes",
+    "lane_snapshots",
+    "lane_initialization",
     "inflight_transition",
     "receipt_rejections",
     "compiler_assumptions",
@@ -116,6 +121,7 @@ class _RunState(TypedDict, total=False):
     run_round: Any
     graph: dict[str, Any]
     contracts: dict[str, Any]
+    frozen_contract_baseline: dict[str, Any] | None
     receipts: list[dict[str, Any]]
     cost: Decimal
     accepted: dict[str, Any]
@@ -147,6 +153,9 @@ class _RunState(TypedDict, total=False):
     pending_model_exchanges: dict[str, dict[str, Any]]
     model_exchanges: dict[str, dict[str, Any]]
     role_progress: dict[str, dict[str, Any]]
+    role_tool_outcomes: dict[str, dict[str, Any]]
+    lane_snapshots: dict[str, dict[str, Any]]
+    lane_initialization: dict[str, Any]
     inflight_transition: dict[str, Any]
     wall_seconds_used: Decimal
     finalization_reserve_seconds: Decimal
@@ -155,6 +164,20 @@ class _RunState(TypedDict, total=False):
     checkpoint_enabled: bool
     recovery_source: str
     _accept_lock: Any
+    _state_lock: Any
+
+
+def _state_lock(state: _RunState):
+    """One reentrant lock protects reservations, reductions and checkpoint snapshots."""
+    return state.setdefault("_state_lock", threading.RLock())
+
+
+def _serialized(method):
+    @wraps(method)
+    def locked(state, *args, **kwargs):
+        with _state_lock(state):
+            return method(state, *args, **kwargs)
+    return locked
 
 
 def _canonical_sha256(value: Any) -> str:
@@ -170,6 +193,10 @@ def _node_update(state: _RunState, **values: Any) -> dict[str, Any]:
         "pending_model_exchanges",
         "model_exchanges",
         "role_progress",
+        "role_tool_outcomes",
+        "lane_snapshots",
+        "lane_initialization",
+        "frozen_contract_baseline",
         "receipt_rejections",
         "immutable_graph_sha256",
         "target_states",
@@ -188,6 +215,7 @@ def _finalization_reserve(config: dict[str, Any]) -> Decimal:
     return min(Decimal("5.000000"), Decimal(config["max_wall_seconds"]) / 10)
 
 
+@_serialized
 def _charge_wall(state: _RunState) -> Decimal:
     now = time.monotonic_ns()
     started = state.get("wall_started_monotonic_ns")
@@ -328,6 +356,7 @@ def _checkpoint_payload(state: _RunState, transition: str, sequence: int) -> dic
     return {**body, "content_sha256": _canonical_sha256(body)}
 
 
+@_serialized
 def _write_checkpoint(state: _RunState, transition: str) -> Path:
     """Durably replace one complete checkpoint without trusting directory order."""
     sequence = int(state.get("checkpoint_sequence", 0)) + 1
@@ -500,6 +529,29 @@ def _resume_record_matches(observed: dict[str, Any], expected: dict[str, Any]) -
     )
 
 
+def _complete_acceptance_dependencies(state: _RunState, transition: dict[str, Any]) -> None:
+    """Publish every scheduler consequence of the same accepted tree transition."""
+    node = transition["node"]
+    commit = transition["accepted"]["accepted_commit"]
+    patch_hash = transition.get("patch_sha256")
+    if patch_hash is not None:
+        state.setdefault("proof_patch_sha256", {})[node] = patch_hash
+    target = state.setdefault("target_states", {}).setdefault(node, {})
+    target.update({"phase": "proof", "status": "accepted", "accepted_commit": commit})
+    releases = state.setdefault("release_events", [])
+    if not any(item.get("node") == node and item.get("accepted_commit") == commit for item in releases):
+        releases.append({"sequence": len(releases) + 1, "node": node,
+                         "accepted_commit": commit})
+    for lane in state.get("lanes", []):
+        if lane.get("node") == node:
+            lane["status"] = "accepted"
+            lane.pop("requeueable", None)
+    owners = state.setdefault("file_owners", {})
+    for path in [path for path, owner in owners.items() if owner == node]:
+        owners.pop(path)
+    _event_once(state["run"], f"candidate_{transition['status']}:{transition['request_id']}")
+
+
 def _recover_checkpoint_state(
     state: _RunState,
     run: dict[str, Any],
@@ -560,10 +612,8 @@ def _recover_checkpoint_state(
                         ],
                     }
                 )
-            for lane in state.get("lanes", []):
-                if lane.get("node") == node:
-                    lane["status"] = "accepted"
-                    lane.pop("requeueable", None)
+            state.setdefault("run", run)
+            _complete_acceptance_dependencies(state, inflight)
         else:
             processed = state.setdefault("processed_candidate_sha256", [])
             if digest in processed:

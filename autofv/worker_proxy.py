@@ -653,8 +653,22 @@ def configure_provider(
     tool_schemas: Any,
     project_root: Path | None = None,
     config_home: Path | None = None,
+    preflight_path: str | Path | None = None,
+    suite_artifact_path: str | Path | None = None,
+    preflight_max_age_seconds: int | None = None,
 ) -> dict[str, Any]:
-    """Bind one trusted upstream without retaining its credential in run state."""
+    """Bind the upstream, then optionally authorize spend from sealed evidence.
+
+    Binding-only setup permits collecting the identity-bound preflight evidence;
+    dispatch remains closed. After releasing that service, setup can reconstruct
+    the same pinned binding with all evidence arguments, as on recovery.
+    Neither caller-supplied identity digests nor a green flag can authorize spend.
+    """
+    evidence_args = (preflight_path, suite_artifact_path, preflight_max_age_seconds)
+    if any(value is not None for value in evidence_args) and any(
+        value is None for value in evidence_args
+    ):
+        raise WorkerError("provider preflight setup arguments are incomplete", run=run)
     try:
         public = provider_transport.configure_provider(
             run,
@@ -666,6 +680,13 @@ def configure_provider(
     except provider_transport.ProviderError as exc:
         raise WorkerError(str(exc), run=run) from exc
     try:
+        if preflight_path is not None:
+            provider_service.load_preflight_authorization(
+                run,
+                preflight_path=preflight_path,
+                suite_artifact_path=suite_artifact_path,
+                max_age_seconds=preflight_max_age_seconds,
+            )
         provider_service.start(run)
     except provider_transport.ProviderError as exc:
         provider_config.abort_configuration(run)

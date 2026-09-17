@@ -12,6 +12,8 @@ from typing import Any
 
 from . import model, worker
 from .contracts import canonical_json_bytes
+from .role_journal import tool_outcome
+from .run_state import _state_lock, _checkpoint_if_enabled
 
 
 _HEX_SHA256 = re.compile(r"^[0-9a-f]{64}$")
@@ -471,8 +473,6 @@ async def run_role_conversation(
     trusted_job = validate_role_job(job)
     run = state.get("run")
     events = run.setdefault("events", []) if isinstance(run, dict) else None
-    if events is not None:
-        events.append(f"role:{trusted_job['role']}:started")
     spec = role_conversation_spec(trusted_job)
     progress = state.setdefault("role_progress", {})
     identity = spec["conversation_id"]
@@ -487,14 +487,24 @@ async def run_role_conversation(
         prior_progress.get(key) != value for key, value in progress_identity.items()
     ):
         raise worker.WorkerError("resumed role progress identity changed")
-    progress[identity] = {
-        **progress_identity,
-        "status": "running",
-        "last_turn": int((prior_progress or {}).get("last_turn", 0)),
-        "last_request_id": (prior_progress or {}).get("last_request_id"),
-        "last_tool": (prior_progress or {}).get("last_tool"),
-        "candidate_sha256": (prior_progress or {}).get("candidate_sha256"),
-    }
+    with _state_lock(state):
+        progress[identity] = {
+            **progress_identity,
+            "status": "running",
+            "last_turn": int((prior_progress or {}).get("last_turn", 0)),
+            "last_request_id": (prior_progress or {}).get("last_request_id"),
+            "last_tool": (prior_progress or {}).get("last_tool"),
+            "candidate_sha256": (prior_progress or {}).get("candidate_sha256"),
+            "events": (prior_progress or {}).get("events", []),
+        }
+    def event(key, value):
+        with _state_lock(state):
+            recorded = progress[identity]["events"]
+            if key not in recorded:
+                recorded.append(key)
+                if events is not None:
+                    events.append(value)
+    event("started", f"role:{trusted_job['role']}:started")
     schemas = capture_tool_schemas(tools)
     messages: list[dict[str, Any]] = initial_role_messages(spec)
     context_hashes = set(trusted_job["input_hashes"])
@@ -512,9 +522,10 @@ async def run_role_conversation(
 
     for turn in range(1, _MAX_ROLE_TURNS + 1):
         request_id = f"lane-{spec['conversation_id'][:16]}-{turn:03d}"
-        progress[identity].update(
-            {"last_turn": turn, "last_request_id": request_id}
-        )
+        with _state_lock(state):
+            progress[identity].update(
+                {"last_turn": turn, "last_request_id": request_id}
+            )
         response, _receipt = model._model_request(
             state,
             request_id=request_id,
@@ -535,22 +546,27 @@ async def run_role_conversation(
             call_kind = "schema_correction"
             continue
 
-        result = invoke_lane_tool(tools, name, arguments)
-        if events is not None:
-            events.append(f"lane_tool:{trusted_job['role']}:{name}")
-        progress[identity]["last_tool"] = name
+        result = tool_outcome(
+            state, identity, request_id, {"name": name, "arguments": arguments},
+            lambda: invoke_lane_tool(tools, name, arguments),
+            lane_node=trusted_job["declaration"],
+        )
+        event(f"tool:{turn}", f"lane_tool:{trusted_job['role']}:{name}")
+        with _state_lock(state):
+            progress[identity]["last_tool"] = name
         if name == "submit_candidate":
             candidate = validate_candidate(result, trusted_job)
-            progress[identity].update(
-                {
-                    "status": "completed",
-                    "candidate_sha256": hashlib.sha256(
-                        canonical_json_bytes(candidate)
-                    ).hexdigest(),
-                }
-            )
-            if events is not None:
-                events.append(f"role:{trusted_job['role']}:candidate")
+            with _state_lock(state):
+                progress[identity].update(
+                    {
+                        "status": "completed",
+                        "candidate_sha256": hashlib.sha256(
+                            canonical_json_bytes(candidate)
+                        ).hexdigest(),
+                    }
+                )
+            event("candidate", f"role:{trusted_job['role']}:candidate")
+            _checkpoint_if_enabled(state, f"role:{identity}:completed")
             return candidate
         tool_call_id = f"{request_id}-tool"
         messages.extend(

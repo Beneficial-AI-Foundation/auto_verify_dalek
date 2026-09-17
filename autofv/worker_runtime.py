@@ -591,6 +591,58 @@ def _runtime_argv(
     )
 
 
+def _candidate_runtime_argv(
+    lock: dict[str, Any], volume: str, lane_id: str, *command: str
+) -> tuple[str, ...]:
+    """Run diagnostics with only one private candidate worktree mounted."""
+    if (
+        not isinstance(lane_id, str)
+        or re.fullmatch(r"[a-z0-9][a-z0-9._-]{0,127}", lane_id) is None
+    ):
+        raise WorkerError("candidate lane identity is invalid")
+    return (
+        "run",
+        "--rm",
+        "-i",
+        "--pull",
+        "never",
+        "--runtime",
+        lock["tools"]["runsc"]["runtime_name"],
+        "--read-only",
+        "--network",
+        "none",
+        "--user",
+        AGENT_UID,
+        "--workdir",
+        "/candidate",
+        "--security-opt",
+        "no-new-privileges",
+        "--cap-drop",
+        "ALL",
+        "--cgroupns",
+        "private",
+        "--pids-limit",
+        "256",
+        "--cpus",
+        "2",
+        "--memory",
+        "2g",
+        "--tmpfs",
+        "/tmp:rw,noexec,nosuid,nodev,size=64m,mode=1777",
+        "--tmpfs",
+        "/home/autofv/.cache:rw,noexec,nosuid,nodev,size=64m,mode=1777",
+        "--env",
+        "CARGO_NET_OFFLINE=true",
+        "--mount",
+        (
+            f"type=volume,src={volume},dst=/candidate,"
+            f"volume-subpath=lanes/{lane_id}/work,volume-nocopy"
+        ),
+        lock["image"]["image_digest"],
+        *command,
+    )
+
+
 def _git(run: dict[str, Any], *argv: str, input_bytes: bytes | None = None) -> bytes:
     if not _resource_matches("volume", run["volume"], run):
         raise WorkerError("run volume identity is missing or mismatched")

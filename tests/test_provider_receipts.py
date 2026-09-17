@@ -33,6 +33,7 @@ from autofv import (
     worker_artifacts,
     worker_proxy,
 )
+from tests.test_provider_service import _install_trusted_authorization_fixture
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -53,6 +54,9 @@ def _run(root: Path) -> dict:
         "volume": "provider-receipt-volume",
         "base_commit": "1" * 40,
         "lock": copy.deepcopy(LOCK),
+        "image_digest": LOCK["image"]["image_digest"],
+        "worker_inventory_sha256": "2" * 64,
+        "native_decide_policy_sha256": LOCK["native_decide_policy_sha256"],
         "fixed_proxy_sha256": _sha(LOCK["fixed_proxy"]),
         "events": [],
     }
@@ -264,6 +268,7 @@ class ProviderReceiptTests(unittest.TestCase):
                 env_path=_environment(root, api_key, endpoint=endpoint),
                 tool_schemas=_tools(),
             )
+        _install_trusted_authorization_fixture(run, root)
         messages = _messages()
         request = _request(messages)
         worker_proxy.stage_provider_messages(run, request, messages)

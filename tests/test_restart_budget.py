@@ -541,7 +541,7 @@ def _run_with_limit(root: Path, *, max_wall_seconds=300, max_cost_usd="1.000000"
         encoding="utf-8",
     )
     seams = _Seams(root, FIXTURE)
-    proxy = _FixtureProxy(FIXTURE)
+    proxy = _FixtureProxy(FIXTURE, parallel_proofs=True)
     patches = (
         mock.patch.object(worker, "prepare_run", seams.prepare),
         mock.patch.object(worker, "run_probes", side_effect=seams.run_probes),

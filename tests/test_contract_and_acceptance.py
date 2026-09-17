@@ -271,6 +271,7 @@ class ContractRepairTests(unittest.TestCase):
             "frozen_targets": [ROOT],
             "selected_nodes": [first, ROOT, second],
             "term_dependencies": [[ROOT, first], [ROOT, second]],
+            "source_paths": {first: "Alpha.lean", ROOT: "Graph/Root.lean", second: "Beta.lean"},
         }
 
         def statement(node, version):

@@ -27,12 +27,21 @@ from tests.test_provider_receipts import (
     _reply,
     _tools,
 )
+from tests.test_provider_service import _install_trusted_authorization_fixture
 from tests.test_restart_budget import ENTRIES, LOCK, _checkpoint_state
 from tests.test_results_evidence import _provider_attempt
 
 
 def _provider_state(root: Path) -> tuple[dict, Path]:
     state = _checkpoint_state(root)
+    state["run"].setdefault("image_digest", LOCK["image"]["image_digest"])
+    state["run"].setdefault("worker_inventory_sha256", "2" * 64)
+    state["run"].setdefault(
+        "native_decide_policy_sha256", LOCK["native_decide_policy_sha256"]
+    )
+    state["run"].setdefault(
+        "base_commit", state["run"]["accepted"]["accepted_commit"]
+    )
     state["run"]["fixed_proxy_sha256"] = provider_config.canonical_sha256(
         LOCK["fixed_proxy"]
     )
@@ -41,6 +50,7 @@ def _provider_state(root: Path) -> tuple[dict, Path]:
         provider_config.configure_provider(
             state["run"], env_path=environment, tool_schemas=_tools()
         )
+    _install_trusted_authorization_fixture(state["run"], root)
     state["pending_model_exchanges"] = {}
     state["model_exchanges"] = {}
     state["receipt_rejections"] = []

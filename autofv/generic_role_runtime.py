@@ -4,9 +4,10 @@ from __future__ import annotations
 
 import asyncio
 import hashlib
+from copy import deepcopy
 from typing import Any
 
-from . import agent_lane, worker
+from . import agent_lane, role_journal, worker
 from .contracts import ContractError, ContractInconclusive
 from .diamond import (
     _candidate_record,
@@ -28,6 +29,8 @@ from .run_state import (
     _event_once,
     _external_call,
     _node_update,
+    _state_lock,
+    _checkpoint_if_enabled,
 )
 
 
@@ -82,6 +85,15 @@ def _run_role_lane(
         input_hashes=input_hashes,
         role_context=role_context,
     )
+    def durable_mutation(invoke):
+        result = invoke()
+        # Snapshot is durable before the journal declares a non-idempotent tool
+        # completed. A crash between those writes stays ambiguous/fail-closed.
+        receipt = worker.save_lane_snapshot(state["run"], _worker_lane(lane))
+        with _state_lock(state):
+            state.setdefault("lane_snapshots", {})[lane["node"]] = receipt
+        return result
+
     tools = agent_lane.build_lane_tools(
         job,
         read_file=lambda relative: worker.read_lane_file(
@@ -90,9 +102,11 @@ def _run_role_lane(
         search_files=lambda query: worker.search_lane_files(
             state["run"], lane, query, job["allowed_read_paths"]
         ),
-        edit_assigned=lambda patch: worker.edit_lane_file(state["run"], lane, patch),
-        check_lean=lambda: worker.check_lane(
-            state["run"], lane, state["manifest"]
+        edit_assigned=lambda patch: durable_mutation(
+            lambda: worker.edit_lane_file(state["run"], lane, patch)
+        ),
+        check_lean=lambda: durable_mutation(
+            lambda: worker.check_lane(state["run"], lane, state["manifest"])
         ),
     )
     return asyncio.run(agent_lane.run_role_conversation(state, job, tools))
@@ -191,14 +205,43 @@ def run_generic_role_path(state: _RunState) -> dict[str, Any]:
             if any(lane.get(key) != expected[key] for key in expected):
                 raise ContractError("resumed role lane identity changed")
         lanes = previous_lanes
-        _event_once(run, "proof_lanes:reused")
     else:
         lanes = expected_lanes
+        # Persist deterministic identities before any mkdir/worktree side effect.
+        run["lanes"] = state["lanes"] = lanes
+        state["lane_initialization"] = {
+            "descriptor_sha256": _canonical_sha256(expected_lanes), "phase": "preparing",
+        }
+        _checkpoint_if_enabled(state, "lanes:initialize:before")
+    initialization = state.get("lane_initialization")
+    if initialization is not None and (
+        initialization.get("descriptor_sha256") != _canonical_sha256(expected_lanes)
+        or initialization.get("phase") not in {"preparing", "ready"}
+    ):
+        raise ContractError("lane initialization identity changed")
+    if initialization is not None and initialization["phase"] == "preparing":
         _external_call(
             state,
             "lanes:prepare-role-lanes",
             lambda: worker.prepare_lanes(run, [_worker_lane(lane) for lane in lanes]),
         )
+        for lane in lanes:
+            receipt = worker.save_lane_snapshot(run, _worker_lane(lane), initial=True)
+            prior = state.setdefault("lane_snapshots", {}).get(lane["node"])
+            if prior is not None and prior != receipt:
+                raise worker.WorkerError("initial lane snapshot receipt changed")
+            state["lane_snapshots"][lane["node"]] = receipt
+            _checkpoint_if_enabled(state, f"lanes:initialize:{lane['lane_id']}:snapshot")
+        initialization["phase"] = "ready"
+        _checkpoint_if_enabled(state, "lanes:initialize:ready")
+    elif previous_lanes:
+        role_journal.reconcile_lane_snapshots(state)
+        for lane in lanes:
+            receipt = state.get("lane_snapshots", {}).get(lane["node"])
+            if receipt is None:
+                raise worker.WorkerError("lane snapshot checkpoint is missing")
+            worker.restore_lane_snapshot(run, _worker_lane(lane), expected_receipt=receipt)
+        _event_once(run, "proof_lanes:reused")
     for lane in lanes:
         if lane.get("status") != "accepted":
             lane["status"] = "running"
@@ -238,6 +281,24 @@ def run_generic_role_path(state: _RunState) -> dict[str, Any]:
     )
 
     policy_sha256 = run["native_decide_policy_sha256"]
+    previous_contracts = state.get("contracts")
+    previous_frozen = state.get("frozen_contract_baseline")
+    if previous_frozen is not None and (
+        not isinstance(previous_frozen, dict)
+        or previous_frozen.get("proof_barrier") != "frozen"
+    ):
+        raise ContractError("invalid frozen contract replay baseline")
+    if (
+        previous_frozen is None
+        and isinstance(previous_contracts, dict)
+        and previous_contracts.get("proof_barrier") == "frozen"
+    ):
+        # Replay itself checkpoints. Retain the authenticated frozen identity
+        # independently of the draft so another interruption cannot turn an
+        # already completed repair into a fresh revision of accepted proofs.
+        previous_frozen = deepcopy(previous_contracts)
+        state["frozen_contract_baseline"] = previous_frozen
+        _checkpoint_if_enabled(state, "contracts:replay:before")
     contracts = {
         "attempts": [],
         "provisional": {},
@@ -387,12 +448,18 @@ def run_generic_role_path(state: _RunState) -> dict[str, Any]:
             )
             contracts["attempts"].append(record)
             contracts["provisional"][declaration] = record
-            _revise_contract_fingerprint(
-                state,
-                node,
-                record["model_fingerprint"],
-                graph=graph,
-            )
+            if previous_frozen is not None:
+                # Replaying an authenticated completed review reconstructs the
+                # same contract, not a new revision of already accepted proofs.
+                if previous_frozen["node_fingerprints"].get(node) != record["model_fingerprint"]:
+                    raise ContractError("resumed frozen contract revision changed")
+                contracts["node_fingerprints"][node] = record["model_fingerprint"]
+                contracts["revision_lineage"] = list(previous_frozen["revision_lineage"])
+                contracts["invalidated_fingerprints"] = list(previous_frozen["invalidated_fingerprints"])
+            else:
+                _revise_contract_fingerprint(
+                    state, node, record["model_fingerprint"], graph=graph,
+                )
         outcome = feasibility("build:generic-reviewed-consumer")
     if outcome["status"] != "passed":
         raise ContractInconclusive(outcome["diagnostic"])
@@ -406,13 +473,21 @@ def run_generic_role_path(state: _RunState) -> dict[str, Any]:
         contracts["node_fingerprints"].values()
     )
     contracts["proof_barrier"] = "frozen"
+    if previous_frozen is not None and any(
+        contracts[key] != previous_frozen[key]
+        for key in ("frozen", "frozen_fingerprints", "node_fingerprints")
+    ):
+        raise ContractError("resumed frozen contracts changed")
+    # Clear explicitly for graph state propagation, only once the exact frozen
+    # identity is restored. Until then every durable replay checkpoint retains it.
+    state["frozen_contract_baseline"] = None
     _event_once(run, "statements_frozen")
 
     for node, target in state["target_states"].items():
         target.update(
             {
                 "phase": "proof",
-                "status": "pending",
+                "status": "accepted" if node in state.get("accepted_nodes", []) else "pending",
                 "contract_fingerprint": contracts["node_fingerprints"][node],
             }
         )
@@ -567,20 +642,6 @@ def run_generic_role_path(state: _RunState) -> dict[str, Any]:
                 "proof_repair_exhausted:" + str(transition.get("reason")),
             )
             return False
-        job["lane"]["status"] = "accepted"
-        state["proof_patch_sha256"][node] = hashlib.sha256(
-            selected["patch"].encode()
-        ).hexdigest()
-        target = state["target_states"][node]
-        target["status"] = "accepted"
-        target["accepted_commit"] = transition["accepted_commit"]
-        state["release_events"].append(
-            {
-                "sequence": len(state["release_events"]) + 1,
-                "node": node,
-                "accepted_commit": transition["accepted_commit"],
-            }
-        )
         return True
 
     accepted_nodes = _schedule_proofs(

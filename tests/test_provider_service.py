@@ -25,6 +25,7 @@ from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
 
 from autofv import (
     experiment,
+    preflight,
     provider_config,
     provider_receipts,
     provider_service,
@@ -92,6 +93,9 @@ def _run(root: Path) -> dict:
         "volume": "provider-service-volume",
         "base_commit": "1" * 40,
         "lock": copy.deepcopy(LOCK),
+        "image_digest": LOCK["image"]["image_digest"],
+        "worker_inventory_sha256": "2" * 64,
+        "native_decide_policy_sha256": LOCK["native_decide_policy_sha256"],
         "fixed_proxy_sha256": _sha(LOCK["fixed_proxy"]),
         "events": [],
     }
@@ -113,6 +117,84 @@ def _request(messages: list[dict]) -> dict:
             f"provider-service-run-001\0{request_id}\0{role}\0bounded-v1".encode()
         ).hexdigest(),
     }
+
+
+def _install_trusted_authorization_fixture(run: dict, root: Path) -> None:
+    binding = run["provider_binding"]
+    identities = {
+        "image_digest": run["image_digest"],
+        "runtime_sha256": run["worker_inventory_sha256"],
+        "native_decide_policy_sha256": run["native_decide_policy_sha256"],
+        "tool_schema_sha256": binding["tool_schema_sha256"],
+        "provider_identity_sha256": binding["binding_sha256"],
+    }
+    artifact_dir = root / "retained-checks"
+    artifact_dir.mkdir(exist_ok=True)
+    groups = {}
+    for prefix, names in (
+        ("case", experiment.DETERMINISTIC_PREFLIGHT_CASES),
+        ("gate", experiment.DETERMINISTIC_PREFLIGHT_GATES),
+    ):
+        paths = {}
+        for index, name in enumerate(names):
+            path = artifact_dir / f"{prefix}-{index:02d}.json"
+            preflight.write_check_outcome(
+                path,
+                check_name=name,
+                check_id=f"tests.test_provider_service::{prefix}_{name}",
+                status="passed",
+                origin="trusted_runner",
+                execution_class="sealed_runtime",
+                applicability="applicable_sealed_runtime",
+                identities=identities,
+                source_head=run["base_commit"],
+            )
+            paths[name] = path
+        groups[prefix] = paths
+    suite_path = root / "retained-suite.json"
+    preflight.write_retained_suite_result(
+        suite_path,
+        case_outcomes=groups["case"],
+        gate_outcomes=groups["gate"],
+        identities=identities,
+        source_head=run["base_commit"],
+        completed_at_unix=int(time.time()),
+    )
+    suite_sha256 = hashlib.sha256(suite_path.read_bytes()).hexdigest()
+
+    def evidence(prefix: str, name: str) -> dict[str, str]:
+        check_id = f"tests.test_provider_service::{prefix}_{name}"
+        return experiment.named_check_evidence(
+            check_id,
+            groups[prefix][name].read_bytes(),
+            suite_sha256=suite_sha256,
+            evidence_kind="sealed_runtime",
+            applicability="applicable_sealed_runtime",
+        )
+
+    preflight_path = root / "deterministic-preflight.json"
+    experiment.write_deterministic_preflight(
+        preflight_path,
+        suite_sha256=suite_sha256,
+        case_evidence={
+            name: evidence("case", name)
+            for name in experiment.DETERMINISTIC_PREFLIGHT_CASES
+        },
+        gate_evidence={
+            name: evidence("gate", name)
+            for name in experiment.DETERMINISTIC_PREFLIGHT_GATES
+        },
+        identities=identities,
+        zero_secret_scan_sha256="7" * 64,
+        source_head=run["base_commit"],
+        completed_at_unix=int(time.time()),
+    )
+    provider_service.load_preflight_authorization(
+        run,
+        preflight_path=preflight_path,
+        suite_artifact_path=suite_path,
+        max_age_seconds=300,
+    )
 
 
 def _reply() -> dict:
@@ -204,6 +286,7 @@ class ProviderServiceTests(unittest.TestCase):
             worker_proxy.configure_provider(
                 run, env_path=_environment(root), tool_schemas=_tools()
             )
+        _install_trusted_authorization_fixture(run, root)
         messages = _messages()
         request = _request(messages)
         worker_proxy.stage_provider_messages(run, request, messages)

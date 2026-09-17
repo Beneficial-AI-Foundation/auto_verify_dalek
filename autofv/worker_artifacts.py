@@ -9,10 +9,16 @@ import os
 import re
 import secrets
 import stat
+import subprocess
 import tarfile
 from pathlib import Path, PurePosixPath
 from typing import Any, Iterable
 
+from .candidate_lane import _sealed_lane_exec, _sealed_source_digest
+from .lane_snapshot import (
+    _capture_sealed_source_root,
+    _restore_sealed_source_root,
+)
 from .worker_runtime import (
     AGENT_VM,
     CLAIM_CONTAINER,
@@ -31,6 +37,7 @@ from .worker_runtime import (
     _labels,
     _lima,
     _owned_worker,
+    _candidate_runtime_argv,
     _runtime_argv,
     _sha256,
     claim_worker,
@@ -973,16 +980,30 @@ def inspect_resume_state(
     run: dict[str, Any], manifest: dict[str, Any]
 ) -> dict[str, Any]:
     """Verify the managed Git HEAD before the controller trusts resumed state."""
+    if run.get("execution_tier") == "simulation":
+        project = Path(run["project_dir"])
+        def local_git(*arguments: str) -> bytes:
+            completed = subprocess.run(
+                ("git", *arguments), cwd=project, capture_output=True, check=True
+            )
+            return completed.stdout
+        try:
+            status = local_git("status", "--porcelain").strip()
+            local_git("diff", "--check")
+            commit = local_git("rev-parse", "HEAD").decode().strip()
+            tree = local_git("archive", "--format=tar", "HEAD")
+        except (OSError, subprocess.CalledProcessError) as exc:
+            return {"valid": False, "dirty": None, "reason": str(exc)[:1000]}
+        return {"valid": True, "dirty": bool(status), "accepted_commit": commit,
+                "accepted_tree_sha256": _sha256(tree),
+                "evidence_classification": "simulation_static"}
     try:
         instance = _owned_worker(run)
         if instance is None:
             _restore_export(run)
         elif _docker("volume", "inspect", run["volume"], check=False).returncode:
             _restore_export(run)
-        status = _git(run, "status", "--porcelain").decode().strip()
-        _docker(*_runtime_argv(run["lock"], run["volume"], *manifest["verify"]))
-        commit = _git(run, "rev-parse", "HEAD").decode().strip()
-        tree = _git(run, "archive", "--format=tar", "HEAD")
+        status, commit, tree = _inspect_sealed_resume_source(run, manifest)
     except WorkerError as exc:
         return {"valid": False, "dirty": None, "reason": str(exc)[:1000]}
     return {
@@ -991,6 +1012,67 @@ def inspect_resume_state(
         "accepted_commit": commit,
         "accepted_tree_sha256": _sha256(tree),
     }
+
+
+def _inspect_sealed_resume_source(
+    run: dict[str, Any], manifest: dict[str, Any]
+) -> tuple[str, str, bytes]:
+    """Compile an exact working-source copy without exposing retained authority."""
+    verify = manifest.get("verify") if isinstance(manifest, dict) else None
+    if (
+        not isinstance(verify, list)
+        or not verify
+        or any(not isinstance(item, str) or not item for item in verify)
+    ):
+        raise WorkerError("resume verification command is unavailable")
+    status = _git(run, "status", "--porcelain").decode().strip()
+    commit = _git(run, "rev-parse", "HEAD").decode().strip()
+    tree = _git(run, "archive", "--format=tar", "HEAD")
+    source, guard_path = _capture_sealed_source_root(
+        run, "/volume/work/project"
+    )
+    lane_id = f"resume-{commit[:16]}-{secrets.token_hex(8)}"
+    root = f"/volume/lanes/{lane_id}/work"
+    _docker(
+        *_runtime_argv(
+            run["lock"],
+            run["volume"],
+            "sh",
+            "-eu",
+            "-c",
+            'test ! -e "$1"; mkdir -p "${1%/*}"; mkdir "$1"',
+            "sh",
+            root,
+        )
+    )
+    _restore_sealed_source_root(run, root, source)
+    source_digest = _sealed_source_digest(run, root, guard_path)
+    _docker(
+        *_candidate_runtime_argv(
+            run["lock"],
+            run["volume"],
+            lane_id,
+            *_sealed_lane_exec(
+                ".", guard_path, *verify, detach_git=True
+            ),
+        )
+    )
+    if _sealed_source_digest(run, root, guard_path) != source_digest:
+        raise WorkerError("resume verification modified isolated source")
+    source_after, _guard_after = _capture_sealed_source_root(
+        run, "/volume/work/project"
+    )
+    status_after = _git(run, "status", "--porcelain").decode().strip()
+    commit_after = _git(run, "rev-parse", "HEAD").decode().strip()
+    tree_after = _git(run, "archive", "--format=tar", "HEAD")
+    if (
+        source_after != source
+        or status_after != status
+        or commit_after != commit
+        or tree_after != tree
+    ):
+        raise WorkerError("canonical resume source changed during verification")
+    return status, commit, tree
 
 
 def restore_accepted(

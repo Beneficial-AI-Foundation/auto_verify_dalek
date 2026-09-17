@@ -16,7 +16,13 @@ from pathlib import Path
 from typing import Any
 
 from .contracts import ContractError, canonical_json_bytes
-from . import provider_config, provider_messages, provider_receipts, provider_transport
+from . import (
+    preflight,
+    provider_config,
+    provider_messages,
+    provider_receipts,
+    provider_transport,
+)
 
 
 JOURNAL_SCHEMA = "autofv-provider-dispatch/v1"
@@ -287,6 +293,36 @@ def validate_pinned_preflight(path: str | Path, *, run: dict[str, Any]):
     return provider_receipts.validate_preflight(
         path, expected_binding=provider_transport.pinned_public_binding(run)
     )
+
+
+def load_preflight_authorization(
+    run: dict[str, Any],
+    *,
+    preflight_path: str | Path,
+    suite_artifact_path: str | Path,
+    max_age_seconds: int,
+) -> dict[str, Any]:
+    """Load sealed evidence and bind it to the process-held provider identity."""
+    binding = provider_config.provider_binding(run)
+    if binding is None:
+        raise provider_transport.ProviderError("provider binding is unavailable")
+    try:
+        body, record = preflight.load_provider_evidence(
+            run,
+            binding.public,
+            preflight_path=preflight_path,
+            suite_artifact_path=suite_artifact_path,
+            max_age_seconds=max_age_seconds,
+        )
+    except ContractError as exc:
+        raise provider_transport.ProviderError(
+            "provider preflight evidence loading failed"
+        ) from exc
+    authorization = {**body, "auth": provider_receipts._sign(binding, body)}
+    run["deterministic_preflight"] = authorization
+    run["deterministic_preflight_sha256"] = record["preflight_sha256"]
+    run["deterministic_suite_sha256"] = record["suite_sha256"]
+    return copy.deepcopy(authorization)
 
 
 def _validate_completed_exchange(
@@ -587,6 +623,12 @@ def dispatch(
             _write(path, existing)
         elif existing["messages_sha256"] != messages_sha256:
             raise provider_transport.ProviderError("provider journal message identity mismatch")
+        try:
+            preflight.authorize_provider_action(run, binding.public)
+        except (ContractError, provider_transport.ProviderError) as exc:
+            raise provider_transport.ProviderError(
+                "provider preflight authorization failed"
+            ) from exc
         dispatched = _record(binding, request, messages_sha256, "dispatched")
         _write(path, dispatched)
         _remember(run, dispatched)

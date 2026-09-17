@@ -766,10 +766,44 @@ class DeterministicPreflightTests(unittest.TestCase):
         suite_sha256 = hashlib.sha256(
             b"python -m unittest selected deterministic suite: all passed"
         ).hexdigest()
+        identities = {
+            "image_digest": "sha256:" + "1" * 64,
+            "runtime_sha256": "2" * 64,
+            "native_decide_policy_sha256": "3" * 64,
+            "tool_schema_sha256": "4" * 64,
+            "provider_identity_sha256": "5" * 64,
+        }
+
+        def outcome(check_name, check_id, execution_class, applicability):
+            body = {
+                "schema": preflight.CHECK_OUTCOME_SCHEMA,
+                "check_name": check_name,
+                "check_id": check_id,
+                "status": "passed",
+                "required": True,
+                "origin": "synthetic_fixture",
+                "execution_class": execution_class,
+                "applicability": applicability,
+                "identities": identities,
+                "source_head": "8" * 40,
+            }
+            value = {
+                **body,
+                "outcome_sha256": hashlib.sha256(
+                    experiment.canonical_json_bytes(body)
+                ).hexdigest(),
+            }
+            return experiment.canonical_json_bytes(value) + b"\n"
+
         cases = {
             name: experiment.named_check_evidence(
                 f"tests.deterministic::{name}",
-                f"PASS tests.deterministic::{name}\n".encode(),
+                outcome(
+                    name,
+                    f"tests.deterministic::{name}",
+                    "unittest",
+                    "simulated_static",
+                ),
                 suite_sha256=suite_sha256,
                 evidence_kind="unittest",
                 applicability="simulated_static",
@@ -779,7 +813,20 @@ class DeterministicPreflightTests(unittest.TestCase):
         gates = {
             name: experiment.named_check_evidence(
                 f"tests.isolation::{name}",
-                f"PASS tests.isolation::{name}\n".encode(),
+                outcome(
+                    name,
+                    f"tests.isolation::{name}",
+                    (
+                        "sealed_runtime"
+                        if name in {"fixed_egress_path", "distinct_terminal_verifier"}
+                        else "static_policy"
+                    ),
+                    (
+                        "applicable_sealed_runtime"
+                        if name in {"fixed_egress_path", "distinct_terminal_verifier"}
+                        else "simulated_static"
+                    ),
+                ),
                 suite_sha256=suite_sha256,
                 evidence_kind=(
                     "sealed_runtime"
@@ -793,13 +840,6 @@ class DeterministicPreflightTests(unittest.TestCase):
                 ),
             )
             for name in experiment.DETERMINISTIC_PREFLIGHT_GATES
-        }
-        identities = {
-            "image_digest": "sha256:" + "1" * 64,
-            "runtime_sha256": "2" * 64,
-            "native_decide_policy_sha256": "3" * 64,
-            "tool_schema_sha256": "4" * 64,
-            "provider_identity_sha256": "5" * 64,
         }
         return suite_sha256, cases, gates, identities
 
@@ -883,7 +923,7 @@ class DeterministicPreflightTests(unittest.TestCase):
                         max_age_seconds=300,
                     )
 
-    def test_external_provider_boundary_requires_current_suite_authorization(self):
+    def test_external_provider_boundary_rejects_unsigned_self_authorization(self):
         suite_sha256, cases, gates, identities = self._inputs()
         with tempfile.TemporaryDirectory() as tmp:
             path = Path(tmp) / "preflight.json"
@@ -906,19 +946,12 @@ class DeterministicPreflightTests(unittest.TestCase):
                     "max_age_seconds": 300,
                 }
             }
-            with mock.patch("autofv.preflight.time.time", return_value=1_700_000_120):
-                authorized = preflight.authorize_external_action(run)
-
-            self.assertEqual(authorized, record)
-            self.assertEqual(
-                run["deterministic_preflight_sha256"], record["preflight_sha256"]
-            )
-            run["deterministic_preflight"]["suite_sha256"] = "9" * 64
             with (
                 mock.patch("autofv.preflight.time.time", return_value=1_700_000_120),
-                self.assertRaises(experiment.ContractError),
+                self.assertRaisesRegex(experiment.ContractError, "authenticated"),
             ):
                 preflight.authorize_external_action(run)
+            self.assertNotIn("deterministic_preflight_sha256", run)
 
     def test_model_provider_action_fails_before_runner_without_preflight(self):
         runner = mock.Mock()

@@ -30,6 +30,7 @@ from tests.test_provider_receipts import (
     _reply,
     _tools,
 )
+from tests.test_provider_service import _install_trusted_authorization_fixture
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -503,6 +504,9 @@ def _provider_attempt(root: Path, *, provider_reports_cost: bool = False):
         provider_config.configure_provider(
             run, env_path=environment, tool_schemas=_tools()
         )
+    if "base_commit" not in run:
+        run["base_commit"] = run["accepted"]["accepted_commit"]
+    _install_trusted_authorization_fixture(run, root)
     run["proxy_base"] = "http://127.0.0.1:19082"
     run.pop("proxy_policy_sha256", None)
     run.pop("proxy_policy_receipt", None)

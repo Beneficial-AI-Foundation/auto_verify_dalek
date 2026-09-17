@@ -32,6 +32,8 @@ from .run_state import (
     _check_wall_budget,
     _checkpoint_if_enabled,
     _event_once,
+    _state_lock,
+    _serialized,
 )
 
 try:
@@ -97,6 +99,7 @@ def _message_bound_hashes(input_hashes: list[str], messages: Any) -> list[str]:
     return [*input_hashes, message_sha256]
 
 
+@_serialized
 def _validate_model_exchange(
     state: _RunState,
     request: dict[str, Any],
@@ -162,6 +165,7 @@ def _validate_model_exchange(
     )
 
 
+@_serialized
 def _record_model_rejection(
     state: _RunState,
     request: dict[str, Any],
@@ -191,6 +195,7 @@ def _record_model_rejection(
         _checkpoint_if_enabled(state, f"receipt:{request.get('request_id')}:rejected")
 
 
+@_serialized
 def _reserve_provider_calls(
     state: _RunState,
     calls: list[tuple[dict[str, Any], Any, str]],
@@ -275,26 +280,24 @@ def _invoke_model(
     provider_bound = isinstance(state["run"].get("provider_binding"), dict)
     if provider_bound:
         preflight.authorize_external_action(state["run"])
-    if checkpoint:
-        _check_budget(state)
-        _reserve_provider_calls(state, [(request, messages, call_kind)])
-        _checkpoint_if_enabled(state, f"model:{request['request_id']}:before")
-    pending = state.setdefault("pending_model_exchanges", {})
-    reservation = pending.get(request["request_id"])
-    if reservation is None:
-        reservation = {
-            "request": request,
-            "call_kind": call_kind,
-            "dispatch_state": "reserved",
-        }
-        pending[request["request_id"]] = reservation
-    elif reservation.get("dispatch_state") in {"dispatched", "ambiguous"} and not provider_bound:
-        raise ContractError(
-            f"model request requires authenticated reconciliation: {request['request_id']}"
-        )
-    reservation["dispatch_state"] = "dispatched"
-    if checkpoint:
-        _checkpoint_if_enabled(state, f"model:{request['request_id']}:dispatched")
+    with _state_lock(state):
+        if checkpoint:
+            _check_budget(state)
+            _reserve_provider_calls(state, [(request, messages, call_kind)])
+            _checkpoint_if_enabled(state, f"model:{request['request_id']}:before")
+        pending = state.setdefault("pending_model_exchanges", {})
+        reservation = pending.get(request["request_id"])
+        if reservation is None:
+            reservation = {"request": request, "call_kind": call_kind,
+                           "dispatch_state": "reserved"}
+            pending[request["request_id"]] = reservation
+        elif reservation.get("dispatch_state") in {"dispatched", "ambiguous"} and not provider_bound:
+            raise ContractError(
+                f"model request requires authenticated reconciliation: {request['request_id']}"
+            )
+        reservation["dispatch_state"] = "dispatched"
+        if checkpoint:
+            _checkpoint_if_enabled(state, f"model:{request['request_id']}:dispatched")
     runner = state["run_round"]
     try:
         if runner is agentproc.run_round:
@@ -316,14 +319,16 @@ def _invoke_model(
         else:
             exchange = runner(request)
     except asyncio.CancelledError:
-        reservation["dispatch_state"] = "ambiguous"
+        with _state_lock(state):
+            reservation["dispatch_state"] = "ambiguous"
         raise
     except Exception:
-        if not provider_bound:
-            pending.pop(request["request_id"], None)
-        if checkpoint:
-            _charge_wall(state)
-            _checkpoint_if_enabled(state, f"model:{request['request_id']}:failed")
+        with _state_lock(state):
+            if not provider_bound:
+                pending.pop(request["request_id"], None)
+            if checkpoint:
+                _charge_wall(state)
+                _checkpoint_if_enabled(state, f"model:{request['request_id']}:failed")
         raise
     try:
         response, receipt, _ = _validate_model_exchange(
@@ -341,22 +346,24 @@ def _invoke_model(
         )
         raise
     if checkpoint:
-        _charge_wall(state)
-        existing = state.setdefault("pending_model_exchanges", {}).get(
-            request["request_id"], {}
-        )
-        state["pending_model_exchanges"][request["request_id"]] = {
-            **existing,
-            "request": request,
-            "response": response,
-            "receipt": receipt,
-            "call_kind": call_kind,
-            "dispatch_state": "completed",
-        }
-        _checkpoint_if_enabled(state, f"model:{request['request_id']}:after")
+        with _state_lock(state):
+            _charge_wall(state)
+            existing = state.setdefault("pending_model_exchanges", {}).get(
+                request["request_id"], {}
+            )
+            state["pending_model_exchanges"][request["request_id"]] = {
+                **existing,
+                "request": request,
+                "response": response,
+                "receipt": receipt,
+                "call_kind": call_kind,
+                "dispatch_state": "completed",
+            }
+            _checkpoint_if_enabled(state, f"model:{request['request_id']}:after")
     return response, receipt
 
 
+@_serialized
 def _accept_model_exchange(
     state: _RunState,
     request: dict[str, Any],
@@ -465,76 +472,63 @@ def _model_request(
     from role context and receipted tool results rather than checkpoint a transcript.
     """
     classified_kind = "explicit" if call_kind is None else call_kind
-    completed = state.setdefault("model_exchanges", {}).get(request_id)
-    pending = state.setdefault("pending_model_exchanges", {}).get(request_id)
-    stored = completed or pending
     try:
-        stored_sequence = stored["request"]["sequence"] if stored is not None else None
-    except (KeyError, TypeError) as exc:
-        raise ContractError(f"stored model request is invalid: {request_id}") from exc
-    try:
-        request = _model_envelope(
-            state,
-            request_id=request_id,
-            role=role,
-            input_hashes=_message_bound_hashes(input_hashes, messages),
-            batch_id=batch_id,
-            sequence=stored_sequence,
-        )
-        if completed is not None:
-            if completed.get("request") != request:
-                raise ContractError(f"resumed model request changed: {request_id}")
-        if pending is not None and pending.get("request") != request:
-            raise ContractError(f"pending model request changed: {request_id}")
-        _bind_model_call_kind(
-            state,
-            request_id,
-            classified_kind,
-            stored,
-            record_event=call_kind is not None,
-        )
-        if completed is not None:
-            return completed["response"], completed["receipt"]
-        if pending is not None:
-            if isinstance(pending.get("response"), dict) and isinstance(
-                pending.get("receipt"), dict
-            ):
-                return _accept_model_exchange(
-                    state, request, pending["response"], pending["receipt"]
-                )
-            return _accept_model_exchange(
-                state,
-                request,
-                *_invoke_model(
-                    state,
-                    request,
-                    call_kind=classified_kind,
-                    messages=messages,
-                ),
+        with _state_lock(state):
+            completed = state.setdefault("model_exchanges", {}).get(request_id)
+            pending = state.setdefault("pending_model_exchanges", {}).get(request_id)
+            stored = completed or pending
+            try:
+                sequence = stored["request"]["sequence"] if stored is not None else None
+            except (KeyError, TypeError) as exc:
+                raise ContractError(f"stored model request is invalid: {request_id}") from exc
+            request = _model_envelope(
+                state, request_id=request_id, role=role,
+                input_hashes=_message_bound_hashes(input_hashes, messages),
+                batch_id=batch_id, sequence=sequence,
             )
+            if stored is not None and stored.get("request") != request:
+                raise ContractError(f"resumed model request changed: {request_id}")
+            _bind_model_call_kind(state, request_id, classified_kind, stored,
+                                  record_event=call_kind is not None)
+            if completed is not None:
+                return completed["response"], completed["receipt"]
+            if pending is not None and isinstance(pending.get("response"), dict) and isinstance(pending.get("receipt"), dict):
+                return _accept_model_exchange(
+                    state, request, pending["response"], pending["receipt"],
+                    allow_out_of_order=True,
+                )
+            # Allocate sequence and budget atomically before allowing another
+            # lane to reserve; transport itself runs without this lock.
+            _check_budget(state)
+            _reserve_provider_calls(state, [(request, messages, classified_kind)])
+            state["pending_model_exchanges"].setdefault(request_id, {
+                "request": request, "call_kind": classified_kind,
+                "dispatch_state": "reserved",
+            })
+            _checkpoint_if_enabled(state, f"model:{request_id}:before")
         return _accept_model_exchange(
             state,
             request,
             *_invoke_model(
                 state, request, call_kind=classified_kind, messages=messages
             ),
+            allow_out_of_order=True,
         )
     except asyncio.CancelledError:
-        incomplete = state.setdefault("pending_model_exchanges", {}).get(request_id)
-        if isinstance(incomplete, dict) and incomplete.get("dispatch_state") in {
-            "reserved",
-            "dispatched",
-        }:
-            incomplete["dispatch_state"] = "ambiguous"
-        _event_once(
-            state["run"], f"model:{request_id}:reserved:{classified_kind}"
-        )
-        _event_once(state["run"], f"model:{request_id}:cancelled")
-        try:
-            _charge_wall(state)
-            _checkpoint_if_enabled(state, f"model:{request_id}:cancelled")
-        except Exception:
-            pass
+        with _state_lock(state):
+            incomplete = state.setdefault("pending_model_exchanges", {}).get(request_id)
+            if isinstance(incomplete, dict) and incomplete.get("dispatch_state") in {
+                "reserved",
+                "dispatched",
+            }:
+                incomplete["dispatch_state"] = "ambiguous"
+            _event_once(state["run"], f"model:{request_id}:reserved:{classified_kind}")
+            _event_once(state["run"], f"model:{request_id}:cancelled")
+            try:
+                _charge_wall(state)
+                _checkpoint_if_enabled(state, f"model:{request_id}:cancelled")
+            except Exception:
+                pass
         raise
 
 

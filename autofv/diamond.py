@@ -39,6 +39,8 @@ from .run_state import (
     _event_once,
     _external_call,
     _node_update,
+    _state_lock,
+    _complete_acceptance_dependencies,
 )
 
 
@@ -254,7 +256,7 @@ def _checkpoint_candidate(
 ) -> dict[str, Any]:
     """Deduplicate and gate one candidate under the sole canonical writer."""
     lock = state.setdefault("_accept_lock", threading.Lock())
-    with lock:
+    with lock, _state_lock(state):
         response = candidate.get("response")
         body = {
             key: value
@@ -382,6 +384,7 @@ def _checkpoint_candidate(
             "node": candidate["node"],
             "base_commit": candidate["base_commit"],
             "previous_accepted_commit": current["accepted_commit"],
+            "patch_sha256": candidate["patch_sha256"],
         }
         try:
             accepted = _external_call(
@@ -438,9 +441,7 @@ def _checkpoint_candidate(
             "accepted_commit": accepted["accepted_commit"],
         }
         state.setdefault("candidate_receipts", []).append(receipt)
-        state["run"]["events"].append(
-            f"candidate_{status}:{candidate['request_id']}"
-        )
+        _complete_acceptance_dependencies(state, state["inflight_transition"])
         state.pop("inflight_transition", None)
         _checkpoint_if_enabled(
             state, f"candidate:{candidate['request_id']}:accepted"
@@ -892,12 +893,6 @@ def _agent_loop(state: _RunState) -> dict[str, Any]:
             target["accepted_commit"] = transition["accepted_commit"]
             if state["file_owners"].get(lane["assigned_path"]) == node:
                 state["file_owners"].pop(lane["assigned_path"])
-            release = {
-                "sequence": len(state["release_events"]) + 1,
-                "node": node,
-                "accepted_commit": transition["accepted_commit"],
-            }
-            state["release_events"].append(release)
             return
         if state["file_owners"].get(lane["assigned_path"]) == node:
             state["file_owners"].pop(lane["assigned_path"])

@@ -45,19 +45,39 @@ Test Rust-to-Lean later as a separate experiment.
 
 ### DEC-04 — How do we choose the top-level set `T`?
 
-**Status:** ACCEPTED for now (2026-09-01, Zhang-Liao; hardening deferred)
+**Status:** ACCEPTED for now (2026-09-11, Zhang-Liao; revised from the
+api-top rule of 2026-09-01; hardening deferred)
 
 **Question:** Which graph rule and which API/trait targets should define `T`?
 
 **Decision:** `T` is a fixed checked-in list, pinned by the DEC-12 tree hash —
-no re-derivation at run time. The public-API face is the api-top list
-(`harness/api_top.py`: Rust `pub` visibility × API-module membership ×
-extracted-and-specced set from `functions.json`; API functions, constants,
-and trait instances reported separately), cross-checked against
-CryptoProver's published list (exclusions recorded in
-`api_top_specs.json` `cryptoprover_crosscheck`) and manually audited
-(2026-08-24, `debug_top_api.md`). On that basis the claim **may** say
-"all public APIs", citing the audit.
+no re-derivation at run time. `T` is the **lean-top** list in the graph sense
+(`harness/lean_top.py` → `.verilib/top_level_funs.json`): every extracted
+function (one `Funs.lean` def per Rust function, from `functions.json`) that
+no *other* extracted function depends on. Edge rules: trait-instance records
+are transparent (whoever uses the record uses each method it bundles,
+transitively through supertraits), `P_loop` bodies fold into `P`, self edges
+are ignored; records and loop bodies are not candidates. Result (2026-09-11):
+134 of 338 candidates. Independently recomputed from the `Funs.lean` text
+(not from the `functions.json` edges) with an identical result; hand-written
+Lean (`FunsExternal.lean`, `Aux.lean`) references none of the 134
+(`external_lean_refs` is empty for every row), so no caller hides outside the
+graph.
+
+The list carries Rust visibility per row (`inherent_pub` 25 — 3 of them
+backend functions in non-exported modules — `inherent_pub_crate` 6,
+`inherent_private` 1, `trait_impl` 65, `operator_forwarder` 37) as a label
+only; it is **not** an API judgement. The claim may therefore say "every
+extracted function that nothing else in the extraction calls". It may **not**
+say "all public APIs": public functions with an internal caller
+(`CompressedEdwardsY::decompress`, `EdwardsPoint::mul_base`,
+`EdwardsPoint::to_montgomery`, …) are outside `T`, and public functions cut
+by the extraction features (`hash_to_curve`, `random`, `from_hash`,
+`vartime_double_scalar_mul_basepoint`, …) are outside the extraction
+altogether. The api-top list (`harness/api_top.py`,
+`.verilib/api_top_specs.json`, CryptoProver cross-check, 2026-08-24 audit in
+`debug_top_api.md`) is kept as a companion catalogue of the public-API face,
+not as the definition of `T`.
 
 **Deferred hardening** (see `top_func.md`): closure-coverage check over the
 spec call graph, independent edge recomputation via `probe-lean`, golden

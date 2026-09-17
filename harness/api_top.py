@@ -9,6 +9,16 @@ Judgement (DEC-04 follow-up):
     spec-budget experiments. A spec belongs here iff its target function is part
     of the crate's user-facing API surface, regardless of internal callers.
 
+Membership rule (module path of `rust_name`, NOT the `source` file):
+  * the owning module is one of lib.rs's `pub mod`s (PUB_MODULES); this pulls
+    in the macro-generated operator impls whose `source` is macros.rs;
+  * `edwards::affine` is excluded -- `mod affine;` is private and AffinePoint
+    is never re-exported;
+  * items reached through a `pub use ...::*` glob re-export (REEXPORTS) count
+    as members of the re-exporting module, subject to their own visibility;
+  * a method or trait impl is public only if its self type is a `pub` type of
+    a pub module (PUB_TYPES); `impl ... for ristretto::ProjectivePoint` is not.
+
 Each api-top row carries `caller_anchored`: true iff some OTHER spec'd function
 (directly or transitively through spec-less helpers) calls the target. Those
 rows are a distinct experimental condition when deleted: an agent can satisfy
@@ -33,14 +43,24 @@ import sys
 REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 RUST_SRC_ROOT = os.path.expanduser("~/curve25519-dalek-lean-verify")
 
-API_MODULES = {
+CRATE = "curve25519_dalek"
+# lib.rs `pub mod`s; everything else (backend, field, window, macros,
+# diagnostics) is pub(crate) or private and therefore not user-facing.
+PUB_MODULES = {"scalar", "montgomery", "edwards", "ristretto", "constants",
+               "traits"}
+# private submodules of pub modules (`mod affine;` in edwards.rs, no pub use)
+EXCLUDED_PREFIXES = (f"{CRATE}::edwards::affine::",)
+# `pub use crate::backend::serial::u64::constants::*;` in constants.rs
+REEXPORTS = {f"{CRATE}::backend::serial::u64::constants::": "constants"}
+# Rust files whose `pub struct/enum/type` declarations define the pub types
+PUB_MODULE_FILES = [
     "curve25519-dalek/src/edwards.rs",
-    "curve25519-dalek/src/edwards/affine.rs",
     "curve25519-dalek/src/ristretto.rs",
     "curve25519-dalek/src/montgomery.rs",
     "curve25519-dalek/src/scalar.rs",
     "curve25519-dalek/src/constants.rs",
-}
+    "curve25519-dalek/src/traits.rs",
+]
 
 # CryptoProver's scouted genuine-API list (spec_gen_experiment_design.md, the
 # named examples only -- the doc elides with "..."), used as a cross-check.
@@ -59,6 +79,43 @@ CRYPTOPROVER_NAMED = {
 }
 
 TRAIT_IMPL_RE = re.compile(r"\{.+ for .+\}")
+SELF_TYPE_TRAIT_RE = re.compile(r" for (?:&[^ (]* ?\()?([\w:]+)")
+SELF_TYPE_INHERENT_RE = re.compile(r"\{([\w:]+)\}")
+PUB_TYPE_RE = re.compile(r"^\s*pub\s+(?:struct|enum|type)\s+(\w+)", re.M)
+
+
+def owning_module(rust_name):
+    """The lib.rs module an item is visible under, or None."""
+    if rust_name.startswith(EXCLUDED_PREFIXES):
+        return None
+    for prefix, module in REEXPORTS.items():
+        if rust_name.startswith(prefix):
+            return module
+    parts = rust_name.split("::")
+    if len(parts) < 2 or parts[0] != CRATE:
+        return None
+    return parts[1] if parts[1] in PUB_MODULES else None
+
+
+def self_type(rust_name):
+    """Last path segment of the impl's self type; None for a free item."""
+    if "{" not in rust_name:
+        return None
+    m = (SELF_TYPE_TRAIT_RE.search(rust_name)
+         if TRAIT_IMPL_RE.search(rust_name)
+         else SELF_TYPE_INHERENT_RE.search(rust_name))
+    return m.group(1).split("::")[-1] if m else None
+
+
+def load_pub_types():
+    types = set()
+    for rel in PUB_MODULE_FILES:
+        try:
+            with open(os.path.join(RUST_SRC_ROOT, rel)) as fh:
+                types.update(PUB_TYPE_RE.findall(fh.read()))
+        except OSError:
+            pass
+    return types
 
 
 def load_probe():
@@ -119,12 +176,31 @@ def visibility(entry):
     lo = max(0, int(m.group(1)) - 3)          # signature may start a bit above
     hi = min(len(lines), int(m.group(2)))
     window = "".join(lines[lo:hi])
+    # prefer the declaration carrying this item's own name: a 3-line lookback
+    # otherwise picks up a neighbour (`pub const BASEPOINT_ORDER` sits right
+    # above `pub(crate) const BASEPOINT_ORDER_PRIVATE`)
+    name = re.escape(entry["rust_name"].split("::")[-1])
+    own = re.search(r"^\s*(pub\s*\((?:crate|super)\)|pub)?\s*"
+                    r"(?:unsafe\s+)?(?:const\s+fn|fn|static|const)\s+"
+                    + name + r"\b", window, re.M)
+    if own:
+        kw = own.group(0)
+        is_fn = re.search(r"\bfn\s", kw) is not None
+        if own.group(1) is None:
+            return "private" if is_fn else "private-const"
+        if own.group(1) == "pub":
+            return "pub" if is_fn else "pub-const"
+        return "pub(crate)" if is_fn else "pub(crate)-const"
     if re.search(r"^\s*pub\s*\((crate|super)\)\s+(const\s+)?fn", window, re.M):
         return "pub(crate)"
     if re.search(r"^\s*pub\s+(const\s+)?fn", window, re.M):
         return "pub"
     if re.search(r"^\s*pub\s+(static|const)\b", window, re.M):
         return "pub-const"
+    if re.search(r"^\s*pub\s*\((crate|super)\)\s+(static|const)\b", window, re.M):
+        return "pub(crate)-const"
+    if re.search(r"^\s*(static|const)\s+\w+\s*:", window, re.M):
+        return "private-const"
     if re.search(r"^\s*(const\s+)?fn", window, re.M):
         return "private"
     return "unknown"
@@ -139,10 +215,12 @@ def main():
     specd_fns = set(s2f.values())
     anchored = caller_anchored_set(kinds, deps, specd_fns)
 
+    pub_types = load_pub_types()
+
     # one entry per lean_name, preferring the specified twin
     by_name = {}
     for e in functions:
-        if e["source"] not in API_MODULES:
+        if owning_module(e["rust_name"]) is None:
             continue
         # NOTE: is_ignored is a verilib display flag, NOT an exclusion --
         # mul_clamped / is_torsion_free are specified APIs with is_ignored=true.
@@ -152,14 +230,21 @@ def main():
         if cur is None or (e["specified"] and not cur["specified"]):
             by_name[e["lean_name"]] = e
 
-    rows, unspecced = [], []
+    rows, unspecced, private_type = [], [], []
     for e in by_name.values():
         is_trait = bool(TRAIT_IMPL_RE.search(e["rust_name"]))
         vis = visibility(e)
         public = is_trait or vis in ("pub", "pub-const")
         if not public:
             continue
+        ty = self_type(e["rust_name"])
+        # blanket `impl<T> Trait for T` in traits.rs is public; a concrete
+        # self type must itself be a pub type of a pub module
+        if ty is not None and ty != "T" and ty not in pub_types:
+            private_type.append(e["rust_name"])
+            continue
         row = {
+            "module": owning_module(e["rust_name"]),
             "rust_name": e["rust_name"],
             "lean_name": e["lean_name"],
             "source": f"{e['source']}:{e['lines']}",
@@ -198,18 +283,29 @@ def main():
                             for ln in lean_names)
             unspec_hit = any(f".{module}." in ln and ln.endswith("." + n)
                              for ln in unspec_names)
+            private_hit = any(f"::{module}::" in pn.replace(".", "::")
+                              and pn.endswith("::" + n)
+                              for pn in (x.lower() for x in private_type))
             status = ("in api-top" if probe_hit else
                       "extracted, NO SPEC" if unspec_hit else
+                      "extracted, private self type" if private_hit else
                       "not extracted")
             crosscheck.append({"module": module, "fn": n, "status": status})
 
     out = {
-        "method": ("user-facing pub API surface (pub fn / pub const / trait "
-                   "impl in the five API modules) intersected with the "
-                   "extracted+specified set; caller_anchored = some other "
-                   "spec'd function reaches it as callee through spec-less "
-                   "helpers"),
-        "api_modules": sorted(API_MODULES),
+        "method": ("user-facing pub API surface: item's owning module (by "
+                   "rust_name path, incl. macro-generated impls and the "
+                   "constants glob re-export) is a lib.rs `pub mod`, "
+                   "edwards::affine excluded, item is pub fn / pub const / "
+                   "trait impl, and its self type is a pub type; intersected "
+                   "with the extracted+specified set; caller_anchored = some "
+                   "other spec'd function reaches it as callee through "
+                   "spec-less helpers"),
+        "pub_modules": sorted(PUB_MODULES),
+        "excluded_prefixes": list(EXCLUDED_PREFIXES),
+        "reexports": REEXPORTS,
+        "pub_types": sorted(pub_types),
+        "excluded_private_self_type": sorted(private_type),
         "rust_source_root": RUST_SRC_ROOT,
         "count": len(rows),
         "api_top": rows,
@@ -221,6 +317,9 @@ def main():
 
     md = ["# api-top：面向用户的 pub API 面 ∩ 已抽取已 spec 集合", "",
           f"来源: `functions.json` + Rust 源码可见性 + probe 调用图；共 **{len(rows)}** 条。",
+          f"成员规则：按 `rust_name` 模块路径归属 lib.rs 的 `pub mod`（{', '.join(sorted(PUB_MODULES))}），",
+          "含 macros.rs 展开的运算符 impl 与 constants 的 glob 重导出；`edwards::affine` 私有，排除；",
+          "方法 / trait impl 的 self 类型必须是 pub 类型（ristretto::ProjectivePoint 等排除）。",
           "`caller_anchored = yes` 表示存在其他带 spec 的函数（经无 spec helper 传递）调用它——",
           "删除这类 spec 时全绿不等于合格，必须靠 `synth_eq_human` 评分。", ""]
     for cat, title in [("api", "公开 API 函数"), ("const", "公开常量"),
@@ -251,7 +350,8 @@ def main():
           f"{sum(1 for r in rows if r['category']=='trait-instance')} trait, "
           f"{sum(1 for r in rows if r['category']=='const')} const); "
           f"caller_anchored: {sum(1 for r in rows if r['caller_anchored'])}; "
-          f"public-unspecced: {len(unspecced)}")
+          f"public-unspecced: {len(unspecced)}; "
+          f"dropped (private self type): {len(private_type)}")
 
 
 if __name__ == "__main__":

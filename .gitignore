@@ -65,3 +65,5 @@ prmopt_log.md
 # gets hashes and summaries only.
 ledger/
 # .verilib/
+# Generated agent-facing bundle (harness/build_without_internal_spec.py) and SCIP index
+data/

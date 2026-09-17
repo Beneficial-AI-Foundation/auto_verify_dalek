@@ -1,0 +1,4 @@
+# Force the serial backend. build.rs defaults to simd on x86_64, but the
+# simd backend needs curve25519-dalek-derive, which is removed from Cargo.toml.
+[build]
+rustflags = ['--cfg', 'curve25519_dalek_backend="serial"']

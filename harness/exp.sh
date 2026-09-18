@@ -1,20 +1,26 @@
 #!/usr/bin/env bash
 # Experiment runner. `bash harness/exp.sh` with no arguments runs the experiment
 # configured below, start to finish:
-#   exp branch  ->  driver.py --commit  ->  ONE squashed commit on main
+#   exp branch  ->  $SCRIPT --commit  ->  ONE squashed commit on main
 # Raw per-fill history is kept at tag exp-raw/<name>. main history is never rewritten.
 #
 # ======================= EDIT HERE: the experiment to run =======================
+# SCRIPT: harness/driver.py         many targets in this checkout (--zones/--path/--limit)
+#         harness/prove_top_spec.py ONE top spec of the bundle dalek-top-spec-only (--target)
+SCRIPT=harness/prove_top_spec.py
 EXP_NAME=""                       # empty = top-spec-<YYYYmmdd-HHMM>
-EXP_MSG="top-spec round: Scalar, claude-sonnet-5, limit 3"   # the one commit on main
+EXP_MSG="top-spec round: ProjectivePoint identity_spec (3 internal specs), claude-sonnet-5"
 DRIVER_ARGS=(
-  --zones specs,aux
-  --path Curve25519Dalek/Specs/Scalar/Scalar
-  --jobs 2
+  --target curve25519_dalek.IdentityCurveModelsProjectivePoint.identity_spec
   --model claude-sonnet-5
-  --limit 3
-  # --dry-run                     # no fee; only check which targets match
+  --rounds 3
+  --max-turns 40                  # callee specs (ONE, ZERO, from_limbs) go in the same file
+  # --dry-run                     # no fee; print the pick and the prompt
 )
+# Previous driver.py configuration, kept for reference:
+#   SCRIPT=harness/driver.py
+#   EXP_MSG="top-spec round: Scalar, claude-sonnet-5, limit 3"
+#   DRIVER_ARGS=(--zones specs,aux --path Curve25519Dalek/Specs/Scalar/Scalar --jobs 2 --model claude-sonnet-5 --limit 3)
 # DEC-20: the checkout is already comment-free (harness/strip_comments.py strip
 # --in-place; last commented tree: commit 66753cb), so no --strip-comments here.
 # ================================================================================
@@ -25,9 +31,10 @@ DRIVER_ARGS=(
 #                                      keep raw history as tag exp-raw/<name>, delete branch
 #   harness/exp.sh abort               drop the exp branch, return to main untouched
 #   harness/exp.sh status              show current exp branch and commits ahead of main
-#   harness/exp.sh run [-n name] [-m msg] -- <driver.py args>
-#                                      same as no-arg run but with explicit args.
-#                                      driver failure leaves you on the exp branch (finish/abort by hand)
+#   harness/exp.sh run [-n name] [-m msg] [-s script] -- <script args>
+#                                      same as no-arg run but with explicit args
+#                                      (-s defaults to $SCRIPT above).
+#                                      script failure leaves you on the exp branch (finish/abort by hand)
 set -euo pipefail
 
 MAIN=main
@@ -44,7 +51,7 @@ require_clean() {
 }
 
 if [[ $# -eq 0 ]]; then
-  set -- run ${EXP_NAME:+-n "$EXP_NAME"} -m "$EXP_MSG" -- "${DRIVER_ARGS[@]}"
+  set -- run ${EXP_NAME:+-n "$EXP_NAME"} -m "$EXP_MSG" -s "$SCRIPT" -- "${DRIVER_ARGS[@]}"
 fi
 
 case "${1:-}" in
@@ -83,33 +90,35 @@ case "${1:-}" in
     ;;
   run)
     shift
-    name=""; msg=""
+    name=""; msg=""; script="$SCRIPT"
     while [[ $# -gt 0 ]]; do
       case "$1" in
         -n) name="$2"; shift 2 ;;
         -m) msg="$2"; shift 2 ;;
+        -s) script="$2"; shift 2 ;;
         --) shift; break ;;
-        *) echo "unknown option $1 (driver args go after --)" >&2; exit 1 ;;
+        *) echo "unknown option $1 (script args go after --)" >&2; exit 1 ;;
       esac
     done
-    [[ $# -gt 0 ]] || { echo "usage: exp.sh run [-n name] [-m msg] -- <driver.py args>" >&2; exit 1; }
+    [[ $# -gt 0 ]] || { echo "usage: exp.sh run [-n name] [-m msg] [-s script] -- <script args>" >&2; exit 1; }
+    [[ -f "$script" ]] || { echo "script not found: $script" >&2; exit 1; }
     name="${name:-top-spec-$(date +%Y%m%d-%H%M)}"
     "$0" start "$name"
     set +e
-    python3 harness/driver.py --commit "$@"
+    python3 "$script" --commit "$@"
     rc=$?
     set -e
     n="$(git rev-list --count "$MAIN..HEAD")"
     if [[ $rc -ne 0 ]]; then
-      echo "driver exited $rc; still on exp/$name with $n commit(s)." >&2
+      echo "$script exited $rc; still on exp/$name with $n commit(s)." >&2
       echo "inspect, then: harness/exp.sh finish \"...\"   or   harness/exp.sh abort" >&2
       exit $rc
     fi
     if [[ "$n" == 0 ]]; then
-      echo "driver accepted nothing; dropping exp/$name"
+      echo "$script accepted nothing; dropping exp/$name"
       git switch -q "$MAIN"; git branch -q -D "exp/$name"; exit 0
     fi
-    "$0" finish "${msg:-exp $name: $n accepted fill(s) — driver.py $*}"
+    "$0" finish "${msg:-exp $name: $n accepted fill(s) — $script $*}"
     ;;
   status)
     if on_exp; then

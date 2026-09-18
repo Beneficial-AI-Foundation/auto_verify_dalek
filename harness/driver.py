@@ -306,6 +306,11 @@ FEEDBACK = {
         "warning count did not decrease — the target is still unproven. "
         "Keep working on the same declaration. All original rules still "
         "apply."),
+    "rejected_no_spec": (
+        "The harness gate rejected this round: the file compiles without "
+        "`sorry`, but it contains no theorem tagged `@[progress]` whose "
+        "statement mentions the target function. Add and prove such a "
+        "specification. All original rules still apply."),
 }
 
 
@@ -537,14 +542,18 @@ def run_rounds(prompt, tid, path, before_counts, args, env, settings_path,
             # session next round; a finished proof is accepted as usual.
             outcome, detail = gate(work, path, before_counts,
                                    args.build_timeout, g1_base,
-                                   g2=getattr(args, "g2", True))
+                                   g2=getattr(args, "g2", True),
+                                   mode=getattr(args, "gate_mode", "fill"),
+                                   callee=getattr(args, "gate_callee", None))
             detail["max_turns_exhausted"] = True
         elif rc != 0:
             outcome, detail = "agent_error", {"error": f"exit {rc}"}
         else:
             outcome, detail = gate(work, path, before_counts,
                                    args.build_timeout, g1_base,
-                                   g2=getattr(args, "g2", True))
+                                   g2=getattr(args, "g2", True),
+                                   mode=getattr(args, "gate_mode", "fill"),
+                                   callee=getattr(args, "gate_callee", None))
 
         m = END_REASON_RE.search(result.get("result") or "")
         end_reason = m.group(1).upper() if m else None
@@ -647,7 +656,8 @@ def stmt_fingerprints(modules, work, timeout=600):
         if "error" in r or not r.get("found"):
             raise RuntimeError(f"StmtCanon: {r}")
         fps.setdefault(r["module"], {})[r["name"]] = {
-            "kind": r["kind"], "canon": r["canon"], "pp": r["pp"]}
+            "kind": r["kind"], "canon": r["canon"], "pp": r["pp"],
+            "consts": [c["name"] for c in r.get("consts", [])]}
     return fps, round(time.time() - t0, 1)
 
 
@@ -663,12 +673,40 @@ def stmt_diff(base, after):
     return missing, changed
 
 
+def progress_specs_for(callee, fps_module, target_path, work):
+    """Theorems of the target module whose statement uses the constant
+    `callee` and that carry `@[progress]` in the source (attribute block
+    directly before the declaration). Names as StmtCanon prints them."""
+    if not callee:
+        return []
+    try:
+        src = open(os.path.join(work, target_path), encoding="utf-8").read()
+    except OSError:
+        return []
+    out = []
+    for name, fp in fps_module.items():
+        if fp.get("kind") != "theorem" or callee not in fp.get("consts", []):
+            continue
+        short = re.escape(name.rsplit(".", 1)[-1])
+        if re.search(r"@\[[^\]]*\bprogress\b[^\]]*\]\s*(?:@\[[^\]]*\]\s*)*"
+                     r"(?:private\s+|protected\s+)?theorem\s+(?:[\w.]*\.)?" + short + r"(?![\w'])", src):
+            out.append(name)
+    return sorted(out)
+
+
 # ── gates ────────────────────────────────────────────────────────────────
 def gate(work, target_path, before_counts, build_timeout=BUILD_TIMEOUT,
-         g1_base=None, g2=True):
+         g1_base=None, g2=True, mode="fill", callee=None):
     """g2=False skips the G2 trust-base gate (harness/gates/g2_trust_base.py
     needs the main checkout's frozen manifests; a bundle workspace has
-    neither — prove_top_spec.py). Recorded in the verdict detail."""
+    neither — prove_top_spec.py). Recorded in the verdict detail.
+
+    mode="fill" (default): rule d — the target file's sorry count strictly
+    decreases. mode="spec" (prove_top_spec.py --bottom-up, one internal
+    spec per round): the target file's sorry count must not increase and
+    the file must contain at least one `@[progress]` theorem whose
+    statement mentions the constant `callee` (checked on the G1 fingerprints' used constants, so
+    g1_base must be given, {} for a fresh file)."""
     mod, new = changed_files(work)
     if new or set(mod) - {target_path}:
         return "rejected_scope", {"modified": mod, "new": new}
@@ -699,7 +737,18 @@ def gate(work, target_path, before_counts, build_timeout=BUILD_TIMEOUT,
             return "rejected_statement_changed", {
                 **b, "missing": missing, "changed": changed}
         b["g1_after"] = fps[mod_name]
-    if after.get(target_path, 0) >= before_counts.get(target_path, 0):
+    if mode == "spec":
+        # no NEW sorry: pre-existing sorried theorems in the file (a kept
+        # top spec sharing the file) are other targets, G1 keeps them
+        if after.get(target_path, 0) > before_counts.get(target_path, 0):
+            return "rejected_sorry_remains", {**b, "mode": mode,
+                                              "before": before_counts.get(target_path, 0),
+                                              "after": after.get(target_path, 0)}
+        specs = progress_specs_for(callee, b.get("g1_after", {}), target_path, work)
+        if not specs:
+            return "rejected_no_spec", {**b, "mode": mode, "callee": callee}
+        b["specs"] = specs
+    elif after.get(target_path, 0) >= before_counts.get(target_path, 0):
         return "rejected_sorry_remains", {**b,
                                           "before": before_counts.get(target_path, 0),
                                           "after": after.get(target_path, 0)}

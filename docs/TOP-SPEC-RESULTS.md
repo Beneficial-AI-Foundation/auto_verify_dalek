@@ -119,8 +119,50 @@ rebuilt `.olean` counted as an out-of-scope edit; the rollback then crashed
 decoding the binary. Fixed by writing `.gitignore` (`.lake/`) into the slot
 before sealing. No ledger record for that attempt.
 
+## Bottom-up mode (2026-09-18)
+
+`prove_top_spec.py --bottom-up` handles targets that need internal specs
+without giving the agent more than one file per round. The plan walks the
+callee graph of the target function leaves-first (bundle probe, instance
+records excluded, kept top specs and already-accepted internal specs
+skipped), one step per internal function:
+
+- **spec step**: the agent writes *and proves* a `@[progress]` spec for that
+  function in its own spec file — the human repo's file for it, created as
+  an empty skeleton and imported from `Curve25519Dalek.lean` by the harness
+  before the sealed baseline. Gate mode `spec` (`driver.gate`): scope one
+  file, forbidden attrs, build, G1 on pre-existing declarations, the file's
+  sorry count must not increase, and at least one `@[progress]` theorem
+  whose statement uses the function (checked on StmtCanon's used constants).
+  The prompt shows the top spec's statement and the direct callers so the
+  agent can pick a strong enough statement.
+- **fill step** (last): the top spec as before; the prompt lists the
+  accepted internal specs.
+
+Each step is a separate agent session with the usual round/stall/reset
+rules; an accepted step is committed into the slot baseline, copied back
+into the bundle and recorded in `dalek-top-spec-only/internal_specs.json`
+(so a later target reuses it, e.g. `FieldElement51.conditional_select`
+for four top specs). A failed step ends the plan; earlier steps stay.
+Ledger: one record per step, `plan.{id,step,of,mode,fn}`.
+
+```
+python3 harness/prove_top_spec.py --bottom-up --target curve25519_dalek.IdentityCurveModelsProjectivePoint.identity_spec --dry-run
+  plan: 4 step(s)
+    1. spec FieldElement51.from_limbs  (…/FieldElement51/FromLimbs.lean [new file])
+    2. spec FieldElement51.ONE         (…/FieldElement51/ONE.lean [new file])
+    3. spec FieldElement51.ZERO        (…/FieldElement51/ZERO.lean [new file])
+    4. fill IdentityCurveModelsProjectivePoint.identity_spec
+```
+
+Known limits: a weak internal spec passes its step and only fails the top
+step (no revise loop yet); spec files for functions the human repo never
+specified get a derived path; multiple callees sharing one file run as
+consecutive steps on that file.
+
 ## Next
 
-First non-trivial experiment: `scalar.Scalar.to_bytes_spec` (closure 3,
-structure eta) or `FieldElement51 ... sub_assign_spec` (closure 7, first
-with limb arithmetic and Math lemmas).
+Configured in `harness/exp.sh`: `identity_spec`, bottom-up, 4 steps
+(3 trivial-ish internal specs, then structure + `Field51_as_Nat`). Then
+`FieldElement51 ... sub_assign_spec` (bottom-up: `LOW_51_BIT_MASK`,
+`reduce`, `sub`, first with limb arithmetic and Math lemmas).

@@ -536,13 +536,15 @@ def run_rounds(prompt, tid, path, before_counts, args, env, settings_path,
             # rejection (build fails / sorry remains) resumes the same
             # session next round; a finished proof is accepted as usual.
             outcome, detail = gate(work, path, before_counts,
-                                   args.build_timeout, g1_base)
+                                   args.build_timeout, g1_base,
+                                   g2=getattr(args, "g2", True))
             detail["max_turns_exhausted"] = True
         elif rc != 0:
             outcome, detail = "agent_error", {"error": f"exit {rc}"}
         else:
             outcome, detail = gate(work, path, before_counts,
-                                   args.build_timeout, g1_base)
+                                   args.build_timeout, g1_base,
+                                   g2=getattr(args, "g2", True))
 
         m = END_REASON_RE.search(result.get("result") or "")
         end_reason = m.group(1).upper() if m else None
@@ -663,7 +665,10 @@ def stmt_diff(base, after):
 
 # ── gates ────────────────────────────────────────────────────────────────
 def gate(work, target_path, before_counts, build_timeout=BUILD_TIMEOUT,
-         g1_base=None):
+         g1_base=None, g2=True):
+    """g2=False skips the G2 trust-base gate (harness/gates/g2_trust_base.py
+    needs the main checkout's frozen manifests; a bundle workspace has
+    neither — prove_top_spec.py). Recorded in the verdict detail."""
     mod, new = changed_files(work)
     if new or set(mod) - {target_path}:
         return "rejected_scope", {"modified": mod, "new": new}
@@ -705,6 +710,8 @@ def gate(work, target_path, before_counts, build_timeout=BUILD_TIMEOUT,
             "delta": {f: (others_before.get(f, 0), others_after.get(f, 0))
                       for f in set(others_before) ^ set(others_after)
                       | {f for f in others_before if others_before.get(f) != others_after.get(f)}}}
+    if not g2:
+        return "accepted", {**b, "g2": "skipped", "counts_after": after}
     g2 = sh(["python3", os.path.join(work, "harness", "gates",
                                      "g2_trust_base.py"), "--skip-build"], work)
     if g2.returncode != 0:

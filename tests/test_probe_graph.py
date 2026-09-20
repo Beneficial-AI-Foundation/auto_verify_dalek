@@ -302,6 +302,224 @@ class ProbeGraphTests(unittest.TestCase):
         with self.assertRaisesRegex(probes.ProbeError, "invalid_probe_aeneas"):
             probes.parse_probe_bytes(self.manifest, self.rust_raw, b"{broken")
 
+    def test_probe_tool_versions_require_an_exact_supported_profile(self):
+        rust = copy.deepcopy(self.rust)
+        aeneas = copy.deepcopy(self.aeneas)
+        rust["tool"]["version"] = "0.11.0"
+        aeneas["tool"]["version"] = "0.20.0"
+
+        graph = self.parse(rust=rust, aeneas=aeneas)
+        self.assertEqual(
+            graph["target_report"]["tools"],
+            {
+                "probe_rust": {
+                    "name": "probe-rust",
+                    "version": "0.11.0",
+                    "command": "extract",
+                },
+                "probe_aeneas": {
+                    "name": "probe-aeneas",
+                    "version": "0.20.0",
+                    "command": "extract",
+                },
+            },
+        )
+
+        for name, rust_version, aeneas_version in (
+            ("old rust with new aeneas", "0.10.0", "0.20.0"),
+            ("new rust with old aeneas", "0.11.0", "0.19.0"),
+        ):
+            mixed_rust = copy.deepcopy(self.rust)
+            mixed_aeneas = copy.deepcopy(self.aeneas)
+            mixed_rust["tool"]["version"] = rust_version
+            mixed_aeneas["tool"]["version"] = aeneas_version
+            with self.subTest(name=name), self.assertRaisesRegex(
+                probes.ProbeError, "probe_tool_profile_mismatch"
+            ):
+                self.parse(rust=mixed_rust, aeneas=mixed_aeneas)
+
+        unknown_aeneas = copy.deepcopy(self.aeneas)
+        unknown_aeneas["tool"]["version"] = "0.21.0"
+        with self.assertRaisesRegex(probes.ProbeError, "probe_aeneas_tool_mismatch"):
+            self.parse(aeneas=unknown_aeneas)
+
+    def test_preparation_profile_is_source_only_and_matches_parser(self):
+        lock = json.loads(
+            (ROOT / "docker/autofv/toolchain-lock.json").read_text(encoding="utf-8")
+        )
+        sources = lock["preparation_probe_sources"]
+        profile = sources["wire_profile"]
+
+        self.assertEqual(sources["artifact_kind"], "source-identities-only")
+        self.assertIs(sources["binaries_in_existing_image"], False)
+        self.assertIn(
+            (profile["probe-rust"], profile["probe-aeneas"]),
+            probes.PROBE_TOOL_VERSION_PROFILES,
+        )
+        self.assertEqual(
+            set(sources["sources"]),
+            {"probe-aeneas", "probe-rust", "probe-lean"},
+        )
+
+    def test_zero_dependency_atoms_may_omit_empty_location_arrays(self):
+        atom = copy.deepcopy(
+            self.rust["data"]["probe:autofv-diamond/0.1.0/left()"]
+        )
+        atom["dependencies"] = []
+        del atom["dependencies-with-locations"]
+
+        selected = probes._project_rust_atom(
+            "probe:autofv-diamond/0.1.0/left()", atom
+        )
+        self.assertIs(selected, atom)
+
+        atom["dependencies"] = ["probe:missing/dependency()"]
+        with self.assertRaisesRegex(
+            probes.ProbeError, "project_rust_fields_missing"
+        ):
+            probes._project_rust_atom(
+                "probe:autofv-diamond/0.1.0/left()", atom
+            )
+
+    def test_same_package_dependency_requires_an_explicit_source_less_stub(self):
+        rust = copy.deepcopy(self.rust)
+        dependency = "probe:autofv-diamond/0.1.0/generated()"
+        rust["data"][TARGET_RUST]["dependencies"].append(dependency)
+        rust["data"][TARGET_RUST]["dependencies-with-locations"].append(
+            {"code-name": dependency, "line": 10, "location": "inner"}
+        )
+        rust["data"][dependency] = {
+            "display-name": "generated",
+            "code-module": "generated",
+            "code-path": "",
+            "code-text": {"lines-start": 0, "lines-end": 0},
+            "dependencies": [],
+            "kind": "exec",
+            "language": "rust",
+            "untracked": False,
+        }
+
+        self.parse(rust=rust)
+
+        rust["data"][dependency]["dependencies"] = [TARGET_RUST]
+        with self.assertRaisesRegex(
+            probes.ProbeError, "project_rust_dependency_missing"
+        ):
+            self.parse(rust=rust)
+
+        rust["data"][dependency]["dependencies"] = []
+        rust["data"][dependency]["unexpected"] = True
+        with self.assertRaisesRegex(
+            probes.ProbeError, "project_rust_dependency_missing"
+        ):
+            self.parse(rust=rust)
+
+    def test_graph_tops_are_bounded_to_the_aeneas_translation_graph(self):
+        rust = copy.deepcopy(self.rust)
+        aeneas = copy.deepcopy(self.aeneas)
+        consumer = "probe:autofv-diamond/0.1.0/rust_only_consumer()"
+        rust_consumer = copy.deepcopy(rust["data"][TARGET_RUST])
+        rust_consumer.update(
+            {
+                "dependencies": [TARGET_RUST],
+                "dependencies-with-locations": [
+                    {"code-name": TARGET_RUST, "line": 12, "location": "inner"}
+                ],
+                "display-name": "rust_only_consumer",
+                "rust-qualified-name": "autofv_diamond::rust_only_consumer",
+            }
+        )
+        rust["data"][consumer] = rust_consumer
+        merged_consumer = copy.deepcopy(aeneas["data"][TARGET_RUST])
+        merged_consumer.update(rust_consumer)
+        for key in ("translation-name", "translation-path", "translation-text"):
+            merged_consumer.pop(key, None)
+        aeneas["data"][consumer] = merged_consumer
+
+        report = json.loads(probes.render_target_report(self.parse(rust=rust, aeneas=aeneas)))
+
+        self.assertEqual(report["graph_tops"], [TARGET_RUST])
+        self.assertNotIn(consumer, report["declarations"])
+
+    def test_graph_top_without_a_primary_spec_is_reported_not_prepared(self):
+        rust = copy.deepcopy(self.rust)
+        aeneas = copy.deepcopy(self.aeneas)
+        unspecced_rust = "probe:autofv-diamond/0.1.0/unspecced()"
+        unspecced_lean = "probe:Diamond.unspecced"
+        rust_atom = copy.deepcopy(rust["data"][TARGET_RUST])
+        rust_atom.update(
+            {
+                "dependencies": [],
+                "dependencies-with-locations": [],
+                "display-name": "unspecced",
+                "rust-qualified-name": "autofv_diamond::unspecced",
+            }
+        )
+        rust["data"][unspecced_rust] = rust_atom
+        merged_rust = copy.deepcopy(aeneas["data"][TARGET_RUST])
+        merged_rust.update(rust_atom)
+        merged_rust["translation-name"] = unspecced_lean
+        aeneas["data"][unspecced_rust] = merged_rust
+        lean_atom = copy.deepcopy(aeneas["data"][TOP])
+        lean_atom.update(
+            {
+                "dependencies": [],
+                "display-name": "unspecced",
+                "term-dependencies": [],
+                "type-dependencies": [],
+            }
+        )
+        lean_atom.pop("primary-spec", None)
+        lean_atom.pop("specs", None)
+        aeneas["data"][unspecced_lean] = lean_atom
+
+        report = json.loads(
+            probes.render_target_report(self.parse(rust=rust, aeneas=aeneas))
+        )
+
+        self.assertEqual(report["graph_tops"], [TARGET_RUST])
+        self.assertEqual(
+            report["diagnostics"],
+            [
+                {
+                    "kind": "graph_top_primary_spec_missing",
+                    "rust_function": unspecced_rust,
+                    "declaration": unspecced_lean,
+                }
+            ],
+        )
+
+    def test_generated_and_nonscheduled_dependencies_do_not_create_jobs(self):
+        aeneas = copy.deepcopy(self.aeneas)
+        generated = f"{LEFT}.mutual"
+        trusted = "probe:Diamond.trusted"
+        aeneas["data"][TOP]["dependencies"] += [generated, trusted]
+        aeneas["data"][TOP]["term-dependencies"] += [generated, trusted]
+        trusted_atom = copy.deepcopy(aeneas["data"][LEFT])
+        trusted_atom.update(
+            {
+                "display-name": "trusted",
+                "verification-status": "trusted",
+            }
+        )
+        aeneas["data"][trusted] = trusted_atom
+
+        graph = self.parse(aeneas=aeneas)
+
+        self.assertEqual(graph["selected_nodes"], [LEFT, RIGHT, TOP])
+        self.assertNotIn([TOP, trusted], graph["term_dependencies"])
+
+    def test_unowned_generated_looking_dependency_fails_closed(self):
+        aeneas = copy.deepcopy(self.aeneas)
+        dependency = "probe:Missing.owner.mutual"
+        aeneas["data"][TOP]["dependencies"].append(dependency)
+        aeneas["data"][TOP]["term-dependencies"].append(dependency)
+
+        with self.assertRaisesRegex(
+            probes.ProbeError, "selected_term_dependency_missing"
+        ):
+            self.parse(aeneas=aeneas)
+
     def test_missing_failed_untracked_and_cyclic_dependencies_fail_closed(self):
         cases = []
 

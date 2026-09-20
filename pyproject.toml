@@ -9,6 +9,7 @@ description = "Sealed formal-verification experiment runner"
 requires-python = "==3.12.*"
 dependencies = [
   "cryptography==50.0.1",
+  "deepagents==0.7.15",
   "langgraph==1.2.11",
 ]
 

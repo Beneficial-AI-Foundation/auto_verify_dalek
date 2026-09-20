@@ -272,6 +272,63 @@ class AgentLaneBoundaryTests(unittest.TestCase):
 
 
 class RoleConversationTests(unittest.TestCase):
+    def test_exact_deepagents_runtime_is_the_only_role_lane_path(self):
+        self.assertTrue(
+            hasattr(agent_lane, "role_lane_runtime"),
+            "Plan 02-12 requires the pinned Deep Agents runtime facade",
+        )
+        runtime = agent_lane.role_lane_runtime()
+
+        self.assertEqual(runtime["runtime"], "deepagents")
+        self.assertEqual(runtime["deepagents"], "0.7.15")
+        self.assertEqual(runtime["langgraph"], "1.2.11")
+        self.assertEqual(runtime["langchain"], "1.4.2")
+        self.assertEqual(runtime["langchain_core"], "1.6.3")
+        self.assertEqual(
+            runtime["excluded_tools"],
+            [
+                "delete",
+                "edit_file",
+                "execute",
+                "glob",
+                "grep",
+                "ls",
+                "read_file",
+                "task",
+                "write_file",
+            ],
+        )
+        self.assertFalse(runtime["general_purpose_subagent"])
+        self.assertEqual(runtime["execution_location"], "trusted_controller")
+        self.assertFalse(runtime["alternate_runtime"])
+
+        lock = json.loads(
+            (Path(__file__).parents[1] / "docker" / "autofv" / "toolchain-lock.json").read_text()
+        )
+        members = lock["controller_delivery"]["allowed_members"]
+        self.assertNotIn("autofv/deepagents_lane.py", members)
+        self.assertNotIn("deepagents==0.7.15", (
+            Path(__file__).parents[1] / "docker" / "autofv" / "Dockerfile"
+        ).read_text())
+
+    def test_framework_cancellation_is_translated_back_to_asyncio_cancellation(self):
+        self.assertTrue(
+            hasattr(agent_lane, "role_lane_runtime"),
+            "Plan 02-12 requires the pinned Deep Agents runtime facade",
+        )
+        tools = agent_lane.build_lane_tools(
+            _job(),
+            lane_root=Path("/unused"),
+            read_file=lambda path: path,
+            search_files=lambda query: query,
+            edit_assigned=lambda patch: patch,
+            check_lean=lambda: "ok",
+        )
+        with mock.patch.object(
+            model, "_model_request", side_effect=asyncio.CancelledError
+        ), self.assertRaises(asyncio.CancelledError):
+            asyncio.run(agent_lane.run_role_conversation({}, _job(), tools))
+
     def test_every_role_gets_a_fresh_bounded_conversation_spec(self):
         self.assertTrue(
             hasattr(agent_lane, "role_conversation_spec"),

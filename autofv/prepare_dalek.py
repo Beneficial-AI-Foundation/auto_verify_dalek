@@ -38,6 +38,10 @@ GENERATED_CORE_FILES = frozenset(
         "Curve25519Dalek/TypesExternal.lean",
     }
 )
+PUBLICATION_LICENSES = (
+    ("LICENSE", "LICENSE"),
+    ("curve25519-dalek/LICENSE", "LICENSES/curve25519-dalek-BSD-3-Clause.txt"),
+)
 
 
 class PreparationError(RuntimeError):
@@ -582,6 +586,34 @@ def _scan_prepared(root: Path) -> None:
             raise PreparationError(f"spoiler content rejected: {entry['path']}")
 
 
+def _publication_readme(
+    mode: str, source_identity: dict[str, Any], target_count: int
+) -> str:
+    return f"""# AutoFV Dalek prepared baseline
+
+This repository is a reproducible Lean experiment input prepared from the pinned
+`curve25519-dalek-lean-verify` source. Target proof bodies are intentionally
+replaced with `sorry`; exact targets are listed in `autofv.json`.
+
+- Shape: `{mode}`
+- Targets: {target_count}
+- Source revision: `{source_identity["revision"]}`
+- Source tree SHA-256: `{source_identity["tree_sha256"]}`
+- Verification command: `lake build`
+
+This artifact supports scoped functional-correctness experiments. It is not a
+cryptographic-security, side-channel, memory-safety, or implementation audit.
+Builds may report disclosed warnings from trusted mathematics or pinned
+external dependencies; those warnings are not target solutions.
+
+## Licensing
+
+The prepared Lean project is distributed under `LICENSE`. Translated
+`curve25519-dalek` material retains its upstream notice in
+`LICENSES/curve25519-dalek-BSD-3-Clause.txt`.
+"""
+
+
 def _materialize(
     stage: Path,
     source: Path,
@@ -594,11 +626,17 @@ def _materialize(
     indexed_modules: set[str],
     required_imports_by_path: dict[str, set[str]],
     targets_manifest: list[dict[str, str]],
+    mode: str,
+    source_identity: dict[str, Any],
 ) -> None:
     for path in sorted(support_paths):
         destination = stage / path
         destination.parent.mkdir(parents=True, exist_ok=True)
         destination.write_bytes(_source_file(source, path).read_bytes())
+    for source_name, destination_name in PUBLICATION_LICENSES:
+        destination = stage / destination_name
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        destination.write_bytes(_source_file(source, source_name).read_bytes())
     for path in sorted(selected_paths):
         destination = stage / path
         destination.parent.mkdir(parents=True, exist_ok=True)
@@ -638,6 +676,10 @@ def _materialize(
                 "verify": ["lake", "build"],
             }
         )
+    )
+    (stage / "README.md").write_text(
+        _publication_readme(mode, source_identity, len(targets_manifest)),
+        encoding="utf-8",
     )
 
 
@@ -780,6 +822,8 @@ def prepare_dalek(
                 indexed_modules,
                 required_imports_by_path,
                 targets_manifest,
+                mode,
+                identities["source"],
             )
             _scan_prepared(stage)
         entries = _tree_entries(stages[0])

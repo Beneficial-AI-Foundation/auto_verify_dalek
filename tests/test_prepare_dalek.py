@@ -133,6 +133,8 @@ end Solution
             "Math/Trusted.lean": self.math_source,
             "Bridge.lean": "import Math.Trusted\n",
             "SolutionOnly.lean": self.solution_source,
+            "LICENSE": "Apache License 2.0\n",
+            "curve25519-dalek/LICENSE": "BSD 3-Clause License\n",
             "lakefile.toml": 'name = "DalekSynthetic"\n',
             "lean-toolchain": "leanprover/lean4:v4.28.0-rc1\n",
         }.items():
@@ -277,6 +279,9 @@ end Solution
                 "Dalek/Types.lean",
                 "Curve25519Dalek.lean",
                 "Math/Trusted.lean",
+                "LICENSE",
+                "LICENSES/curve25519-dalek-BSD-3-Clause.txt",
+                "README.md",
                 "autofv.json",
                 "lakefile.toml",
                 "lean-toolchain",
@@ -296,6 +301,16 @@ end Solution
         self.assertIn("import Dalek.Scalar\n", root_module)
         self.assertIn("import Dalek.Edwards\n", root_module)
         self.assertNotIn("SolutionOnly", root_module)
+        self.assertEqual(full_files["LICENSE"], b"Apache License 2.0\n")
+        self.assertEqual(
+            full_files["LICENSES/curve25519-dalek-BSD-3-Clause.txt"],
+            b"BSD 3-Clause License\n",
+        )
+        readme = full_files["README.md"].decode()
+        self.assertIn("- Shape: `full`", readme)
+        self.assertIn("- Targets: 2", readme)
+        self.assertIn(f"- Source revision: `{'a' * 40}`", readme)
+        self.assertNotIn("secretLemma", readme)
 
         small = self.root / "small"
         small_manifest = self.root / "small-manifest.json"
@@ -479,6 +494,15 @@ end Solution
         values["source"]["tree_sha256"] = "f" * 64
         identities.write_text(json.dumps(values, sort_keys=True, separators=(",", ":")))
         cases.append(("provenance", source, identities, "provenance"))
+
+        source, identities = self._case_inputs("missing-license")
+        (source / "LICENSE").unlink()
+        values = json.loads(identities.read_text())
+        values["source"]["tree_sha256"] = _tree_sha256(source)
+        identities.write_text(json.dumps(values, sort_keys=True, separators=(",", ":")))
+        cases.append(
+            ("missing-license", source, identities, "source is not a regular file: LICENSE")
+        )
 
         source, identities = self._case_inputs("unsafe")
         values = json.loads(identities.read_text())

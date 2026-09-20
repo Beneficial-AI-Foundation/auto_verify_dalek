@@ -4,16 +4,14 @@ from __future__ import annotations
 
 import copy
 import hashlib
-import json
 import re
 from collections.abc import Callable, Mapping
 from pathlib import PurePosixPath
 from typing import Any
 
-from . import model, worker
+from . import worker
 from .contracts import canonical_json_bytes
-from .role_journal import tool_outcome
-from .run_state import _state_lock, _checkpoint_if_enabled
+from .run_state import _checkpoint_if_enabled
 
 
 _HEX_SHA256 = re.compile(r"^[0-9a-f]{64}$")
@@ -469,139 +467,14 @@ def _conversation_action(response: Any) -> tuple[str, dict[str, Any]]:
 async def run_role_conversation(
     state: dict[str, Any], job: Any, tools: Any
 ) -> dict[str, Any]:
-    """Run one bounded job-local tool loop through the receipted model seam."""
-    trusted_job = validate_role_job(job)
-    run = state.get("run")
-    events = run.setdefault("events", []) if isinstance(run, dict) else None
-    spec = role_conversation_spec(trusted_job)
-    progress = state.setdefault("role_progress", {})
-    identity = spec["conversation_id"]
-    prior_progress = progress.get(identity)
-    progress_identity = {
-        "conversation_id": identity,
-        "job_sha256": hashlib.sha256(canonical_json_bytes(trusted_job)).hexdigest(),
-        "role": trusted_job["role"],
-        "declaration": trusted_job["declaration"],
-    }
-    if isinstance(prior_progress, dict) and any(
-        prior_progress.get(key) != value for key, value in progress_identity.items()
-    ):
-        raise worker.WorkerError("resumed role progress identity changed")
-    with _state_lock(state):
-        progress[identity] = {
-            **progress_identity,
-            "status": "running",
-            "last_turn": int((prior_progress or {}).get("last_turn", 0)),
-            "last_request_id": (prior_progress or {}).get("last_request_id"),
-            "last_tool": (prior_progress or {}).get("last_tool"),
-            "candidate_sha256": (prior_progress or {}).get("candidate_sha256"),
-            "events": (prior_progress or {}).get("events", []),
-        }
-    def event(key, value):
-        with _state_lock(state):
-            recorded = progress[identity]["events"]
-            if key not in recorded:
-                recorded.append(key)
-                if events is not None:
-                    events.append(value)
-    event("started", f"role:{trusted_job['role']}:started")
-    schemas = capture_tool_schemas(tools)
-    messages: list[dict[str, Any]] = initial_role_messages(spec)
-    context_hashes = set(trusted_job["input_hashes"])
-    context_hashes.update(
-        {
-            trusted_job["graph_sha256"],
-            trusted_job["statement_sha256"],
-            trusted_job["contract_fingerprint"],
-            hashlib.sha256(canonical_json_bytes(spec)).hexdigest(),
-            hashlib.sha256(canonical_json_bytes(schemas)).hexdigest(),
-        }
-    )
-    corrections = 0
-    call_kind = "explicit"
+    """Run one bounded role through the sole pinned runtime implementation."""
+    from .deepagents_lane import run_role_conversation as run_deepagents_lane
 
-    for turn in range(1, _MAX_ROLE_TURNS + 1):
-        request_id = f"lane-{spec['conversation_id'][:16]}-{turn:03d}"
-        with _state_lock(state):
-            progress[identity].update(
-                {"last_turn": turn, "last_request_id": request_id}
-            )
-        response, _receipt = model._model_request(
-            state,
-            request_id=request_id,
-            role=trusted_job["role"],
-            input_hashes=sorted(context_hashes),
-            call_kind=call_kind,
-            messages=copy.deepcopy(messages),
-        )
-        try:
-            name, arguments = _conversation_action(response)
-            if name not in tools:
-                raise worker.WorkerError("lane tool is not allowlisted")
-            _validate_tool_arguments(tools[name]["schema"], arguments)
-        except worker.WorkerError:
-            if corrections >= 2:
-                raise worker.WorkerError("invalid_agent_output") from None
-            corrections += 1
-            call_kind = "schema_correction"
-            continue
+    return await run_deepagents_lane(state, job, tools)
 
-        result = tool_outcome(
-            state, identity, request_id, {"name": name, "arguments": arguments},
-            lambda: invoke_lane_tool(tools, name, arguments),
-            lane_node=trusted_job["declaration"],
-        )
-        event(f"tool:{turn}", f"lane_tool:{trusted_job['role']}:{name}")
-        with _state_lock(state):
-            progress[identity]["last_tool"] = name
-        if name == "submit_candidate":
-            candidate = validate_candidate(result, trusted_job)
-            with _state_lock(state):
-                progress[identity].update(
-                    {
-                        "status": "completed",
-                        "candidate_sha256": hashlib.sha256(
-                            canonical_json_bytes(candidate)
-                        ).hexdigest(),
-                    }
-                )
-            event("candidate", f"role:{trusted_job['role']}:candidate")
-            _checkpoint_if_enabled(state, f"role:{identity}:completed")
-            return candidate
-        tool_call_id = f"{request_id}-tool"
-        messages.extend(
-            (
-                {
-                    "role": "assistant",
-                    "content": None,
-                    "tool_calls": [
-                        {
-                            "id": tool_call_id,
-                            "type": "function",
-                            "function": {
-                                "name": name,
-                                "arguments": json.dumps(
-                                    arguments,
-                                    sort_keys=True,
-                                    separators=(",", ":"),
-                                    ensure_ascii=False,
-                                ),
-                            },
-                        }
-                    ],
-                },
-                {
-                    "role": "tool",
-                    "tool_call_id": tool_call_id,
-                    "content": result,
-                },
-            )
-        )
-        context_hashes.add(
-            hashlib.sha256(
-                canonical_json_bytes({"tool": name, "result": result})
-            ).hexdigest()
-        )
-        call_kind = "explicit"
 
-    raise worker.WorkerError("invalid_agent_output: role turn limit exhausted")
+def role_lane_runtime() -> dict[str, Any]:
+    """Expose the exact fail-closed runtime identity for preflight and evidence."""
+    from .deepagents_lane import runtime_compatibility
+
+    return runtime_compatibility()

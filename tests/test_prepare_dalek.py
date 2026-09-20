@@ -17,7 +17,7 @@ OTHER_ROOT = (
     "probe:curve25519_dalek/4.1.3/"
     "curve25519_dalek.edwards.EdwardsPoint.compress()"
 )
-SCALAR = "probe:Curve25519Dalek.Scalar.fromCanonicalBytes"
+SCALAR = "probe:curve25519_dalek.scalar.Scalar.from_canonical_bytes"
 SCALAR_SPEC = f"{SCALAR}_spec"
 HELPER = "probe:Curve25519Dalek.Scalar.decode"
 HELPER_SPEC = f"{HELPER}_spec"
@@ -73,7 +73,7 @@ class DalekPreparationShapeTests(unittest.TestCase):
         self.source = self.root / "solved"
         self.source.mkdir()
         self.scalar_source = """import Dalek.Types
-import Math.Trusted
+import Bridge
 import SolutionOnly
 
 namespace Curve25519Dalek.Scalar
@@ -81,6 +81,7 @@ namespace Curve25519Dalek.Scalar
 def decode (x : Nat) : Nat :=
   Math.Trusted.reduce x
 
+set_option maxHeartbeats 1000 in
 theorem decode_spec (x : Nat) : decode x = x := by
   exact Solution.secretLemma x
 
@@ -89,6 +90,8 @@ def fromCanonicalBytes (x : Nat) : Nat :=
 
 theorem fromCanonicalBytes_spec (x : Nat) :
     fromCanonicalBytes x = x := by
+  have nested : x = x := by
+    rfl
   exact Solution.secretLemma x
 
 end Curve25519Dalek.Scalar
@@ -128,6 +131,7 @@ end Solution
             "Dalek/Edwards.lean": self.other_source,
             "Dalek/Types.lean": self.type_source,
             "Math/Trusted.lean": self.math_source,
+            "Bridge.lean": "import Math.Trusted\n",
             "SolutionOnly.lean": self.solution_source,
             "lakefile.toml": 'name = "DalekSynthetic"\n',
             "lean-toolchain": "leanprover/lean4:v4.28.0-rc1\n",
@@ -271,6 +275,7 @@ end Solution
                 "Dalek/Edwards.lean",
                 "Dalek/Scalar.lean",
                 "Dalek/Types.lean",
+                "Curve25519Dalek.lean",
                 "Math/Trusted.lean",
                 "autofv.json",
                 "lakefile.toml",
@@ -280,9 +285,17 @@ end Solution
         scalar = full_files["Dalek/Scalar.lean"].decode()
         self.assertIn("theorem fromCanonicalBytes_spec (x : Nat) :", scalar)
         self.assertIn("fromCanonicalBytes x = x := by\n  sorry", scalar)
+        self.assertNotIn("have nested", scalar)
         self.assertNotIn("decode_spec", scalar)
+        self.assertNotIn("set_option maxHeartbeats 1000 in", scalar)
         self.assertNotIn("secretLemma", scalar)
         self.assertNotIn("SolutionOnly", scalar)
+        self.assertIn("import Math.Trusted\n", scalar)
+        self.assertNotIn("import Bridge\n", scalar)
+        root_module = full_files["Curve25519Dalek.lean"].decode()
+        self.assertIn("import Dalek.Scalar\n", root_module)
+        self.assertIn("import Dalek.Edwards\n", root_module)
+        self.assertNotIn("SolutionOnly", root_module)
 
         small = self.root / "small"
         small_manifest = self.root / "small-manifest.json"
@@ -290,6 +303,10 @@ end Solution
         self.assertEqual(
             set(_tree_bytes(small)),
             set(full_files) - {"Dalek/Edwards.lean"},
+        )
+        self.assertNotIn(
+            "import Dalek.Edwards\n",
+            (small / "Curve25519Dalek.lean").read_text(),
         )
         self.assertEqual(
             json.loads((small / "autofv.json").read_text())["targets"],
@@ -375,6 +392,66 @@ end Solution
                     separators=(",", ":"),
                 ).encode()
             ).hexdigest(),
+        )
+
+    def test_nested_generated_declaration_shares_its_owner_source_span(self):
+        from autofv import prepare_dalek
+
+        identities = json.loads(self.identities.read_text())
+        owner = identities["declarations"][SCALAR]
+        nested = "probe:Dalek.Scalar.generated_projection"
+        owner["dependencies"].append(nested)
+        identities["declarations"][nested] = {
+            "path": owner["path"],
+            "lines": [owner["lines"][1], owner["lines"][1]],
+            "kind": "type",
+            "dependencies": [],
+            "proof_dependencies": [],
+        }
+        identities_path = self.root / "nested-identities.json"
+        identities_path.write_text(
+            json.dumps(identities, sort_keys=True, separators=(",", ":"))
+        )
+        output = self.root / "nested-output"
+        manifest = self.root / "nested-manifest.json"
+
+        with mock.patch.object(prepare_dalek, "_run_build"):
+            result = prepare_dalek.prepare_dalek(
+                self.source,
+                self.report,
+                identities_path,
+                "small",
+                output,
+                manifest,
+            )
+
+        self.assertIn(nested, result["retained_declarations"])
+        self.assertIn("def fromCanonicalBytes", (output / owner["path"]).read_text())
+
+    def test_build_cache_is_linked_only_into_the_disposable_build_tree(self):
+        from autofv import prepare_dalek
+
+        project = self.root / "build-project"
+        packages = self.root / "trusted-packages"
+        project.mkdir()
+        packages.mkdir()
+
+        with (
+            mock.patch.dict(
+                os.environ,
+                {"AUTOFV_LAKE_PACKAGES_DIR": str(packages)},
+            ),
+            mock.patch.object(prepare_dalek.subprocess, "run") as run,
+        ):
+            prepare_dalek._run_build(project)
+
+        self.assertTrue((project / ".lake/packages").is_symlink())
+        self.assertEqual((project / ".lake/packages").resolve(), packages.resolve())
+        run.assert_called_once_with(
+            ("lake", "build"),
+            cwd=project,
+            check=True,
+            capture_output=True,
         )
 
     def test_hostile_inputs_fail_before_output_finalization(self):

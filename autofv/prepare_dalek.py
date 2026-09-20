@@ -14,7 +14,7 @@ from pathlib import Path, PurePosixPath
 from typing import Any
 
 
-SMALL_ROOT_MARKER = "curve25519_dalek.scalar.Scalar.from_canonical_bytes"
+SMALL_DECLARATION = "probe:curve25519_dalek.scalar.Scalar.from_canonical_bytes"
 REPORT_SCHEMA = "target-report/v1"
 IDENTITIES_SCHEMA = "autofv-dalek-probe-identities/v1"
 MANIFEST_SCHEMA = "preparation-manifest/v1"
@@ -29,6 +29,14 @@ SPOILER_MARKERS = (
     b"reference.json",
     b"secretlemma",
     b"solutiononly",
+)
+GENERATED_CORE_FILES = frozenset(
+    {
+        "Curve25519Dalek/Funs.lean",
+        "Curve25519Dalek/FunsExternal.lean",
+        "Curve25519Dalek/Types.lean",
+        "Curve25519Dalek/TypesExternal.lean",
+    }
 )
 
 
@@ -132,15 +140,34 @@ def _validate_inputs(
         raise PreparationError("target report schema mismatch")
     tops = report.get("graph_tops")
     targets = report.get("declarations")
+    diagnostics = report.get("diagnostics")
     if (
         not isinstance(tops, list)
         or not tops
         or tops != sorted(set(tops))
         or not isinstance(targets, dict)
         or set(targets) != set(tops)
-        or report.get("diagnostics") != []
+        or not isinstance(diagnostics, list)
     ):
         raise PreparationError("target report graph tops mismatch")
+    for diagnostic in diagnostics:
+        if (
+            not isinstance(diagnostic, dict)
+            or set(diagnostic)
+            != {"kind", "rust_function", "declaration"}
+            or diagnostic.get("kind") != "graph_top_primary_spec_missing"
+            or not isinstance(diagnostic.get("rust_function"), str)
+            or not diagnostic["rust_function"]
+            or not isinstance(diagnostic.get("declaration"), str)
+            or not diagnostic["declaration"]
+            or diagnostic["rust_function"] in targets
+        ):
+            raise PreparationError("target report diagnostic mismatch")
+    if diagnostics != sorted(
+        diagnostics,
+        key=lambda item: (item["rust_function"], item["declaration"]),
+    ):
+        raise PreparationError("target report diagnostic order mismatch")
     inputs = report.get("inputs")
     tools = report.get("tools")
     if (
@@ -214,10 +241,17 @@ def _validate_inputs(
     return targets, declarations, files
 
 
-def _selected_roots(tops: list[str], mode: str) -> list[str]:
+def _selected_roots(
+    tops: list[str], targets: dict[str, Any], mode: str
+) -> list[str]:
     if mode == "full":
         return tops
-    matches = [name for name in tops if SMALL_ROOT_MARKER in name]
+    matches = [
+        name
+        for name in tops
+        if isinstance(targets.get(name), dict)
+        and targets[name].get("declaration") == SMALL_DECLARATION
+    ]
     if len(matches) != 1:
         raise PreparationError("small-mode Scalar.from_canonical_bytes root mismatch")
     return matches
@@ -299,10 +333,78 @@ def _record_path(record: Any, name: str) -> str:
 def _redact_proof(lines: list[str], name: str) -> list[str]:
     text = "".join(lines)
     marker = ":= by"
-    boundary = text.rfind(marker)
+    boundary = text.find(marker)
     if boundary < 0:
         raise PreparationError(f"root statement proof boundary missing: {name}")
     return (text[:boundary] + marker + "\n  sorry\n").splitlines(keepends=True)
+
+
+def _attribute_start(lines: list[str], start: int) -> int:
+    cursor = start
+    while cursor > 0:
+        previous = lines[cursor - 1].strip()
+        if (
+            previous.startswith("@[")
+            or previous.startswith("--")
+            or (
+                previous.startswith("set_option ")
+                and previous.endswith(" in")
+            )
+        ):
+            cursor -= 1
+            continue
+        break
+    return cursor
+
+
+def _generated_core_source(
+    lines: list[str],
+    units: list[tuple[int, int, list[tuple[int, int, str]]]],
+    selected: set[str],
+    path: str,
+) -> list[str]:
+    namespace_indexes = [
+        index
+        for index, line in enumerate(lines)
+        if line.startswith("namespace ")
+    ]
+    if not namespace_indexes:
+        raise PreparationError(f"generated core namespace mismatch: {path}")
+    namespace_index = namespace_indexes[0]
+    namespace = lines[namespace_index].strip().removeprefix("namespace ")
+    rendered = [*lines[: namespace_index + 1], "\n"]
+    current_nested: list[str] = []
+    for start, end, members in units:
+        if {name for _, _, name in members} & selected:
+            active: list[str] = []
+            for line in lines[:start]:
+                if line.startswith("namespace "):
+                    active.append(line.strip().removeprefix("namespace "))
+                elif line.startswith("end "):
+                    ended = line.strip().removeprefix("end ")
+                    if active and active[-1] == ended:
+                        active.pop()
+            nested = active[1:] if active and active[0] == namespace else active
+            shared = 0
+            while (
+                shared < len(current_nested)
+                and shared < len(nested)
+                and current_nested[shared] == nested[shared]
+            ):
+                shared += 1
+            for opened in reversed(current_nested[shared:]):
+                rendered.append(f"end {opened}\n")
+            for opened in nested[shared:]:
+                rendered.append(f"namespace {opened}\n")
+            current_nested = nested
+            block_start = _attribute_start(lines, start)
+            rendered.extend(lines[block_start:end])
+            if rendered and rendered[-1].strip():
+                rendered.append("\n")
+    for opened in reversed(current_nested):
+        rendered.append(f"end {opened}\n")
+    rendered.append(f"end {namespace}\n")
+    return rendered
 
 
 def _render_source(
@@ -313,6 +415,7 @@ def _render_source(
     root_specs: set[str],
     retained_modules: set[str],
     indexed_modules: set[str],
+    required_imports: set[str],
 ) -> bytes:
     lines = _source_file(source, path).read_text(encoding="utf-8").splitlines(
         keepends=True
@@ -324,15 +427,47 @@ def _render_source(
         if end > len(lines):
             raise PreparationError(f"declaration source span invalid: {name}")
         spans.append((start - 1, end, name))
-    spans.sort()
-    if any(right[0] < left[1] for left, right in zip(spans, spans[1:])):
-        raise PreparationError(f"overlapping declaration spans: {path}")
+    spans.sort(key=lambda item: (item[0], -item[1], item[2]))
 
-    for start, end, name in reversed(spans):
-        if name not in selected:
-            lines[start:end] = []
-        elif name in root_specs:
-            lines[start:end] = _redact_proof(lines[start:end], name)
+    # Lean reports generated projections, structure fields, and local proof
+    # declarations inside the owning top-level declaration. Treat every
+    # maximal source span as one materialization unit while preserving all
+    # declaration identities for dependency selection and provenance.
+    units: list[tuple[int, int, list[tuple[int, int, str]]]] = []
+    for start, end, name in spans:
+        if units and start < units[-1][1]:
+            unit_start, unit_end, members = units[-1]
+            if start < unit_start or end > unit_end:
+                raise PreparationError(f"crossing declaration spans: {path}")
+            members.append((start, end, name))
+            continue
+        units.append((start, end, [(start, end, name)]))
+
+    if path in GENERATED_CORE_FILES:
+        lines = _generated_core_source(lines, units, selected, path)
+    else:
+        for start, end, members in reversed(units):
+            names = {name for _, _, name in members}
+            retained_roots = sorted(names & root_specs)
+            if not names & selected:
+                lines[_attribute_start(lines, start):end] = []
+            elif retained_roots:
+                if len(retained_roots) != 1:
+                    raise PreparationError(f"overlapping root statements: {path}")
+                root = retained_roots[0]
+                root_spans = {
+                    (member_start, member_end)
+                    for member_start, member_end, name in members
+                    if name == root
+                }
+                if root_spans != {(start, end)}:
+                    raise PreparationError(f"nested root statement span: {root}")
+                lines[start:end] = _redact_proof(lines[start:end], root)
+
+    local_names: dict[str, set[str]] = {}
+    for name, _ in records:
+        leaf = name.removeprefix("probe:").rsplit(".", 1)[-1]
+        local_names.setdefault(leaf, set()).add(name)
 
     filtered: list[str] = []
     for line in lines:
@@ -341,20 +476,69 @@ def _render_source(
             imported = stripped.removeprefix("import ").strip()
             if imported in indexed_modules and imported not in retained_modules:
                 continue
+        if stripped.startswith("attribute ") and "]" in stripped:
+            targets = stripped.split("]", 1)[1].removesuffix(" in").split()
+            referenced = {
+                name
+                for target in targets
+                for leaf, names in local_names.items()
+                if target == leaf or target.endswith(f".{leaf}")
+                for name in names
+            }
+            if referenced and not referenced & selected:
+                continue
         filtered.append(line)
+    existing_imports = {
+        line.strip().removeprefix("import ").strip()
+        for line in filtered
+        if line.strip().startswith("import ")
+    }
+    missing_imports = sorted(required_imports - existing_imports)
+    if missing_imports:
+        insertion = next(
+            (
+                index
+                for index, line in enumerate(filtered)
+                if line.strip().startswith("import ")
+            ),
+            0,
+        )
+        filtered[insertion:insertion] = [
+            f"import {module}\n" for module in missing_imports
+        ]
     return "".join(filtered).encode("utf-8")
 
 
 def _run_build(project: Path) -> None:
+    packages = os.environ.get("AUTOFV_LAKE_PACKAGES_DIR")
+    if packages:
+        packages_path = Path(packages).resolve(strict=True)
+        if not packages_path.is_dir():
+            raise PreparationError("Lake packages cache is not a directory")
+        lake_dir = project / ".lake"
+        lake_dir.mkdir()
+        (lake_dir / "packages").symlink_to(packages_path, target_is_directory=True)
+    build_log = os.environ.get("AUTOFV_BUILD_LOG")
     try:
-        subprocess.run(
+        completed = subprocess.run(
             ("lake", "build"),
             cwd=project,
             check=True,
             capture_output=True,
         )
-    except (OSError, subprocess.CalledProcessError) as exc:
-        raise PreparationError("prepared project build failed") from exc
+    except OSError as exc:
+        raise PreparationError(f"prepared project build failed: {exc}") from exc
+    except subprocess.CalledProcessError as exc:
+        output = (exc.stdout or b"") + (exc.stderr or b"")
+        if build_log:
+            Path(build_log).write_bytes(output)
+        detail = output.decode("utf-8", errors="replace")[-8_000:].strip()
+        suffix = f"\n{detail}" if detail else ""
+        raise PreparationError(f"prepared project build failed{suffix}") from exc
+    if build_log:
+        Path(build_log).write_bytes(
+            (completed.stdout or b"") + (completed.stderr or b"")
+        )
 
 
 def _tree_entries(root: Path, *, ignore_git: bool = False) -> list[dict[str, Any]]:
@@ -408,6 +592,7 @@ def _materialize(
     root_specs: set[str],
     retained_modules: set[str],
     indexed_modules: set[str],
+    required_imports_by_path: dict[str, set[str]],
     targets_manifest: list[dict[str, str]],
 ) -> None:
     for path in sorted(support_paths):
@@ -426,8 +611,25 @@ def _materialize(
                 root_specs,
                 retained_modules,
                 indexed_modules,
+                required_imports_by_path.get(path, set()),
             )
         )
+    root_modules = sorted(
+        module
+        for path, module in (
+            (
+                path,
+                ".".join(PurePosixPath(path).with_suffix("").parts),
+            )
+            for path in selected_paths
+            if path.endswith(".lean")
+        )
+        if path != "Curve25519Dalek.lean"
+    )
+    (stage / "Curve25519Dalek.lean").write_text(
+        "".join(f"import {module}\n" for module in root_modules),
+        encoding="utf-8",
+    )
     (stage / "autofv.json").write_bytes(
         _canonical_bytes(
             {
@@ -493,7 +695,7 @@ def prepare_dalek(
     targets, declarations, files = _validate_inputs(report, identities)
     if source_tree_sha256(source_path) != identities["source"]["tree_sha256"]:
         raise PreparationError("provenance source tree mismatch")
-    roots = _selected_roots(report["graph_tops"], mode)
+    roots = _selected_roots(report["graph_tops"], targets, mode)
     selected, root_specs = _selected_declarations(roots, targets, declarations)
 
     records_by_path: dict[str, list[tuple[str, dict[str, Any]]]] = {}
@@ -507,8 +709,45 @@ def prepare_dalek(
         for path in records_by_path
         if path.endswith(".lean")
     }
-    retained_modules = {modules_by_path[path] for path in selected_paths if path in modules_by_path}
+    retained_modules = {
+        modules_by_path[path]
+        for path in selected_paths
+        if path in modules_by_path
+    }
+    retained_modules.update(
+        ".".join(PurePosixPath(path).with_suffix("").parts)
+        for path in support_paths
+        if path.endswith(".lean")
+    )
     indexed_modules = set(modules_by_path.values())
+    for path in source_path.rglob("*.lean"):
+        if path.is_symlink() or not path.is_file():
+            raise PreparationError("unsafe local Lean module")
+        indexed_modules.add(
+            ".".join(path.relative_to(source_path).with_suffix("").parts)
+        )
+    required_imports_by_path: dict[str, set[str]] = {}
+    declaration_paths = {
+        name: _record_path(record, name)
+        for name, record in declarations.items()
+    }
+    for name in selected:
+        record = declarations[name]
+        path = declaration_paths[name]
+        if not path.endswith(".lean"):
+            continue
+        for dependency in [
+            *record["dependencies"],
+            *record["proof_dependencies"],
+        ]:
+            if dependency not in selected:
+                continue
+            dependency_path = declaration_paths[dependency]
+            if dependency_path == path or not dependency_path.endswith(".lean"):
+                continue
+            required_imports_by_path.setdefault(path, set()).add(
+                ".".join(PurePosixPath(dependency_path).with_suffix("").parts)
+            )
     targets_manifest = [
         {
             "function": root,
@@ -539,6 +778,7 @@ def prepare_dalek(
                 root_specs,
                 retained_modules,
                 indexed_modules,
+                required_imports_by_path,
                 targets_manifest,
             )
             _scan_prepared(stage)

@@ -13,6 +13,18 @@ MAX_PROBE_BYTES = 16 * 1024 * 1024
 MAX_NODES = 10_000
 MAX_EDGES = 100_000
 MAX_DIAGNOSTIC_MEMBERS = 32
+PROBE_TOOL_VERSION_PROFILES = frozenset(
+    {
+        ("0.10.0", "0.19.0"),  # pinned OCI image and retained fixtures
+        ("0.11.0", "0.20.0"),  # approved Phase 02 preparation sources
+    }
+)
+PROBE_RUST_VERSIONS = frozenset(
+    rust for rust, _ in PROBE_TOOL_VERSION_PROFILES
+)
+PROBE_AENEAS_VERSIONS = frozenset(
+    aeneas for _, aeneas in PROBE_TOOL_VERSION_PROFILES
+)
 
 
 class ProbeError(ValueError):
@@ -64,11 +76,23 @@ def _strict_json(raw: bytes, label: str) -> dict[str, Any]:
 
 
 def _tool_envelope(
-    value: dict[str, Any], *, schema: str, name: str, version: str, label: str
+    value: dict[str, Any],
+    *,
+    schema: str,
+    name: str,
+    versions: frozenset[str],
+    label: str,
 ) -> dict[str, Any]:
     if value.get("schema") != schema or value.get("schema-version") != "3.0":
         raise ProbeError(f"{label}_schema_mismatch")
-    if value.get("tool") != {"name": name, "version": version, "command": "extract"}:
+    tool = value.get("tool")
+    if (
+        not isinstance(tool, dict)
+        or set(tool) != {"name", "version", "command"}
+        or tool.get("name") != name
+        or tool.get("version") not in versions
+        or tool.get("command") != "extract"
+    ):
         raise ProbeError(f"{label}_tool_mismatch")
     atoms = value.get("data")
     if not isinstance(atoms, dict) or not atoms or len(atoms) > MAX_NODES:
@@ -115,7 +139,7 @@ def _source_location(atom: dict[str, Any], reason: str) -> dict[str, Any]:
     return {"path": path, "lines": [lines["lines-start"], lines["lines-end"]]}
 
 
-def _selected_lean_atom(name: str, atom: Any) -> dict[str, Any]:
+def _lean_atom(name: str, atom: Any) -> dict[str, Any]:
     if not isinstance(atom, dict) or atom.get("language") != "lean":
         raise ProbeError("selected_lean_atom_missing")
     required = {
@@ -134,20 +158,13 @@ def _selected_lean_atom(name: str, atom: Any) -> dict[str, Any]:
     }
     if not required <= atom.keys():
         raise ProbeError("selected_lean_fields_missing")
-    if (
-        atom["is-extraction-artifact"] is not False
-        or atom["is-hidden"] is not False
-        or atom["is-ignored"] is not False
-        or atom["is-in-package"] is not True
-        or atom["is-relevant"] is not True
-    ):
-        raise ProbeError("selected_lean_atom_not_schedulable")
     if atom["verification-status"] == "failed":
         raise ProbeError("selected_dependency_failed")
     if atom["verification-status"] not in {
         "verified",
         "transitively-verified",
         "unverified",
+        "trusted",
     }:
         raise ProbeError("selected_lean_status_invalid")
     _source_location(atom, "selected_lean_source_invalid")
@@ -156,6 +173,99 @@ def _selected_lean_atom(name: str, atom: Any) -> dict[str, Any]:
     _string_list(atom["term-dependencies"], "selected_term_dependencies_invalid")
     _string_list(atom["type-dependencies"], "selected_type_dependencies_invalid")
     return atom
+
+
+def _is_schedulable_lean_atom(atom: dict[str, Any]) -> bool:
+    return (
+        atom["is-extraction-artifact"] is False
+        and atom["is-hidden"] is False
+        and atom["is-ignored"] is False
+        and atom["is-in-package"] is True
+        and atom["is-relevant"] is True
+        and atom["verification-status"] != "trusted"
+    )
+
+
+def _selected_lean_atom(name: str, atom: Any) -> dict[str, Any]:
+    selected = _lean_atom(name, atom)
+    if not _is_schedulable_lean_atom(selected):
+        raise ProbeError("selected_lean_atom_not_schedulable")
+    return selected
+
+
+def _generated_lean_dependency(name: str, merged_atoms: dict[str, Any]) -> bool:
+    """Recognize source-less names that Lean generates from a retained owner."""
+    if name.endswith(".mutual"):
+        owner = merged_atoms.get(name.removesuffix(".mutual"))
+        return isinstance(owner, dict) and owner.get("language") == "lean"
+
+    if name.endswith(".mk.congr_simp"):
+        owner = merged_atoms.get(name.removesuffix(".mk.congr_simp"))
+        return (
+            isinstance(owner, dict)
+            and owner.get("language") == "lean"
+            and owner.get("kind") == "structure"
+        )
+
+    marker = ".Insts."
+    if marker in name:
+        owner = merged_atoms.get(name.split(marker, 1)[0])
+        return (
+            isinstance(owner, dict)
+            and owner.get("language") == "lean"
+            and owner.get("kind") in {"def", "inductive", "structure"}
+        )
+
+    owner_name, separator, constructor = name.rpartition(".")
+    owner = merged_atoms.get(owner_name)
+    return bool(
+        separator
+        and constructor
+        and isinstance(owner, dict)
+        and owner.get("language") == "lean"
+        and owner.get("kind") == "inductive"
+    )
+
+
+def _lean_dependency_atom(
+    name: str, merged_atoms: dict[str, Any], missing_reason: str
+) -> dict[str, Any] | None:
+    candidate = merged_atoms.get(name)
+    if not isinstance(candidate, dict) or candidate.get("language") != "lean":
+        if _generated_lean_dependency(name, merged_atoms):
+            return None
+        raise ProbeError(missing_reason)
+    return _lean_atom(name, candidate)
+
+
+def _scheduled_term_dependency(
+    name: str, merged_atoms: dict[str, Any]
+) -> dict[str, Any] | None:
+    candidate = _lean_dependency_atom(
+        name, merged_atoms, "selected_term_dependency_missing"
+    )
+    if candidate is None or _is_schedulable_lean_atom(candidate):
+        return candidate
+
+    # A normal project declaration cannot silently disappear from the work
+    # graph merely because its relevance bit changed. Third-party Rust traits
+    # translated into the package carry absolute upstream source identities;
+    # those, generated artifacts, hidden declarations, ignored declarations,
+    # and trusted facts are retained as preparation evidence but not scheduled.
+    if (
+        candidate["is-extraction-artifact"] is False
+        and candidate["is-hidden"] is False
+        and candidate["is-ignored"] is False
+        and candidate["is-in-package"] is True
+        and candidate["is-relevant"] is False
+    ):
+        rust_source = candidate.get("rust-source")
+        if (
+            not isinstance(rust_source, str)
+            or not PurePosixPath(rust_source).is_absolute()
+        ):
+            raise ProbeError("selected_lean_atom_not_schedulable")
+    return None
 
 
 def _validate_dependency_partition(
@@ -259,10 +369,9 @@ def _collect_lean_closure(
         sources[name] = location["path"]
         locations[name] = location
         for dependency in atom["term-dependencies"]:
-            candidate = merged_atoms.get(dependency)
-            if not isinstance(candidate, dict) or candidate.get("language") != "lean":
-                raise ProbeError("selected_term_dependency_missing")
-            _selected_lean_atom(dependency, candidate)
+            candidate = _scheduled_term_dependency(dependency, merged_atoms)
+            if candidate is None:
+                continue
             edges.add((name, dependency))
             if dependency not in nodes:
                 nodes.add(dependency)
@@ -283,7 +392,6 @@ def _project_rust_atom(name: str, atom: Any) -> dict[str, Any] | None:
         "code-path",
         "code-text",
         "dependencies",
-        "dependencies-with-locations",
         "display-name",
         "rust-qualified-name",
         "untracked",
@@ -298,7 +406,11 @@ def _project_rust_atom(name: str, atom: Any) -> dict[str, Any] | None:
     dependencies = _string_list(
         atom["dependencies"], f"project_rust_dependencies_invalid: {name}"
     )
-    locations = atom["dependencies-with-locations"]
+    locations = atom.get("dependencies-with-locations")
+    if locations is None:
+        if dependencies:
+            raise ProbeError(f"project_rust_fields_missing: {name}")
+        locations = []
     if not isinstance(locations, list):
         raise ProbeError(f"project_rust_edge_locations_invalid: {name}")
     located: list[str] = []
@@ -319,6 +431,41 @@ def _project_rust_atom(name: str, atom: Any) -> dict[str, Any] | None:
     if public_api is not None and type(public_api) is not bool:
         raise ProbeError(f"project_rust_public_api_invalid: {name}")
     return atom
+
+
+def _explicit_rust_stub(atom: Any) -> bool:
+    """Recognize probe-rust's source-less callee placeholder exactly."""
+    if not isinstance(atom, dict):
+        return False
+    fields = {
+        "display-name",
+        "dependencies",
+        "code-module",
+        "code-path",
+        "code-text",
+        "kind",
+        "language",
+        "untracked",
+    }
+    allowed_shapes = {
+        frozenset(fields),
+        frozenset(fields | {"dependencies-with-locations"}),
+    }
+    if set(atom) not in allowed_shapes:
+        return False
+    locations = atom.get("dependencies-with-locations", [])
+    return (
+        atom.get("language") == "rust"
+        and atom.get("kind") == "exec"
+        and atom.get("code-path") == ""
+        and atom.get("code-text") == {"lines-start": 0, "lines-end": 0}
+        and atom.get("dependencies") == []
+        and locations == []
+        and atom.get("untracked") is False
+        and isinstance(atom.get("display-name"), str)
+        and bool(atom["display-name"])
+        and atom.get("rust-qualified-name") is None
+    )
 
 
 def _validate_probe_source_identity(
@@ -355,16 +502,33 @@ def _build_target_report(
     rust_sha256: str,
     aeneas_sha256: str,
 ) -> dict[str, Any]:
-    project_atoms = {
+    all_project_atoms = {
         name: selected
         for name, atom in rust_atoms.items()
         if (selected := _project_rust_atom(name, atom)) is not None
     }
-    if not project_atoms:
+    if not all_project_atoms:
         raise ProbeError("project_rust_functions_missing")
 
     package, package_version = _validate_probe_source_identity(rust, aeneas)
     project_prefix = f"probe:{package}/{package_version}/"
+    project_atoms: dict[str, dict[str, Any]] = {}
+    for name, atom in all_project_atoms.items():
+        merged = merged_atoms.get(name)
+        if not isinstance(merged, dict) or merged.get("language") != "rust":
+            raise ProbeError(f"project_merge_missing: {name}")
+        if merged.get("code-path") != atom["code-path"]:
+            raise ProbeError(f"project_source_identity_mismatch: {name}")
+        translation = merged.get("translation-name")
+        if translation is None:
+            continue
+        _text(translation, f"project_translation_identity_missing: {name}")
+        if merged.get("is-relevant") is not True:
+            raise ProbeError(f"project_translation_not_relevant: {name}")
+        project_atoms[name] = atom
+    if not project_atoms:
+        raise ProbeError("project_translations_missing")
+
     project_names = set(project_atoms)
     edges: set[tuple[str, str]] = set()
     locations = {
@@ -375,7 +539,11 @@ def _build_target_report(
         for dependency in atom["dependencies"]:
             if dependency in project_names:
                 edges.add((consumer, dependency))
-            elif dependency.startswith(project_prefix):
+            elif (
+                dependency.startswith(project_prefix)
+                and dependency not in all_project_atoms
+                and not _explicit_rust_stub(rust_atoms.get(dependency))
+            ):
                 raise ProbeError(f"project_rust_dependency_missing: {dependency}")
 
     consumed = {dependency for _, dependency in edges}
@@ -385,6 +553,7 @@ def _build_target_report(
     _topological_orders(project_names, sorted(edges), graph_tops, locations)
 
     declarations: dict[str, Any] = {}
+    diagnostics: list[dict[str, str]] = []
     for root in graph_tops:
         merged_root = merged_atoms.get(root)
         if not isinstance(merged_root, dict) or merged_root.get("language") != "rust":
@@ -400,7 +569,14 @@ def _build_target_report(
         )
         primary_spec = declaration_atom.get("primary-spec")
         if not isinstance(primary_spec, str) or not primary_spec:
-            raise ProbeError(f"graph_top_primary_spec_missing: {root}")
+            diagnostics.append(
+                {
+                    "kind": "graph_top_primary_spec_missing",
+                    "rust_function": root,
+                    "declaration": declaration,
+                }
+            )
+            continue
         primary_spec_atom = _selected_lean_atom(
             primary_spec, merged_atoms.get(primary_spec)
         )
@@ -419,6 +595,9 @@ def _build_target_report(
             "source": locations[root],
         }
 
+    if not declarations:
+        raise ProbeError("project_primary_specs_missing")
+
     return {
         "schema": "target-report/v1",
         "inputs": {
@@ -429,9 +608,12 @@ def _build_target_report(
             "probe_aeneas": aeneas["tool"],
             "probe_rust": rust["tool"],
         },
-        "graph_tops": graph_tops,
+        "graph_tops": sorted(declarations),
         "declarations": declarations,
-        "diagnostics": [],
+        "diagnostics": sorted(
+            diagnostics,
+            key=lambda item: (item["rust_function"], item["declaration"]),
+        ),
     }
 
 
@@ -445,16 +627,19 @@ def parse_probe_bytes(
         rust,
         schema="probe-rust/extract",
         name="probe-rust",
-        version="0.10.0",
+        versions=PROBE_RUST_VERSIONS,
         label="probe_rust",
     )
     merged_atoms = _tool_envelope(
         aeneas,
         schema="probe-aeneas/extract",
         name="probe-aeneas",
-        version="0.19.0",
+        versions=PROBE_AENEAS_VERSIONS,
         label="probe_aeneas",
     )
+    profile = (rust["tool"]["version"], aeneas["tool"]["version"])
+    if profile not in PROBE_TOOL_VERSION_PROFILES:
+        raise ProbeError("probe_tool_profile_mismatch")
 
     frozen_targets: list[str] = []
     supplied_specs: dict[str, str] = {}
@@ -484,10 +669,11 @@ def parse_probe_bytes(
     for name in sorted(nodes):
         atom = _selected_lean_atom(name, merged_atoms.get(name))
         for dependency in atom["type-dependencies"]:
-            candidate = merged_atoms.get(dependency)
-            if not isinstance(candidate, dict) or candidate.get("language") != "lean":
-                raise ProbeError("selected_type_dependency_missing")
-            dependency_atom = _selected_lean_atom(dependency, candidate)
+            dependency_atom = _lean_dependency_atom(
+                dependency, merged_atoms, "selected_type_dependency_missing"
+            )
+            if dependency_atom is None:
+                continue
             sources[dependency] = dependency_atom["code-path"]
             type_edges.add((name, dependency))
 
@@ -497,10 +683,11 @@ def parse_probe_bytes(
         _validate_dependency_partition(atom, merged_atoms)
         sources[spec] = atom["code-path"]
         for dependency in atom["type-dependencies"]:
-            candidate = merged_atoms.get(dependency)
-            if not isinstance(candidate, dict) or candidate.get("language") != "lean":
-                raise ProbeError("selected_type_dependency_missing")
-            dependency_atom = _selected_lean_atom(dependency, candidate)
+            dependency_atom = _lean_dependency_atom(
+                dependency, merged_atoms, "selected_type_dependency_missing"
+            )
+            if dependency_atom is None:
+                continue
             sources[dependency] = dependency_atom["code-path"]
             type_edges.add((spec, dependency))
 

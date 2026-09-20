@@ -2,6 +2,42 @@
   "schema": "autofv-toolchain-lock/v1",
   "observed_at": "2026-08-31",
   "legitimacy_policy": "Only operator-observed, officially identified inputs marked verified may be installed or executed.",
+  "preparation_probe_sources": {
+    "schema": "autofv-preparation-probe-sources/v1",
+    "observed_at": "2026-09-19",
+    "artifact_kind": "source-identities-only",
+    "binaries_in_existing_image": false,
+    "scope": "Source identities approved for local Plan 02-11 preparation only. These records do not claim that the existing OCI image contains these binaries; image.tools and image.build_inputs remain authoritative for the built image.",
+    "wire_profile": {
+      "schema-version": "3.0",
+      "probe-rust": "0.11.0",
+      "probe-aeneas": "0.20.0",
+      "probe-lean": "0.14.0"
+    },
+    "sources": {
+      "probe-aeneas": {
+        "official_origin": "https://github.com/Beneficial-AI-Foundation/probe-aeneas.git",
+        "ref": "origin/main",
+        "commit": "70cbb9b4675d1639721fa60d1e0f2cd2df80cb54",
+        "git_tree": "590a90c5216835b98593f3eebe0ff9dd68286015",
+        "version": "0.20.0"
+      },
+      "probe-rust": {
+        "official_origin": "https://github.com/Beneficial-AI-Foundation/probe-rust.git",
+        "ref": "origin/main",
+        "commit": "1d2a7c5d0e5a5dd95e55c8d6a51cddae0b3d7572",
+        "git_tree": "edb5f704f1283762df73327e6f4a1976030062e2",
+        "version": "0.11.0"
+      },
+      "probe-lean": {
+        "official_origin": "https://github.com/Beneficial-AI-Foundation/probe-lean.git",
+        "ref": "origin/main",
+        "commit": "fa581edfcb3de7eb801580ea183430edaa50cc68",
+        "git_tree": "3ed59b2c690a3c19065a2e09a128b522d4c36580",
+        "version": "0.14.0"
+      }
+    }
+  },
   "base_oci": {
     "identity": "docker.io/library/python:3.12.12-slim-bookworm",
     "official_origin": "https://hub.docker.com/_/python",

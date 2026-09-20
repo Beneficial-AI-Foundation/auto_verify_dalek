@@ -167,9 +167,28 @@ class _RunState(TypedDict, total=False):
     _state_lock: Any
 
 
+class _CopyableRLock:
+    """Keep copied run state usable without sharing its synchronization lock."""
+
+    def __init__(self) -> None:
+        self._lock = threading.RLock()
+
+    def __enter__(self) -> _CopyableRLock:
+        self._lock.acquire()
+        return self
+
+    def __exit__(self, *_: Any) -> None:
+        self._lock.release()
+
+    def __deepcopy__(self, memo: dict[int, Any]) -> _CopyableRLock:
+        copied = type(self)()
+        memo[id(self)] = copied
+        return copied
+
+
 def _state_lock(state: _RunState):
     """One reentrant lock protects reservations, reductions and checkpoint snapshots."""
-    return state.setdefault("_state_lock", threading.RLock())
+    return state.setdefault("_state_lock", _CopyableRLock())
 
 
 def _serialized(method):

@@ -9,7 +9,16 @@ from decimal import Decimal
 from pathlib import Path
 from unittest import mock
 
-from autofv import experiment, model, provider_config, results, verifier, worker, worker_proxy
+from autofv import (
+    experiment,
+    model,
+    provider_config,
+    results,
+    run_state,
+    verifier,
+    worker,
+    worker_proxy,
+)
 from tests.test_phase1_diamond import MODEL_FIXTURE, TARGET, _FixtureProxy, _Seams
 from tests.test_clean_verifier import REFERENCE, _preparation_manifest, _sha256, _terminal_state
 
@@ -72,6 +81,17 @@ def _checkpoint_state(root: Path) -> dict:
 
 
 class RestartTests(unittest.TestCase):
+    def test_transient_state_lock_does_not_break_state_copying(self):
+        state = _checkpoint_state(Path("/unused"))
+        original_lock = run_state._state_lock(state)
+
+        copied = copy.deepcopy(state)
+
+        self.assertIsNot(copied["_state_lock"], original_lock)
+        with run_state._state_lock(copied):
+            copied["run"]["events"].append("copied")
+        self.assertNotIn("copied", state["run"]["events"])
+
     def test_synthetic_fixed_proxy_policy_does_not_trigger_provider_rebind(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)

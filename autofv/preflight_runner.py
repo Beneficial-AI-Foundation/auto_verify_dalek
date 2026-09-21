@@ -177,7 +177,7 @@ def _tool_schema_equality() -> None:
     ]
     assert len(assignments) == 1
     schemas = ast.literal_eval(assignments[0].value)
-    normalized = provider_config._tool_schemas(schemas)
+    normalized = provider_config._tool_schemas(list(schemas))
     assert len(normalized) == len(schemas) and len({item["function"]["name"] for item in normalized}) == len(schemas)
 
 

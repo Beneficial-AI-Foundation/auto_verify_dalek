@@ -41,13 +41,14 @@ def compile_source(run, source, guard_path):
 
 
 _NAME = r"[A-Za-z_][A-Za-z0-9_'.]*(?:\.[A-Za-z_][A-Za-z0-9_']*)*"
-_FORBIDDEN = re.compile(r"\b(?:sorry|admit|axiom|unsafe|run_elab|run_tac|set_option|by)\b|[\n\r;]|--|/\*")
+_FORBIDDEN = re.compile(r"\b(?:sorry|admit|axiom|unsafe|run_elab|run_tac|set_option|by)\b|;|--|/\*")
 
 
 def _signature(text, kind, name):
     if not isinstance(text, str) or _FORBIDDEN.search(text) or ":=" in text:
         raise ContractError("unsupported feasibility signature syntax")
-    match = re.fullmatch(rf"{kind}\s+{re.escape(name)}\s*(.+)", text.strip())
+    text = re.sub(r"[ \t\r\n]+", " ", text.strip())
+    match = re.fullmatch(rf"{kind}\s+{re.escape(name)}\s*(.+)", text)
     if match is None:
         raise ContractError("unsupported feasibility declaration signature")
     rest = match.group(1)
@@ -78,15 +79,22 @@ def _signature(text, kind, name):
 
 def _definition(source, declaration):
     short = declaration.rsplit(".", 1)[-1]
-    matches = list(re.finditer(rf"^def\s+({re.escape(declaration)}|{re.escape(short)})\s+([^\n]+)$", source, re.M))
+    matches = list(
+        re.finditer(
+            rf"^def\s+({re.escape(declaration)}|{re.escape(short)})\s+(.+?)(?=^[^ \t\r\n]|\Z)",
+            source,
+            re.M | re.S,
+        )
+    )
     if len(matches) != 1 or ":=" not in matches[0].group(0):
         raise ContractError("unsupported feasibility source definition")
     header, body = matches[0].group(0).split(":=", 1)
     name = matches[0].group(1)
     binders, result = _signature(header, "def", name)
-    if _FORBIDDEN.search(body):
+    body = re.sub(r"[ \t\r\n]+", " ", body.strip())
+    if not body or _FORBIDDEN.search(body):
         raise ContractError("unsupported feasibility source body")
-    return binders, result, body.strip()
+    return binders, result, body
 
 
 def _replace(text, names):
@@ -110,7 +118,7 @@ def consumer_source(request, sources):
     modules = request["modules"]
     if any(re.fullmatch(_NAME, module) is None for module in modules):
         raise ContractError("invalid feasibility module")
-    lines = [*(f"import {module}" for module in modules), ""]
+    lines = [*(f"import {module}" for module in modules), "import Std.Tactic", ""]
     qualified = {node.removeprefix("probe:").rsplit(".", 1)[-1]: node.removeprefix("probe:") for node in items}
     for item in items.values():
         # A proposition-valued expression checks elaboration without any proof
@@ -149,5 +157,5 @@ def consumer_source(request, sources):
         goal = _proposition(item, consumer_names)
         rules = ", ".join(f"_autofv_h{index}" for index in range(len(dependencies)))
         lines.extend(["", f"example {' '.join(parameters + hypotheses)} : {goal} := by",
-                      f"  simp only [{rules}]"])
+                      f"  simp only [{rules}]", "  omega"])
     return "\n".join(lines) + "\n"

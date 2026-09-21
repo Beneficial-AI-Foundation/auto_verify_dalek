@@ -587,6 +587,7 @@ class VerifierRuntimeTests(unittest.TestCase):
         self.assertIn("--read-only", argv)
         self.assertEqual(argv[argv.index("--network") + 1], "none")
         self.assertEqual(argv[argv.index("--pull") + 1], "never")
+        self.assertEqual(argv[argv.index("--memory") + 1], "4g")
         self.assertIn("CARGO_NET_OFFLINE=true", argv)
         self.assertIn(
             "type=volume,src=fresh-verifier-volume,dst=/project,volume-nocopy",
@@ -1175,8 +1176,11 @@ class Phase1DiamondTests(unittest.TestCase):
         )
         self.assertEqual(result["execution_tier"], "sealed_runsc")
         self.assertTrue(result["scored"])
-        self.assertEqual(result["evidence_level"], "L4")
-        self.assertEqual(result["claim"]["status"], "supported")
+        # The verifier reaches L4, but recovered contracts remain claim-withheld
+        # until the separate semantic-review artifact is supplied.
+        self.assertEqual(result["evidence_level"], "L3")
+        self.assertEqual(result["claim"]["status"], "withheld")
+        self.assertEqual(result["contract_semantic_review_status"], "withheld")
         self.assertEqual(result["missing_evidence"], [])
         self.assertEqual(result["sorry_counts"], {"before": 1, "after": 0})
         self.assertEqual(result["proxy_requests"], 8)
@@ -1197,6 +1201,7 @@ class Phase1DiamondTests(unittest.TestCase):
         report = json.loads((run_root / "evidence/verifier.json").read_text())
         egress = json.loads((run_root / "evidence/egress.json").read_text())
         self.assertEqual(report["accepted_commit"], result["accepted_commit"])
+        self.assertEqual(report["evidence_level"], "L4")
         self.assertNotEqual(report["agent_worker_id"], report["verifier_worker_id"])
         self.assertTrue(report["checks"]["runtime_identity"])
         self.assertEqual(

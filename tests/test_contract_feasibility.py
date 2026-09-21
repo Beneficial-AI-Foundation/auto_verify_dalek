@@ -62,11 +62,40 @@ class ConsumerFeasibilityTests(unittest.TestCase):
         self.assertIn('_autofv_dep_0', source)
         self.assertIn('_autofv_h0', source)
         self.assertIn('example', source)
+        self.assertIn('import Std.Tactic', source)
+        self.assertIn('\n  omega', source)
         # The implementation cannot silently supply a fact missing from the
         # contract: the consumer goal is over an arbitrary function parameter.
         obligation = source[source.index('example'):]
         self.assertNotIn('Numbers.increment', obligation)
         self.assertNotIn('Pipeline.finish', obligation)
+
+    def test_multiline_signatures_and_definition_expressions_stay_bounded(self):
+        from autofv import contract_feasibility
+        graph, records, sources = fixture()
+        records['probe:Pipeline.finish']['canon'] = (
+            'theorem Pipeline.finish_spec (n : Nat) :\n'
+            '    Pipeline.finish n = n + 1'
+        )
+        sources['Pipeline/Finish.lean'] = (
+            'import Numbers.Increment\nnamespace Pipeline\n'
+            'def finish (n : Nat) : Nat :=\n'
+            '  Numbers.increment n\n\nend Pipeline\n'
+        )
+        request = worker.contract_feasibility_request(graph, records)
+
+        source = contract_feasibility.consumer_source(request, sources)
+
+        self.assertIn(
+            '#check (∀ (n : Nat), Pipeline.finish n = n + 1 : Prop)', source
+        )
+        self.assertIn('(fun (n : Nat) => _autofv_dep_0 n)', source)
+        records['probe:Pipeline.finish']['canon'] += '\naxiom leaked : True'
+        request = worker.contract_feasibility_request(graph, records)
+        with self.assertRaisesRegex(
+            contract_feasibility.ContractError, 'unsupported feasibility signature syntax'
+        ):
+            contract_feasibility.consumer_source(request, sources)
 
     def test_weak_contract_reaches_real_consumer_goal_and_failure_is_retained(self):
         from autofv import contract_feasibility

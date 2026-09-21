@@ -18,14 +18,15 @@ _CANDIDATE_SOURCE_DIGEST = r'''
 import hashlib, json, stat, sys
 from pathlib import Path
 root = Path(sys.argv[1])
-skip = {".git", ".lake", "target", "__pycache__"}
+skip_parts = {".git", ".lake", "target", "__pycache__"}
+skip_names = {"lake-manifest.json"}
 def identity(value):
     return (value.st_dev, value.st_ino, value.st_mode, value.st_size,
             value.st_mtime_ns, value.st_ctime_ns)
 entries = []
 for path in sorted(root.rglob("*"), key=lambda value: value.as_posix()):
     relative = path.relative_to(root)
-    if any(part in skip for part in relative.parts):
+    if any(part in skip_parts for part in relative.parts) or relative.name in skip_names:
         continue
     status = path.lstat()
     if stat.S_ISLNK(status.st_mode) or not (stat.S_ISDIR(status.st_mode) or stat.S_ISREG(status.st_mode)):

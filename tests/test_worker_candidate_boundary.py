@@ -13,7 +13,7 @@ import unittest
 from pathlib import Path
 from unittest import mock
 
-from autofv import worker, worker_artifacts, worker_runtime
+from autofv import candidate_lane, worker, worker_artifacts, worker_runtime
 
 
 _LOCK = {
@@ -59,6 +59,31 @@ def _lane(run_root: Path) -> dict[str, str]:
 
 
 class CandidateRuntimeBoundaryTests(unittest.TestCase):
+    def test_candidate_source_digest_ignores_lake_generated_manifest(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            source = root / "Proof.lean"
+            source.write_text("source\n", encoding="utf-8")
+
+            def digest() -> str:
+                return subprocess.run(
+                    (
+                        sys.executable,
+                        "-c",
+                        candidate_lane._CANDIDATE_SOURCE_DIGEST,
+                        str(root),
+                    ),
+                    check=True,
+                    capture_output=True,
+                    text=True,
+                ).stdout.strip()
+
+            before = digest()
+            (root / "lake-manifest.json").write_text("{}\n", encoding="utf-8")
+            self.assertEqual(digest(), before)
+            source.write_text("changed\n", encoding="utf-8")
+            self.assertNotEqual(digest(), before)
+
     def test_candidate_runtime_argv_mounts_only_private_worktree(self) -> None:
         argv = worker_runtime._candidate_runtime_argv(
             _LOCK, "run-volume", _LANE_ID, "lake", "build"

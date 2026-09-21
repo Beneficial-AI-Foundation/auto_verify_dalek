@@ -10,8 +10,8 @@
       "source": "Diamond/Left.lean",
       "statement": "∀ input : Nat, Diamond.left input = input + 1",
       "statement_sha256": "0cf305fa09d77ca5cdab1e8d7333a48011bf1b0be76ccc1987ad07b04e1ac024",
-      "proof": "by\n  intro input\n  simp [Diamond.left]",
-      "proof_sha256": "639893feacd48bd629cf4251a293892fb1883a35bc352a4b8ea865b5187a59ef"
+      "proof": "by\n  intro input\n  rfl",
+      "proof_sha256": "908c7b98cd00c75fefdb4526122989e9c7c31c0abbebf4fa89c2c248e818be9c"
     },
     {
       "declaration": "Diamond.right",
@@ -19,8 +19,8 @@
       "source": "Diamond/Right.lean",
       "statement": "∀ input : Nat, Diamond.right input = input * 2",
       "statement_sha256": "d279e731fdcde74d4792403902b0cb4968e95d3e76a5601c246d67978779c377",
-      "proof": "by\n  intro input\n  simp [Diamond.right]",
-      "proof_sha256": "1a1427ac2f37122f2b0bd083f4b26a1a0b7c37f805c5c643d61bc76ea90fc938"
+      "proof": "by\n  intro n\n  rfl",
+      "proof_sha256": "acc4d1722b7b2988e14aa9d382ec6a18d8d3792dfa96d1cfe309af0e64373fdc"
     }
   ]
 }

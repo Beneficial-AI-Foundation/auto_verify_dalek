@@ -143,7 +143,7 @@ def _runtime_argv(
         "--cpus",
         "2",
         "--memory",
-        "2g",
+        "4g",
         "--tmpfs",
         "/tmp:rw,noexec,nosuid,nodev,size=64m",
         "--tmpfs",

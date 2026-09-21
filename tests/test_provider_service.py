@@ -664,6 +664,7 @@ class ProviderServiceTests(unittest.TestCase):
                     worker_proxy.configure_provider(
                         run, env_path=_environment(root, endpoint=endpoint), tool_schemas=_tools()
                     )
+                    _install_trusted_authorization_fixture(run, root)
                     binding = provider_config.provider_binding(run)
                     messages = _messages()
                     request = _request(messages)

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hmac
 import os
 import re
 import secrets
@@ -12,6 +13,27 @@ from typing import Any
 
 from . import worker_runtime as _runtime
 from .worker_runtime import WorkerError
+
+
+def candidate_binding_is_current(
+    fingerprints: list[str],
+    policy_sha256: str,
+    current_fingerprints: list[str],
+    current_policy_sha256: str,
+) -> bool:
+    """Return whether candidate inputs are a non-empty subset of current truth."""
+    return (
+        isinstance(fingerprints, list)
+        and bool(fingerprints)
+        and all(isinstance(value, str) for value in fingerprints)
+        and fingerprints == sorted(set(fingerprints))
+        and isinstance(current_fingerprints, list)
+        and all(isinstance(value, str) for value in current_fingerprints)
+        and set(fingerprints) <= set(current_fingerprints)
+        and isinstance(policy_sha256, str)
+        and isinstance(current_policy_sha256, str)
+        and hmac.compare_digest(policy_sha256, current_policy_sha256)
+    )
 
 
 _CANDIDATE_SOURCE_DIGEST = r'''

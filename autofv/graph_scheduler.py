@@ -2,17 +2,27 @@
 
 from __future__ import annotations
 
+import hashlib
 import hmac
 import threading
 from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, wait
 from pathlib import PurePosixPath
 from typing import Any
 
-from .contracts import ContractError
-from .run_state import _RunState, _canonical_sha256, _event_once
+from .contracts import ContractError, canonical_json_bytes
 
 
 MAX_PARALLEL_LANES = 4
+_RunState = dict[str, Any]
+
+
+def _canonical_sha256(value: Any) -> str:
+    return hashlib.sha256(canonical_json_bytes(value)).hexdigest()
+
+
+def _event_once(run: dict[str, Any], event: str) -> None:
+    if event not in run.setdefault("events", []):
+        run["events"].append(event)
 
 
 def _record_preparation_defect(

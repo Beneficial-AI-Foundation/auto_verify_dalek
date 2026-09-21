@@ -127,7 +127,7 @@ class ToolchainContractTests(unittest.TestCase):
         )
         self.assertEqual(top.returncode, 0, top.stderr)
         self.assertEqual(run.returncode, 0, run.stderr)
-        self.assertIn("{inspect,run}", top.stdout)
+        self.assertIn("{inspect,run,preflight}", top.stdout)
         self.assertIn("inspect", top.stdout)
         self.assertIn("--target", run.stdout)
         self.assertIn("--run-config", run.stdout)

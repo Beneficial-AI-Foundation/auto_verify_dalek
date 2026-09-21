@@ -11,6 +11,7 @@ from pathlib import Path, PurePosixPath
 from typing import Any
 
 from . import probes, worker
+from .candidate_lane import candidate_binding_is_current
 from .contracts import BudgetExhausted, ContractError, ContractInconclusive, _sha256
 from .graph_scheduler import (
     MAX_PARALLEL_LANES,
@@ -102,17 +103,11 @@ def _candidate_binding_is_current(
     current_policy_sha256: str,
 ) -> bool:
     """Return whether candidate inputs are a non-empty subset of current truth."""
-    return (
-        isinstance(fingerprints, list)
-        and bool(fingerprints)
-        and all(isinstance(value, str) for value in fingerprints)
-        and fingerprints == sorted(set(fingerprints))
-        and isinstance(current_fingerprints, list)
-        and all(isinstance(value, str) for value in current_fingerprints)
-        and set(fingerprints) <= set(current_fingerprints)
-        and isinstance(policy_sha256, str)
-        and isinstance(current_policy_sha256, str)
-        and hmac.compare_digest(policy_sha256, current_policy_sha256)
+    return candidate_binding_is_current(
+        fingerprints,
+        policy_sha256,
+        current_fingerprints,
+        current_policy_sha256,
     )
 
 

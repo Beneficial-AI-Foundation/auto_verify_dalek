@@ -3,9 +3,11 @@
 from __future__ import annotations
 
 import argparse
+import ast
 import hashlib
 import json
 import os
+import re
 import stat
 import sys
 import time
@@ -16,12 +18,10 @@ if __package__ in {None, ""}:
     sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from autofv import (  # noqa: E402
-    agent_lane,
-    diamond,
+    candidate_lane,
     graph_scheduler,
     preflight,
     preflight_evidence,
-    prepare_dalek,
     provider_config,
     provider_receipts,
     result_summary,
@@ -112,8 +112,8 @@ def _cycle_rejection() -> None:
 
 def _stale_binding_reverification() -> None:
     digest = "1" * 64
-    assert diamond._candidate_binding_is_current([digest], digest, [digest], digest)
-    assert not diamond._candidate_binding_is_current([digest], digest, [digest], "2" * 64)
+    assert candidate_lane.candidate_binding_is_current([digest], digest, [digest], digest)
+    assert not candidate_lane.candidate_binding_is_current([digest], digest, [digest], "2" * 64)
 
 
 def _undeclared_dependency_rejected() -> None:
@@ -168,11 +168,17 @@ def _honest_terminal_labels() -> None:
 
 
 def _tool_schema_equality() -> None:
-    tools = {
-        schema["name"]: {"schema": schema, "invoke": lambda _arguments: None}
-        for schema in agent_lane._TOOL_SCHEMAS
-    }
-    assert agent_lane.capture_tool_schemas(tools) == list(agent_lane._TOOL_SCHEMAS)
+    source = Path("/volume/autofv-control/autofv/agent_lane.py").read_text()
+    module = ast.parse(source)
+    assignments = [
+        node for node in module.body
+        if isinstance(node, ast.Assign)
+        and any(isinstance(target, ast.Name) and target.id == "_TOOL_SCHEMAS" for target in node.targets)
+    ]
+    assert len(assignments) == 1
+    schemas = ast.literal_eval(assignments[0].value)
+    normalized = provider_config._tool_schemas(schemas)
+    assert len(normalized) == len(schemas) and len({item["function"]["name"] for item in normalized}) == len(schemas)
 
 
 def _tree_has_no_symlinks() -> None:
@@ -182,14 +188,32 @@ def _tree_has_no_symlinks() -> None:
                 raise AssertionError("sealed source contains a symlink")
 
 
+def _source_files() -> list[bytes]:
+    values = []
+    for root, _directories, files in os.walk("/volume/work/project"):
+        for name in files:
+            path = Path(root) / name
+            if path.is_file() and not path.is_symlink():
+                values.append(path.read_bytes())
+    return values
+
+
 def _secret_scan() -> None:
     for name in provider_config._ENV_NAMES:
         assert name not in os.environ
-    prepare_dalek._scan_prepared(Path("/volume/work/project"))
+    pattern = re.compile(
+        rb"(?i)(?:api[_-]?key|secret|token|password)\s*[:=]\s*['\"]?[a-z0-9_-]{8,}"
+    )
+    assert not any(pattern.search(raw) for raw in _source_files())
 
 
 def _spoiler_scan() -> None:
-    prepare_dalek._scan_prepared(Path("/volume/work/project"))
+    markers = (
+        b"diamond" + b"-reference",
+        b"hidden" + b" reference",
+        b"reference." + b"json",
+    )
+    assert not any(marker in raw.lower() for raw in _source_files() for marker in markers)
 
 
 def _fixed_egress_path() -> None:
@@ -344,7 +368,7 @@ def run_preflight(
     max_age_seconds: int = MAX_AGE_SECONDS,
 ) -> dict[str, Any]:
     """Run the fixed suite once in the sealed runsc worker and retain authorization."""
-    from autofv import provider_service, worker
+    from autofv import agent_lane, prepare_dalek, provider_service, worker
     from autofv.contracts import (
         load_toolchain_lock,
         validate_native_decide_policy,
@@ -353,6 +377,7 @@ def run_preflight(
     )
 
     target, manifest = validate_target(repo)
+    prepare_dalek._scan_prepared(target)
     validate_run_config(run_config)
     lock = load_toolchain_lock()
     validate_native_decide_policy(lock)

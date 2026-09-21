@@ -351,6 +351,33 @@ def statement_text(bundle, path, decl_line, sorry_line):
     return "\n".join(lines[decl_line - 1:sorry_line]).rstrip()
 
 
+PROOF_SKETCH = """
+How a `@[progress]` proof goes here (Aeneas + this project):
+- Statement: `f args ⦃ r => P r ⦄` is sugar for `spec (f args) (fun r => P r)`.
+  P is a value equation (`Field51_as_Nat r = ...` or `... ≡ ... [MOD p]`) ∧ the
+  bounds callers need (`∀ i < 5, r[i]!.val < 2^52`). Tag it `@[progress]`.
+- Skeleton: `unfold f` then `progress*` (or one step at a time,
+  `progress as ⟨x, hx⟩`, `⟨x, hx, hx_bv⟩` when the lemma also yields a bitvector
+  fact). Each `progress` consumes one `let x ← g ...` with the `@[progress]`
+  lemma of `g`: Aeneas already registers `+ - * >>> <<< &&& |||`, casts,
+  `Array.index_usize` / `update`; your own specs count once tagged. When
+  `progress` fails, the missing side condition is usually an overflow or
+  index bound: prove it just before with `have : ... := by scalar_tac` /
+  `omega` from the postconditions already in context.
+- Finish: `unfold Field51_as_Nat U8x32_as_Nat` +
+  `simp only [Finset.sum_range_succ, Finset.range_zero, Finset.sum_empty]` to
+  expand `∑`; `simp [hx, ...]` / `simp_lists` for indexing after `update`;
+  `omega` / `scalar_tac` for linear facts; `Nat.ModEq` lemmas or `zmodify` for
+  `≡ [MOD p]`; `decide` / `native_decide` for closed numerals.
+- Big functions: prove per-limb helper lemmas (pure `U64` / `Nat` facts) as
+  separate theorems in the same file, then combine.
+- Where things are: Aeneas lemmas in
+  `.lake/packages/aeneas/backends/lean/Aeneas/Std/` (`Scalar/`, `Array/`,
+  `WP.lean`); project helpers in `Curve25519Dalek/Aux.lean` and
+  `Curve25519Dalek/Math/Basic.lean` (`p`, `L`, `Field51_as_Nat`,
+  `U8x32_as_Nat`). Do not search the whole filesystem.
+"""
+
 PROMPT_SPEC = """Write and prove a specification for `{fn}` in {path}.
 
 `{fn}` is defined in Curve25519Dalek/Funs.lean (near line {funs_line}).
@@ -366,7 +393,7 @@ top-level theorem `{top_decl}` in {top_path}:
 Direct callers of `{fn}` that later steps must specify: {callers}. Design your
 statement so it is strong enough for them and for the final goal (bounds and
 the `as_Nat`-style value equations the goal needs).
-{available}
+{available}{sketch}
 Rules — violations are auto-rejected by the harness:
 - Edit ONLY {path}. No other file. Adding `import` lines to it is fine.
 - The file must end up containing at least one fully proved theorem whose
@@ -415,7 +442,7 @@ prove at least one useful theorem whose statement mentions that function:
 You may refine newly created statements while testing their callers.
 Fill the top theorem's existing `sorry`, add required imports inside the
 allowlist, and run `lake build` until the complete project succeeds.
-{available}
+{available}{sketch}
 Rules — violations are auto-rejected by the harness:
 - Edit only the exact files in the allowlist above.
 - Do not change or remove any pre-existing declaration statement. In
@@ -481,7 +508,7 @@ def joint_prompt(batch, done, top_funs_in_plan, top_decl, top_stmt):
         planned="\n".join(planned) or "(none; prove the top theorem directly)",
         edges="\n".join(edges) or "(no unspecified internal edges)",
         editable="\n".join(f"- {p}" for p in batch["editable_files"]),
-        available=available_block(done, top_funs_in_plan))
+        available=available_block(done, top_funs_in_plan), sketch=PROOF_SKETCH)
 
 
 def _sha_bytes(data):
@@ -667,11 +694,12 @@ def main():
     def step_prompt(i, s, done_now):
         if s["mode"] == "fill":
             avail = available_block(done_now, top_in_plan) if args.bottom_up else ""
-            return top_prompt + (avail and "\n" + avail)
+            return top_prompt + (avail and "\n" + avail) + PROOF_SKETCH
         kind_text, attr_rule = spec_kind(s)
         return PROMPT_SPEC.format(
             fn=short_name(s["fn"]), path=s["path"], funs_line=funs_line(data, s["fn"]),
             spec_kind=kind_text.format(fn=short_name(s["fn"])), attr_rule=attr_rule,
+            sketch=PROOF_SKETCH,
             step=i, steps=len(steps), top_decl=short, top_path=path, top_stmt=top_stmt,
             callers=", ".join(s["callers"]) or "(none: the top-level function itself)",
             available=available_block(done_now, top_in_plan), module=driver.path_to_module(s["path"]))

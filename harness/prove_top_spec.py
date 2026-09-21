@@ -24,6 +24,12 @@ sorry-count gates, rollback. Differences from driver.py:
     files plus internal_specs.json only if every planned spec and the top
     proof pass together. Failed work is saved as an immutable partial
     snapshot and none of it is published.
+  * --bottom-up --stepwise: the legacy control. Same plan, but each internal
+    spec is its own agent session with one editable file, accepted
+    (gate mode "spec": no new sorry, a proved `@[progress]` theorem about
+    the function) and published to the bundle before the next step. Known
+    weakness, kept for A/B comparison: a locally true but too-weak spec
+    passes its step and only fails at the top proof.
 
 Ledger: ledger/top_spec_rounds.jsonl (one record per attempt; transcripts
 in ledger/transcripts/topspec_*.jsonl like the driver's).
@@ -34,6 +40,7 @@ Usage:
   python3 harness/prove_top_spec.py --model claude-sonnet-5       # smallest closure
   python3 harness/prove_top_spec.py --model <id> --target curve25519_dalek.scalar.Scalar.to_bytes_spec
   python3 harness/prove_top_spec.py --bottom-up --target curve25519_dalek.IdentityCurveModelsProjectivePoint.identity_spec --dry-run
+  python3 harness/prove_top_spec.py --bottom-up --stepwise --target <same> --dry-run   # legacy control
 """
 import argparse
 import datetime
@@ -508,6 +515,10 @@ def main():
     ap.add_argument("--bottom-up", action="store_true",
                     help="jointly specify all unspecified internal callees and prove "
                          "the top spec in one atomic multi-file batch")
+    ap.add_argument("--stepwise", action="store_true",
+                    help="with --bottom-up: legacy leaves-first mode, one internal spec "
+                         "per agent session (one editable file, accepted and published "
+                         "step by step) instead of one joint batch; A/B control")
     ap.add_argument("--max-joint-files", type=int, default=0,
                     help="reject a bottom-up closure above N editable files (0 = unlimited)")
     ap.add_argument("--model", default="")
@@ -529,6 +540,9 @@ def main():
     ap.add_argument("--dry-run", action="store_true")
     args = ap.parse_args()
     args.g2 = False  # driver.gate: no trust-base manifests in a bundle slot
+    if args.stepwise and not args.bottom_up:
+        sys.exit("--stepwise requires --bottom-up")
+    joint = args.bottom_up and not args.stepwise
 
     rows = rank_candidates(args.bundle, args.probe)
     if args.list:
@@ -565,14 +579,16 @@ def main():
             first_for_path.setdefault(s["path"], s["fn"])
         skeletons = [(p, skeleton(fn)) for p, fn in first_for_path.items()
                      if not os.path.isfile(os.path.join(REPO, args.bundle, p))]
-        steps = []
+        # stepwise: the same plan as separately accepted steps, leaves first
+        steps = [] if joint else batch["planned"] + [batch["top"]]
     else:
         steps = [{"mode": "fill", "fn": "probe:" + name, "path": path}]
         skeletons = []
     skel_paths = {p for p, _ in skeletons}
     top_stmt = statement_text(args.bundle, path, decl_line, line)
     if args.bottom_up:
-        print(f"  joint batch: {len(batch['planned_fns'])} internal function(s), "
+        what = ("joint batch" if joint else "stepwise plan")
+        print(f"  {what}: {len(batch['planned_fns'])} internal function(s), "
               f"{len(batch['editable_files'])} editable file(s)")
         for i, s in enumerate(batch["planned"], 1):
             tag = " [new file]" if s["path"] in skel_paths else " [existing file]"
@@ -590,7 +606,7 @@ def main():
             available=available_block(done_now, top_in_plan), module=driver.path_to_module(s["path"]))
 
     if args.dry_run:
-        if args.bottom_up:
+        if joint:
             print("\n──── joint prompt ────\n" +
                   joint_prompt(batch, done, top_in_plan, short, top_stmt))
             return
@@ -648,7 +664,7 @@ def main():
         "auto_reset", "max_auto_resets")}
     plan_id = run_id
 
-    if args.bottom_up:
+    if joint:
         editable = batch["editable_files"]
         modules = [driver.path_to_module(p) for p in editable]
         prompt = joint_prompt(batch, done, top_in_plan, short, top_stmt)
@@ -785,8 +801,8 @@ def main():
         record = {
             "run_id": run_id, "bundle": args.bundle, "target": name, "path": path,
             "line": line, "closure": {"total": closure, "funs": funs, "math": math},
-            "plan": {"id": plan_id, "step": i, "of": len(steps), "mode": s["mode"],
-                     "fn": short_name(s["fn"]), "step_path": spath,
+            "plan": {"id": plan_id, "mode": "stepwise", "step": i, "of": len(steps),
+                     "step_mode": s["mode"], "fn": short_name(s["fn"]), "step_path": spath,
                      "new_file": spath in skel_paths} if args.bottom_up else None,
             "outcome": outcome, "detail": detail, "rounds": rounds,
             "session_ids": session_ids, "g2": "skipped", "limits": limits,

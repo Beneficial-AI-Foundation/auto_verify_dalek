@@ -9,10 +9,11 @@
 #         harness/prove_top_spec.py ONE top spec of the bundle dalek-top-spec-only (--target)
 SCRIPT=harness/prove_top_spec.py
 EXP_NAME=""                       # empty = top-spec-<YYYYmmdd-HHMM>
-EXP_MSG="top-spec round: ProjectivePoint identity_spec, bottom-up (from_limbs, ONE, ZERO), claude-sonnet-5"
+EXP_MSG="top-spec round: ProjectivePoint identity_spec, bottom-up joint (from_limbs, ONE, ZERO), claude-sonnet-5"
 DRIVER_ARGS=(
   --target curve25519_dalek.IdentityCurveModelsProjectivePoint.identity_spec
-  --bottom-up                     # one step per internal callee (own spec file), then the top spec
+  --bottom-up                     # joint: all missing internal spec files + top file, one session, one gate
+  # --stepwise                    # A/B control: one session per internal callee, published step by step
   --model claude-sonnet-5
   --rounds 3
   --max-turns 30

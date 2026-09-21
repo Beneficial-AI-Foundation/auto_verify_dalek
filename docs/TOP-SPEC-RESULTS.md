@@ -121,8 +121,15 @@ before sealing. No ledger record for that attempt.
 
 ## Bottom-up mode (2026-09-18)
 
-`prove_top_spec.py --bottom-up` handles targets that need internal specs
-without giving the agent more than one file per round. The plan walks the
+Since 2026-09-21 `--bottom-up` alone runs the *joint* mode of
+[PLAN-REVISE-LOOP.md](PLAN-REVISE-LOOP.md): one agent session over every
+missing internal spec file plus the top file, one gate, atomic publication.
+The stepwise mode described below is kept as the A/B control behind
+`--bottom-up --stepwise`; ledger records carry `plan.mode` =
+`"joint"` or `"stepwise"`.
+
+`prove_top_spec.py --bottom-up --stepwise` handles targets that need internal
+specs without giving the agent more than one file per round. The plan walks the
 callee graph of the target function leaves-first (bundle probe, instance
 records excluded, kept top specs and already-accepted internal specs
 skipped), one step per internal function:
@@ -144,11 +151,11 @@ rules; an accepted step is committed into the slot baseline, copied back
 into the bundle and recorded in `dalek-top-spec-only/internal_specs.json`
 (so a later target reuses it, e.g. `FieldElement51.conditional_select`
 for four top specs). A failed step ends the plan; earlier steps stay.
-Ledger: one record per step, `plan.{id,step,of,mode,fn}`.
+Ledger: one record per step, `plan.{id,mode,step,of,step_mode,fn}`.
 
 ```
-python3 harness/prove_top_spec.py --bottom-up --target curve25519_dalek.IdentityCurveModelsProjectivePoint.identity_spec --dry-run
-  plan: 4 step(s)
+python3 harness/prove_top_spec.py --bottom-up --stepwise --target curve25519_dalek.IdentityCurveModelsProjectivePoint.identity_spec --dry-run
+  stepwise plan: 3 internal function(s), 4 editable file(s)
     1. spec FieldElement51.from_limbs  (…/FieldElement51/FromLimbs.lean [new file])
     2. spec FieldElement51.ONE         (…/FieldElement51/ONE.lean [new file])
     3. spec FieldElement51.ZERO        (…/FieldElement51/ZERO.lean [new file])

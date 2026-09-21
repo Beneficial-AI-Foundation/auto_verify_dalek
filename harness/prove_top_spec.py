@@ -18,18 +18,12 @@ sorry-count gates, rollback. Differences from driver.py:
   * an accepted proof is copied back into the bundle file (and, with
     --commit, committed here). Nothing is written to Curve25519Dalek/ of
     this checkout;
-  * --bottom-up: the bundle strips every internal spec, so a top spec
-    whose function calls other Funs.lean functions needs their specs
-    first. The plan walks the callee graph leaves-first, one internal
-    function per step: the agent writes AND proves a `@[progress]` spec
-    for it in that function's own spec file (created as a skeleton, and
-    imported from Curve25519Dalek.lean, by the harness before the sealed
-    baseline), gate mode "spec" (zero sorry in the file, a progress
-    theorem mentioning the function; driver.gate). The last step is the
-    top spec itself, gate mode "fill" as before. Every step is one file.
-    Accepted internal specs are copied back into the bundle and recorded
-    in <bundle>/internal_specs.json, so later targets skip them. A failed
-    step ends the plan; earlier accepted steps are kept.
+  * --bottom-up: compute every still-unspecified internal callee first, then
+    give all of their spec files and the fixed top-spec file to one agent
+    session. The joint gate validates the whole allowlist and publishes the
+    files plus internal_specs.json only if every planned spec and the top
+    proof pass together. Failed work is saved as an immutable partial
+    snapshot and none of it is published.
 
 Ledger: ledger/top_spec_rounds.jsonl (one record per attempt; transcripts
 in ledger/transcripts/topspec_*.jsonl like the driver's).
@@ -50,6 +44,7 @@ import re
 import shutil
 import subprocess
 import sys
+import tempfile
 
 REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
@@ -109,7 +104,7 @@ def locate(bundle, path, name):
 
 
 # ── workspace ────────────────────────────────────────────────────────────
-def make_bundle_slot(run_dir, bundle, skeletons=()):
+def make_bundle_slot(run_dir, bundle, skeletons=(), baseline_imports=()):
     """driver.make_slot for the bundle: rsync minus .git and .lake/packages
     (symlinked to the main checkout's), StmtCanon copied in for the G1 gate,
     `git init` + one commit as the sealed baseline. `skeletons`
@@ -141,7 +136,8 @@ def make_bundle_slot(run_dir, bundle, skeletons=()):
         os.makedirs(os.path.dirname(full), exist_ok=True)
         with open(full, "w") as fh:
             fh.write(text)
-        add_root_import(slot, driver.path_to_module(path))
+    for module in baseline_imports:
+        add_root_import(slot, module)
     g = ["git", "-c", "user.name=harness", "-c", "user.email=harness@localhost"]
     for c in (["init", "-q"], ["add", "-A"],
               ["commit", "-q", "--allow-empty", "-m", "sealed baseline"]):
@@ -281,6 +277,22 @@ def build_plan(args, row, data):
     return steps, done, sorted(skipped & top_funs)
 
 
+def build_joint_batch(args, row, data):
+    """Plan one atomic multi-file batch for a bottom-up target."""
+    steps, done, top_funs = build_plan(args, row, data)
+    planned = [s for s in steps if s["mode"] == "spec"]
+    top = steps[-1]
+    spec_files = list(dict.fromkeys(s["path"] for s in planned))
+    editable_files = list(dict.fromkeys(spec_files + [top["path"]]))
+    return {
+        "planned": planned,
+        "planned_fns": [s["fn"] for s in planned],
+        "spec_files": spec_files,
+        "top": top,
+        "editable_files": editable_files,
+    }, done, top_funs
+
+
 def short_name(k):
     return k.removeprefix("probe:").removeprefix("curve25519_dalek.")
 
@@ -328,6 +340,42 @@ End your final message with exactly one line:
   END_REASON:LIMIT      — you cannot finish this step; say why in one line
 """
 
+PROMPT_JOINT = """Jointly specify the internal functions below and prove the fixed top theorem.
+
+Fixed top theorem `{top_decl}` in {top_path} (its statement must not change):
+
+```lean
+{top_stmt}
+```
+
+Internal functions are listed in dependency order (callees before callers):
+{planned}
+
+Direct call edges relevant to the batch:
+{edges}
+
+Editable files (the complete allowlist):
+{editable}
+
+Work across these files as one problem. For every internal function, add and
+prove at least one useful `@[progress]` theorem whose statement mentions that
+function. You may refine newly created statements while testing their callers.
+Fill the top theorem's existing `sorry`, add required imports inside the
+allowlist, and run `lake build` until the complete project succeeds.
+{available}
+Rules — violations are auto-rejected by the harness:
+- Edit only the exact files in the allowlist above.
+- Do not change or remove any pre-existing declaration statement. In
+  particular, the fixed top theorem statement is immutable.
+- Do not add `axiom` declarations or `@[implemented_by]` / `@[extern]`
+  attributes. `native_decide` is allowed.
+- Do not add `sorry`; every new specification must be proved.
+
+End your final message with exactly one line:
+  END_REASON:COMPLETE   — every spec and the top proof compile with `lake build`
+  END_REASON:LIMIT      — you cannot finish this batch; say why in one line
+"""
+
 AVAILABLE_BLOCK = """
 Specifications already available (import their modules and use them):
 {items}
@@ -342,6 +390,112 @@ def available_block(done, top_funs_in_plan):
     return AVAILABLE_BLOCK.format(items="\n".join(items)) if items else ""
 
 
+def joint_prompt(batch, done, top_funs_in_plan, top_decl, top_stmt):
+    planned = []
+    edges = []
+    for i, s in enumerate(batch["planned"], 1):
+        fn = short_name(s["fn"])
+        planned.append(
+            f"{i}. {fn} — {s['path']} (Funs.lean near line "
+            f"{s.get('funs_line') or '?'})")
+        for caller in s.get("callers", []):
+            edges.append(f"- {fn} -> caller {caller}")
+    return PROMPT_JOINT.format(
+        top_decl=top_decl, top_path=batch["top"]["path"], top_stmt=top_stmt,
+        planned="\n".join(planned) or "(none; prove the top theorem directly)",
+        edges="\n".join(edges) or "(no unspecified internal edges)",
+        editable="\n".join(f"- {p}" for p in batch["editable_files"]),
+        available=available_block(done, top_funs_in_plan))
+
+
+def _sha_bytes(data):
+    return hashlib.sha256(data).hexdigest()
+
+
+def _read_bytes(path):
+    with open(path, "rb") as fh:
+        return fh.read()
+
+
+def save_partial_snapshot(run_dir, attempt, editable_paths, work,
+                          functions_by_path=None):
+    """Save a non-overwriting, content-addressed record of failed joint work."""
+    root = os.path.join(run_dir, "partials", f"attempt-{attempt}")
+    os.makedirs(root, exist_ok=False)
+    records = []
+    functions_by_path = functions_by_path or {}
+    for rel in editable_paths:
+        src = os.path.join(work, rel)
+        data = _read_bytes(src) if os.path.isfile(src) else b""
+        baseline = driver.sh(["git", "show", f"HEAD:{rel}"], work)
+        base_data = baseline.stdout.encode() if baseline.returncode == 0 else b""
+        dst = os.path.join(root, "files", rel)
+        os.makedirs(os.path.dirname(dst), exist_ok=True)
+        with open(dst, "wb") as fh:
+            fh.write(data)
+        records.append({
+            "path": rel, "sha256": _sha_bytes(data),
+            "baseline_sha256": _sha_bytes(base_data),
+            "changed": data != base_data,
+            "functions": sorted(functions_by_path.get(rel, [])),
+        })
+    manifest = {"attempt": attempt, "files": records}
+    manifest_path = os.path.join(root, "manifest.json")
+    with open(manifest_path, "w") as fh:
+        json.dump(manifest, fh, indent=1, sort_keys=True)
+        fh.write("\n")
+    return os.path.relpath(manifest_path, REPO)
+
+
+def atomic_publish_joint(bundle, work, paths, registry, replace_func=None):
+    """Publish a joint batch and registry as one rollback-protected update.
+
+    POSIX has no multi-file rename transaction. All new bytes are staged first;
+    if any replacement fails, every earlier destination is restored before the
+    error is re-raised, so callers never retain a partial accepted batch.
+    """
+    bundle_root = os.path.join(REPO, bundle)
+    replace_func = replace_func or os.replace
+    registry_rel = INTERNAL_SPECS
+    payloads = {p: _read_bytes(os.path.join(work, p)) for p in paths}
+    payloads[registry_rel] = (json.dumps(registry, indent=1, sort_keys=True)
+                              + "\n").encode()
+    backups = {}
+    stage = tempfile.mkdtemp(prefix="joint-publish-", dir=bundle_root)
+    replaced = []
+    try:
+        for rel, data in payloads.items():
+            dst = os.path.join(bundle_root, rel)
+            backups[rel] = _read_bytes(dst) if os.path.isfile(dst) else None
+            tmp = os.path.join(stage, rel)
+            os.makedirs(os.path.dirname(tmp), exist_ok=True)
+            with open(tmp, "wb") as fh:
+                fh.write(data)
+                fh.flush()
+                os.fsync(fh.fileno())
+        for rel in payloads:
+            dst = os.path.join(bundle_root, rel)
+            os.makedirs(os.path.dirname(dst), exist_ok=True)
+            replace_func(os.path.join(stage, rel), dst)
+            replaced.append(rel)
+    except Exception:
+        for rel in reversed(replaced):
+            dst = os.path.join(bundle_root, rel)
+            old = backups[rel]
+            if old is None:
+                if os.path.exists(dst):
+                    os.remove(dst)
+            else:
+                restore = os.path.join(stage, ".restore", rel)
+                os.makedirs(os.path.dirname(restore), exist_ok=True)
+                with open(restore, "wb") as fh:
+                    fh.write(old)
+                replace_func(restore, dst)
+        raise
+    finally:
+        shutil.rmtree(stage, ignore_errors=True)
+
+
 # ── main ─────────────────────────────────────────────────────────────────
 def main():
     ap = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
@@ -352,8 +506,10 @@ def main():
     ap.add_argument("--list", action="store_true", help="rank candidates and exit")
     ap.add_argument("--target", default="", help="full theorem name (default: smallest closure)")
     ap.add_argument("--bottom-up", action="store_true",
-                    help="first one round per unspecified internal callee (spec + proof, "
-                         "its own file), leaves first; then the top spec")
+                    help="jointly specify all unspecified internal callees and prove "
+                         "the top spec in one atomic multi-file batch")
+    ap.add_argument("--max-joint-files", type=int, default=0,
+                    help="reject a bottom-up closure above N editable files (0 = unlimited)")
     ap.add_argument("--model", default="")
     ap.add_argument("--max-turns", type=int, default=30)
     ap.add_argument("--timeout", type=int, default=900)
@@ -395,21 +551,33 @@ def main():
           f"  closure {closure} in-package decls ({funs} Funs, {math} Math)")
 
     data = json.load(open(os.path.join(REPO, args.probe)))["data"]
-    done, top_in_plan = {}, []
+    done, top_in_plan, batch = {}, [], None
     if args.bottom_up:
-        steps, done, top_in_plan = build_plan(args, row, data)
+        batch, done, top_in_plan = build_joint_batch(args, row, data)
+        for s in batch["planned"]:
+            s["funs_line"] = funs_line(data, s["fn"])
+        if args.max_joint_files and len(batch["editable_files"]) > args.max_joint_files:
+            sys.exit("joint_scope_too_large: "
+                     f"{len(batch['editable_files'])} editable files exceeds "
+                     f"--max-joint-files {args.max_joint_files}")
+        first_for_path = {}
+        for s in batch["planned"]:
+            first_for_path.setdefault(s["path"], s["fn"])
+        skeletons = [(p, skeleton(fn)) for p, fn in first_for_path.items()
+                     if not os.path.isfile(os.path.join(REPO, args.bundle, p))]
+        steps = []
     else:
         steps = [{"mode": "fill", "fn": "probe:" + name, "path": path}]
-    skeletons = [(s["path"], skeleton(s["fn"])) for s in steps
-                 if s["mode"] == "spec" and not os.path.isfile(os.path.join(REPO, args.bundle, s["path"]))]
+        skeletons = []
     skel_paths = {p for p, _ in skeletons}
     top_stmt = statement_text(args.bundle, path, decl_line, line)
     if args.bottom_up:
-        print(f"  plan: {len(steps)} step(s)")
-        for i, s in enumerate(steps, 1):
-            tag = "" if s["mode"] == "fill" else (
-                " [new file]" if s["path"] in skel_paths else " [existing file]")
-            print(f"    {i}. {s['mode']:4} {short_name(s['fn'])}  ({s['path']}{tag})")
+        print(f"  joint batch: {len(batch['planned_fns'])} internal function(s), "
+              f"{len(batch['editable_files'])} editable file(s)")
+        for i, s in enumerate(batch["planned"], 1):
+            tag = " [new file]" if s["path"] in skel_paths else " [existing file]"
+            print(f"    {i}. spec {short_name(s['fn'])}  ({s['path']}{tag})")
+        print(f"    top. fill {name}  ({path})")
 
     def step_prompt(i, s, done_now):
         if s["mode"] == "fill":
@@ -422,6 +590,10 @@ def main():
             available=available_block(done_now, top_in_plan), module=driver.path_to_module(s["path"]))
 
     if args.dry_run:
+        if args.bottom_up:
+            print("\n──── joint prompt ────\n" +
+                  joint_prompt(batch, done, top_in_plan, short, top_stmt))
+            return
         sim = dict(done)
         for i, s in enumerate(steps, 1):
             print(f"\n──── step {i}/{len(steps)} prompt ────\n" + step_prompt(i, s, sim))
@@ -440,7 +612,9 @@ def main():
     os.makedirs(run_dir, exist_ok=True)
     agentproc.install_signal_handler()
 
-    work = make_bundle_slot(run_dir, args.bundle, skeletons)
+    baseline_imports = ([driver.path_to_module(p) for p in batch["spec_files"]]
+                        if args.bottom_up else [])
+    work = make_bundle_slot(run_dir, args.bundle, skeletons, baseline_imports)
     print(f"slot: {os.path.relpath(work, REPO)}; baseline lake build …", flush=True)
     rc, before_counts, base_s = driver.build_sorry_counts(work, args.build_timeout)
     if rc != 0:
@@ -473,6 +647,94 @@ def main():
         "max_cost_usd", "stall_rounds", "bloat_threshold_tokens",
         "auto_reset", "max_auto_resets")}
     plan_id = run_id
+
+    if args.bottom_up:
+        editable = batch["editable_files"]
+        modules = [driver.path_to_module(p) for p in editable]
+        prompt = joint_prompt(batch, done, top_in_plan, short, top_stmt)
+        try:
+            g1_base, g1_s = driver.stmt_fingerprints(modules, work)
+        except (RuntimeError, subprocess.TimeoutExpired) as e:
+            sys.exit(f"G1 joint baseline failed: {str(e)[-2000:]}")
+        log(f"joint attempt — {len(batch['planned_fns'])} functions in "
+            f"{len(editable)} files; G1 baseline "
+            f"{sum(len(v) for v in g1_base.values())} declarations, {g1_s}s")
+        args.gate_mode = "joint"
+        args.gate_callee = None
+        args.gate_callees = {
+            s["fn"].removeprefix("probe:"): s["path"]
+            for s in batch["planned"]}
+        tid = "topspec_" + re.sub(r"[^A-Za-z0-9_.]+", "_", name) + ".joint"
+        outcome, detail, rounds, session_ids = driver.run_rounds(
+            prompt, tid, path, before_counts, args, env, settings_path,
+            g1_base, work, prefix, log, editable_paths=editable)
+
+        # Keep fingerprints out of the JSONL ledger; result_specs retains the
+        # exact accepted theorem names and pretty-printed statements.
+        detail.pop("g1_after", None)
+        for rnd in rounds:
+            (rnd.get("detail") or {}).pop("g1_after", None)
+
+        partial_manifest = None
+        if outcome == "accepted":
+            for fn, specs in detail.get("result_specs", {}).items():
+                done[fn] = {
+                    "path": args.gate_callees[fn],
+                    "theorems": [s["theorem"] for s in specs],
+                    "pp": {s["theorem"]: s["pp"] for s in specs},
+                    "run_id": run_id,
+                    "revisions": [],
+                }
+            driver.slot_commit(work, editable,
+                               f"joint specs and top proof for {name}")
+            publish_paths = list(dict.fromkeys(editable + [ROOT_MODULE]))
+            atomic_publish_joint(args.bundle, work, publish_paths, done)
+            to_add = [os.path.join(args.bundle, p) for p in publish_paths]
+            to_add.append(os.path.join(args.bundle, INTERNAL_SPECS))
+            print(driver.sh(["git", "diff", "--", *to_add]).stdout)
+            if args.commit:
+                msg = (f"{args.bundle}: jointly prove {name}\n\n"
+                       "Co-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>")
+                driver.sh(["git", "add", "--", *to_add])
+                driver.sh(["git", "commit", "-q", "-m", msg])
+        else:
+            by_path = {}
+            for s in batch["planned"]:
+                by_path.setdefault(s["path"], []).append(short_name(s["fn"]))
+            by_path.setdefault(path, []).append(name)
+            partial_manifest = save_partial_snapshot(
+                run_dir, 1, editable, work, by_path)
+            mod, new = driver.changed_files(work)
+            driver.rollback(mod, new, work)
+
+        record = {
+            "run_id": run_id, "bundle": args.bundle, "target": name,
+            "path": path, "line": line,
+            "closure": {"total": closure, "funs": funs, "math": math},
+            "plan": {
+                "id": plan_id, "mode": "joint", "attempt": 1,
+                "planned_fns": [short_name(f) for f in batch["planned_fns"]],
+                "editable_files": editable,
+                "new_files": sorted(skel_paths),
+            },
+            "outcome": outcome, "detail": detail, "rounds": rounds,
+            "session_ids": session_ids, "g2": "skipped", "limits": limits,
+            "isolation": isolation, "slot": os.path.relpath(work, REPO),
+            "baseline_build_seconds": base_s,
+            "prompt_sha256": hashlib.sha256(prompt.encode()).hexdigest(),
+            "partial_manifest": partial_manifest,
+        }
+        with open(LEDGER, "a") as fh:
+            fh.write(json.dumps(record, ensure_ascii=False) + "\n")
+        print(f"\njoint {outcome}: {len(batch['planned_fns'])} internal spec(s) + "
+              f"top proof ({len(rounds)} round(s)); ledger "
+              f"{os.path.relpath(LEDGER, REPO)}")
+        if agentproc.RECEIVED_SIGNAL is not None:
+            sys.exit(128 + agentproc.RECEIVED_SIGNAL)
+        if outcome != "accepted":
+            sys.exit(1)
+        return
+
     final = None
     for i, s in enumerate(steps, 1):
         spath, smod = s["path"], driver.path_to_module(s["path"])

@@ -132,7 +132,7 @@ def now_iso():
 BUILD_TIMEOUT = 1200  # seconds; fixed so runs on different machines are comparable
 
 
-def build_sorry_counts(work, timeout=BUILD_TIMEOUT):
+def build_sorry_counts(work, timeout=BUILD_TIMEOUT, include_output=False):
     """lake build → (exit_code | "timeout", {file: sorry_warning_count}, wall_s).
 
     N3 minimal version (plan.md §6): a `decide`-style kernel blow-up passes
@@ -149,6 +149,7 @@ def build_sorry_counts(work, timeout=BUILD_TIMEOUT):
     proc = subprocess.Popen(["nice", "-n", "19", "lake", "build"], cwd=work,
                             stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
                             text=True, start_new_session=True)
+    out = ""
     try:
         out, _ = proc.communicate(timeout=timeout)
         rc = proc.returncode
@@ -158,7 +159,8 @@ def build_sorry_counts(work, timeout=BUILD_TIMEOUT):
         except ProcessLookupError:
             pass
         proc.wait()
-        return "timeout", {}, round(time.time() - t0, 1)
+        result = ("timeout", {}, round(time.time() - t0, 1))
+        return (*result, out) if include_output else result
     counts = {}
     for ln in out.splitlines():
         if "declaration uses `sorry`" in ln or "declaration uses 'sorry'" in ln:
@@ -166,7 +168,8 @@ def build_sorry_counts(work, timeout=BUILD_TIMEOUT):
             loc = loc.removeprefix("warning: ").lstrip("./")
             f = loc.split(":")[0]
             counts[f] = counts.get(f, 0) + 1
-    return rc, counts, round(time.time() - t0, 1)
+    result = (rc, counts, round(time.time() - t0, 1))
+    return (*result, out) if include_output else result
 
 
 # ── target resolution (robust to line drift from earlier accepts) ───────
@@ -282,7 +285,9 @@ def rollback(mod, new, work):
 
 
 def slot_commit(work, path, msg):
-    sh(["git", "add", path], work)
+    """Commit one path or an atomic batch of paths in a sealed slot."""
+    paths = [path] if isinstance(path, str) else list(path)
+    sh(["git", "add", "--", *paths], work)
     sh(["git", "-c", "user.name=harness", "-c", "user.email=harness@localhost",
         "commit", "-q", "-m", msg], work)
 
@@ -477,7 +482,7 @@ def record_provenance(prompt):
 
 
 def run_rounds(prompt, tid, path, before_counts, args, env, settings_path,
-               g1_base, work, sandbox_prefix, log):
+               g1_base, work, sandbox_prefix, log, editable_paths=None):
     """Multi-round attempt on one target. Stop rules (DEC-16), ported from
     CryptoProver run.py and adapted to one-sorry targets:
 
@@ -506,6 +511,9 @@ def run_rounds(prompt, tid, path, before_counts, args, env, settings_path,
     Returns (outcome, detail, rounds, session_ids). Each round's transcript
     is ledger/transcripts/{tid}.r{n}.jsonl.
     """
+    editable_paths = tuple(dict.fromkeys(editable_paths or [path]))
+    if path not in editable_paths:
+        raise ValueError("path must be included in editable_paths")
     session_id = agentproc.new_session_id()
     session_ids = [session_id]
     rounds = []
@@ -521,7 +529,7 @@ def run_rounds(prompt, tid, path, before_counts, args, env, settings_path,
             round_prompt = prompt + "\n\n" + _history_block(rounds)
         else:
             round_prompt = prompt
-        sha_before = _file_sha(path, work)
+        sha_before = {p: _file_sha(p, work) for p in editable_paths}
         tpath = os.path.join(TRANSCRIPTS, f"{tid}.r{rnd}.jsonl")
         status, rc, wall, result, prov = agentproc.run_round(
             round_prompt, tpath, cwd=work, session_id=session_id,
@@ -544,7 +552,9 @@ def run_rounds(prompt, tid, path, before_counts, args, env, settings_path,
                                    args.build_timeout, g1_base,
                                    g2=getattr(args, "g2", True),
                                    mode=getattr(args, "gate_mode", "fill"),
-                                   callee=getattr(args, "gate_callee", None))
+                                   callee=getattr(args, "gate_callee", None),
+                                   editable_paths=editable_paths,
+                                   callees=getattr(args, "gate_callees", None))
             detail["max_turns_exhausted"] = True
         elif rc != 0:
             outcome, detail = "agent_error", {"error": f"exit {rc}"}
@@ -553,7 +563,9 @@ def run_rounds(prompt, tid, path, before_counts, args, env, settings_path,
                                    args.build_timeout, g1_base,
                                    g2=getattr(args, "g2", True),
                                    mode=getattr(args, "gate_mode", "fill"),
-                                   callee=getattr(args, "gate_callee", None))
+                                   callee=getattr(args, "gate_callee", None),
+                                   editable_paths=editable_paths,
+                                   callees=getattr(args, "gate_callees", None))
 
         m = END_REASON_RE.search(result.get("result") or "")
         end_reason = m.group(1).upper() if m else None
@@ -566,8 +578,10 @@ def run_rounds(prompt, tid, path, before_counts, args, env, settings_path,
         cost = result.get("total_cost_usd")
         cost_total += float(cost or 0)
         session_cc_tokens += usage.get("cache_creation_input_tokens", 0) or 0
-        sha_after = _file_sha(path, work)
-        edited = sha_after != sha_before
+        sha_after = {p: _file_sha(p, work) for p in editable_paths}
+        edited_paths = sorted(p for p in editable_paths
+                              if sha_after[p] != sha_before[p])
+        edited = bool(edited_paths)
         stall_run = 0 if edited else stall_run + 1
 
         rounds.append({
@@ -578,6 +592,7 @@ def run_rounds(prompt, tid, path, before_counts, args, env, settings_path,
             "provenance": prov,
             "end_reason": end_reason,
             "target_file_edited": edited,
+            "edited_files": edited_paths,
             # actual models billed (the isolated config dir has no user
             # `model` setting, so "default" here means claude's default)
             "models_used": sorted(result.get("modelUsage") or {}),
@@ -696,47 +711,77 @@ def progress_specs_for(callee, fps_module, target_path, work):
 
 # ── gates ────────────────────────────────────────────────────────────────
 def gate(work, target_path, before_counts, build_timeout=BUILD_TIMEOUT,
-         g1_base=None, g2=True, mode="fill", callee=None):
+         g1_base=None, g2=True, mode="fill", callee=None,
+         editable_paths=None, callees=None):
     """g2=False skips the G2 trust-base gate (harness/gates/g2_trust_base.py
     needs the main checkout's frozen manifests; a bundle workspace has
     neither — prove_top_spec.py). Recorded in the verdict detail.
 
-    mode="fill" (default): rule d — the target file's sorry count strictly
-    decreases. mode="spec" (prove_top_spec.py --bottom-up, one internal
-    spec per round): the target file's sorry count must not increase and
+    mode="fill" (default): the target file's sorry count must strictly
+    decrease. mode="spec" (legacy one-file mode): the target file's sorry
+    count must not increase and
     the file must contain at least one `@[progress]` theorem whose
     statement mentions the constant `callee` (checked on the G1 fingerprints' used constants, so
-    g1_base must be given, {} for a fresh file)."""
+    g1_base must be given, {} for a fresh file).
+
+    mode="joint" accepts an explicit set of editable paths. `target_path` is
+    the fixed top-spec file; its sorry count must decrease, every other
+    editable file may not gain sorry, and `callees` maps each planned
+    function name to the spec file that must contain its progress theorem.
+    Existing declarations in every editable module remain G1-identical."""
+    editable_paths = tuple(dict.fromkeys(editable_paths or [target_path]))
+    editable_set = set(editable_paths)
+    if target_path not in editable_set:
+        return "rejected_scope", {"error": "top target is not editable",
+                                  "target_path": target_path,
+                                  "editable_paths": list(editable_paths)}
     mod, new = changed_files(work)
-    if new or set(mod) - {target_path}:
-        return "rejected_scope", {"modified": mod, "new": new}
-    if mod:  # target actually touched — scan forbidden constructs
-        diff = sh(["git", "diff", "--unified=0", "--", target_path], work).stdout
+    outside = (set(mod) | set(new)) - editable_set
+    # Joint skeletons are created before the sealed baseline. Any file first
+    # appearing during the agent session is therefore outside the contract.
+    if new or outside:
+        return "rejected_scope", {"modified": mod, "new": new,
+                                  "outside": sorted(outside),
+                                  "editable_paths": list(editable_paths)}
+    if mod:  # scan added lines in every changed allowlisted file
+        diff = sh(["git", "diff", "--unified=0", "--", *sorted(mod)], work).stdout
         added = "\n".join(l[1:] for l in diff.splitlines()
                           if l.startswith("+") and not l.startswith("+++"))
         if FORBIDDEN_RE.search(added):
             return "rejected_forbidden_attr", {}
-    rc, after, build_s = build_sorry_counts(work, build_timeout)
+    rc, after, build_s, build_out = build_sorry_counts(
+        work, build_timeout, include_output=True)
     b = {"gate_build_seconds": build_s}
     if rc == "timeout":
         # policy violation, not "not done yet": resuming would just make
         # the agent try another blow-up. Rolled back like any rejection.
         return "rejected_kernel_budget", {**b, "build_timeout": build_timeout}
     if rc != 0:
-        return "rejected_build", b
+        paths = sorted(set(re.findall(
+            r"(?:^|\n)(?:error: |warning: )?(?:\./)?([^:\n]+\.lean):\d+",
+            build_out)))
+        return "rejected_build", {
+            **b, "broken_files": paths,
+            "build_error_tail": build_out[-4000:]}
     if g1_base is not None:
-        mod_name = path_to_module(target_path)
+        modules = [path_to_module(p) for p in editable_paths]
         try:
-            fps, g1_s = stmt_fingerprints([mod_name], work)
+            fps, g1_s = stmt_fingerprints(modules, work)
         except (RuntimeError, subprocess.TimeoutExpired) as e:
             return "rejected_g1_error", {**b, "g1_error": str(e)[-1500:]}
         b["g1_seconds"] = g1_s
-        missing, changed = stmt_diff(g1_base.get(mod_name, {}),
-                                     fps.get(mod_name, {}))
+        missing, changed = {}, {}
+        for mod_name in modules:
+            mi, ch = stmt_diff(g1_base.get(mod_name, {}),
+                               fps.get(mod_name, {}))
+            if mi:
+                missing[mod_name] = mi
+            if ch:
+                changed[mod_name] = ch
         if missing or changed:
             return "rejected_statement_changed", {
                 **b, "missing": missing, "changed": changed}
-        b["g1_after"] = fps[mod_name]
+        b["g1_after"] = fps
     if mode == "spec":
         # no NEW sorry: pre-existing sorried theorems in the file (a kept
         # top spec sharing the file) are other targets, G1 keeps them
@@ -744,16 +789,49 @@ def gate(work, target_path, before_counts, build_timeout=BUILD_TIMEOUT,
             return "rejected_sorry_remains", {**b, "mode": mode,
                                               "before": before_counts.get(target_path, 0),
                                               "after": after.get(target_path, 0)}
-        specs = progress_specs_for(callee, b.get("g1_after", {}), target_path, work)
+        fps_module = b.get("g1_after", {}).get(path_to_module(target_path), {})
+        specs = progress_specs_for(callee, fps_module, target_path, work)
         if not specs:
             return "rejected_no_spec", {**b, "mode": mode, "callee": callee}
         b["specs"] = specs
+    elif mode == "joint":
+        if after.get(target_path, 0) >= before_counts.get(target_path, 0):
+            return "rejected_sorry_remains", {
+                **b, "mode": mode, "path": target_path,
+                "before": before_counts.get(target_path, 0),
+                "after": after.get(target_path, 0)}
+        result_specs = {}
+        fps_all = b.get("g1_after", {})
+        for planned_fn, spec_path in sorted((callees or {}).items()):
+            specs = progress_specs_for(
+                planned_fn, fps_all.get(path_to_module(spec_path), {}),
+                spec_path, work)
+            if not specs:
+                return "rejected_no_spec", {
+                    **b, "mode": mode, "callee": planned_fn,
+                    "path": spec_path}
+            result_specs[planned_fn] = [
+                {"theorem": n,
+                 "pp": fps_all[path_to_module(spec_path)][n]["pp"]}
+                for n in specs]
+        b["result_specs"] = result_specs
+        for editable in editable_paths:
+            if editable == target_path:
+                continue
+            if after.get(editable, 0) > before_counts.get(editable, 0):
+                return "rejected_sorry_remains", {
+                    **b, "mode": mode, "path": editable,
+                    "before": before_counts.get(editable, 0),
+                    "after": after.get(editable, 0)}
     elif after.get(target_path, 0) >= before_counts.get(target_path, 0):
         return "rejected_sorry_remains", {**b,
                                           "before": before_counts.get(target_path, 0),
                                           "after": after.get(target_path, 0)}
-    others_before = {f: c for f, c in before_counts.items() if f != target_path}
-    others_after = {f: c for f, c in after.items() if f != target_path}
+    exempt_sorry_paths = editable_set if mode == "joint" else {target_path}
+    others_before = {f: c for f, c in before_counts.items()
+                     if f not in exempt_sorry_paths}
+    others_after = {f: c for f, c in after.items()
+                    if f not in exempt_sorry_paths}
     if others_before != others_after:
         return "rejected_sorry_migration", {**b,
             "delta": {f: (others_before.get(f, 0), others_after.get(f, 0))

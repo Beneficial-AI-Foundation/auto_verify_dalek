@@ -124,7 +124,7 @@ class PreflightCliTests(unittest.TestCase):
                 mock.patch("autofv.worker.prepare_run", return_value=run),
                 mock.patch("autofv.preflight_runner._probe_distinct_verifier", return_value="lima:autofv-verifier:fixture"),
                 mock.patch("autofv.worker.force_destroy_worker") as destroy,
-                mock.patch("autofv.worker_runtime._docker", side_effect=[completed, collected]) as docker,
+                mock.patch("autofv.worker_runtime._docker", side_effect=[completed, completed, collected]) as docker,
                 mock.patch(
                     "autofv.provider_transport._open_upstream",
                     side_effect=AssertionError("provider dispatch forbidden"),
@@ -139,8 +139,8 @@ class PreflightCliTests(unittest.TestCase):
             preflight_runner.validate_preflight_bundle(
                 output / "preflight-result.json", expected_source_head="1" * 40
             )
-            self.assertEqual(docker.call_count, 2)
-            runner_argv = docker.call_args_list[0].args
+            self.assertEqual(docker.call_count, 3)
+            runner_argv = docker.call_args_list[1].args
             self.assertEqual(
                 runner_argv[runner_argv.index("--runtime") + 1],
                 LOCK["tools"]["runsc"]["runtime_name"],
@@ -175,6 +175,7 @@ class PreflightCliTests(unittest.TestCase):
                 mock.patch(
                     "autofv.worker_runtime._docker",
                     side_effect=[
+                        subprocess.CompletedProcess((), 0, b"", b""),
                         subprocess.CompletedProcess((), 0, b"", b""),
                         subprocess.CompletedProcess((), 0, _runner_raw(), b""),
                     ],

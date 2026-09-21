@@ -378,6 +378,28 @@ def run_preflight(
             project_root=target,
         )
         markers = provider_config.secret_markers(run)
+        worker_runtime._docker(
+            "run",
+            "--rm",
+            "--pull",
+            "never",
+            "--runtime",
+            lock["tools"]["runsc"]["runtime_name"],
+            "--read-only",
+            "--network",
+            "none",
+            "--user",
+            "0:0",
+            "--security-opt",
+            "no-new-privileges",
+            "--mount",
+            f"type=volume,src={run['volume']},dst=/volume,volume-nocopy",
+            lock["image"]["image_digest"],
+            "chmod",
+            "-R",
+            "a-w",
+            "/volume/work/project",
+        )
         completed = worker_runtime._docker(
             *worker_runtime._runtime_argv(
                 lock,

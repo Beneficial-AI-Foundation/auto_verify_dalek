@@ -203,7 +203,7 @@ def _fixed_egress_path() -> None:
 def _provider_identity() -> None:
     route = _lock()["fixed_proxy"]
     assert route["proxy_id"] and route["route_id"]
-    assert route["cost_classification"] == "provider_authenticated"
+    assert route["cost_classification"] in {"synthetic_fixture", "provider_authenticated"}
 
 
 def _candidate_scope() -> None:

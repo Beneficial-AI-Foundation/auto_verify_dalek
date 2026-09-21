@@ -18,7 +18,7 @@ DRIVER_ARGS=(
   # --stepwise                    # A/B control: one session per internal callee, published step by step
   --model claude-sonnet-5
   --rounds 3
-  --max-turns 30
+  --max-turns 300                 # joint mode edits several files per session; the 900s --timeout is the real bound
   # --dry-run                     # no fee; print the plan and every step's prompt
 )
 # Previous driver.py configuration, kept for reference:

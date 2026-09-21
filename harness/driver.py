@@ -757,8 +757,10 @@ def gate(work, target_path, before_counts, build_timeout=BUILD_TIMEOUT,
         # the agent try another blow-up. Rolled back like any rejection.
         return "rejected_kernel_budget", {**b, "build_timeout": build_timeout}
     if rc != 0:
+        # only `error:` lines: a failing build also replays every file's
+        # `sorry` warnings, which would list the whole package as broken
         paths = sorted(set(re.findall(
-            r"(?:^|\n)(?:error: |warning: )?(?:\./)?([^:\n]+\.lean):\d+",
+            r"(?:^|\n)error: (?:\./)*([^:\n]+\.lean):\d+",
             build_out)))
         return "rejected_build", {
             **b, "broken_files": paths,

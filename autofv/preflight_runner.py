@@ -392,8 +392,6 @@ def run_preflight(
             check=False,
         )
         _scan_secrets(markers, completed.stdout, completed.stderr)
-        if completed.returncode:
-            raise ContractError("sealed preflight runner failed")
         collected = worker_runtime._docker(
             *worker_runtime._runtime_argv(
                 lock,
@@ -408,6 +406,8 @@ def run_preflight(
         if collected.returncode:
             raise ContractError("sealed preflight result collection failed")
         validate_runner_result(collected.stdout)
+        if completed.returncode:
+            raise ContractError("sealed preflight runner failed")
         binding = provider_config.provider_binding(run)
         if binding is None:
             raise ContractError("provider binding is unavailable")

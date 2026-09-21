@@ -660,10 +660,65 @@ def validate_preflight_bundle(
     return result
 
 
+def validate_reconstructed_provider_preflight(
+    path: str | Path,
+    *,
+    bundle_path: str | Path,
+    env_file: str | Path | None = None,
+) -> dict[str, Any]:
+    """Validate a post-call artifact against a freshly reconstructed binding."""
+    from autofv import agent_lane, provider_service
+    from autofv.contracts import load_toolchain_lock
+
+    bundle = validate_preflight_bundle(bundle_path)
+    authorization_path = Path(bundle["artifacts"]["authorization"])
+    authorization = json.loads(authorization_path.read_bytes())
+    lock = load_toolchain_lock()
+    run = {
+        "run_id": authorization["run_id"],
+        "lock": lock,
+        "fixed_proxy_sha256": hashlib.sha256(
+            canonical_json_bytes(lock["fixed_proxy"])
+        ).hexdigest(),
+    }
+    try:
+        public = provider_config.configure_provider(
+            run,
+            env_path=env_file,
+            tool_schemas=list(agent_lane._TOOL_SCHEMAS),
+        )
+        if public["binding_sha256"] != bundle["identities"]["provider_identity_sha256"]:
+            raise ContractError("reconstructed provider binding does not match preflight bundle")
+        value = provider_service.validate_pinned_preflight(path, run=run)
+        return {
+            "schema": "autofv-pinned-provider-preflight-validation/v1",
+            "status": "passed",
+            "binding_sha256": public["binding_sha256"],
+            "preflight_sha256": value["preflight_sha256"],
+        }
+    finally:
+        provider_config.abort_configuration(run)
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(prog="preflight_runner")
-    parser.add_argument("--output", required=True)
+    parser.add_argument("--output")
+    parser.add_argument("--validate-provider")
+    parser.add_argument("--bundle")
+    parser.add_argument("--env-file")
     args = parser.parse_args()
+    if args.validate_provider is not None:
+        if args.output is not None or args.bundle is None:
+            parser.error("provider validation requires --validate-provider and --bundle")
+        result = validate_reconstructed_provider_preflight(
+            args.validate_provider,
+            bundle_path=args.bundle,
+            env_file=args.env_file,
+        )
+        print(canonical_json_bytes(result).decode())
+        return
+    if args.output is None or args.bundle is not None or args.env_file is not None:
+        parser.error("sealed runner requires --output")
     result = run_fixed_suite(args.output)
     if any(check["status"] != "passed" for check in result["checks"]):
         raise SystemExit(1)

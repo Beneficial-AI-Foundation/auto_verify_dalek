@@ -21,9 +21,12 @@ import Curve25519Dalek.Specs.Backend.Serial.U64.Constants.SQRT_AD_MINUS_ONE
 import Curve25519Dalek.Specs.Backend.Serial.U64.Constants.SQRT_M1
 import Curve25519Dalek.Specs.Backend.Serial.U64.Field.FieldElement51.AsBytes
 import Curve25519Dalek.Specs.Backend.Serial.U64.Field.FieldElement51.FromBytes
+import Curve25519Dalek.Specs.Backend.Serial.U64.Field.FieldElement51.FromLimbs
+import Curve25519Dalek.Specs.Backend.Serial.U64.Field.FieldElement51.ONE
 import Curve25519Dalek.Specs.Backend.Serial.U64.Field.FieldElement51.Reduce
 import Curve25519Dalek.Specs.Backend.Serial.U64.Field.FieldElement51.SubAssign
 import Curve25519Dalek.Specs.Backend.Serial.U64.Field.FieldElement51.ToBytes
+import Curve25519Dalek.Specs.Backend.Serial.U64.Field.FieldElement51.ZERO
 import Curve25519Dalek.Specs.Backend.Serial.U64.Scalar.M
 import Curve25519Dalek.Specs.Backend.Serial.U64.Scalar.Scalar52.ConditionalAddL
 import Curve25519Dalek.Specs.Backend.Serial.U64.Scalar.Scalar52.MontgomeryInvert

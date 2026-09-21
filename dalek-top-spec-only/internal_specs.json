@@ -1,0 +1,35 @@
+{
+ "curve25519_dalek.backend.serial.u64.field.FieldElement51.ONE": {
+  "path": "Curve25519Dalek/Specs/Backend/Serial/U64/Field/FieldElement51/ONE.lean",
+  "pp": {
+   "curve25519_dalek.backend.serial.u64.field.FieldElement51.ONE_spec": "Aeneas.Std.WP.spec curve25519_dalek.backend.serial.u64.field.FieldElement51.ONE fun fe => Eq (Field51_as_Nat fe) 1"
+  },
+  "revisions": [],
+  "run_id": "2026-09-21T12:32:54+00:00",
+  "theorems": [
+   "curve25519_dalek.backend.serial.u64.field.FieldElement51.ONE_spec"
+  ]
+ },
+ "curve25519_dalek.backend.serial.u64.field.FieldElement51.ZERO": {
+  "path": "Curve25519Dalek/Specs/Backend/Serial/U64/Field/FieldElement51/ZERO.lean",
+  "pp": {
+   "curve25519_dalek.backend.serial.u64.field.FieldElement51.ZERO_spec": "Aeneas.Std.WP.spec curve25519_dalek.backend.serial.u64.field.FieldElement51.ZERO fun fe => Eq (Field51_as_Nat fe) 0"
+  },
+  "revisions": [],
+  "run_id": "2026-09-21T12:32:54+00:00",
+  "theorems": [
+   "curve25519_dalek.backend.serial.u64.field.FieldElement51.ZERO_spec"
+  ]
+ },
+ "curve25519_dalek.backend.serial.u64.field.FieldElement51.from_limbs": {
+  "path": "Curve25519Dalek/Specs/Backend/Serial/U64/Field/FieldElement51/FromLimbs.lean",
+  "pp": {
+   "curve25519_dalek.backend.serial.u64.field.FieldElement51.from_limbs_spec": "\u2200 (limbs : Aeneas.Std.Array Aeneas.Std.U64 (Aeneas.Std.Usize.ofNat 5 \u22ef)),\n  Aeneas.Std.WP.spec (curve25519_dalek.backend.serial.u64.field.FieldElement51.from_limbs limbs) fun fe => Eq fe limbs"
+  },
+  "revisions": [],
+  "run_id": "2026-09-21T12:32:54+00:00",
+  "theorems": [
+   "curve25519_dalek.backend.serial.u64.field.FieldElement51.from_limbs_spec"
+  ]
+ }
+}

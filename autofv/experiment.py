@@ -705,6 +705,11 @@ def _parser() -> argparse.ArgumentParser:
     run.add_argument("--output-root")
     run.add_argument("--target", dest="target_alias")
     run.add_argument("--run-config", dest="config_alias")
+    preflight_command = commands.add_parser("preflight")
+    preflight_command.add_argument("repo")
+    preflight_command.add_argument("--config", required=True)
+    preflight_command.add_argument("--output", required=True)
+    preflight_command.add_argument("--env-file")
     return parser
 
 
@@ -728,6 +733,20 @@ def main() -> None:
             inspect_repository(args.repo, args.output)
         except (OSError, probes.ProbeError) as exc:
             parser.error(str(exc))
+        return
+    if args.command == "preflight":
+        from .preflight_runner import run_preflight
+
+        try:
+            result = run_preflight(
+                args.repo,
+                args.config,
+                args.output,
+                env_file=args.env_file,
+            )
+        except (ContractError, OSError, worker.WorkerError) as exc:
+            parser.error(str(exc))
+        print(canonical_json_bytes(result).decode("utf-8"))
         return
     target, run_config = _run_arguments(parser, args)
     try:

@@ -11,9 +11,12 @@
 #         harness/prove_top_spec.py ONE top spec of the bundle dalek-top-spec-only (--target)
 SCRIPT=harness/prove_top_spec.py
 EXP_NAME=""                       # empty = top-spec-<YYYYmmdd-HHMM>
-EXP_MSG="top-spec round: ProjectivePoint identity_spec, bottom-up joint (from_limbs, ONE, ZERO), claude-sonnet-5"
+EXP_MSG="top-spec round: FieldElement51 as_bytes_spec, bottom-up joint (LOW_51_BIT_MASK, reduce, to_bytes), claude-sonnet-5"
 DRIVER_ARGS=(
-  --target curve25519_dalek.IdentityCurveModelsProjectivePoint.identity_spec
+  --target curve25519_dalek.backend.serial.u64.field.FieldElement51.as_bytes_spec
+                                  # closure: reduce.LOW_51_BIT_MASK (trivial), reduce (carry chain, bounds < 2^52,
+                                  # ≡ [MOD p]), to_bytes (canonical reduction + 32-byte split; the human spec is
+                                  # @[externally_verified], i.e. never proved in Lean) — expect failure, read the transcripts
   --bottom-up                     # joint: all missing internal spec files + top file, one session, one gate
   # --stepwise                    # A/B control: one session per internal callee, published step by step
   --model claude-sonnet-5

@@ -279,6 +279,7 @@ def build_plan(args, row, data):
     for f in order:
         p, how = spec_path_for(f, full)
         steps.append({"mode": "spec", "fn": f, "path": p, "path_source": how,
+                      "result": returns_result(args.bundle, data, f),
                       "callers": [short_name(c) for c in callers.get(f, [])]})
     steps.append({"mode": "fill", "fn": "probe:" + name, "path": path, "top_fn": top_fn})
     return steps, done, sorted(skipped & top_funs)
@@ -309,16 +310,54 @@ def funs_line(data, fn):
     return ct.get("lines-start")
 
 
+def _strip_binders(text):
+    """Drop balanced (...) [...] {...} ⦃...⦄ groups: argument binders."""
+    out, depth = [], 0
+    for ch in text:
+        if ch in "([{⦃":
+            depth += 1
+        elif ch in ")]}⦄":
+            depth = max(0, depth - 1)
+        elif depth == 0:
+            out.append(ch)
+    return "".join(out)
+
+
+def returns_result(bundle, data, fn):
+    """True iff the Funs.lean declaration of `fn` has a `Result`-valued
+    return type (Aeneas monadic function: `@[progress]` specs apply).
+    False for pure values / functions (e.g. `Scalar52.ZERO : Scalar52`),
+    whose specs are `@[simp]` equations or plain lemmas. None if the
+    signature cannot be located."""
+    ct = data.get(fn, {}).get("code-text") or {}
+    start, end = ct.get("lines-start"), ct.get("lines-end")
+    if not start:
+        return None
+    lines = open(os.path.join(REPO, bundle, "Curve25519Dalek/Funs.lean"),
+                 encoding="utf-8").read().splitlines()
+    short = fn.removeprefix("probe:").removeprefix("curve25519_dalek.")
+    # Aeneas may break the line after `def`; work on the joined block.
+    block = " ".join(lines[start - 1:(end or start + 40)])
+    m = re.search(r"(?:^|\s)(?:def|opaque|abbrev)\s+" + re.escape(short) + r"(?![\w'])", block)
+    if not m:
+        return None
+    sig = block[m.end():].partition(":=")[0]
+    ret = _strip_binders(sig).rpartition(":")[2]
+    return re.search(r"\bResult\b", ret) is not None
+
+
 def statement_text(bundle, path, decl_line, sorry_line):
     lines = open(os.path.join(REPO, bundle, path)).read().splitlines()
     return "\n".join(lines[decl_line - 1:sorry_line]).rstrip()
 
 
-PROMPT_SPEC = """Write and prove a `@[progress]` specification for `{fn}` in {path}.
+PROMPT_SPEC = """Write and prove a specification for `{fn}` in {path}.
 
-`{fn}` is defined in Curve25519Dalek/Funs.lean (near line {funs_line}). This is
-step {step} of {steps} of a bottom-up plan whose final goal is the top-level
-theorem `{top_decl}` in {top_path}:
+`{fn}` is defined in Curve25519Dalek/Funs.lean (near line {funs_line}).
+{spec_kind}
+
+This is step {step} of {steps} of a bottom-up plan whose final goal is the
+top-level theorem `{top_decl}` in {top_path}:
 
 ```lean
 {top_stmt}
@@ -330,8 +369,8 @@ the `as_Nat`-style value equations the goal needs).
 {available}
 Rules — violations are auto-rejected by the harness:
 - Edit ONLY {path}. No other file. Adding `import` lines to it is fine.
-- The file must end up containing at least one theorem tagged `@[progress]`
-  whose statement mentions `{fn}`, fully proved. Helper lemmas in the same
+- The file must end up containing at least one fully proved theorem whose
+  statement mentions `{fn}` ({attr_rule}). Helper lemmas in the same
   file are fine. The file's `sorry` warning count must not increase: your new
   declarations must be sorry-free.
 - Do NOT change or remove any declaration that already exists in the file;
@@ -365,8 +404,15 @@ Editable files (the complete allowlist):
 {editable}
 
 Work across these files as one problem. For every internal function, add and
-prove at least one useful `@[progress]` theorem whose statement mentions that
-function. You may refine newly created statements while testing their callers.
+prove at least one useful theorem whose statement mentions that function:
+- a function returning `Result _` (marked [Result] above) gets a `@[progress]`
+  specification, `spec f (fun r => ...)` / `f ⦃ r => ... ⦄`-style, stating the
+  value equations (`..._as_Nat`) and bounds its callers need;
+- a pure value or pure function (marked [pure] above) is NOT monadic:
+  `@[progress]` does not apply. State a `@[simp]` equation (e.g.
+  `Scalar52_as_Nat ZERO = 0`) or a plain lemma instead, whatever lets callers
+  rewrite with it.
+You may refine newly created statements while testing their callers.
 Fill the top theorem's existing `sorry`, add required imports inside the
 allowlist, and run `lake build` until the complete project succeeds.
 {available}
@@ -388,6 +434,29 @@ Specifications already available (import their modules and use them):
 {items}
 """
 
+SPEC_KIND = {
+    True: ("It returns `Result _` (Aeneas monadic function): write a `@[progress]` "
+           "specification, `spec {fn} (fun r => ...)` / `{fn} ... ⦃ r => ... ⦄`-style, "
+           "stating the value equations (`..._as_Nat`) and bounds its callers need.",
+           "tagged `@[progress]`"),
+    False: ("It is a pure value / pure function, NOT monadic: `@[progress]` does not "
+            "apply. State a `@[simp]` equation (e.g. `Scalar52_as_Nat ZERO = 0`) or a "
+            "plain lemma that lets callers rewrite with it.",
+            "`@[simp]` equation or plain lemma; `@[progress]` is not required"),
+    None: ("Its return type could not be determined automatically: if it returns "
+           "`Result _`, write a `@[progress]` specification; if it is a pure value, "
+           "a `@[simp]` equation or plain lemma.",
+           "`@[progress]` if it returns `Result _`, otherwise any proved lemma"),
+}
+
+
+def spec_kind(step):
+    return SPEC_KIND[step.get("result")]
+
+
+def kind_tag(step):
+    return {True: "[Result]", False: "[pure]", None: "[type?]"}[step.get("result")]
+
 
 def available_block(done, top_funs_in_plan):
     items = [f"- {short_name(fn)}: {d['path']} ({', '.join(t.rsplit('.', 1)[-1] for t in d['theorems'])})"
@@ -403,7 +472,7 @@ def joint_prompt(batch, done, top_funs_in_plan, top_decl, top_stmt):
     for i, s in enumerate(batch["planned"], 1):
         fn = short_name(s["fn"])
         planned.append(
-            f"{i}. {fn} — {s['path']} (Funs.lean near line "
+            f"{i}. {fn} {kind_tag(s)} — {s['path']} (Funs.lean near line "
             f"{s.get('funs_line') or '?'})")
         for caller in s.get("callers", []):
             edges.append(f"- {fn} -> caller {caller}")
@@ -592,15 +661,17 @@ def main():
               f"{len(batch['editable_files'])} editable file(s)")
         for i, s in enumerate(batch["planned"], 1):
             tag = " [new file]" if s["path"] in skel_paths else " [existing file]"
-            print(f"    {i}. spec {short_name(s['fn'])}  ({s['path']}{tag})")
+            print(f"    {i}. spec {short_name(s['fn'])} {kind_tag(s)}  ({s['path']}{tag})")
         print(f"    top. fill {name}  ({path})")
 
     def step_prompt(i, s, done_now):
         if s["mode"] == "fill":
             avail = available_block(done_now, top_in_plan) if args.bottom_up else ""
             return top_prompt + (avail and "\n" + avail)
+        kind_text, attr_rule = spec_kind(s)
         return PROMPT_SPEC.format(
             fn=short_name(s["fn"]), path=s["path"], funs_line=funs_line(data, s["fn"]),
+            spec_kind=kind_text.format(fn=short_name(s["fn"])), attr_rule=attr_rule,
             step=i, steps=len(steps), top_decl=short, top_path=path, top_stmt=top_stmt,
             callers=", ".join(s["callers"]) or "(none: the top-level function itself)",
             available=available_block(done_now, top_in_plan), module=driver.path_to_module(s["path"]))
@@ -680,6 +751,9 @@ def main():
         args.gate_callees = {
             s["fn"].removeprefix("probe:"): s["path"]
             for s in batch["planned"]}
+        args.gate_pure_callees = {
+            s["fn"].removeprefix("probe:")
+            for s in batch["planned"] if s.get("result") is False}
         tid = "topspec_" + re.sub(r"[^A-Za-z0-9_.]+", "_", name) + ".joint"
         outcome, detail, rounds, session_ids = driver.run_rounds(
             prompt, tid, path, before_counts, args, env, settings_path,
@@ -763,6 +837,8 @@ def main():
             f"G1 baseline {len(g1_base.get(smod, {}))} declarations, {g1_s}s")
         args.gate_mode = s["mode"]
         args.gate_callee = s["fn"].removeprefix("probe:") if s["mode"] == "spec" else None
+        args.gate_pure_callees = (
+            {args.gate_callee} if s["mode"] == "spec" and s.get("result") is False else set())
         tid = "topspec_" + re.sub(r"[^A-Za-z0-9_.]+", "_", name) + (
             f".s{i}_" + re.sub(r"[^A-Za-z0-9_.]+", "_", short_name(s["fn"])) if len(steps) > 1 else "")
         outcome, detail, rounds, session_ids = driver.run_rounds(

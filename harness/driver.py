@@ -554,7 +554,8 @@ def run_rounds(prompt, tid, path, before_counts, args, env, settings_path,
                                    mode=getattr(args, "gate_mode", "fill"),
                                    callee=getattr(args, "gate_callee", None),
                                    editable_paths=editable_paths,
-                                   callees=getattr(args, "gate_callees", None))
+                                   callees=getattr(args, "gate_callees", None),
+                                   pure_callees=getattr(args, "gate_pure_callees", ()))
             detail["max_turns_exhausted"] = True
         elif rc != 0:
             outcome, detail = "agent_error", {"error": f"exit {rc}"}
@@ -565,7 +566,8 @@ def run_rounds(prompt, tid, path, before_counts, args, env, settings_path,
                                    mode=getattr(args, "gate_mode", "fill"),
                                    callee=getattr(args, "gate_callee", None),
                                    editable_paths=editable_paths,
-                                   callees=getattr(args, "gate_callees", None))
+                                   callees=getattr(args, "gate_callees", None),
+                                   pure_callees=getattr(args, "gate_pure_callees", ()))
 
         m = END_REASON_RE.search(result.get("result") or "")
         end_reason = m.group(1).upper() if m else None
@@ -688,10 +690,12 @@ def stmt_diff(base, after):
     return missing, changed
 
 
-def progress_specs_for(callee, fps_module, target_path, work):
+def progress_specs_for(callee, fps_module, target_path, work, require_progress=True):
     """Theorems of the target module whose statement uses the constant
     `callee` and that carry `@[progress]` in the source (attribute block
-    directly before the declaration). Names as StmtCanon prints them."""
+    directly before the declaration). Names as StmtCanon prints them.
+    require_progress=False (a pure, non-`Result` function: `@[progress]`
+    does not apply) accepts any theorem whose statement uses `callee`."""
     if not callee:
         return []
     try:
@@ -703,7 +707,7 @@ def progress_specs_for(callee, fps_module, target_path, work):
         if fp.get("kind") != "theorem" or callee not in fp.get("consts", []):
             continue
         short = re.escape(name.rsplit(".", 1)[-1])
-        if re.search(r"@\[[^\]]*\bprogress\b[^\]]*\]\s*(?:@\[[^\]]*\]\s*)*"
+        if not require_progress or re.search(r"@\[[^\]]*\bprogress\b[^\]]*\]\s*(?:@\[[^\]]*\]\s*)*"
                      r"(?:private\s+|protected\s+)?theorem\s+(?:[\w.]*\.)?" + short + r"(?![\w'])", src):
             out.append(name)
     return sorted(out)
@@ -712,7 +716,7 @@ def progress_specs_for(callee, fps_module, target_path, work):
 # ── gates ────────────────────────────────────────────────────────────────
 def gate(work, target_path, before_counts, build_timeout=BUILD_TIMEOUT,
          g1_base=None, g2=True, mode="fill", callee=None,
-         editable_paths=None, callees=None):
+         editable_paths=None, callees=None, pure_callees=()):
     """g2=False skips the G2 trust-base gate (harness/gates/g2_trust_base.py
     needs the main checkout's frozen manifests; a bundle workspace has
     neither — prove_top_spec.py). Recorded in the verdict detail.
@@ -728,7 +732,11 @@ def gate(work, target_path, before_counts, build_timeout=BUILD_TIMEOUT,
     the fixed top-spec file; its sorry count must decrease, every other
     editable file may not gain sorry, and `callees` maps each planned
     function name to the spec file that must contain its progress theorem.
-    Existing declarations in every editable module remain G1-identical."""
+    `pure_callees` names functions (in `callee`/`callees`) that do not
+    return `Result`: any proved theorem about them counts, `@[progress]`
+    is not required. Existing declarations in every editable module
+    remain G1-identical."""
+    pure_callees = set(pure_callees or ())
     editable_paths = tuple(dict.fromkeys(editable_paths or [target_path]))
     editable_set = set(editable_paths)
     if target_path not in editable_set:
@@ -792,9 +800,11 @@ def gate(work, target_path, before_counts, build_timeout=BUILD_TIMEOUT,
                                               "before": before_counts.get(target_path, 0),
                                               "after": after.get(target_path, 0)}
         fps_module = b.get("g1_after", {}).get(path_to_module(target_path), {})
-        specs = progress_specs_for(callee, fps_module, target_path, work)
+        specs = progress_specs_for(callee, fps_module, target_path, work,
+                                   require_progress=callee not in pure_callees)
         if not specs:
-            return "rejected_no_spec", {**b, "mode": mode, "callee": callee}
+            return "rejected_no_spec", {**b, "mode": mode, "callee": callee,
+                                        "pure": callee in pure_callees}
         b["specs"] = specs
     elif mode == "joint":
         if after.get(target_path, 0) >= before_counts.get(target_path, 0):
@@ -807,11 +817,12 @@ def gate(work, target_path, before_counts, build_timeout=BUILD_TIMEOUT,
         for planned_fn, spec_path in sorted((callees or {}).items()):
             specs = progress_specs_for(
                 planned_fn, fps_all.get(path_to_module(spec_path), {}),
-                spec_path, work)
+                spec_path, work,
+                require_progress=planned_fn not in pure_callees)
             if not specs:
                 return "rejected_no_spec", {
                     **b, "mode": mode, "callee": planned_fn,
-                    "path": spec_path}
+                    "path": spec_path, "pure": planned_fn in pure_callees}
             result_specs[planned_fn] = [
                 {"theorem": n,
                  "pp": fps_all[path_to_module(spec_path)][n]["pp"]}

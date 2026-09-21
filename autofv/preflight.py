@@ -287,6 +287,7 @@ def _current_provider_identities(
     identities = {
         "image_digest": run.get("image_digest"),
         "runtime_sha256": run.get("worker_inventory_sha256"),
+        "control_bundle_sha256": run.get("control_bundle_sha256"),
         "native_decide_policy_sha256": run.get("native_decide_policy_sha256"),
         "tool_schema_sha256": provider_binding.get("tool_schema_sha256"),
         "provider_identity_sha256": provider_binding.get("binding_sha256"),

@@ -31,6 +31,7 @@ from autofv import (
     provider_service,
     provider_transport,
     worker_proxy,
+    worker_runtime,
 )
 
 
@@ -95,6 +96,7 @@ def _run(root: Path) -> dict:
         "lock": copy.deepcopy(LOCK),
         "image_digest": LOCK["image"]["image_digest"],
         "worker_inventory_sha256": "2" * 64,
+        "control_bundle_sha256": worker_runtime._control_manifest(LOCK)[0]["bundle_sha256"],
         "native_decide_policy_sha256": LOCK["native_decide_policy_sha256"],
         "fixed_proxy_sha256": _sha(LOCK["fixed_proxy"]),
         "events": [],
@@ -120,10 +122,20 @@ def _request(messages: list[dict]) -> dict:
 
 
 def _install_trusted_authorization_fixture(run: dict, root: Path) -> None:
+    control_bundle = run.get("control_bundle_sha256")
+    if (
+        not isinstance(control_bundle, str)
+        or len(control_bundle) != 64
+        or any(character not in "0123456789abcdef" for character in control_bundle)
+    ):
+        run["control_bundle_sha256"] = worker_runtime._control_manifest(run["lock"])[0][
+            "bundle_sha256"
+        ]
     binding = run["provider_binding"]
     identities = {
         "image_digest": run["image_digest"],
         "runtime_sha256": run["worker_inventory_sha256"],
+        "control_bundle_sha256": run["control_bundle_sha256"],
         "native_decide_policy_sha256": run["native_decide_policy_sha256"],
         "tool_schema_sha256": binding["tool_schema_sha256"],
         "provider_identity_sha256": binding["binding_sha256"],
@@ -151,6 +163,7 @@ def _install_trusted_authorization_fixture(run: dict, root: Path) -> None:
             )
             paths[name] = path
         groups[prefix] = paths
+    completed_at = int(time.time())
     suite_path = root / "retained-suite.json"
     preflight.write_retained_suite_result(
         suite_path,
@@ -158,7 +171,7 @@ def _install_trusted_authorization_fixture(run: dict, root: Path) -> None:
         gate_outcomes=groups["gate"],
         identities=identities,
         source_head=run["base_commit"],
-        completed_at_unix=int(time.time()),
+        completed_at_unix=completed_at,
     )
     suite_sha256 = hashlib.sha256(suite_path.read_bytes()).hexdigest()
 
@@ -187,7 +200,7 @@ def _install_trusted_authorization_fixture(run: dict, root: Path) -> None:
         identities=identities,
         zero_secret_scan_sha256="7" * 64,
         source_head=run["base_commit"],
-        completed_at_unix=int(time.time()),
+        completed_at_unix=completed_at,
     )
     provider_service.load_preflight_authorization(
         run,

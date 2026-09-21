@@ -769,6 +769,7 @@ class DeterministicPreflightTests(unittest.TestCase):
         identities = {
             "image_digest": "sha256:" + "1" * 64,
             "runtime_sha256": "2" * 64,
+            "control_bundle_sha256": "6" * 64,
             "native_decide_policy_sha256": "3" * 64,
             "tool_schema_sha256": "4" * 64,
             "provider_identity_sha256": "5" * 64,

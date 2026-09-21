@@ -125,7 +125,7 @@ def _provider_run(root: Path, lock: dict[str, Any], base_commit: str) -> dict[st
         "base_commit": base_commit,
         "lock": copy.deepcopy(lock),
         "image_digest": lock["image"]["image_digest"],
-        "control_bundle_sha256": lock["controller_delivery"]["bundle_sha256"],
+        "control_bundle_sha256": worker.control_manifest(lock)[0]["bundle_sha256"],
         "native_decide_policy_sha256": lock["native_decide_policy_sha256"],
         "worker_inventory_sha256": "1" * 64,
         "fixed_proxy_sha256": _canonical_sha256(lock["fixed_proxy"]),

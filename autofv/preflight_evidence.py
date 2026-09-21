@@ -39,6 +39,7 @@ IDENTITY_FIELDS = frozenset(
     {
         "image_digest",
         "runtime_sha256",
+        "control_bundle_sha256",
         "native_decide_policy_sha256",
         "tool_schema_sha256",
         "provider_identity_sha256",

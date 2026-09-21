@@ -7,13 +7,14 @@ import json
 import subprocess
 import tempfile
 import unittest
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from unittest import mock
 
 from cryptography.hazmat.primitives import serialization
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
 
-from autofv import experiment, preflight_runner, provider_config
+from autofv import experiment, preflight_runner, provider_config, worker_runtime
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -54,6 +55,7 @@ def _run(root: Path) -> dict:
         "lock": copy.deepcopy(LOCK),
         "image_digest": LOCK["image"]["image_digest"],
         "worker_inventory_sha256": "2" * 64,
+        "control_bundle_sha256": worker_runtime._control_manifest(LOCK)[0]["bundle_sha256"],
         "native_decide_policy_sha256": LOCK["native_decide_policy_sha256"],
         "fixed_proxy_sha256": fixed_sha,
         "events": [],
@@ -111,6 +113,36 @@ class PreflightCliTests(unittest.TestCase):
                     experiment.canonical_json_bytes(candidate) + b"\n"
                 )
 
+    def test_same_file_serialization_rejects_overlap(self) -> None:
+        def concurrent_scheduler(graph, run_job, accept_job, **_kwargs):
+            with ThreadPoolExecutor(max_workers=2) as pool:
+                futures = [pool.submit(run_job, node) for node in ("Left", "Right")]
+                results = [future.result() for future in futures]
+            self.assertEqual(results, ["Left", "Right"])
+            return {"Base", "Left", "Right", "Top"}
+
+        with (
+            mock.patch(
+                "autofv.preflight_runner.graph_scheduler._schedule_proofs",
+                side_effect=concurrent_scheduler,
+            ),
+            self.assertRaises(AssertionError),
+        ):
+            preflight_runner._same_file_serialization()
+
+    def test_distinct_verifier_rejects_same_machine(self) -> None:
+        machine_id = "1" * 32
+        started = subprocess.CompletedProcess((), 0, b"", b"")
+        observed = subprocess.CompletedProcess((), 0, f"{machine_id}\n".encode(), b"")
+        with (
+            mock.patch("subprocess.run", return_value=started),
+            mock.patch("autofv.verifier._shell", return_value=observed),
+            self.assertRaises(worker_runtime.WorkerError),
+        ):
+            preflight_runner._probe_distinct_verifier(
+                {"agent_worker_id": f"lima:autofv-agent-template:{machine_id}"}
+            )
+
     def test_preflight_uses_one_sealed_runner_and_produces_valid_bundle(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
@@ -160,6 +192,77 @@ class PreflightCliTests(unittest.TestCase):
                 path.read_bytes() for path in output.rglob("*") if path.is_file()
             )
             self.assertNotIn(b"preflight-secret-canary", retained)
+
+    def test_bundle_validation_rejects_control_bundle_drift(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            output = root / "bundle"
+            run = _run(root)
+            env = _environment(root)
+            with (
+                mock.patch.dict("os.environ", {"AUTOFV_RUN_TOKEN": "preflight-run-token"}),
+                mock.patch("autofv.worker.prepare_run", return_value=run),
+                mock.patch("autofv.preflight_runner._probe_distinct_verifier", return_value="lima:autofv-verifier:fixture"),
+                mock.patch("autofv.worker.force_destroy_worker"),
+                mock.patch(
+                    "autofv.worker_runtime._docker",
+                    side_effect=[
+                        subprocess.CompletedProcess((), 0, b"", b""),
+                        subprocess.CompletedProcess((), 0, b"", b""),
+                        subprocess.CompletedProcess((), 0, _runner_raw(), b""),
+                    ],
+                ),
+            ):
+                preflight_runner.run_preflight(TARGET, CONFIG, output, env_file=env)
+            with (
+                mock.patch(
+                    "autofv.worker_runtime._control_manifest",
+                    return_value=({"bundle_sha256": "f" * 64}, []),
+                ),
+                self.assertRaises(experiment.ContractError),
+            ):
+                preflight_runner.validate_preflight_bundle(
+                    output / "preflight-result.json"
+                )
+
+    def test_reconstructed_validator_passes_independent_run_binding(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            authorization = root / "provider-authorization.json"
+            authorization.write_text(json.dumps({"run_id": "preflight-run-001"}))
+            bundle = {
+                "artifacts": {"authorization": str(authorization)},
+                "identities": {"provider_identity_sha256": "a" * 64},
+            }
+            with (
+                mock.patch(
+                    "autofv.preflight_runner.validate_preflight_bundle",
+                    return_value=bundle,
+                ),
+                mock.patch("autofv.contracts.load_toolchain_lock", return_value=LOCK),
+                mock.patch(
+                    "autofv.provider_config.configure_provider",
+                    return_value={"binding_sha256": "a" * 64},
+                ),
+                mock.patch(
+                    "autofv.provider_service.validate_pinned_preflight",
+                    return_value={"preflight_sha256": "b" * 64},
+                ) as validate,
+                mock.patch("autofv.provider_config.abort_configuration") as abort,
+            ):
+                result = preflight_runner.validate_reconstructed_provider_preflight(
+                    root / "provider-preflight.json",
+                    bundle_path=root / "preflight-result.json",
+                    env_file=root / "provider.env",
+                )
+
+            self.assertEqual(result["status"], "passed")
+            reconstructed = validate.call_args.kwargs["run"]
+            self.assertEqual(reconstructed["run_id"], "preflight-run-001")
+            validate.assert_called_once_with(
+                root / "provider-preflight.json", run=reconstructed
+            )
+            abort.assert_called_once_with(reconstructed)
 
     def test_bundle_validation_rejects_tamper(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:

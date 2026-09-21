@@ -10,6 +10,7 @@ import os
 import re
 import stat
 import sys
+import threading
 import time
 from pathlib import Path
 from typing import Any, Callable
@@ -27,7 +28,11 @@ from autofv import (  # noqa: E402
     result_summary,
     worker_runtime,
 )
-from autofv.contracts import ContractError, canonical_json_bytes  # noqa: E402
+from autofv.contracts import (  # noqa: E402
+    ContractError,
+    canonical_json_bytes,
+    load_toolchain_lock,
+)
 
 RUNNER_SCHEMA = "autofv-sealed-preflight-runner/v1"
 RESULT_SCHEMA = "autofv-preflight-result/v1"
@@ -86,8 +91,33 @@ def _schedule_trace() -> list[str]:
 
 
 def _same_file_serialization() -> None:
-    trace = _schedule_trace()
-    assert trace.index("Left") != trace.index("Right")
+    barrier = threading.Barrier(2)
+    lock = threading.Lock()
+    active = 0
+    overlap = False
+
+    def run(node: str) -> str:
+        nonlocal active, overlap
+        if node not in {"Left", "Right"}:
+            return node
+        with lock:
+            overlap = overlap or active > 0
+            active += 1
+        try:
+            try:
+                barrier.wait(timeout=0.25)
+            except threading.BrokenBarrierError:
+                pass
+        finally:
+            with lock:
+                active -= 1
+        return node
+
+    accepted = graph_scheduler._schedule_proofs(
+        _graph(), run, lambda node, result: node == result, max_workers=4
+    )
+    assert accepted == {"Base", "Left", "Right", "Top"}
+    assert not overlap
 
 
 def _immediate_consumer_release() -> None:
@@ -353,10 +383,15 @@ def _probe_distinct_verifier(run: dict[str, Any]) -> str:
     if started.returncode:
         raise worker_runtime.WorkerError("preflight verifier failed to start")
     machine_id = verifier._shell("cat", "/etc/machine-id").stdout.decode().strip()
-    identity = f"lima:{verifier.VERIFIER_VM}:{machine_id}"
-    if not machine_id or identity == run.get("agent_worker_id"):
+    agent_identity = run.get("agent_worker_id")
+    if (
+        re.fullmatch(r"[0-9a-f]{32}", machine_id) is None
+        or not isinstance(agent_identity, str)
+        or re.fullmatch(r"lima:[^:]+:[0-9a-f]{32}", agent_identity) is None
+        or machine_id == agent_identity.rsplit(":", 1)[-1]
+    ):
         raise worker_runtime.WorkerError("preflight verifier identity is not distinct")
-    return identity
+    return f"lima:{verifier.VERIFIER_VM}:{machine_id}"
 
 
 def run_preflight(
@@ -601,6 +636,14 @@ def validate_preflight_bundle(
     if result["schema"] != RESULT_SCHEMA or result["status"] != "passed":
         raise ContractError("preflight result is not green")
     identities = preflight_evidence.validated_identities(result["identities"], "preflight result")
+    try:
+        current_control = worker_runtime._control_manifest(load_toolchain_lock())[0][
+            "bundle_sha256"
+        ]
+    except (KeyError, OSError, worker_runtime.WorkerError) as exc:
+        raise ContractError("current control bundle identity is unavailable") from exc
+    if identities["control_bundle_sha256"] != current_control:
+        raise ContractError("preflight result control bundle identity mismatch")
     source_head = result["source_head"]
     if expected_source_head is not None and source_head != expected_source_head:
         raise ContractError("preflight result source identity mismatch")

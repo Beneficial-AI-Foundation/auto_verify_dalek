@@ -110,6 +110,7 @@ class PreflightBoundaryTests(unittest.TestCase):
         identities = {
             "image_digest": run["image_digest"],
             "runtime_sha256": run["worker_inventory_sha256"],
+            "control_bundle_sha256": run["control_bundle_sha256"],
             "native_decide_policy_sha256": run["native_decide_policy_sha256"],
             "tool_schema_sha256": binding["tool_schema_sha256"],
             "provider_identity_sha256": binding["binding_sha256"],
@@ -353,6 +354,7 @@ class PreflightBoundaryTests(unittest.TestCase):
                 mismatched = {
                     "image_digest": run["image_digest"],
                     "runtime_sha256": "6" * 64,
+                    "control_bundle_sha256": run["control_bundle_sha256"],
                     "native_decide_policy_sha256": run[
                         "native_decide_policy_sha256"
                     ],

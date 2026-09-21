@@ -1,8 +1,10 @@
 #!/usr/bin/env bash
 # Experiment runner. `bash harness/exp.sh` with no arguments runs the experiment
 # configured below, start to finish:
-#   exp branch  ->  $SCRIPT --commit  ->  ONE squashed commit on main
-# Raw per-fill history is kept at tag exp-raw/<name>. main history is never rewritten.
+#   exp branch  ->  $SCRIPT --commit  ->  stop on the exp branch for inspection
+# Then by hand: `exp.sh finish "msg"` squashes it into ONE commit on main and keeps
+# the raw per-fill history at tag exp-raw/<name>; `exp.sh abort` drops it.
+# main history is never rewritten.
 #
 # ======================= EDIT HERE: the experiment to run =======================
 # SCRIPT: harness/driver.py         many targets in this checkout (--zones/--path/--limit)
@@ -120,7 +122,10 @@ case "${1:-}" in
       echo "$script accepted nothing; dropping exp/$name"
       git switch -q "$MAIN"; git branch -q -D "exp/$name"; exit 0
     fi
-    "$0" finish "${msg:-exp $name: $n accepted fill(s) — $script $*}"
+    echo "$script accepted $n fill(s); staying on exp/$name for inspection."
+    echo "  git log --stat $MAIN..HEAD          # what was accepted, step by step"
+    echo "  harness/exp.sh finish \"$msg\""
+    echo "  harness/exp.sh abort                # drop the branch"
     ;;
   status)
     if on_exp; then

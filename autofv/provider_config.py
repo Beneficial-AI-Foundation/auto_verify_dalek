@@ -60,6 +60,7 @@ class ProviderConfigError(WorkerError):
         super().__init__(message)
         self.classification = classification
         self.status_code = status_code
+        self.provider_response: Any = None
 
 
 @dataclass

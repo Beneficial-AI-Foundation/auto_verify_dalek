@@ -12,6 +12,7 @@ import socket
 import stat
 import threading
 from dataclasses import dataclass
+from decimal import Decimal
 from pathlib import Path
 from typing import Any
 
@@ -26,6 +27,7 @@ from . import (
 
 
 JOURNAL_SCHEMA = "autofv-provider-dispatch/v1"
+REJECTED_RESPONSE_SCHEMA = "autofv-provider-rejected-response/v1"
 _JOURNAL_FIELDS = frozenset({
     "schema", "status", "run_id", "request_id", "sequence", "request_sha256",
     "messages_sha256", "binding_sha256", "response", "receipt", "auth",
@@ -155,6 +157,47 @@ def _record(
     return {**signed, "record_sha256": _sha(signed)}
 
 
+def _normalize_rejected_response(value: Any) -> Any:
+    if isinstance(value, Decimal):
+        provider_messages.bounded_decimal(value)
+        return format(value, "f")
+    if isinstance(value, list):
+        return [_normalize_rejected_response(item) for item in value]
+    if isinstance(value, dict):
+        return {
+            key: _normalize_rejected_response(item)
+            for key, item in sorted(value.items())
+        }
+    return value
+
+
+def _validate_rejected_response(value: Any) -> None:
+    if (
+        not isinstance(value, dict)
+        or set(value)
+        != {
+            "schema", "classification", "message", "provider_response",
+            "provider_response_sha256",
+        }
+        or value.get("schema") != REJECTED_RESPONSE_SCHEMA
+        or not isinstance(value.get("classification"), str)
+        or not value["classification"]
+        or len(value["classification"]) > 128
+        or not isinstance(value.get("message"), str)
+        or not value["message"]
+        or len(value["message"]) > 512
+        or not isinstance(value.get("provider_response_sha256"), str)
+    ):
+        raise provider_transport.ProviderError(
+            "provider rejected response fields mismatch"
+        )
+    provider_messages.bounded_wire(value["provider_response"])
+    if _sha(value["provider_response"]) != value["provider_response_sha256"]:
+        raise provider_transport.ProviderError(
+            "provider rejected response identity mismatch"
+        )
+
+
 def _validate_record(
     value: Any,
     binding: provider_config.ProviderBinding,
@@ -174,7 +217,8 @@ def _validate_record(
     }
     if (
         any(value.get(key) != item for key, item in expected.items())
-        or value.get("status") not in {"reserved", "dispatched", "completed"}
+        or value.get("status")
+        not in {"reserved", "dispatched", "rejected", "completed"}
         or not isinstance(value.get("messages_sha256"), str)
         or value.get("record_sha256") != _sha(signed)
     ):
@@ -182,10 +226,23 @@ def _validate_record(
     provider_receipts.verify_signature(
         body, value["auth"], binding.public["receipt_authentication"], "provider journal"
     )
-    complete = value["status"] == "completed"
-    if complete != (
-        isinstance(value["response"], dict) and isinstance(value["receipt"], dict)
-    ) or (not complete and (value["response"] is not None or value["receipt"] is not None)):
+    if value["status"] == "completed":
+        if not isinstance(value["response"], dict) or not isinstance(
+            value["receipt"], dict
+        ):
+            raise provider_transport.ProviderError(
+                "provider journal completion mismatch"
+            )
+    elif value["status"] == "rejected":
+        if (
+            not isinstance(value["response"], dict)
+            or value["receipt"] is not None
+        ):
+            raise provider_transport.ProviderError(
+                "provider journal rejection mismatch"
+            )
+        _validate_rejected_response(value["response"])
+    elif value["response"] is not None or value["receipt"] is not None:
         raise provider_transport.ProviderError("provider journal completion mismatch")
     return value
 
@@ -270,10 +327,14 @@ def _check_remembered(
         raise provider_transport.ProviderError("provider journal memory changed")
     allowed = {existing["record_sha256"]}
     messages_sha256 = existing["messages_sha256"]
-    if existing["status"] in {"dispatched", "completed"}:
-        allowed.add(_record(binding, request, messages_sha256, "reserved")["record_sha256"])
-    if existing["status"] == "completed":
-        allowed.add(_record(binding, request, messages_sha256, "dispatched")["record_sha256"])
+    if existing["status"] in {"dispatched", "rejected", "completed"}:
+        allowed.add(
+            _record(binding, request, messages_sha256, "reserved")["record_sha256"]
+        )
+    if existing["status"] in {"rejected", "completed"}:
+        allowed.add(
+            _record(binding, request, messages_sha256, "dispatched")["record_sha256"]
+        )
     if digest not in allowed:
         raise provider_transport.ProviderError("provider journal memory changed")
 
@@ -613,6 +674,11 @@ def dispatch(
         if existing is not None and existing["status"] == "completed":
             _remember(run, existing)
             return copy.deepcopy(existing["response"]), copy.deepcopy(existing["receipt"])
+        if existing is not None and existing["status"] == "rejected":
+            raise provider_transport.ProviderError(
+                "previous provider response was rejected",
+                classification=existing["response"]["classification"],
+            )
         if existing is not None and existing["status"] == "dispatched":
             raise provider_transport.ProviderError(
                 "provider dispatch outcome is ambiguous", classification="upstream_error"
@@ -633,7 +699,31 @@ def dispatch(
         _write(path, dispatched)
         _remember(run, dispatched)
 
-    response, receipt = provider_transport.provider_round(run, request)
+    try:
+        response, receipt = provider_transport.provider_round(run, request)
+    except provider_transport.ProviderError as exc:
+        if exc.provider_response is not None:
+            normalized_response = _normalize_rejected_response(exc.provider_response)
+            rejected_response = {
+                "schema": REJECTED_RESPONSE_SCHEMA,
+                "classification": exc.classification,
+                "message": str(exc),
+                "provider_response": normalized_response,
+                "provider_response_sha256": _sha(normalized_response),
+            }
+            _validate_rejected_response(rejected_response)
+            provider_messages.scan_response(rejected_response, binding)
+            rejected = _record(
+                binding,
+                request,
+                messages_sha256,
+                "rejected",
+                response=rejected_response,
+            )
+            with binding.lock:
+                _write(path, rejected)
+                _remember(run, rejected)
+        raise
     completed = _record(
         binding, request, messages_sha256, "completed", response=response, receipt=receipt
     )

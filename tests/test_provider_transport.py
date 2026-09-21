@@ -380,6 +380,62 @@ class ProviderTransportTests(unittest.TestCase):
             worker_proxy.stage_provider_messages(run, request, messages)
             worker_proxy.discard_provider_messages(run, request["request_id"])
 
+    def test_provider_retains_secret_scanned_rejected_response_without_retry(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            run, request, messages = _configured_provider(
+                root, self.lock, self.base_commit
+            )
+            worker_proxy.stage_provider_messages(run, request, messages)
+            rejected = _provider_reply()
+            rejected["choices"][0]["message"]["tool_calls"][0]["index"] = 0
+            rejected["usage"]["cost"] = 0.00038
+            opener = mock.Mock(return_value=_ProviderReply(rejected))
+
+            with mock.patch(
+                "autofv.provider_transport._open_upstream", opener
+            ), self.assertRaisesRegex(
+                provider_transport.ProviderError, "provider tool call fields mismatch"
+            ):
+                provider_service.dispatch(run, request, run_token=RUN_TOKEN)
+
+            journal = next((root / "evidence" / "provider-journal").glob("*.json"))
+            record = _strict_json(journal.read_bytes())
+            self.assertEqual(record["status"], "rejected")
+            self.assertIsNone(record["receipt"])
+            retained = record["response"]
+            self.assertEqual(
+                {
+                    key: retained[key]
+                    for key in ("schema", "classification", "message")
+                },
+                {
+                    "schema": "autofv-provider-rejected-response/v1",
+                    "classification": "malformed_response",
+                    "message": "provider tool call fields mismatch",
+                },
+            )
+            normalized = copy.deepcopy(rejected)
+            normalized["usage"]["cost"] = "0.00038"
+            self.assertEqual(retained["provider_response"], normalized)
+            self.assertEqual(
+                retained["provider_response_sha256"], _canonical_sha256(normalized)
+            )
+            binding = provider_config.provider_binding(run)
+            self.assertIsNotNone(binding)
+            self.assertEqual(provider_service._load(journal, binding, request), record)
+
+            retry = mock.Mock(side_effect=AssertionError("upstream retried"))
+            with mock.patch(
+                "autofv.provider_transport._open_upstream", retry
+            ), self.assertRaisesRegex(
+                provider_transport.ProviderError,
+                "previous provider response was rejected",
+            ):
+                provider_service.dispatch(run, request, run_token=RUN_TOKEN)
+            retry.assert_not_called()
+            opener.assert_called_once()
+
     def test_provider_rejects_authority_drift_before_any_upstream_call(self) -> None:
         mutations = (
             lambda request, _run: request.update({"authorization": "caller-selected"}),
@@ -426,6 +482,14 @@ class ProviderTransportTests(unittest.TestCase):
                 ) as error:
                     provider_service.dispatch(run, request, run_token=RUN_TOKEN)
                 self.assertEqual(error.exception.classification, "malformed_response")
+                journal_path = provider_service._journal_path(
+                    run, request["request_id"]
+                )
+                journal = _strict_json(journal_path.read_bytes())
+                self.assertEqual(journal["status"], "rejected")
+                self.assertEqual(
+                    journal["response"]["provider_response"], provider_reply
+                )
                 worker_proxy.stage_provider_messages(run, request, messages)
                 worker_proxy.discard_provider_messages(run, request["request_id"])
                 retained = b"".join(
@@ -535,6 +599,13 @@ class ProviderTransportTests(unittest.TestCase):
                     provider_service.dispatch(
                         run, hostile_request, run_token=RUN_TOKEN
                     )
+                hostile_journal = _strict_json(
+                    provider_service._journal_path(
+                        run, hostile_request["request_id"]
+                    ).read_bytes()
+                )
+                self.assertEqual(hostile_journal["status"], "dispatched")
+                self.assertIsNone(hostile_journal["response"])
             deep: dict[str, Any] = {}
             cursor = deep
             for _ in range(14):

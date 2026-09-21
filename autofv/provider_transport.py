@@ -584,17 +584,21 @@ def provider_round(
         raise ProviderError(
             "provider upstream_error", classification="upstream_error"
         ) from exc
-    response, provider = _provider_response(
-        binding, request, value, run.get("base_commit", "")
-    )
-    input_ceiling = len(canonical_json_bytes(upstream)) + 4096
-    if (
-        provider["usage"]["input_tokens"] > input_ceiling
-        or provider["usage"]["output_tokens"] > upstream["max_tokens"]
-    ):
-        raise ProviderError("provider usage exceeds the reserved token ceiling")
-    scan_response_secrets(response, binding)
-    scan_response_secrets(provider, binding)
-    receipt = _sign_receipt(binding, run, request, response, provider)
-    scan_response_secrets(receipt, binding)
+    try:
+        response, provider = _provider_response(
+            binding, request, value, run.get("base_commit", "")
+        )
+        input_ceiling = len(canonical_json_bytes(upstream)) + 4096
+        if (
+            provider["usage"]["input_tokens"] > input_ceiling
+            or provider["usage"]["output_tokens"] > upstream["max_tokens"]
+        ):
+            raise ProviderError("provider usage exceeds the reserved token ceiling")
+        scan_response_secrets(response, binding)
+        scan_response_secrets(provider, binding)
+        receipt = _sign_receipt(binding, run, request, response, provider)
+        scan_response_secrets(receipt, binding)
+    except ProviderError as exc:
+        exc.provider_response = value
+        raise
     return response, receipt

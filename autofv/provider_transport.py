@@ -352,13 +352,22 @@ def _provider_response(
         )
     ):
         raise ProviderError("provider response must contain exactly one tool call")
-    call = _exact(message["tool_calls"][0], {"id", "type", "function"}, "provider tool call")
+    call = _shape(
+        message["tool_calls"][0],
+        {"id", "type", "function"},
+        {"index"},
+        "provider tool call",
+    )
     function = _exact(call["function"], {"name", "arguments"}, "provider function call")
     allowed = {tool["function"]["name"] for tool in binding.tools}
     if (
         not isinstance(call["id"], str)
         or not call["id"]
         or call["type"] != "function"
+        or (
+            "index" in call
+            and (type(call["index"]) is not int or call["index"] != 0)
+        )
         or not isinstance(function["name"], str)
         or function["name"] not in allowed
         or not isinstance(function["arguments"], str)

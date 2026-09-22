@@ -388,7 +388,7 @@ class ProviderTransportTests(unittest.TestCase):
             )
             worker_proxy.stage_provider_messages(run, request, messages)
             rejected = _provider_reply()
-            rejected["choices"][0]["message"]["tool_calls"][0]["index"] = 0
+            rejected["choices"][0]["message"]["tool_calls"][0]["provider_extra"] = 0
             rejected["usage"]["cost"] = 0.00038
             opener = mock.Mock(return_value=_ProviderReply(rejected))
 
@@ -461,6 +461,9 @@ class ProviderTransportTests(unittest.TestCase):
         wrong_tool = _provider_reply()
         wrong_tool["choices"][0]["message"]["tool_calls"] = []
         malformed.append(wrong_tool)
+        wrong_index = _provider_reply()
+        wrong_index["choices"][0]["message"]["tool_calls"][0]["index"] = 1
+        malformed.append(wrong_index)
         wrong_usage = _provider_reply()
         wrong_usage["usage"]["total_tokens"] = 999
         malformed.append(wrong_usage)
@@ -555,6 +558,7 @@ class ProviderTransportTests(unittest.TestCase):
                 }
             )
             realistic["choices"][0].update({"index": 0, "logprobs": None})
+            realistic["choices"][0]["message"]["tool_calls"][0]["index"] = 0
             realistic["choices"][0]["message"].update(
                 {
                     "content": None,

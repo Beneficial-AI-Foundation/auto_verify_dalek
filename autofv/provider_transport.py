@@ -393,10 +393,12 @@ def _provider_response(
     )
     details = usage.get("prompt_tokens_details", {"cached_tokens": 0})
     if not isinstance(details, dict) or not set(details) <= {
-        "cached_tokens", "audio_tokens", "cache_write_tokens"
+        "cached_tokens", "audio_tokens", "cache_write_tokens", "video_tokens"
     } or (
         "prompt_tokens_details" in usage and "cached_tokens" not in details
-    ) or any(type(item) is not int or item < 0 for item in details.values()):
+    ) or any(type(item) is not int or item < 0 for item in details.values()) or (
+        details.get("video_tokens", 0) != 0
+    ):
         raise ProviderError("provider cached usage fields mismatch")
     cached_tokens = details.get("cached_tokens", 0)
     completion_details = usage.get("completion_tokens_details", {})

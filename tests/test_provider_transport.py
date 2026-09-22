@@ -464,6 +464,9 @@ class ProviderTransportTests(unittest.TestCase):
         wrong_index = _provider_reply()
         wrong_index["choices"][0]["message"]["tool_calls"][0]["index"] = 1
         malformed.append(wrong_index)
+        wrong_video_usage = _provider_reply()
+        wrong_video_usage["usage"]["prompt_tokens_details"]["video_tokens"] = 1
+        malformed.append(wrong_video_usage)
         wrong_usage = _provider_reply()
         wrong_usage["usage"]["total_tokens"] = 999
         malformed.append(wrong_usage)
@@ -567,6 +570,7 @@ class ProviderTransportTests(unittest.TestCase):
                     "reasoning_details": [],
                 }
             )
+            realistic["usage"]["prompt_tokens_details"]["video_tokens"] = 0
             realistic["usage"].update(
                 {
                     "completion_tokens_details": {"reasoning_tokens": 4},

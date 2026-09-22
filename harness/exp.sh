@@ -15,13 +15,14 @@ EXP_MSG="top-spec round: FieldElement51 as_bytes_spec, bottom-up joint (LOW_51_B
 DRIVER_ARGS=(
   --target curve25519_dalek.backend.serial.u64.field.FieldElement51.as_bytes_spec
                                   # closure: reduce.LOW_51_BIT_MASK (trivial), reduce (carry chain, bounds < 2^52,
-                                  # ≡ [MOD p]), to_bytes (canonical reduction + 32-byte split; the human spec is
-                                  # @[externally_verified], i.e. never proved in Lean) — expect failure, read the transcripts
+                                  # ≡ [MOD p]), to_bytes (canonical reduction + 32-byte split)
   --bottom-up                     # joint: all missing internal spec files + top file, one session, one gate
   # --stepwise                    # A/B control: one session per internal callee, published step by step
   --model claude-sonnet-5
-  --rounds 3
-  --max-turns 300                 # joint mode edits several files per session; the 900s --timeout is the real bound
+  --rounds 5
+  --timeout 3600                  # wall clock per round; a deadline kill ends the whole run (driver.run_rounds),
+                                  # so this is the real bound — rounds only add budget after a graceful round end
+  --max-turns 300                 # joint mode edits several files per session
   # --dry-run                     # no fee; print the plan and every step's prompt
 )
 # Previous driver.py configuration, kept for reference:

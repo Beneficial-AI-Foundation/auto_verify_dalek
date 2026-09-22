@@ -488,7 +488,10 @@ def run_rounds(prompt, tid, path, before_counts, args, env, settings_path,
 
       * --rounds            hard cap on agent rounds
       * --timeout           wall clock per round (process-group kill); the
-                            per-target bound is rounds × timeout
+                            per-target bound is rounds × timeout. Like max
+                            turns below, a deadline kill is not an
+                            agent_error: the gate runs on what's on disk and
+                            the session is resumed next round
       * --max-cost-usd      cumulative reported cost cap per target (0 = off)
       * END_REASON:LIMIT    agent's honest give-up ends the attempt
       * max turns           a round that dies of --max-turns (claude exits 1,
@@ -541,13 +544,20 @@ def run_rounds(prompt, tid, path, before_counts, args, env, settings_path,
         was_fresh, fresh = fresh, False
         result = result or {}
 
-        if status != "ok":
-            outcome, detail = "agent_error", {"error": status}
+        cut_off = None
+        if status == "deadline":
+            cut_off = "deadline_exhausted"
         elif rc != 0 and result.get("subtype") == "error_max_turns":
-            # Ran out of --max-turns mid-work — not a failure, the round
-            # just ended early. Gate whatever is on disk: a FEEDBACK
-            # rejection (build fails / sorry remains) resumes the same
-            # session next round; a finished proof is accepted as usual.
+            cut_off = "max_turns_exhausted"
+        if status not in ("ok", "deadline"):
+            outcome, detail = "agent_error", {"error": status}
+        elif cut_off:
+            # Ran out of --max-turns or of the --timeout wall clock mid-work
+            # — not a failure, the round just ended early. Gate whatever is
+            # on disk: a FEEDBACK rejection (build fails / sorry remains)
+            # resumes the same session next round (claude's session file is
+            # written incrementally, so it survives the SIGKILL); a finished
+            # proof is accepted as usual.
             outcome, detail = gate(work, path, before_counts,
                                    args.build_timeout, g1_base,
                                    g2=getattr(args, "g2", True),
@@ -556,7 +566,7 @@ def run_rounds(prompt, tid, path, before_counts, args, env, settings_path,
                                    editable_paths=editable_paths,
                                    callees=getattr(args, "gate_callees", None),
                                    pure_callees=getattr(args, "gate_pure_callees", ()))
-            detail["max_turns_exhausted"] = True
+            detail[cut_off] = True
         elif rc != 0:
             outcome, detail = "agent_error", {"error": f"exit {rc}"}
         else:
@@ -645,6 +655,12 @@ def run_rounds(prompt, tid, path, before_counts, args, env, settings_path,
             if end_reason == "COMPLETE":
                 continue_message = ("You declared END_REASON:COMPLETE but "
                                     + continue_message)
+            elif detail.get("deadline_exhausted"):
+                continue_message = (
+                    f"The previous round was killed at the {args.timeout}s "
+                    "wall-clock limit; your last command may not have "
+                    "finished. Re-check the file state before continuing. "
+                    + continue_message)
     return outcome, detail, rounds, session_ids
 
 

@@ -17,7 +17,15 @@ from typing import Any
 
 from langgraph.graph import END, START, StateGraph
 
-from . import probes, results, terminal_run, verifier, worker
+from . import (
+    preflight_runner,
+    probes,
+    provider_service,
+    results,
+    terminal_run,
+    verifier,
+    worker,
+)
 from .contracts import (
     BudgetExhausted,
     ContractError,
@@ -287,6 +295,72 @@ def _resume_identities(
     return identities
 
 
+def _bind_provider_selection(
+    run: dict[str, Any], selection_path: str | Path
+) -> None:
+    source = _absolute_path(
+        selection_path, "provider selection", directory=False
+    )
+    raw = source.read_bytes()
+    selection = _exact_dict(
+        _read_json(source, "provider selection"),
+        {
+            "schema", "status", "selected_at", "selected_by", "decision",
+            "scope", "model", "accessibility_evidence", "constraints",
+            "verification",
+        },
+        "provider selection",
+    )
+    if raw != canonical_json_bytes(selection) + b"\n":
+        raise ContractError("provider selection must be canonical JSON")
+    if (
+        selection["schema"] != "autofv-retained-model-selection/v1"
+        or selection["status"] != "selected"
+        or selection["decision"] != "select-model"
+    ):
+        raise ContractError("provider selection is not approved")
+    scope = _exact_dict(
+        selection["scope"],
+        {
+            "proof_smoke", "full_retained_run", "provider_request_authorized",
+            "spend_authorized", "push_authorized", "dynamic_routing_allowed",
+            "model_substitution_allowed",
+        },
+        "provider selection scope",
+    )
+    if scope != {
+        "proof_smoke": True,
+        "full_retained_run": True,
+        "provider_request_authorized": False,
+        "spend_authorized": False,
+        "push_authorized": False,
+        "dynamic_routing_allowed": False,
+        "model_substitution_allowed": False,
+    }:
+        raise ContractError("provider selection scope mismatch")
+    model = _exact_dict(
+        selection["model"],
+        {
+            "model_id", "endpoint", "endpoint_sha256", "parameters", "pricing",
+            "pricing_sha256", "tool_schema_sha256", "capability_sha256",
+            "fixed_proxy_sha256", "proxy_id", "route_id",
+        },
+        "provider selection model",
+    )
+    binding = run.get("provider_binding")
+    stable_fields = (
+        "model_id", "endpoint", "endpoint_sha256", "parameters", "pricing",
+        "pricing_sha256", "tool_schema_sha256", "fixed_proxy_sha256",
+        "proxy_id", "route_id",
+    )
+    if not isinstance(binding, dict) or any(
+        binding.get(name) != model[name] for name in stable_fields
+    ):
+        raise ContractError("provider binding does not match selected model")
+    if "provider_selected" not in run.setdefault("events", []):
+        run["events"].append("provider_selected")
+
+
 def run_experiment(
     target: str | Path,
     run_config: str | Path,
@@ -295,8 +369,14 @@ def run_experiment(
     run_round=agentproc.run_round,
     resume_from: str | Path | None = None,
     verifier_reference: str | Path | None = None,
+    env_file: str | Path | None = None,
+    provider_selection: str | Path | None = None,
 ) -> dict[str, Any]:
     """Run the bounded sealed tracer and persist every attempted run."""
+    if (env_file is None) != (provider_selection is None):
+        raise ContractError(
+            "provider env file and selected model record must be supplied together"
+        )
     wall_started = time.monotonic_ns()
     results.validate_output_root(target, output_root)
     try:
@@ -571,6 +651,19 @@ def run_experiment(
         _charge_wall(state)
         if preparation_failure is not None:
             raise preparation_failure
+        if env_file is not None:
+            preflight_runner.authorize_prepared_run(
+                run,
+                target_path,
+                run_config,
+                Path(run["evidence_dir"]) / "provider-prerequisite",
+                env_file=env_file,
+                max_age_seconds=config["max_wall_seconds"],
+            )
+            _bind_provider_selection(run, provider_selection)
+            if run["provider_binding"]["model_id"] != config["model"]:
+                raise ContractError("run model does not match provider binding")
+            provider_service.start(run)
         if (
             run.get("execution_tier") == "sealed_runsc"
             and not run.get("egress_receipt")
@@ -703,6 +796,8 @@ def _parser() -> argparse.ArgumentParser:
     run.add_argument("repo", nargs="?")
     run.add_argument("--config")
     run.add_argument("--output-root")
+    run.add_argument("--env-file")
+    run.add_argument("--selection-record")
     run.add_argument("--target", dest="target_alias")
     run.add_argument("--run-config", dest="config_alias")
     preflight_command = commands.add_parser("preflight")
@@ -750,11 +845,17 @@ def main() -> None:
         return
     target, run_config = _run_arguments(parser, args)
     try:
-        result = run_experiment(
-            target,
-            run_config,
-            output_root=args.output_root,
-        )
+        if (args.env_file is None) != (args.selection_record is None):
+            parser.error(
+                "--env-file and --selection-record must be supplied together"
+            )
+        options = {"output_root": args.output_root}
+        if args.env_file is not None:
+            options.update(
+                env_file=args.env_file,
+                provider_selection=args.selection_record,
+            )
+        result = run_experiment(target, run_config, **options)
     except (ContractError, results.ResultError) as exc:
         parser.error(str(exc))
     print(canonical_json_bytes(result).decode("utf-8"))

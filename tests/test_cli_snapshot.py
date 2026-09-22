@@ -131,6 +131,8 @@ class ToolchainContractTests(unittest.TestCase):
         self.assertIn("inspect", top.stdout)
         self.assertIn("--target", run.stdout)
         self.assertIn("--run-config", run.stdout)
+        self.assertIn("--env-file", run.stdout)
+        self.assertIn("--selection-record", run.stdout)
         for forbidden in ("--model", "--node", "--probe", "--provider", "--host"):
             self.assertNotIn(forbidden, top.stdout + run.stdout)
 
@@ -169,6 +171,28 @@ class ToolchainContractTests(unittest.TestCase):
                 (
                     ["autofv", "run", repo, "--config", config],
                     mock.call(repo, config, output_root=None),
+                ),
+                (
+                    [
+                        "autofv",
+                        "run",
+                        repo,
+                        "--config",
+                        config,
+                        "--output-root",
+                        output_root,
+                        "--env-file",
+                        str(root / "provider.env"),
+                        "--selection-record",
+                        str(root / "selection.json"),
+                    ],
+                    mock.call(
+                        repo,
+                        config,
+                        output_root=output_root,
+                        env_file=str(root / "provider.env"),
+                        provider_selection=str(root / "selection.json"),
+                    ),
                 ),
             )
             for argv, expected in forms:

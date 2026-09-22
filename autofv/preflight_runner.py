@@ -401,6 +401,7 @@ def run_preflight(
     *,
     env_file: str | Path | None = None,
     max_age_seconds: int = MAX_AGE_SECONDS,
+    _prepared_run: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Run the fixed suite once in the sealed runsc worker and retain authorization."""
     from autofv import agent_lane, prepare_dalek, provider_service, worker
@@ -425,10 +426,19 @@ def run_preflight(
     destination = parent / destination.name
     destination.mkdir(mode=0o700)
     (destination / "checks").mkdir(mode=0o700)
-    run: dict[str, Any] | None = None
+    run = _prepared_run
+    retain_worker = run is not None
     succeeded = False
     try:
-        run = worker.prepare_run(target, manifest, lock)
+        if run is None:
+            run = worker.prepare_run(target, manifest, lock)
+        elif (
+            run.get("lock") != lock
+            or run.get("snapshot_sha256") != worker.hash_tree(target)
+            or run.get("manifest_sha256")
+            != hashlib.sha256(canonical_json_bytes(manifest)).hexdigest()
+        ):
+            raise ContractError("prepared preflight run identity mismatch")
         _probe_distinct_verifier(run)
         tools = list(agent_lane._TOOL_SCHEMAS)
         provider_config.configure_provider(
@@ -597,14 +607,14 @@ def run_preflight(
         return result
     finally:
         cleanup_error = None
-        if run is not None:
+        if run is not None and not retain_worker:
             try:
                 worker.force_destroy_worker(run)
                 run["worker_disposed"] = True
             except BaseException as exc:
                 cleanup_error = exc
-            finally:
-                provider_config.abort_configuration(run)
+        if run is not None and (not succeeded or not retain_worker):
+            provider_config.abort_configuration(run)
         if not succeeded:
             import shutil
             shutil.rmtree(destination, ignore_errors=True)
@@ -613,6 +623,26 @@ def run_preflight(
                 import shutil
                 shutil.rmtree(destination, ignore_errors=True)
             raise worker_runtime.WorkerError("preflight worker cleanup failed") from cleanup_error
+
+
+def authorize_prepared_run(
+    run: dict[str, Any],
+    repo: str | Path,
+    run_config: str | Path,
+    output: str | Path,
+    *,
+    env_file: str | Path,
+    max_age_seconds: int,
+) -> dict[str, Any]:
+    """Authorize provider calls on an already allocated sealed worker."""
+    return run_preflight(
+        repo,
+        run_config,
+        output,
+        env_file=env_file,
+        max_age_seconds=max_age_seconds,
+        _prepared_run=run,
+    )
 
 
 def validate_preflight_bundle(

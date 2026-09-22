@@ -14,7 +14,7 @@ from unittest import mock
 from cryptography.hazmat.primitives import serialization
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
 
-from autofv import experiment, preflight_runner, provider_config, worker_runtime
+from autofv import experiment, preflight_runner, provider_config, worker, worker_runtime
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -95,6 +95,121 @@ class PreflightCliTests(unittest.TestCase):
         self.assertEqual(args.config, "/tmp/run.json")
         self.assertEqual(args.output, "/tmp/evidence")
         self.assertEqual(args.env_file, "/tmp/provider.env")
+
+    def test_provider_run_authorizes_its_prepared_worker_before_execution(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            run = _run(root)
+            run["execution_tier"] = "simulation"
+            env = root / "provider.env"
+            selection = root / "selection.json"
+
+            def authorize(prepared, *_args, **_kwargs):
+                prepared["provider_binding"] = {"model_id": "fixture-model-v1"}
+
+            with (
+                mock.patch("autofv.worker.prepare_run", return_value=run),
+                mock.patch(
+                    "autofv.experiment.preflight_runner.authorize_prepared_run",
+                    side_effect=authorize,
+                ) as authorize_run,
+                mock.patch.object(
+                    experiment, "_bind_provider_selection"
+                ) as bind_selection,
+                mock.patch.object(
+                    experiment.provider_service, "start"
+                ) as start_provider,
+                mock.patch.object(
+                    experiment._EXPERIMENT_GRAPH, "stream", return_value=[]
+                ),
+                mock.patch.object(experiment, "_checkpoint_if_enabled"),
+                mock.patch.object(
+                    experiment,
+                    "_finish_attempt",
+                    return_value={"outcome": "success"},
+                ),
+            ):
+                result = experiment.run_experiment(
+                    TARGET,
+                    CONFIG,
+                    env_file=env,
+                    provider_selection=selection,
+                )
+
+            self.assertEqual(result["outcome"], "success")
+            authorize_run.assert_called_once_with(
+                run,
+                TARGET,
+                CONFIG,
+                Path(run["evidence_dir"]) / "provider-prerequisite",
+                env_file=env,
+                max_age_seconds=300,
+            )
+            bind_selection.assert_called_once_with(run, selection)
+            start_provider.assert_called_once_with(run)
+
+    def test_provider_selection_binds_stable_identity_not_run_capability(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            path = root / "selection.json"
+            model = {
+                "model_id": "selected-model-v1",
+                "endpoint": "https://provider.invalid/v1/chat/completions",
+                "endpoint_sha256": "1" * 64,
+                "parameters": {
+                    "review_max_output_tokens": 4096,
+                    "stream": False,
+                    "temperature": 0,
+                    "timeout_seconds": 30,
+                    "tool_choice": "required",
+                    "work_max_output_tokens": 8192,
+                },
+                "pricing": {
+                    "cached_input_usd_per_million": "1.000000",
+                    "currency": "USD",
+                    "input_usd_per_million": "2.000000",
+                    "output_usd_per_million": "4.000000",
+                },
+                "pricing_sha256": "2" * 64,
+                "tool_schema_sha256": "3" * 64,
+                "capability_sha256": "4" * 64,
+                "fixed_proxy_sha256": "5" * 64,
+                "proxy_id": "proxy-v1",
+                "route_id": "route-v1",
+            }
+            selection = {
+                "schema": "autofv-retained-model-selection/v1",
+                "status": "selected",
+                "selected_at": "2026-09-22T10:36:07.015Z",
+                "selected_by": "human-operator",
+                "decision": "select-model",
+                "scope": {
+                    "proof_smoke": True,
+                    "full_retained_run": True,
+                    "provider_request_authorized": False,
+                    "spend_authorized": False,
+                    "push_authorized": False,
+                    "dynamic_routing_allowed": False,
+                    "model_substitution_allowed": False,
+                },
+                "model": model,
+                "accessibility_evidence": {},
+                "constraints": [],
+                "verification": {},
+            }
+            path.write_bytes(experiment.canonical_json_bytes(selection) + b"\n")
+            binding = {**model, "capability_sha256": "6" * 64}
+            run = {"provider_binding": binding, "events": []}
+
+            experiment._bind_provider_selection(run, path)
+            self.assertEqual(run["events"], ["provider_selected"])
+
+            selection["model"]["pricing_sha256"] = "7" * 64
+            path.write_bytes(experiment.canonical_json_bytes(selection) + b"\n")
+            with self.assertRaises(experiment.ContractError):
+                experiment._bind_provider_selection(
+                    {"provider_binding": binding, "events": []}, path
+                )
 
     def test_runner_result_rejects_unknown_or_failed_checks(self) -> None:
         value = json.loads(_runner_raw())
@@ -192,6 +307,49 @@ class PreflightCliTests(unittest.TestCase):
                 path.read_bytes() for path in output.rglob("*") if path.is_file()
             )
             self.assertNotIn(b"preflight-secret-canary", retained)
+
+    def test_prepared_run_authorization_retains_worker_and_binding(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            output = root / "bundle"
+            run = _run(root)
+            manifest = json.loads((TARGET / "autofv.json").read_bytes())
+            run["snapshot_sha256"] = worker.hash_tree(TARGET)
+            run["manifest_sha256"] = hashlib.sha256(
+                experiment.canonical_json_bytes(manifest)
+            ).hexdigest()
+            env = _environment(root)
+            completed = subprocess.CompletedProcess((), 0, b"", b"")
+            collected = subprocess.CompletedProcess((), 0, _runner_raw(), b"")
+            try:
+                with (
+                    mock.patch.dict(
+                        "os.environ", {"AUTOFV_RUN_TOKEN": "preflight-run-token"}
+                    ),
+                    mock.patch(
+                        "autofv.preflight_runner._probe_distinct_verifier",
+                        return_value="lima:autofv-verifier:fixture",
+                    ),
+                    mock.patch("autofv.worker.force_destroy_worker") as destroy,
+                    mock.patch(
+                        "autofv.worker_runtime._docker",
+                        side_effect=[completed, completed, collected],
+                    ),
+                ):
+                    result = preflight_runner.authorize_prepared_run(
+                        run,
+                        TARGET,
+                        CONFIG,
+                        output,
+                        env_file=env,
+                        max_age_seconds=300,
+                    )
+
+                self.assertEqual(result["status"], "passed")
+                self.assertIn("provider_binding", run)
+                destroy.assert_not_called()
+            finally:
+                provider_config.abort_configuration(run)
 
     def test_bundle_validation_rejects_control_bundle_drift(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:

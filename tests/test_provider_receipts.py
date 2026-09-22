@@ -87,6 +87,7 @@ def _environment(
     api_key: str,
     *,
     endpoint: str = "https://provider.invalid/v1/chat/completions",
+    pricing: tuple[str, str, str] = ("2.000000", "1.000000", "4.000000"),
 ) -> Path:
     signing_key = Ed25519PrivateKey.generate().private_bytes(
         serialization.Encoding.Raw,
@@ -97,9 +98,9 @@ def _environment(
         "AUTOFV_PROVIDER_ENDPOINT": endpoint,
         "AUTOFV_PROVIDER_MODEL": MODEL_ID,
         "AUTOFV_PROVIDER_API_KEY": api_key,
-        "AUTOFV_PROVIDER_INPUT_USD_PER_MILLION": "2.000000",
-        "AUTOFV_PROVIDER_CACHED_INPUT_USD_PER_MILLION": "1.000000",
-        "AUTOFV_PROVIDER_OUTPUT_USD_PER_MILLION": "4.000000",
+        "AUTOFV_PROVIDER_INPUT_USD_PER_MILLION": pricing[0],
+        "AUTOFV_PROVIDER_CACHED_INPUT_USD_PER_MILLION": pricing[1],
+        "AUTOFV_PROVIDER_OUTPUT_USD_PER_MILLION": pricing[2],
         "AUTOFV_RECEIPT_SIGNING_KEY_B64": base64.b64encode(signing_key).decode(),
     }
     path = root / "providers.env"
@@ -258,6 +259,7 @@ class ProviderReceiptTests(unittest.TestCase):
         api_key: str = "provider-canary-secret",
         *,
         endpoint: str = "https://provider.invalid/v1/chat/completions",
+        pricing: tuple[str, str, str] = ("2.000000", "1.000000", "4.000000"),
     ):
         run = _run(root)
         with mock.patch.dict(
@@ -265,7 +267,9 @@ class ProviderReceiptTests(unittest.TestCase):
         ), mock.patch("autofv.provider_service._serve", return_value=_InertServer()):
             worker_proxy.configure_provider(
                 run,
-                env_path=_environment(root, api_key, endpoint=endpoint),
+                env_path=_environment(
+                    root, api_key, endpoint=endpoint, pricing=pricing
+                ),
                 tool_schemas=_tools(),
             )
         _install_trusted_authorization_fixture(run, root)
@@ -299,13 +303,13 @@ class ProviderReceiptTests(unittest.TestCase):
                 response, receipt = provider_transport.provider_round(run, request)
 
             self.assertEqual(receipt["cost"]["basis"], "provider_billed")
-            self.assertEqual(receipt["cost"]["amount"], "0.000380")
+            self.assertEqual(receipt["cost"]["amount"], "0.00038")
             self.assertEqual(
                 receipt["provider"]["billing"]["provider_reported"],
                 {
                     "amount": "0.00038",
                     "currency": "USD",
-                    "amount_contract": "exact-decimal-usd-max-6",
+                    "amount_contract": "exact-decimal-usd-max-8",
                     "details": {"upstream_inference_cost": "0.00038"},
                 },
             )
@@ -325,11 +329,67 @@ class ProviderReceiptTests(unittest.TestCase):
                     response_sha256=_sha(response),
                     seen_receipt_sha256=frozenset(),
                 ),
-                Decimal("0.000380"),
+                Decimal("0.00038"),
             )
             self.assertGreaterEqual(
                 worker_proxy.provider_reservation_usd(run, request, _messages()),
                 Decimal(receipt["cost"]["amount"]),
+            )
+
+    def test_provider_billing_preserves_exact_eight_decimal_cost(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            run, request = self._configured(
+                Path(temporary), pricing=("0.120000", "0.070000", "0.800000")
+            )
+            reply = _reply('{"path":"README.md"}', cost=0.00009248)
+            reply["choices"][0]["message"]["tool_calls"][0]["index"] = 0
+            reply["usage"].update(
+                {
+                    "prompt_tokens": 624,
+                    "completion_tokens": 22,
+                    "total_tokens": 646,
+                    "prompt_tokens_details": {
+                        "cached_tokens": 0,
+                        "audio_tokens": 0,
+                        "cache_write_tokens": 0,
+                        "video_tokens": 0,
+                    },
+                }
+            )
+            with mock.patch(
+                "autofv.provider_transport._open_upstream",
+                return_value=_Reply(reply),
+            ):
+                response, receipt = provider_transport.provider_round(run, request)
+
+            self.assertEqual(receipt["cost"]["amount"], "0.00009248")
+            self.assertEqual(
+                receipt["provider"]["billing"]["provider_reported"]["amount"],
+                "0.00009248",
+            )
+            self.assertEqual(
+                receipt["provider"]["billing"]["provider_reported"][
+                    "amount_contract"
+                ],
+                "exact-decimal-usd-max-8",
+            )
+            self.assertEqual(
+                receipt["provider"]["billing"]["calculated_estimate"]["amount"],
+                "0.000092",
+            )
+            self.assertEqual(
+                worker_proxy.validate_provider_receipt(
+                    receipt,
+                    run=run,
+                    run_id=request["run_id"],
+                    sequence=1,
+                    request_id=request["request_id"],
+                    model_id=MODEL_ID,
+                    request_sha256=_sha(request),
+                    response_sha256=_sha(response),
+                    seen_receipt_sha256=frozenset(),
+                ),
+                Decimal("0.00009248"),
             )
 
     def test_provider_billing_must_match_the_pinned_pricing_contract(self) -> None:
@@ -351,7 +411,7 @@ class ProviderReceiptTests(unittest.TestCase):
             run, request = self._configured(Path(temporary))
             raw = experiment.canonical_json_bytes(
                 _reply('{"path":"Diamond/Left.lean"}')
-            ).replace(b'"cost":0.00038', b'"cost":0.0003800', 1)
+            ).replace(b'"cost":0.00038', b'"cost":0.000380000', 1)
             with mock.patch(
                 "autofv.provider_transport._open_upstream",
                 return_value=_RawReply(raw),

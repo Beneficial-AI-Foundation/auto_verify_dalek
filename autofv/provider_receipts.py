@@ -34,31 +34,38 @@ _JOURNAL_FIELDS = {
 }
 _MONEY = re.compile(r"(?:0|[1-9][0-9]{0,15})\.[0-9]{6}")
 _EXACT_PROVIDER_MONEY = re.compile(
-    r"(?:0|[1-9][0-9]{0,15})(?:\.[0-9]{1,6})?"
+    r"(?:0|[1-9][0-9]{0,15})(?:\.[0-9]{1,8})?"
 )
 
 
-def calculated_cost(provider: dict[str, Any]) -> Decimal:
+def _exact_calculated_cost(provider: dict[str, Any]) -> Decimal:
     usage, pricing = provider["usage"], provider["pricing"]
     cached = usage["cached_input_tokens"]
     uncached = usage["input_tokens"] - cached
     try:
         with localcontext() as context:
             context.prec = 64
-            amount = (
+            return (
                 Decimal(uncached) * Decimal(pricing["input_usd_per_million"])
                 + Decimal(cached) * Decimal(pricing["cached_input_usd_per_million"])
                 + Decimal(usage["output_tokens"])
                 * Decimal(pricing["output_usd_per_million"])
             ) / Decimal(1_000_000)
-            return amount.quantize(
-                Decimal("0.000001"), rounding=ROUND_HALF_UP
-            )
+    except DecimalException as exc:
+        raise ProviderError("provider calculated cost is invalid") from exc
+
+
+def calculated_cost(provider: dict[str, Any]) -> Decimal:
+    try:
+        return _exact_calculated_cost(provider).quantize(
+            Decimal("0.000001"), rounding=ROUND_HALF_UP
+        )
     except DecimalException as exc:
         raise ProviderError("provider calculated cost is invalid") from exc
 
 
 def bind_billing(provider: dict[str, Any], usage: dict[str, Any]) -> None:
+    exact = _exact_calculated_cost(provider)
     calculated = calculated_cost(provider)
     estimate = {"amount": f"{calculated:.6f}", "currency": "USD"}
     reported = None
@@ -70,14 +77,14 @@ def bind_billing(provider: dict[str, Any], usage: dict[str, Any]) -> None:
         except DecimalException as exc:
             raise ProviderError("provider billed cost is invalid") from exc
         exponent = reported_amount.as_tuple().exponent
-        if exponent < -6:
+        if exponent < -8:
             raise ProviderError("provider billed cost exceeds supported precision")
-        if reported_amount != calculated:
+        if reported_amount != exact:
             raise ProviderError("provider billed cost does not match pinned pricing")
         reported = {
             "amount": format(reported_amount, "f"),
             "currency": "USD",
-            "amount_contract": "exact-decimal-usd-max-6",
+            "amount_contract": "exact-decimal-usd-max-8",
             "details": _normalize_details(usage.get("cost_details", {})),
         }
     provider["billing"] = {
@@ -167,8 +174,9 @@ def sign_receipt(
     provider: dict[str, Any],
 ) -> dict[str, Any]:
     billing = provider["billing"]
-    source = billing["provider_reported"] or billing["calculated_estimate"]
-    pattern = _EXACT_PROVIDER_MONEY if billing["provider_reported"] else _MONEY
+    provider_reported = billing["provider_reported"]
+    source = provider_reported or billing["calculated_estimate"]
+    pattern = _EXACT_PROVIDER_MONEY if provider_reported else _MONEY
     amount = _money(source["amount"], pattern, "provider receipt amount")
     route = run["lock"]["fixed_proxy"]
     body = {
@@ -188,7 +196,7 @@ def sign_receipt(
             "total_tokens": provider["usage"]["total_tokens"],
         },
         "cost": {
-            "amount": f"{amount:.6f}",
+            "amount": format(amount, "f") if provider_reported else f"{amount:.6f}",
             "currency": "USD",
             "basis": billing["basis"],
         },
@@ -287,6 +295,7 @@ def validate_receipt(
         or not 0 <= provider_usage["cached_input_tokens"] <= usage["input_tokens"]
     ):
         raise ProviderError("provider accounting binding mismatch")
+    exact = _exact_calculated_cost(provider)
     calculated = calculated_cost(provider)
     billing = provider_config.exact_dict(
         provider["billing"],
@@ -311,8 +320,8 @@ def validate_receipt(
         )
         if (
             reported["currency"] != "USD"
-            or reported["amount_contract"] != "exact-decimal-usd-max-6"
-            or reported_amount != calculated
+            or reported["amount_contract"] != "exact-decimal-usd-max-8"
+            or reported_amount != exact
         ):
             raise ProviderError("provider billed cost mismatch")
     basis = "provider_billed" if reported is not None else "calculated_from_pinned_pricing"
@@ -326,7 +335,11 @@ def validate_receipt(
     cost = provider_config.exact_dict(
         receipt["cost"], {"amount", "currency", "basis"}, "provider cost"
     )
-    cost_amount = _money(cost.get("amount"), _MONEY, "provider cost")
+    cost_amount = _money(
+        cost.get("amount"),
+        _EXACT_PROVIDER_MONEY if reported is not None else _MONEY,
+        "provider cost",
+    )
     if (
         cost["currency"] != "USD"
         or cost["basis"] != basis

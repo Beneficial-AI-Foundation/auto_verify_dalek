@@ -394,6 +394,20 @@ def _probe_distinct_verifier(run: dict[str, Any]) -> str:
     return f"lima:{verifier.VERIFIER_VM}:{machine_id}"
 
 
+def configure_prepared_provider(
+    run: dict[str, Any], repo: str | Path, *, env_file: str | Path
+) -> dict[str, Any]:
+    """Configure credentials before the worker freezes its outbound policy."""
+    from autofv import agent_lane
+
+    return provider_config.configure_provider(
+        run,
+        env_path=env_file,
+        tool_schemas=list(agent_lane._TOOL_SCHEMAS),
+        project_root=Path(repo),
+    )
+
+
 def run_preflight(
     repo: str | Path,
     run_config: str | Path,
@@ -404,7 +418,7 @@ def run_preflight(
     _prepared_run: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Run the fixed suite once in the sealed runsc worker and retain authorization."""
-    from autofv import agent_lane, prepare_dalek, provider_service, worker
+    from autofv import prepare_dalek, provider_service, worker
     from autofv.contracts import (
         load_toolchain_lock,
         validate_native_decide_policy,
@@ -440,13 +454,8 @@ def run_preflight(
         ):
             raise ContractError("prepared preflight run identity mismatch")
         _probe_distinct_verifier(run)
-        tools = list(agent_lane._TOOL_SCHEMAS)
-        provider_config.configure_provider(
-            run,
-            env_path=env_file,
-            tool_schemas=tools,
-            project_root=target,
-        )
+        if provider_config.provider_binding(run) is None:
+            configure_prepared_provider(run, target, env_file=env_file)
         markers = provider_config.secret_markers(run)
         worker_runtime._docker(
             "run",

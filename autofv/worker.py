@@ -8,7 +8,7 @@ import secrets
 import subprocess
 import tempfile
 from pathlib import Path, PurePosixPath
-from typing import Any
+from typing import Any, Callable
 
 from . import candidate_lane as _candidate, lane_snapshot as _snapshots
 from .candidate_lane import (
@@ -74,7 +74,11 @@ def verification_repository(
 
 
 def prepare_run(
-    target: Path, manifest: dict[str, Any], lock: dict[str, Any]
+    target: Path,
+    manifest: dict[str, Any],
+    lock: dict[str, Any],
+    *,
+    before_worker: Callable[[dict[str, Any]], None] | None = None,
 ) -> dict[str, Any]:
     """Copy target/control bytes into a fresh named volume without a bind mount."""
     archive, control_manifest, snapshot_sha256 = _runtime._seed_archive(target, lock)
@@ -126,6 +130,8 @@ def prepare_run(
     )
     worker_created = False
     try:
+        if before_worker is not None:
+            before_worker(run)
         _runtime._create_worker(run)
         worker_created = True
         inventory = _runtime.inspect_worker(lock, run_id=run_id)

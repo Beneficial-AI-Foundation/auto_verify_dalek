@@ -1078,6 +1078,44 @@ class ResultEvidenceTests(unittest.TestCase):
             )
             self.assertTrue((root / "result.json").is_file())
 
+    def test_provider_failure_before_first_call_persists_zero_accounting(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp) / "run"
+            run, state = _provider_attempt(root)
+            for path in (root / "evidence" / "provider-journal").iterdir():
+                path.unlink()
+            (root / "evidence" / "provider-preflight.json").unlink()
+            run["provider_journal"] = {}
+            run.pop("provider_preflight_sha256")
+            state["receipts"] = []
+            state["model_exchanges"] = {}
+            state["pending_model_exchanges"] = {}
+            state["cost"] = Decimal("0.000000")
+
+            results.reconcile_provider_finalization(
+                run, state, outcome="infrastructure_failed"
+            )
+            provider_service.release(run)
+            result, receipt = results.render_attempt(
+                run,
+                state,
+                outcome="infrastructure_failed",
+                reason="worker_failed",
+            )
+            results.persist_attempt(run, result, receipt)
+
+            self.assertFalse(result["scored"])
+            self.assertFalse(result["accounting_complete"])
+            self.assertFalse(result["unknown_provider_spend"])
+            self.assertEqual(
+                result["accounting"]["provider_authenticated"]["requests"], 0
+            )
+            self.assertEqual(
+                result["accounting"]["provider_authenticated"]["cost_usd"],
+                "0.000000",
+            )
+            self.assertTrue((root / "result.json").is_file())
+
     def test_first_provider_call_ambiguity_persists_without_a_preflight(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp) / "run"

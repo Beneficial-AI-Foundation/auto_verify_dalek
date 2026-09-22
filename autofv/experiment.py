@@ -244,6 +244,12 @@ def _finish_attempt(
                     failed_finalization(exc)
 
     try:
+        if run.get("provider_binding") is not None:
+            provider_service.release(run)
+    except (Exception, KeyboardInterrupt) as exc:
+        failed_finalization(exc)
+
+    try:
         _charge_wall(state)
     except (Exception, KeyboardInterrupt) as exc:
         failed_finalization(exc)
@@ -452,6 +458,19 @@ def run_experiment(
         )
 
     preparation_failure = None
+
+    def prepare_provider(prepared: dict[str, Any]) -> None:
+        nonlocal durable_run
+        durable_run = prepared
+        try:
+            preflight_runner.configure_prepared_provider(
+                prepared, target_path, env_file=env_file
+            )
+            provider_service.start(prepared)
+        except BaseException:
+            provider_service.release(prepared)
+            raise
+
     if resume_from is not None:
         try:
             resume_root = _absolute_path(
@@ -488,7 +507,13 @@ def run_experiment(
             )
     else:
         try:
-            run = worker.prepare_run(target_path, manifest, lock)
+            run = (
+                worker.prepare_run(
+                    target_path, manifest, lock, before_worker=prepare_provider
+                )
+                if env_file is not None
+                else worker.prepare_run(target_path, manifest, lock)
+            )
         except KeyboardInterrupt:
             return persist_unallocated(
                 "infrastructure_failed",

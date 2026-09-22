@@ -96,19 +96,42 @@ class PreflightCliTests(unittest.TestCase):
         self.assertEqual(args.output, "/tmp/evidence")
         self.assertEqual(args.env_file, "/tmp/provider.env")
 
-    def test_provider_run_authorizes_its_prepared_worker_before_execution(self) -> None:
+    def test_provider_run_starts_listener_before_worker_policy_and_authorizes_same_worker(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
             run = _run(root)
             run["execution_tier"] = "simulation"
             env = root / "provider.env"
             selection = root / "selection.json"
+            events = []
 
-            def authorize(prepared, *_args, **_kwargs):
+            def prepare(*_args, before_worker=None, **_kwargs):
+                if before_worker is not None:
+                    before_worker(run)
+                events.append("worker_policy")
+                return run
+
+            def configure(prepared, *_args, **_kwargs):
                 prepared["provider_binding"] = {"model_id": "fixture-model-v1"}
+                events.append("provider_configured")
+
+            def start(_prepared):
+                events.append(
+                    "listener_started"
+                    if "listener_started" not in events
+                    else "listener_reattached"
+                )
+
+            def authorize(_prepared, *_args, **_kwargs):
+                events.append("worker_authorized")
 
             with (
-                mock.patch("autofv.worker.prepare_run", return_value=run),
+                mock.patch("autofv.worker.prepare_run", side_effect=prepare),
+                mock.patch(
+                    "autofv.experiment.preflight_runner.configure_prepared_provider",
+                    side_effect=configure,
+                    create=True,
+                ) as configure_provider,
                 mock.patch(
                     "autofv.experiment.preflight_runner.authorize_prepared_run",
                     side_effect=authorize,
@@ -117,7 +140,7 @@ class PreflightCliTests(unittest.TestCase):
                     experiment, "_bind_provider_selection"
                 ) as bind_selection,
                 mock.patch.object(
-                    experiment.provider_service, "start"
+                    experiment.provider_service, "start", side_effect=start
                 ) as start_provider,
                 mock.patch.object(
                     experiment._EXPERIMENT_GRAPH, "stream", return_value=[]
@@ -137,6 +160,17 @@ class PreflightCliTests(unittest.TestCase):
                 )
 
             self.assertEqual(result["outcome"], "success")
+            self.assertEqual(
+                events,
+                [
+                    "provider_configured",
+                    "listener_started",
+                    "worker_policy",
+                    "worker_authorized",
+                    "listener_reattached",
+                ],
+            )
+            configure_provider.assert_called_once_with(run, TARGET, env_file=env)
             authorize_run.assert_called_once_with(
                 run,
                 TARGET,
@@ -146,7 +180,7 @@ class PreflightCliTests(unittest.TestCase):
                 max_age_seconds=300,
             )
             bind_selection.assert_called_once_with(run, selection)
-            start_provider.assert_called_once_with(run)
+            self.assertEqual(start_provider.call_args_list, [mock.call(run), mock.call(run)])
 
     def test_provider_selection_binds_stable_identity_not_run_capability(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:

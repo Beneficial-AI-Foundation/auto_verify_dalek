@@ -342,7 +342,7 @@ def authenticate_provider_evidence(
     if preflight_sha256 != expected_preflight_sha256:
         raise provider_config.ProviderConfigError("provider preflight digest mismatch")
     journal = run.get("provider_journal")
-    if not isinstance(journal, dict) or not journal or any(
+    if not isinstance(journal, dict) or any(
         not isinstance(request_id, str)
         or not isinstance(digest, str)
         or SHA256.fullmatch(digest) is None

@@ -370,18 +370,12 @@ How a `@[progress]` proof goes here (Aeneas + this project):
   `omega` / `scalar_tac` for linear facts; `Nat.ModEq` lemmas or `zmodify` for
   `≡ [MOD p]`; `decide` / `native_decide` for closed numerals.
 - Big functions: prove per-limb helper lemmas (pure `U64` / `Nat` facts) as
-  separate theorems in the same file, then combine. Two reasons this is
-  not optional:
-  * `omega` / `scalar_tac` / `simp` read EVERY hypothesis in context. After a
-    long `progress` chain that is hundreds of facts, each `/` or `%` adding
-    variables: omega times out or returns a spurious counterexample. Run
-    `clear * - h1 h2 ...` right before them, or state the step as its own
-    lemma over just the variables it needs.
-  * `maxHeartbeats` is charged to the whole declaration, not per tactic, so
-    one slow step at the end of a 300-line proof times out the entire
-    theorem. Raising `maxHeartbeats` is not a fix (the gate's build has a
-    fixed wall clock; exceeding it is a hard rejection) — split instead;
-    a separate lemma gets its own budget and a small context.
+  separate theorems in the same file, then combine.
+- `omega` / `scalar_tac` / `simp` read every hypothesis in context: after a
+  long `progress` chain they time out. `clear * - h1 h2 ...` first, or move
+  the step into its own lemma.
+- `maxHeartbeats` is per declaration, not per tactic. Do not raise it; split
+  the proof.
 - Where things are: Aeneas lemmas in
   `.lake/packages/aeneas/backends/lean/Aeneas/Std/` (`Scalar/`, `Array/`,
   `WP.lean`); project helpers in `Curve25519Dalek/Aux.lean` and

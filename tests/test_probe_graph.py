@@ -9,7 +9,7 @@ import unittest
 from pathlib import Path
 from unittest import mock
 
-from autofv import experiment, probes, results, worker
+from autofv import experiment, graph_scheduler, probes, results, worker
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -28,6 +28,47 @@ SIBLING_SPEC = "probe:Diamond.sibling_spec"
 
 def _bytes(value):
     return json.dumps(value, separators=(",", ":"), ensure_ascii=False).encode()
+
+
+class ProgressiveSchedulerTests(unittest.TestCase):
+    def setUp(self):
+        self.graph = {
+            "selected_nodes": ["probe:root", "probe:leaf_a", "probe:leaf_b"],
+            "term_dependencies": [["probe:root", "probe:leaf_a"],
+                                  ["probe:root", "probe:leaf_b"]],
+        }
+
+    def test_preferred_leaf_stops_only_on_confirmed_acceptance(self):
+        attempted = []
+        accepted = graph_scheduler._schedule_progressive(
+            self.graph,
+            lambda node: attempted.append(node) or node,
+            lambda node, _job: node == "probe:leaf_a",
+            preferred_leaf="probe:leaf_b",
+            stop_after_accept=True,
+        )
+        self.assertEqual(attempted, ["probe:leaf_b", "probe:leaf_a"])
+        self.assertEqual(accepted, {"probe:leaf_a"})
+        self.assertNotIn("probe:root", attempted)
+
+    def test_full_mode_releases_root_only_after_both_leaves(self):
+        attempted = []
+        accepted = graph_scheduler._schedule_progressive(
+            self.graph,
+            lambda node: attempted.append(node) or node,
+            lambda node, _job: True,
+        )
+        self.assertEqual(accepted, set(self.graph["selected_nodes"]))
+        self.assertEqual(attempted[-1], "probe:root")
+
+    def test_rejects_nonleaf_preference_before_running_jobs(self):
+        attempted = []
+        with self.assertRaisesRegex(graph_scheduler.ContractError, "not dependency-ready"):
+            graph_scheduler._schedule_progressive(
+                self.graph, lambda node: attempted.append(node),
+                lambda _node, _job: True, preferred_leaf="probe:root"
+            )
+        self.assertEqual(attempted, [])
 
 
 class ProbeGraphTests(unittest.TestCase):

@@ -26,11 +26,15 @@ def compile_source(run, source, guard_path):
         "sh", root,
     ), input_bytes=archive)
     before = _sealed_source_digest(run, root, guard_path)
+    cache_gate = (
+        "lake build --no-build Mathlib 2>&1 && "
+        if isinstance(run.get("preparation_manifest"), dict) else ""
+    )
     completed = runtime._docker(*runtime._candidate_runtime_argv(
         run["lock"], run["volume"], lane_id,
         *_sealed_lane_exec(
             ".", guard_path, "sh", "-c",
-            "lake build 2>&1 && lake env lean --stdin 2>&1; code=$?; "
+            cache_gate + "lake build 2>&1 && lake env lean --stdin 2>&1; code=$?; "
             "printf '\\nAUTOFV_FEASIBILITY_EXIT=%s\\n' \"$code\"",
             detach_git=True,
         ),

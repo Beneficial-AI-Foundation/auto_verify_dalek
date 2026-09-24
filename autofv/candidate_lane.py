@@ -433,13 +433,7 @@ def accept_sealed_candidate(
     path: str, raw_patch: bytes,
 ) -> dict[str, Any]:
     """Compile without canonical authority, then import exactly the validated tree."""
-    verify = manifest.get("verify")
-    if (
-        not isinstance(verify, list)
-        or not verify
-        or any(not isinstance(item, str) or not item for item in verify)
-    ):
-        raise WorkerError("candidate verification command is unavailable")
+    verify = _runtime.trusted_verify_command(run, manifest)
     previous_head = _runtime._git(run, "rev-parse", "HEAD").decode().strip()
     lane_id, source_digest, assigned_bytes, expected_tree = (
         _prepare_acceptance_snapshot(run, path, raw_patch)

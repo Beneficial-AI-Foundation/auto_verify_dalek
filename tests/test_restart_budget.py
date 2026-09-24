@@ -719,6 +719,30 @@ class BudgetTests(unittest.TestCase):
             probes_call.assert_not_called()
             self.assertTrue((root / "result.json").is_file())
 
+class SleepAwareWallTests(unittest.TestCase):
+    def test_sleep_time_exhausts_sealed_budget_even_when_monotonic_clock_stalls(self):
+        state = {
+            "run": {"execution_tier": "sealed_runsc"},
+            "config": {"max_wall_seconds": 30},
+            "wall_started_monotonic_ns": 10_000_000_000,
+            "wall_started_epoch_ns": 100_000_000_000,
+            "wall_seconds_used": Decimal("0"),
+        }
+        with (
+            mock.patch.object(run_state.time, "monotonic_ns", return_value=11_000_000_000),
+            mock.patch.object(run_state.time, "time_ns", return_value=140_000_000_000),
+            self.assertRaises(run_state.BudgetExhausted),
+        ):
+            run_state._check_wall_budget(state)
+        self.assertEqual(state["wall_seconds_used"], Decimal("40"))
+
+    def test_old_sealed_checkpoint_cannot_reset_its_elapsed_budget(self):
+        state = {"run": {"execution_tier": "sealed_runsc"},
+                 "config": {"max_wall_seconds": 30}, "wall_seconds_used": Decimal("0")}
+        with self.assertRaisesRegex(run_state.ContractError, "checkpoint is missing"):
+            run_state._check_wall_budget(state)
+
+
 def _exchange_state(root: Path) -> dict:
     state = _checkpoint_state(root)
     state["run"]["base_commit"] = FIXTURE["git"]["base_commit"]

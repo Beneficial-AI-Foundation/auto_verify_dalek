@@ -678,6 +678,7 @@
       "autofv/agent_lane.py",
       "autofv/candidate_lane.py",
       "autofv/contracts.py",
+      "autofv/dependency_cache.py",
       "autofv/diamond.py",
       "autofv/evidence.py",
       "autofv/experiment.py",

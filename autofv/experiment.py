@@ -164,6 +164,7 @@ def _persist_unallocated_attempt(
             "wall_seconds_used": Decimal("0.000000"),
             "finalization_reserve_seconds": Decimal("0.000000"),
             "wall_started_monotonic_ns": wall_started,
+            "wall_started_epoch_ns": time.time_ns(),
             "termination_detail": str(detail)[:1000],
         }
     else:
@@ -488,6 +489,7 @@ def run_experiment(
             "execution mode must be supplied together"
         )
     wall_started = time.monotonic_ns()
+    wall_started_epoch = time.time_ns()
     results.validate_output_root(target, output_root)
     try:
         identity = results.new_attempt_identity(target)
@@ -758,6 +760,7 @@ def run_experiment(
             "receipt_rejections": [],
             "compiler_assumptions": verifier.compiler_assumptions(lock),
             "wall_seconds_used": Decimal("0.000000"),
+            "wall_started_epoch_ns": wall_started_epoch,
             "finalization_reserve_seconds": _finalization_reserve(config),
         }
         if prepared_inputs is not None:

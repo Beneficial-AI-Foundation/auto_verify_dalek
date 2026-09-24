@@ -164,6 +164,7 @@ class _RunState(TypedDict, total=False):
     wall_seconds_used: Decimal
     finalization_reserve_seconds: Decimal
     wall_started_monotonic_ns: int
+    wall_started_epoch_ns: int
     checkpoint_sequence: int
     checkpoint_enabled: bool
     recovery_source: str
@@ -213,6 +214,7 @@ def _node_update(state: _RunState, **values: Any) -> dict[str, Any]:
         "checkpoint_sequence",
         "wall_seconds_used",
         "wall_started_monotonic_ns",
+        "wall_started_epoch_ns",
         "pending_model_exchanges",
         "model_exchanges",
         "role_progress",
@@ -240,14 +242,21 @@ def _finalization_reserve(config: dict[str, Any]) -> Decimal:
 
 @_serialized
 def _charge_wall(state: _RunState) -> Decimal:
-    now = time.monotonic_ns()
+    now, epoch = time.monotonic_ns(), time.time_ns()
     started = state.get("wall_started_monotonic_ns")
+    started_epoch = state.get("wall_started_epoch_ns")
+    if started_epoch is None and state.get("run", {}).get("execution_tier") == "sealed_runsc":
+        raise ContractError("sealed wall clock checkpoint is missing")
+    if started is not None and now < started:
+        raise ContractError("monotonic clock moved backwards")
+    if started_epoch is not None and epoch < started_epoch:
+        raise ContractError("wall clock moved backwards")
     state["wall_started_monotonic_ns"] = now
+    state["wall_started_epoch_ns"] = epoch
     used = Decimal(state.get("wall_seconds_used", Decimal("0.000000")))
     if started is not None:
-        if now < started:
-            raise ContractError("monotonic clock moved backwards")
-        used += Decimal(now - started) / Decimal(1_000_000_000)
+        elapsed = max(now - started, epoch - started_epoch) if started_epoch is not None else now - started
+        used += Decimal(elapsed) / Decimal(1_000_000_000)
     state["wall_seconds_used"] = used
     return used
 

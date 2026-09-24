@@ -17,6 +17,7 @@ from .diamond import (
     _worker_lane,
 )
 from .graph_scheduler import (
+    MAX_PARALLEL_LANES,
     _block_dependents,
     _contract_frontier,
     _immediate_consumers,
@@ -667,6 +668,7 @@ def run_generic_role_path(state: _RunState) -> dict[str, Any]:
             accept_proof,
             prepare_job=prepare_proof,
             accepted_nodes=state["accepted_nodes"],
+            max_workers=1 if isinstance(run.get("preparation_manifest"), dict) else MAX_PARALLEL_LANES,
         )
     state["accepted_nodes"][:] = sorted(accepted_nodes)
 

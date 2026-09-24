@@ -1,4 +1,5 @@
 import copy
+from contextlib import nullcontext
 import hashlib
 import io
 import json
@@ -515,6 +516,17 @@ class ReportAuthorityTests(unittest.TestCase):
             verifier.validate_report(same_worker, run, invocation)
 
 class VerifyRunWiringTests(unittest.TestCase):
+    def test_prepared_verifier_refuses_oversized_vm_before_checks(self):
+        with mock.patch.object(verifier.worker_runtime, "inspect_lima_instance", return_value={
+            "status": "Running", "cpus": 8, "memory": 24 * 1024**3
+        }):
+            with self.assertRaisesRegex(verifier.VerifierInfrastructureError, "resource limit"):
+                verifier._check_quiet_verifier_vm()
+        with mock.patch.object(verifier.worker_runtime, "inspect_lima_instance", return_value={
+            "status": "Running", "cpus": 2, "memory": 8 * 1024**3
+        }):
+            verifier._check_quiet_verifier_vm()
+
     def test_prepared_checkout_links_package_subdirectory(self):
         completed = subprocess.CompletedProcess((), 0, b"", b"")
         with (
@@ -543,17 +555,22 @@ class VerifyRunWiringTests(unittest.TestCase):
             completed = subprocess.CompletedProcess((), 0, b"", b"")
             with (
                 mock.patch.object(verifier, "_prepared_dependency_cache", return_value=source),
+                mock.patch.object(verifier.dependency_cache, "validated_archive", return_value=nullcontext(source)) as validate,
                 mock.patch.object(verifier, "_docker", return_value=completed) as docker,
                 mock.patch.object(verifier.subprocess, "run", return_value=completed) as streamed,
                 mock.patch.object(verifier.axiom_audit, "checkout_volume") as checkout,
             ):
                 verifier._seed_verifier_dependency_cache(
-                    {"lock": experiment.load_toolchain_lock()},
+                    {"lock": experiment.load_toolchain_lock(), "dependency_cache_receipt": {
+                        "sha256": hashlib.sha256(source.read_bytes()).hexdigest(),
+                        "size": source.stat().st_size,
+                    }},
                     "sha256:" + "1" * 64,
                     "dependency-volume",
                     b"accepted bundle",
                     "a" * 40,
                 )
+            validate.assert_called_once_with(source, hashlib.sha256(source.read_bytes()).hexdigest(), source.stat().st_size)
             self.assertIn("docker run --rm -i", streamed.call_args.args[0][-1])
             checkout.assert_called_once()
             self.assertEqual(checkout.call_args.kwargs["commit"], "a" * 40)
@@ -572,7 +589,7 @@ class VerifyRunWiringTests(unittest.TestCase):
             self.assertLess(calls.index(gate), calls.index(warm))
             self.assertLess(calls.index(warm), calls.index(full_gate))
             self.assertIn("runc", warm)
-            self.assertIn("8g", warm)
+            self.assertIn("6g", warm)
             self.assertIn("runc", full_gate)
             self.assertIn("dst=/project/dependencies,volume-nocopy", str(warm))
             self.assertNotIn("dst=/project/dependencies,volume-nocopy,readonly", str(warm))

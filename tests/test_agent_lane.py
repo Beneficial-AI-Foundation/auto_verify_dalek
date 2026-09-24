@@ -382,6 +382,32 @@ class RoleConversationTests(unittest.TestCase):
 
         self.assertEqual(len(conversation_ids), len(ceilings))
 
+    def test_role_methodology_keeps_the_frozen_graph_and_tool_boundary(self):
+        expectations = {
+            "scout": "source locations",
+            "dependency_planner": "preparation defect",
+            "specifier": "impossible precondition",
+            "spec_reviewer": "non-vacuity",
+            "prover": "accepted dependency lemmas",
+            "proof_reviewer": "dirty-cache-only",
+            "repair": "Keep frozen statements",
+            "verification_adviser": "semantic specification recovery",
+        }
+        prompts = []
+        for role, expected in expectations.items():
+            with self.subTest(role=role):
+                prompt = agent_lane.role_conversation_spec({**_job(), "role": role})[
+                    "system_prompt"
+                ]
+                self.assertIn(expected, prompt)
+                self.assertIn("A -> B means A depends on B", prompt)
+                self.assertIn("agents cannot re-run probes", prompt)
+                self.assertIn("no arbitrary shell", prompt)
+                self.assertIn("Mathlib compilation", prompt)
+                self.assertIn("candidate, not acceptance", prompt)
+                prompts.append(prompt)
+        self.assertEqual(len(set(prompts)), len(expectations))
+
     def test_scripted_read_check_submit_uses_only_the_model_request_seam(self):
         self.assertTrue(
             hasattr(agent_lane, "run_role_conversation"),

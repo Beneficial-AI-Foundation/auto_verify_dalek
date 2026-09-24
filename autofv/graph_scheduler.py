@@ -376,6 +376,40 @@ def _contract_frontier(graph: dict[str, Any], completed_nodes: set[str]) -> list
     )
 
 
+def _schedule_progressive(
+    graph: dict[str, Any],
+    run_job,
+    accept_job,
+    *,
+    accepted_nodes=(),
+    preferred_leaf: str | None = None,
+    stop_after_accept: bool = False,
+) -> set[str]:
+    """Serial dependency-ready jobs; a job owns spec, review and proof together.
+
+    The acceptance callback must return True only after controller acceptance;
+    smoke callers must additionally obtain distinct clean-verifier confirmation
+    before returning True. No work is released from a rejected candidate.
+    """
+    accepted = set(accepted_nodes)
+    pending = set(graph["selected_nodes"]) - accepted
+    if not accepted <= set(graph["selected_nodes"]):
+        raise ContractError("progressive accepted nodes changed")
+    if preferred_leaf is not None and preferred_leaf not in _proof_ready_nodes(graph, accepted):
+        raise ContractError("preferred smoke leaf is not dependency-ready")
+    while pending:
+        ready = [node for node in _proof_ready_nodes(graph, accepted) if node in pending]
+        if not ready:
+            break  # failed prerequisites remain blocked; cycles are rejected earlier.
+        node = preferred_leaf if preferred_leaf in ready else ready[0]
+        pending.remove(node)
+        if accept_job(node, run_job(node)) is True:
+            accepted.add(node)
+            if stop_after_accept:
+                break
+    return accepted
+
+
 def _schedule_proofs(
     graph,
     run_job,

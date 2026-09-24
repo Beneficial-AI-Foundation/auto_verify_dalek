@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from contextlib import nullcontext
 import hashlib
 import io
 import json
@@ -13,7 +14,7 @@ import unittest
 from pathlib import Path
 from unittest import mock
 
-from autofv import candidate_lane, worker, worker_artifacts, worker_runtime
+from autofv import candidate_lane, verifier, worker, worker_artifacts, worker_runtime
 
 
 _LOCK = {
@@ -59,6 +60,38 @@ def _lane(run_root: Path) -> dict[str, str]:
 
 
 class CandidateRuntimeBoundaryTests(unittest.TestCase):
+    def test_prepared_candidate_checks_require_cached_mathlib_before_build(self) -> None:
+        run = {"preparation_manifest": {"schema": "preparation-manifest/v1"}}
+        command = worker_runtime.trusted_verify_command(run, {"verify": ["lake", "build"]})
+        self.assertEqual(command[:3], ("sh", "-eu", "-c"))
+        self.assertEqual(command[3], "lake build --no-build Mathlib && exec lake build")
+        self.assertEqual(
+            worker_runtime.trusted_verify_command({}, {"verify": ["lake", "build"]}),
+            ("lake", "build"),
+        )
+        with self.assertRaises(worker_runtime.WorkerError):
+            worker_runtime.trusted_verify_command(run, {"verify": ["lake", "update"]})
+
+    def test_all_lean_runtime_entrypoints_force_one_thread(self) -> None:
+        commands = (
+            worker_runtime._runtime_argv(_LOCK, "run-volume", "lake", "build"),
+            worker_runtime._candidate_runtime_argv(
+                _LOCK, "run-volume", _LANE_ID, "lake", "build"
+            ),
+            verifier._runtime_argv(
+                _LOCK["image"]["image_digest"], "verify-volume", "lake", "build"
+            ),
+        )
+        for argv in commands:
+            with self.subTest(argv=argv):
+                environment = [argv[i + 1] for i, value in enumerate(argv) if value == "--env"]
+                self.assertEqual(
+                    [value for value in environment if value.startswith("LEAN_NUM_THREADS=")],
+                    ["LEAN_NUM_THREADS=1"],
+                )
+                self.assertEqual(argv[argv.index("--memory-swap") + 1],
+                                 argv[argv.index("--memory") + 1])
+
     def test_dependency_cache_prepares_public_mathlib_without_building_it(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             archive = Path(tmp) / "cache.tar.zst"
@@ -68,6 +101,7 @@ class CandidateRuntimeBoundaryTests(unittest.TestCase):
             with (
                 mock.patch.object(worker_runtime, "_docker", return_value=completed) as docker,
                 mock.patch.object(worker_runtime, "_lima_stream_file", return_value=completed),
+                mock.patch.object(worker_runtime.dependency_cache, "validated_archive", return_value=nullcontext(archive)),
             ):
                 receipt = worker_runtime.seed_dependency_cache(
                     run, archive, hashlib.sha256(archive.read_bytes()).hexdigest()
@@ -96,7 +130,7 @@ class CandidateRuntimeBoundaryTests(unittest.TestCase):
             self.assertLess(calls.index(gate), calls.index(warmed))
             self.assertLess(calls.index(warmed), calls.index(sealed))
             self.assertIn("runc", warmed)
-            self.assertIn("8g", warmed)
+            self.assertIn("6g", warmed)
             self.assertIn("runsc-hardened", sealed)
             self.assertIn("--network", warmed)
             self.assertIn("none", warmed)
@@ -148,6 +182,8 @@ class CandidateRuntimeBoundaryTests(unittest.TestCase):
                 worker_runtime.AGENT_UID,
                 "--workdir",
                 "/candidate",
+                "--env",
+                "LEAN_NUM_THREADS=1",
                 "--security-opt",
                 "no-new-privileges",
                 "--cap-drop",
@@ -159,6 +195,8 @@ class CandidateRuntimeBoundaryTests(unittest.TestCase):
                 "--cpus",
                 "2",
                 "--memory",
+                "2g",
+                "--memory-swap",
                 "2g",
                 "--tmpfs",
                 "/tmp:rw,noexec,nosuid,nodev,size=64m,mode=1777",

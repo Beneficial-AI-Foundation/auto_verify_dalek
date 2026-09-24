@@ -3,6 +3,7 @@ import hashlib
 import json
 import os
 import tempfile
+import time
 import unittest
 from datetime import datetime, timezone
 from decimal import Decimal
@@ -401,6 +402,7 @@ def _complete_attempt(
         "receipt_rejections": [],
         "cost": Decimal("0.010000"),
         "wall_seconds_used": Decimal("12.500000"),
+        "wall_started_epoch_ns": time.time_ns(),
         "finalization_reserve_seconds": Decimal("5.000000"),
         "verifier_report": report,
         "native_decide_uses": [],

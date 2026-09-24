@@ -21,6 +21,8 @@ import urllib.parse
 from pathlib import Path, PurePosixPath
 from typing import Any, Iterable
 
+from . import dependency_cache
+
 
 ROOT = Path(__file__).resolve().parents[1]
 AGENT_TEMPLATE_VM = "autofv-agent-template"
@@ -322,6 +324,8 @@ def _create_worker(run: dict[str, Any]) -> None:
     _limactl(
         "clone",
         "--mount-none",
+        "--cpus", "2",
+        "--memory", "8",
         "--ssh-port",
         str(ssh_port),
         "--set",
@@ -339,6 +343,8 @@ def _create_worker(run: dict[str, Any]) -> None:
             instance is None
             or instance.get("status") != "Stopped"
             or instance.get("sshLocalPort") != ssh_port
+            or instance.get("cpus") != 2
+            or instance.get("memory") != 8 * 1024**3
         ):
             raise WorkerError("disposable worker clone identity mismatch")
         _start_worker(run, instance)
@@ -475,22 +481,17 @@ def seed_dependency_cache(
     run: dict[str, Any], archive_path: str | Path, expected_sha256: str
 ) -> dict[str, Any]:
     """Stream one bound dependency-only cache into the disposable worker volume."""
-    archive = Path(archive_path)
     try:
-        before = archive.stat()
-        digest = hashlib.sha256()
-        with archive.open("rb") as source:
-            while chunk := source.read(8 * 1024 * 1024):
-                digest.update(chunk)
-        after = archive.stat()
-    except OSError as exc:
-        raise WorkerError("prepared dependency cache is unreadable") from exc
-    if (
-        before != after
-        or not stat.S_ISREG(before.st_mode)
-        or digest.hexdigest() != expected_sha256
-    ):
-        raise WorkerError("prepared dependency cache identity mismatch")
+        with dependency_cache.validated_archive(archive_path, expected_sha256) as archive:
+            return _seed_verified_dependency_cache(run, archive, expected_sha256)
+    except dependency_cache.CacheError as exc:
+        raise WorkerError(str(exc)) from exc
+
+
+def _seed_verified_dependency_cache(
+    run: dict[str, Any], archive: Path, expected_sha256: str
+) -> dict[str, Any]:
+    before = archive.stat()
     setup = (
         "mkdir -p /volume/dependencies/packages /volume/work/project/.lake; "
         f"chown -R {AGENT_UID} /volume/dependencies /volume/work/project/.lake; "
@@ -525,7 +526,8 @@ def seed_dependency_cache(
         "export LEAN_NUM_THREADS=1; lake build",
     ))
     warm[warm.index("--runtime") + 1] = "runc"
-    warm[warm.index("--memory") + 1] = "8g"
+    warm[warm.index("--memory") + 1] = "6g"
+    warm[warm.index("--memory-swap") + 1] = "6g"
     _docker(*warm, timeout=600)
     _docker(*_runtime_argv(
         run["lock"], run["volume"], "sh", "-eu", "-c",
@@ -683,6 +685,8 @@ def _runtime_argv(
         "--network",
         network,
         *dns,
+        "--env",
+        "LEAN_NUM_THREADS=1",
         "--user",
         AGENT_UID,
         "--workdir",
@@ -698,6 +702,8 @@ def _runtime_argv(
         "--cpus",
         "2",
         "--memory",
+        "2g",
+        "--memory-swap",
         "2g",
         "--tmpfs",
         "/tmp:rw,noexec,nosuid,nodev,size=64m,mode=1777",
@@ -724,6 +730,24 @@ def _runtime_argv(
     )
 
 
+def trusted_verify_command(
+    run: dict[str, Any], manifest: dict[str, Any]
+) -> tuple[str, ...]:
+    """Fail before a Dalek candidate build if pinned Mathlib is not cached."""
+    verify = manifest.get("verify")
+    if isinstance(run.get("preparation_manifest"), dict):
+        if verify != ["lake", "build"]:
+            raise WorkerError("prepared verification command changed")
+        # The dependency volume is read-only in the candidate and clean verifier.
+        # --no-build checks the public Mathlib cache; it cannot build a changed proof.
+        return ("sh", "-eu", "-c", "lake build --no-build Mathlib && exec lake build")
+    if not isinstance(verify, list) or not verify or any(
+        not isinstance(arg, str) or not arg for arg in verify
+    ):
+        raise WorkerError("verification command is unavailable")
+    return tuple(verify)
+
+
 def _candidate_runtime_argv(
     lock: dict[str, Any], volume: str, lane_id: str, *command: str
 ) -> tuple[str, ...]:
@@ -748,6 +772,8 @@ def _candidate_runtime_argv(
         AGENT_UID,
         "--workdir",
         "/candidate",
+        "--env",
+        "LEAN_NUM_THREADS=1",
         "--security-opt",
         "no-new-privileges",
         "--cap-drop",
@@ -759,6 +785,8 @@ def _candidate_runtime_argv(
         "--cpus",
         "2",
         "--memory",
+        "2g",
+        "--memory-swap",
         "2g",
         "--tmpfs",
         "/tmp:rw,noexec,nosuid,nodev,size=64m,mode=1777",
@@ -942,6 +970,8 @@ def inspect_worker(lock: dict[str, Any], *, run_id: str) -> dict[str, Any]:
         or config.get("propagateProxyEnv") is not False
         or (config.get("hostResolver") or {}).get("enabled") is not False
         or (config.get("ssh") or {}).get("forwardAgent") is not False
+        or instance.get("cpus") != 2
+        or instance.get("memory") != 8 * 1024**3
     ):
         raise WorkerError("disposable Lima worker configuration mismatch")
 

@@ -550,9 +550,7 @@ def check_lane(
             f"diagnostic_sha256={_runtime._sha256(diagnostic.encode())}"
         )
     root = _sealed_lane_root(lane)
-    verify = manifest.get("verify")
-    if not isinstance(verify, list) or not verify:
-        raise WorkerError("lane diagnostic command is unavailable")
+    verify = _runtime.trusted_verify_command(run, manifest)
     _runtime._docker(
         *_runtime._runtime_argv(
             run["lock"],

@@ -18,6 +18,7 @@ from . import (
     axiom_audit,
     contracts,
     counterexample,
+    dependency_cache,
     probes,
     terminal_verifier,
     verifier_bundle,
@@ -93,6 +94,16 @@ def _docker(
     *argv: str, input_bytes: bytes | None = None, timeout: int | None = None
 ) -> subprocess.CompletedProcess[bytes]:
     return _shell("sudo", "docker", *argv, input_bytes=input_bytes, timeout=timeout)
+
+
+def _check_quiet_verifier_vm() -> None:
+    instance = worker_runtime.inspect_lima_instance(VERIFIER_VM)
+    if (
+        instance is None or instance.get("status") != "Running"
+        or instance.get("cpus") != 2
+        or instance.get("memory") != 8 * 1024**3
+    ):
+        raise VerifierInfrastructureError("clean verifier VM resource limit mismatch")
 
 
 def _check_verifier_runtime(lock: dict[str, Any]) -> None:
@@ -171,6 +182,8 @@ def _runtime_argv(
         worker.AGENT_UID,
         "--workdir",
         workdir,
+        "--env",
+        "LEAN_NUM_THREADS=1",
         "--security-opt",
         "no-new-privileges",
         "--pids-limit",
@@ -178,6 +191,8 @@ def _runtime_argv(
         "--cpus",
         "2",
         "--memory",
+        "4g",
+        "--memory-swap",
         "4g",
         "--tmpfs",
         "/tmp:rw,noexec,nosuid,nodev,size=64m",
@@ -350,6 +365,20 @@ def _seed_verifier_dependency_cache(
     repository_bundle: bytes, base_commit: str,
 ) -> None:
     archive = _prepared_dependency_cache(run)
+    receipt = run["dependency_cache_receipt"]
+    try:
+        with dependency_cache.validated_archive(
+            archive, receipt["sha256"], receipt["size"]
+        ) as staged:
+            _seed_verified_dependency_cache(run, image, volume, repository_bundle, base_commit, staged)
+    except dependency_cache.CacheError as exc:
+        raise VerifierInfrastructureError(str(exc)) from exc
+
+
+def _seed_verified_dependency_cache(
+    run: dict[str, Any], image: str, volume: str,
+    repository_bundle: bytes, base_commit: str, archive: Path,
+) -> None:
     _docker("volume", "create", volume)
     _docker(
         "run", "--rm", "--pull", "never", "--network", "none",
@@ -415,7 +444,8 @@ def _seed_verifier_dependency_cache(
             "export LEAN_NUM_THREADS=1; lake build",
             workdir="/project/repo", runtime="runc",
         ))
-        warm[warm.index("--memory") + 1] = "8g"
+        warm[warm.index("--memory") + 1] = "6g"
+        warm[warm.index("--memory-swap") + 1] = "6g"
         warm_name = f"{warm_volume}-build"
         warm[2:2] = ["--name", warm_name]
         try:
@@ -695,7 +725,7 @@ def _clean_worker_checks(
             volume=audit_volume,
             repository_bundle=members["accepted/repository.bundle"],
             base_commit=state["base_commit"],
-            verify_command=run["manifest"]["verify"],
+            verify_command=list(worker_runtime.trusted_verify_command(run, run["manifest"])),
             expected=expected_axioms,
             state=state,
             reference=reference,
@@ -779,7 +809,7 @@ def _clean_worker_checks(
             *runtime_argv(
                 image,
                 volume,
-                *run["manifest"]["verify"],
+                *worker_runtime.trusted_verify_command(run, run["manifest"]),
                 workdir="/project/repo",
                 runtime=runtime,
             )
@@ -927,6 +957,8 @@ def verify_run(
     if not machine_id or verifier_worker_id == run.get("agent_worker_id"):
         raise VerifierInfrastructureError("clean verifier worker is not distinct")
     lock = run["lock"]
+    if isinstance(run.get("preparation_manifest"), dict):
+        _check_quiet_verifier_vm()
     _check_verifier_runtime(lock)
     toolchain_lock_sha256 = _sha256(_canonical_bytes(lock))
     if expected.get("toolchain_lock_sha256") != toolchain_lock_sha256:

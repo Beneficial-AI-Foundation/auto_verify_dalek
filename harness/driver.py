@@ -16,10 +16,10 @@ proxy — ported from CryptoProver run.py). Multi-round policy here:
     and a hint per kind (shrink the context / split into lemmas, do not
     raise heartbeats). Also recorded per round under `feedback`.
   * only "not done yet" rejections continue (rejected_build,
-    rejected_sorry_remains). Policy violations (scope / forbidden attr /
-    sorry migration / g2) abort the target immediately: they require a
-    rollback, and resuming after a rollback would desync the agent's view
-    of the tree.
+    rejected_sorry_remains, rejected_no_spec, rejected_kernel_budget).
+    Policy violations (scope / forbidden attr / sorry migration / g2)
+    abort the target immediately: they require a rollback, and resuming
+    after a rollback would desync the agent's view of the tree.
   * stop rules (DEC-16): --rounds × --timeout (per-target wall bound),
     --max-cost-usd, agent END_REASON:LIMIT, stall (target file unchanged
     for --stall-rounds rounds) and context bloat → session reset with a
@@ -33,7 +33,8 @@ Gate stack per attempt (all must pass to accept):
   b. no new `axiom`, `@[implemented_by]`, `@[extern]` in the changed file
      (the native_decide hijack path — plan.md §4 policy)
   c. `lake build` exits 0 within --build-timeout (default 1200s; a
-     timeout is rejected_kernel_budget — N3 minimal, plan.md §6)
+     timeout is rejected_kernel_budget — N3 minimal, plan.md §6 — and
+     resumes like a failing build while rounds remain)
   c'. G1 statement identity (harness/gates/StmtCanon.lean --module):
      every constant declared in the target module before the attempt must
      still exist with the same kind and α-invariant canonical statement
@@ -447,6 +448,11 @@ FEEDBACK = {
         "`sorry`, but it contains no theorem tagged `@[progress]` whose "
         "statement mentions the target function. Add and prove such a "
         "specification. All original rules still apply."),
+    "rejected_kernel_budget": (
+        "The harness gate rejected this round: its `lake build` did not "
+        "finish within the wall-clock limit and was killed. Make the build "
+        "fast again (see the diagnostics below); the proof must compile "
+        "within the gate's budget. All original rules still apply."),
 }
 
 
@@ -667,8 +673,8 @@ def run_rounds(prompt, tid, path, before_counts, args, env, settings_path,
                             exceed --bloat-threshold-tokens is reset (context
                             degradation is the dominant failure mode in the
                             CryptoProver runs)
-      Policy violations (scope / forbidden attr / migration / g2 / kernel
-      budget) abort immediately, as before. CryptoProver's plateau guard is
+      Policy violations (scope / forbidden attr / migration / g2) abort
+      immediately, as before. CryptoProver's plateau guard is
       not ported: with a single sorry per target the progress metric is
       binary, so "no new low for N rounds" collapses into --rounds.
 
@@ -935,8 +941,9 @@ def gate(work, target_path, before_counts, build_timeout=BUILD_TIMEOUT,
     if raised:  # diagnostics only; the feedback tells the agent to revert
         b["heartbeats_raised"] = raised
     if rc == "timeout":
-        # policy violation, not "not done yet": resuming would just make
-        # the agent try another blow-up. Rolled back like any rejection.
+        # "not done yet" like a failing build: the session is resumed with
+        # the unfinished modules and the split-don't-raise-heartbeats hint
+        # (2026-09-22 as_bytes r3 ended here with the diagnostics unread).
         return "rejected_kernel_budget", {
             **b, "build_timeout": build_timeout,
             "unfinished": unfinished_modules(build_out, editable_paths),

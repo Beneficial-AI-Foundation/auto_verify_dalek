@@ -92,6 +92,13 @@ class FeedbackMessageTests(unittest.TestCase):
         self.assertIn("modules not finished: " + driver.path_to_module(TOBYTES), diag)
         self.assertIn("raising it is never the fix", diag)
 
+    def test_kernel_budget_is_feedback(self):
+        detail = {"gate_build_seconds": 1200.1, "build_timeout": 1200,
+                  "unfinished": ["Top"], "errors": [], "deadline_exhausted": True}
+        msg = driver.feedback_message("rejected_kernel_budget", detail, timeout=3600)
+        self.assertIn(driver.FEEDBACK["rejected_kernel_budget"], msg)
+        self.assertIn("modules not finished: Top", msg)
+
     def test_no_diagnostics_keeps_plain_verdict(self):
         detail = {"gate_build_seconds": 28.0, "before": 1, "after": 1}
         msg = driver.feedback_message("rejected_sorry_remains", detail,

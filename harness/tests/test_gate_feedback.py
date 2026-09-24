@@ -37,14 +37,18 @@ class ParseTests(unittest.TestCase):
     def test_errors_parsed_deduplicated_and_classified(self):
         errs = driver.parse_build_errors(R2_OUT)
         self.assertEqual([(e["line"], e["kind"]) for e in errs],
-                         [(370, "omega_failed"), (452, "heartbeats")])
+                         [(370, "omega_failed"), (452, "resource")])
         self.assertEqual(errs[0]["file"], TOBYTES)
         self.assertEqual(errs[0]["message"], "omega could not prove the goal:")
 
-    def test_error_limit(self):
+    def test_per_file_cap_then_total_cap(self):
         out = "".join(f"error: A.lean:{i}:0: unsolved goals\n" for i in range(20))
-        self.assertEqual(len(driver.parse_build_errors(out)),
-                         driver.MAX_ERRORS_FED_BACK)
+        out += "".join(f"error: B.lean:{i}:0: type mismatch\n" for i in range(20))
+        out += "".join(f"error: C.lean:{i}:0: unknown identifier\n" for i in range(20))
+        errs = driver.parse_build_errors(out)
+        self.assertEqual([e["file"] for e in errs],
+                         ["A.lean"] * 3 + ["B.lean"] * 3 + ["C.lean"] * 2)
+        self.assertTrue(all(e["kind"] == "other" for e in errs))
 
     def test_unfinished_modules(self):
         paths = [TOBYTES, "Curve25519Dalek/Specs/Backend/Serial/U64/Field/"
@@ -74,7 +78,7 @@ class FeedbackMessageTests(unittest.TestCase):
         self.assertIn(f"{TOBYTES}:452:4: (deterministic) timeout", msg)
         self.assertIn("clear * -", msg)
         self.assertIn("counterexample", msg)
-        self.assertIn("charged to the WHOLE declaration", msg)
+        self.assertIn("charged to the whole declaration", msg)
         self.assertIn("sets `maxHeartbeats` to 20000000", msg)
         self.assertIn("Revert the `maxHeartbeats` increase", msg)
         # each hint once even though two kinds could share wording
@@ -137,7 +141,7 @@ class GateDetailTests(unittest.TestCase):
         outcome, detail = self._gate((1, {}, 5.0, R2_OUT))
         self.assertEqual(outcome, "rejected_build")
         self.assertEqual([e["kind"] for e in detail["errors"]],
-                         ["omega_failed", "heartbeats"])
+                         ["omega_failed", "resource"])
         self.assertFalse(detail["errors_truncated"])
         self.assertEqual(detail["heartbeats_raised"], [20000000])
         self.assertEqual(detail["broken_files"], [TOBYTES])

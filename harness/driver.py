@@ -183,72 +183,45 @@ def build_sorry_counts(work, timeout=BUILD_TIMEOUT, include_output=False):
 # The bare verdict ("lake build fails") sent the 2026-09-22 as_bytes run in
 # circles: the build tail is cut at 4000 chars, so an `omega` counterexample
 # listing hid the `error: file:line:col:` header, and the agent's answer to a
-# heartbeat timeout was to raise `maxHeartbeats`. Parse the error lines into
-# (location, kind, first message line) and attach a hint per kind.
+# heartbeat timeout was to raise `maxHeartbeats`. Feed back the error lines
+# (location + first message line, a few per file so one noisy file cannot
+# crowd out the others — CryptoProver's diversification), and a short hint
+# for the two failure modes that actually recur: resource blow-ups and omega
+# counterexamples. Everything else is `other`, no hint.
 ERROR_LINE_RE = re.compile(
     r"(?:^|\n)error: (?:\./)*([^:\n]+\.lean):(\d+):(\d+): ([^\n]*)")
 HEARTBEATS_RE = re.compile(r"set_option\s+maxHeartbeats\s+(\d+)")
 MAX_ERRORS_FED_BACK = 8
+MAX_ERRORS_PER_FILE = 3
 
-ERROR_KINDS = (  # first match wins
-    ("heartbeats", re.compile(r"maximum number of heartbeats|\(deterministic\) timeout")),
-    ("recursion", re.compile(r"maximum recursion depth")),
+ERROR_KINDS = (  # first match wins; anything else is "other"
+    ("resource", re.compile(r"maximum number of heartbeats|\(deterministic\) timeout"
+                            r"|maximum recursion depth")),
     ("omega_failed", re.compile(r"omega could not prove")),
-    ("scalar_tac_failed", re.compile(r"scalar_tac failed")),
-    ("progress_failed", re.compile(r"progress failed|could not find a progress")),
-    ("unsolved_goals", re.compile(r"unsolved goals")),
-    ("unknown_ident", re.compile(r"unknown (identifier|constant)")),
-    ("type_mismatch", re.compile(r"type mismatch|application type mismatch")),
 )
 
 HINTS = {
-    "heartbeats": (
-        "`maxHeartbeats` is charged to the WHOLE declaration, not to one "
-        "tactic, and raising it does not make a blow-up finish: the gate "
-        "builds under a fixed wall clock and a build that exceeds it is a "
-        "hard rejection. Fix the slow step instead: `omega` / `scalar_tac` / "
-        "`simp` read every hypothesis in context (hundreds after a long "
-        "`progress` chain, each `/` or `%` adds variables), so run "
-        "`clear * - h1 h2 ...` right before them, keeping only the facts the "
-        "goal needs, or move the step into its own lemma stated over just the "
-        "variables involved and `have` it (a separate theorem gets its own "
-        "heartbeat budget and its own small context)."),
-    "recursion": (
-        "Maximum recursion depth: a term is being unfolded too deep "
-        "(often `decide`, `simp` on a huge literal, or `whnf` of a long "
-        "`Array.set` chain). Split the declaration and prove the offending "
-        "step as a separate lemma."),
+    "resource": (
+        "A heartbeat/recursion timeout is charged to the whole declaration and "
+        "raising `maxHeartbeats` does not fix it (the gate has a fixed wall "
+        "clock). Shrink the context with `clear * - h1 h2 ...` right before "
+        "`omega`/`scalar_tac`/`simp`, or move the slow step into its own lemma."),
     "omega_failed": (
-        "`omega` returned a counterexample, so the goal does not follow "
-        "linearly from the atoms as they stand — more heartbeats will not "
-        "help. Read the `where` list: atoms like "
-        "`((a.set i x).set j y)[k]!`, `↑↑z / 2^51`, `x <<< 3 % U64.size` are "
-        "opaque to omega; rewrite them first (`simp` with the indexing lemmas "
-        "for `set`/`update`, `Nat.div_add_mod`, `Nat.shiftLeft_eq`) or state "
-        "the needed relation as a hypothesis, then run omega in a standalone "
-        "lemma over only those hypotheses (`clear * - ...` in the main proof)."),
-    "scalar_tac_failed": (
-        "`scalar_tac` failed: the bound is not implied by the hypotheses it "
-        "can see, or the context is too big. Add the missing bound with a "
-        "`have` from earlier postconditions, or shrink the context first."),
-    "progress_failed": (
-        "`progress` could not find or apply a lemma: the callee has no "
-        "`@[progress]` spec yet, or its precondition (overflow / index bound) "
-        "is not in context — prove it just before with `have : ... := by "
-        "scalar_tac`."),
-    "unsolved_goals": (
-        "Unsolved goals remain at the shown position; inspect the goal state "
-        "there and close each goal explicitly, or add the missing step."),
+        "`omega` found a counterexample: the atoms in its `where` list (e.g. "
+        "`(a.set i x)[k]!`, `z / 2^51`) are opaque to it. Rewrite them first "
+        "or state the needed relation as a hypothesis, then run omega in a "
+        "standalone lemma over just those hypotheses."),
 }
 
 KERNEL_BUDGET_HINT = (
-    "The gate's `lake build` did not finish within the wall-clock limit "
-    "and was killed. Lean's `maxHeartbeats` does not bound this (kernel "
-    "checking and `decide`/`native_decide`/huge `omega` or `simp` calls run "
-    "past it), so raising it is never the fix. Find the slow declaration "
-    "(the unfinished modules are listed above), and split "
-    "it: separate lemmas with small contexts, `clear * - ...` before "
-    "arithmetic tactics, no `decide` on large terms.")
+    "The gate's `lake build` did not finish within the wall-clock limit and "
+    "was killed; `maxHeartbeats` does not bound this, so raising it is never "
+    "the fix. Split the slow declaration into lemmas with small contexts and "
+    "avoid `decide` on large terms.")
+
+HEARTBEATS_RAISED_HINT = (
+    "Revert the `maxHeartbeats` increase; it is not the fix and it makes "
+    "every build slower.")
 
 
 def classify_error(message):
@@ -258,16 +231,20 @@ def classify_error(message):
     return "other"
 
 
-def parse_build_errors(build_out, limit=MAX_ERRORS_FED_BACK):
+def parse_build_errors(build_out, limit=MAX_ERRORS_FED_BACK,
+                       per_file=MAX_ERRORS_PER_FILE):
     """`error: file:line:col: msg` lines of a lake build → deduplicated
-    [{file, line, col, kind, message}], first `limit` in build order."""
-    seen, errs = set(), []
+    [{file, line, col, kind, message}] in build order, at most `per_file`
+    per file and `limit` overall."""
+    seen, per, errs = set(), {}, []
     for f, ln, col, msg in ERROR_LINE_RE.findall(build_out or ""):
+        f = f.lstrip("./")
         key = (f, int(ln), int(col))
-        if key in seen:
+        if key in seen or per.get(f, 0) >= per_file:
             continue
         seen.add(key)
-        errs.append({"file": f.lstrip("./"), "line": int(ln), "col": int(col),
+        per[f] = per.get(f, 0) + 1
+        errs.append({"file": f, "line": int(ln), "col": int(col),
                      "kind": classify_error(msg), "message": msg.strip()})
         if len(errs) >= limit:
             break
@@ -317,8 +294,7 @@ def diagnostics_block(outcome, detail):
     if raised:
         lines.append("Your edit sets `maxHeartbeats` to "
                      + ", ".join(str(v) for v in raised) + ".")
-        hints.append("Revert the `maxHeartbeats` increase; it is not the fix "
-                     "(see above) and it makes every build slower.")
+        hints.append(HEARTBEATS_RAISED_HINT)
     if not lines:
         return ""
     out = "\n".join(lines)
@@ -976,7 +952,8 @@ def gate(work, target_path, before_counts, build_timeout=BUILD_TIMEOUT,
             **b, "broken_files": paths,
             "errors": errors,
             "errors_truncated": len(parse_build_errors(
-                build_out, limit=MAX_ERRORS_FED_BACK + 1)) > len(errors),
+                build_out, limit=MAX_ERRORS_FED_BACK + 1,
+                per_file=MAX_ERRORS_FED_BACK + 1)) > len(errors),
             "build_error_tail": build_out[-4000:]}
     if g1_base is not None:
         modules = [path_to_module(p) for p in editable_paths]

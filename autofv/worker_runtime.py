@@ -9,6 +9,7 @@ import json
 import os
 import re
 import secrets
+import shlex
 import shutil
 import socket
 import stat
@@ -450,6 +451,98 @@ def hash_tree(root: str | Path) -> str:
     return _tree_hash(_tree_files(Path(root)))
 
 
+def offline_mathlib_cache_script(dependencies: str) -> str:
+    """Use pinned public LTARs without granting any network fetch or Mathlib build."""
+    if dependencies not in {"/volume/dependencies", "/project/dependencies"}:
+        raise WorkerError("dependency cache mount is invalid")
+    return (
+        "set -eu; "
+        f"test -x {dependencies}/toolchain/bin/lean; "
+        f"test -d {dependencies}/mathlib-cache; "
+        f"mkdir {dependencies}/offline-bin; "
+        f"trap 'rm -f {dependencies}/offline-bin/curl; rmdir {dependencies}/offline-bin' EXIT; "
+        "printf '#!/bin/sh\\nif test \"$#\" -eq 1 && test \"$1\" = \"--version\"; "
+        "then echo \"curl 8.10.0\"; else exit 97; fi\\n' "
+        f"> {dependencies}/offline-bin/curl; "
+        f"chmod 0555 {dependencies}/offline-bin/curl; "
+        f"export PATH={dependencies}/offline-bin:{dependencies}/toolchain/bin:$PATH; "
+        f"export MATHLIB_CACHE_DIR={dependencies}/mathlib-cache LEAN_NUM_THREADS=1 CI=1; "
+        "lake exe cache get; lake exe cache unpack!"
+    )
+
+
+def seed_dependency_cache(
+    run: dict[str, Any], archive_path: str | Path, expected_sha256: str
+) -> dict[str, Any]:
+    """Stream one bound dependency-only cache into the disposable worker volume."""
+    archive = Path(archive_path)
+    try:
+        before = archive.stat()
+        digest = hashlib.sha256()
+        with archive.open("rb") as source:
+            while chunk := source.read(8 * 1024 * 1024):
+                digest.update(chunk)
+        after = archive.stat()
+    except OSError as exc:
+        raise WorkerError("prepared dependency cache is unreadable") from exc
+    if (
+        before != after
+        or not stat.S_ISREG(before.st_mode)
+        or digest.hexdigest() != expected_sha256
+    ):
+        raise WorkerError("prepared dependency cache identity mismatch")
+    setup = (
+        "mkdir -p /volume/dependencies/packages /volume/work/project/.lake; "
+        f"chown -R {AGENT_UID} /volume/dependencies /volume/work/project/.lake; "
+        "test ! -e /volume/work/project/.lake/packages; "
+        "ln -s /volume/dependencies/packages /volume/work/project/.lake/packages; "
+        "printf '.lake/\\n' >> /volume/work/project/.git/info/exclude"
+    )
+    _docker(
+        "run", "--rm", "--pull", "never", "--network", "none",
+        "--user", "0:0", "--mount",
+        f"type=volume,src={run['volume']},dst=/volume,volume-nocopy",
+        run["lock"]["image"]["image_digest"], "sh", "-eu", "-c", setup,
+    )
+    extract_argv = _runtime_argv(
+        run["lock"], run["volume"], "tar", "-xf", "-", "-C",
+        "/volume/dependencies",
+    )
+    command = "zstd -dc | " + shlex.join(("sudo", "docker", *extract_argv))
+    _lima_stream_file(archive, "sh", "-eu", "-c", command)
+    prep = list(_runtime_argv(
+        run["lock"], run["volume"], "sh", "-eu", "-c",
+        offline_mathlib_cache_script("/volume/dependencies"),
+    ))
+    prep[prep.index("--runtime") + 1] = "runc"
+    _docker(*prep, timeout=210)
+    _docker(*_runtime_argv(
+        run["lock"], run["volume"], "lake", "build", "--no-build", "Mathlib",
+    ), timeout=180)
+    run.setdefault("events", []).append("mathlib_public_cache_verified")
+    warm = list(_runtime_argv(
+        run["lock"], run["volume"], "sh", "-eu", "-c",
+        "export LEAN_NUM_THREADS=1; lake build",
+    ))
+    warm[warm.index("--runtime") + 1] = "runc"
+    warm[warm.index("--memory") + 1] = "8g"
+    _docker(*warm, timeout=600)
+    _docker(*_runtime_argv(
+        run["lock"], run["volume"], "sh", "-eu", "-c",
+        "export LEAN_NUM_THREADS=1; lake build --no-build",
+    ), timeout=150)
+    run["events"].append("offline_baseline_warmed")
+    receipt_body = {
+        "schema": "autofv-dependency-cache-binding/v1",
+        "sha256": expected_sha256,
+        "size": before.st_size,
+    }
+    return {
+        **receipt_body,
+        "receipt_sha256": _sha256(_canonical_bytes(receipt_body)),
+    }
+
+
 def _control_manifest(lock: dict[str, Any]) -> tuple[dict[str, Any], list[tuple[str, bytes, int]]]:
     contract = lock["controller_delivery"]
     members = contract["allowed_members"]
@@ -510,13 +603,17 @@ def _lima(
     *argv: str,
     input_bytes: bytes | None = None,
     check: bool = True,
+    timeout: int | None = None,
 ) -> subprocess.CompletedProcess[bytes]:
     try:
         completed = subprocess.run(
             ("limactl", "shell", AGENT_VM, "--", *argv),
             input=input_bytes,
             capture_output=True,
+            timeout=timeout,
         )
+    except subprocess.TimeoutExpired as exc:
+        raise WorkerError("agent worker command timed out") from exc
     except OSError as exc:
         raise WorkerError(f"agent worker launcher failed: {exc}") from exc
     if check and completed.returncode:
@@ -536,8 +633,32 @@ def _docker(
     *argv: str,
     input_bytes: bytes | None = None,
     check: bool = True,
+    timeout: int | None = None,
 ) -> subprocess.CompletedProcess[bytes]:
-    return _lima("sudo", "docker", *argv, input_bytes=input_bytes, check=check)
+    return _lima("sudo", "docker", *argv, input_bytes=input_bytes, check=check, timeout=timeout)
+
+
+def _lima_stream_file(path: Path, *argv: str) -> subprocess.CompletedProcess[bytes]:
+    try:
+        with path.open("rb") as stream:
+            completed = subprocess.run(
+                ("limactl", "shell", AGENT_VM, "--", *argv),
+                stdin=stream,
+                capture_output=True,
+            )
+    except OSError as exc:
+        raise WorkerError(f"agent worker launcher failed: {exc}") from exc
+    if completed.returncode:
+        detail = "\n".join(
+            part
+            for part in (
+                completed.stdout.decode("utf-8", "replace").strip(),
+                completed.stderr.decode("utf-8", "replace").strip(),
+            )
+            if part
+        )[-4000:]
+        raise WorkerError(f"agent worker cache seed failed: {detail}")
+    return completed
 
 
 def _runtime_argv(
@@ -584,8 +705,20 @@ def _runtime_argv(
         "/home/autofv/.cache:rw,noexec,nosuid,nodev,size=64m,mode=1777",
         "--env",
         "CARGO_NET_OFFLINE=true",
+        "--env",
+        "CI=1",
+        "--env",
+        (
+            "PATH=/dependencies/toolchain/bin:/opt/autofv-venv/bin:/opt/git/bin:"
+            "/opt/lean/bin:/opt/rust-bin:/usr/local/bin:/usr/bin:/bin"
+        ),
         "--mount",
         f"type=volume,src={volume},dst=/volume,volume-nocopy",
+        "--mount",
+        (
+            f"type=volume,src={volume},dst=/dependencies,"
+            "volume-subpath=dependencies,volume-nocopy,readonly"
+        ),
         lock["image"]["image_digest"],
         *command,
     )
@@ -633,10 +766,22 @@ def _candidate_runtime_argv(
         "/home/autofv/.cache:rw,noexec,nosuid,nodev,size=64m,mode=1777",
         "--env",
         "CARGO_NET_OFFLINE=true",
+        "--env",
+        "CI=1",
+        "--env",
+        (
+            "PATH=/dependencies/toolchain/bin:/opt/autofv-venv/bin:/opt/git/bin:"
+            "/opt/lean/bin:/opt/rust-bin:/usr/local/bin:/usr/bin:/bin"
+        ),
         "--mount",
         (
             f"type=volume,src={volume},dst=/candidate,"
             f"volume-subpath=lanes/{lane_id}/work,volume-nocopy"
+        ),
+        "--mount",
+        (
+            f"type=volume,src={volume},dst=/dependencies,"
+            "volume-subpath=dependencies,volume-nocopy,readonly"
         ),
         lock["image"]["image_digest"],
         *command,
@@ -1034,6 +1179,14 @@ def inspect_scored_container(run: dict[str, Any]) -> dict[str, Any]:
             and mount.get("Name") == run["volume"]
             and mount.get("Destination") == "/volume"
         ]
+        dependency_mounts = [
+            mount
+            for mount in mounts
+            if mount.get("Type") == "volume"
+            and mount.get("Name") == run["volume"]
+            and mount.get("Destination") == "/dependencies"
+            and mount.get("RW") is False
+        ]
         body = {
             "schema": "autofv-scored-container/v1",
             "run_id": run["run_id"],
@@ -1045,6 +1198,7 @@ def inspect_scored_container(run: dict[str, Any]) -> dict[str, Any]:
             "volume": run["volume"],
             "mount_count": len(mounts),
             "volume_mounts": len(volume_mounts),
+            "dependency_mounts": len(dependency_mounts),
             "bind_mounts": [mount for mount in mounts if mount.get("Type") == "bind"],
             "runtime_sockets": sockets,
             "cap_add": host.get("CapAdd") or [],
@@ -1064,8 +1218,9 @@ def inspect_scored_container(run: dict[str, Any]) -> dict[str, Any]:
             "read_only_root": True,
             "user": AGENT_UID,
             "network_mode": "none",
-            "mount_count": 1,
+            "mount_count": 2,
             "volume_mounts": 1,
+            "dependency_mounts": 1,
             "bind_mounts": [],
             "runtime_sockets": [],
             "cap_add": [],

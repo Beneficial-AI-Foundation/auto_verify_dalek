@@ -4,6 +4,7 @@ import io
 import json
 import subprocess
 import tarfile
+import tempfile
 import unittest
 from pathlib import Path
 from unittest import mock
@@ -222,7 +223,9 @@ def _preparation_manifest(state=None):
         "closures": {
             root: graph["selected_nodes"] for root in graph["frozen_targets"]
         },
-        "retained_declarations": graph["selected_nodes"],
+        "retained_declarations": sorted(
+            set(graph["selected_nodes"]) | set(graph["supplied_specs"].values())
+        ),
         "files": files,
         "tree_sha256": _sha256(_canonical(files)),
         "gates": {
@@ -512,6 +515,70 @@ class ReportAuthorityTests(unittest.TestCase):
             verifier.validate_report(same_worker, run, invocation)
 
 class VerifyRunWiringTests(unittest.TestCase):
+    def test_prepared_checkout_links_package_subdirectory(self):
+        completed = subprocess.CompletedProcess((), 0, b"", b"")
+        with (
+            mock.patch.object(verifier, "_docker", return_value=completed) as docker,
+            mock.patch.object(verifier, "_seed_file"),
+        ):
+            verifier.axiom_audit.checkout_volume(
+                image="sha256:" + "1" * 64,
+                volume="audit-volume",
+                repository_bundle=b"baseline",
+                commit="a" * 40,
+                runtime="runsc-hardened",
+                docker=verifier._docker,
+                runtime_argv=verifier._runtime_argv,
+                seed_file=verifier._seed_file,
+            )
+        self.assertIn(
+            "ln -s /project/dependencies/packages repo/.lake/packages",
+            str(docker.call_args.args),
+        )
+
+    def test_clean_dependency_cache_replays_public_artifacts_from_base_only(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            source = Path(tmp) / "dependency-cache.tar.zst"
+            source.write_bytes(b"bound archive")
+            completed = subprocess.CompletedProcess((), 0, b"", b"")
+            with (
+                mock.patch.object(verifier, "_prepared_dependency_cache", return_value=source),
+                mock.patch.object(verifier, "_docker", return_value=completed) as docker,
+                mock.patch.object(verifier.subprocess, "run", return_value=completed) as streamed,
+                mock.patch.object(verifier.axiom_audit, "checkout_volume") as checkout,
+            ):
+                verifier._seed_verifier_dependency_cache(
+                    {"lock": experiment.load_toolchain_lock()},
+                    "sha256:" + "1" * 64,
+                    "dependency-volume",
+                    b"accepted bundle",
+                    "a" * 40,
+                )
+            self.assertIn("docker run --rm -i", streamed.call_args.args[0][-1])
+            checkout.assert_called_once()
+            self.assertEqual(checkout.call_args.kwargs["commit"], "a" * 40)
+            calls = [call.args for call in docker.call_args_list]
+            prep = next(args for args in calls if "lake exe cache get" in str(args))
+            gate = next(args for args in calls if "--no-build" in args)
+            self.assertLess(calls.index(prep), calls.index(gate))
+            self.assertIn("runc", prep)
+            self.assertIn("runc", gate)
+            self.assertIn("lake exe cache unpack!", str(prep))
+            self.assertIn("else exit 97", str(prep))
+            self.assertIn("--network", prep)
+            self.assertIn("none", prep)
+            warm = next(args for args in calls if "LEAN_NUM_THREADS=1; lake build" in str(args))
+            full_gate = next(args for args in calls if "lake build --no-build" in str(args))
+            self.assertLess(calls.index(gate), calls.index(warm))
+            self.assertLess(calls.index(warm), calls.index(full_gate))
+            self.assertIn("runc", warm)
+            self.assertIn("8g", warm)
+            self.assertIn("runc", full_gate)
+            self.assertIn("dst=/project/dependencies,volume-nocopy", str(warm))
+            self.assertNotIn("dst=/project/dependencies,volume-nocopy,readonly", str(warm))
+            self.assertIn("volume", calls[-1])
+            self.assertIn("rm", calls[-1])
+
     def test_verifier_runtime_mismatch_fails_before_bundle_intake(self):
         lock = experiment.load_toolchain_lock()
         configured = {

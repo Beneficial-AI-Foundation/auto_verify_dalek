@@ -78,7 +78,10 @@ class GenericRoleE2ETests(unittest.TestCase):
             with self.subTest(point=point):
                 self._run(crash=True, replay_crash=point)
 
-    def _run(self, *, crash, snapshot_attack=None, initialization_crash=None, replay_crash=None):
+    def test_proof_only_runs_only_the_supplied_root_proof_roles(self):
+        self._run(crash=False, proof_only=True)
+
+    def _run(self, *, crash, snapshot_attack=None, initialization_crash=None, replay_crash=None, proof_only=False):
         key = Ed25519PrivateKey.from_private_bytes(bytes(range(1, 33)))
         lock = _role_test_lock(key)
         with tempfile.TemporaryDirectory() as tmp:
@@ -97,6 +100,8 @@ class GenericRoleE2ETests(unittest.TestCase):
             commit = git('rev-parse', 'HEAD').decode().strip()
             state = _checkpoint_state(root)
             state['run'].update(project_dir=str(project), base_commit=commit, lock=lock)
+            if proof_only:
+                state['run']['execution_mode'] = 'proof_only'
             state['accepted'] = state['working'] = {'accepted_commit': commit, 'accepted_tree_sha256': hashlib.sha256(git('archive', 'HEAD')).hexdigest()}
             state['run']['accepted'] = state['accepted']
             graph = {'frozen_targets': [ROOT], 'selected_nodes': [LEAF, ROOT],
@@ -239,6 +244,16 @@ class GenericRoleE2ETests(unittest.TestCase):
                 self.assertEqual(state['proof_patch_sha256'][LEAF], proof_before)
                 self.assertEqual(state['target_states'][LEAF]['accepted_commit'], accepted_before['accepted_commit'])
                 self.assertIsNone(state['frozen_contract_baseline'])
+            if proof_only:
+                roles = [job_by_request[call['request_id'].split('-')[1]]['role'] for call in calls]
+                self.assertEqual(roles, ['prover', 'proof_reviewer'])
+                self.assertEqual(set(state['accepted_nodes']), {ROOT})
+                self.assertEqual(state['target_states'][ROOT]['status'], 'accepted')
+                self.assertEqual(state['target_states'][LEAF]['status'], 'pending')
+                self.assertEqual(feasibility_sources, [])
+                self.assertEqual((project / 'Arithmetic/Increment.lean').read_text(), SOURCES['Arithmetic/Increment.lean'])
+                self.assertEqual((project / 'Pipeline/Finish.lean').read_text(), patched['Pipeline/Finish.lean'])
+                return
             self.assertEqual(set(state['accepted_nodes']), {LEAF, ROOT})
             self.assertEqual(state['target_states'][LEAF]['status'], 'accepted')
             self.assertEqual(len(state['release_events']), 2)

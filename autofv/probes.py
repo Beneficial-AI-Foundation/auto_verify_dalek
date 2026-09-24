@@ -722,6 +722,13 @@ def parse_probe_bytes(
     }
 
 
+def proof_source_path(graph: dict[str, Any], node: str) -> str | None:
+    """Return the supplied theorem file for a fixed target, else its source."""
+    supplied = graph.get("supplied_specs", {}).get(node)
+    paths = graph.get("source_paths", {})
+    return paths.get(supplied) if supplied is not None else paths.get(node)
+
+
 def render_target_report(graph: dict[str, Any]) -> bytes:
     """Return the canonical report derived at the probe trust boundary."""
     report = graph.get("target_report")

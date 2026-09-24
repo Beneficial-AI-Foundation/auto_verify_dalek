@@ -46,10 +46,11 @@ class ConsumerFeasibilityTests(unittest.TestCase):
         compilation = [args for args in calls if any('lake env lean' in arg for arg in args)]
         self.assertEqual(len(compilation), 1)
         mounts = [compilation[0][i+1] for i,arg in enumerate(compilation[0]) if arg == '--mount']
-        self.assertEqual(len(mounts), 1)
+        self.assertEqual(len(mounts), 2)
         self.assertIn('dst=/candidate', mounts[0])
         self.assertIn('volume-subpath=lanes/feasibility-', mounts[0])
-        self.assertNotIn('dst=/volume', mounts[0])
+        self.assertEqual(mounts[1], 'type=volume,src=run-volume,dst=/dependencies,volume-subpath=dependencies,volume-nocopy,readonly')
+        self.assertFalse(any('dst=/volume' in mount for mount in mounts))
 
     def test_consumer_obligation_abstracts_dependency_and_has_no_proof_holes(self):
         from autofv import contract_feasibility

@@ -133,7 +133,7 @@ def _lane_descriptors(
         leaf = re.sub(r"[^a-z0-9]+", "-", node.rsplit(".", 1)[-1].lower()).strip("-")
         if not leaf:
             raise ContractError("proof node cannot form a safe lane identity")
-        path = graph["source_paths"].get(node)
+        path = probes.proof_source_path(graph, node)
         pure = PurePosixPath(path) if isinstance(path, str) else None
         if (
             pure is None
@@ -305,7 +305,7 @@ def _checkpoint_candidate(
                     request_id=candidate.get("request_id"),
                 )
                 return reject("preparation_defect_undeclared_node")
-            if candidate.get("assigned_path") != graph["source_paths"][node]:
+            if candidate.get("assigned_path") != probes.proof_source_path(graph, node):
                 _record_preparation_defect(
                     state,
                     "source_path_mismatch",

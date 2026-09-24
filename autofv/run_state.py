@@ -70,6 +70,10 @@ CHECKPOINT_RUN_FIELDS = (
     "disposal_receipt",
     "base_commit",
     "preparation_manifest",
+    "prepared_graph_receipt",
+    "prepared_probe_sources",
+    "dependency_cache_receipt",
+    "execution_mode",
     "verifier_reference",
     "events",
 )
@@ -331,6 +335,18 @@ def _checkpoint_identities(run: dict[str, Any]) -> dict[str, Any]:
         identities["preparation_manifest_sha256"] = preparation.get(
             "manifest_sha256"
         )
+    prepared_graph = run.get("prepared_graph_receipt")
+    if isinstance(prepared_graph, dict):
+        identities["prepared_graph_receipt_sha256"] = prepared_graph.get(
+            "receipt_sha256"
+        )
+    prepared_sources = run.get("prepared_probe_sources")
+    if isinstance(prepared_sources, dict):
+        identities["prepared_probe_sources_sha256"] = _canonical_sha256(
+            prepared_sources
+        )
+    if isinstance(run.get("execution_mode"), str):
+        identities["execution_mode"] = run["execution_mode"]
     reference = run.get("verifier_reference")
     if isinstance(reference, dict):
         identities["verifier_reference_path"] = reference.get("reference_path")
@@ -499,6 +515,22 @@ def _valid_checkpoint(
     if isinstance(preparation, dict) and (
         identities.get("preparation_manifest_sha256")
         != preparation.get("manifest_sha256")
+    ):
+        return None
+    prepared_graph = run.get("prepared_graph_receipt")
+    if isinstance(prepared_graph, dict) and (
+        identities.get("prepared_graph_receipt_sha256")
+        != prepared_graph.get("receipt_sha256")
+    ):
+        return None
+    prepared_sources = run.get("prepared_probe_sources")
+    if isinstance(prepared_sources, dict) and (
+        identities.get("prepared_probe_sources_sha256")
+        != _canonical_sha256(prepared_sources)
+    ):
+        return None
+    if isinstance(run.get("execution_mode"), str) and (
+        identities.get("execution_mode") != run["execution_mode"]
     ):
         return None
     if isinstance(reference, dict) and (

@@ -581,7 +581,7 @@ def verify_bundle(
         observed.get("statement_fingerprints") != contract_fingerprints,
     )
     allowed_paths = {
-        recomputed_graph["source_paths"][node]
+        probes.proof_source_path(recomputed_graph, node)
         for node in recomputed_graph["selected_nodes"]
     }
     changed_paths = observed.get("changed_paths")

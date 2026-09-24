@@ -7,6 +7,7 @@ model exchange, the bounded diamond scheduler, and result/evidence records.
 from __future__ import annotations
 
 import argparse
+import hashlib
 import os
 import secrets
 import tempfile
@@ -301,6 +302,90 @@ def _resume_identities(
     return identities
 
 
+def _load_prepared_inputs(
+    target: Path,
+    target_manifest: dict[str, Any],
+    preparation_manifest_path: str | Path,
+    probe_rust_path: str | Path,
+    probe_aeneas_path: str | Path,
+    dependency_cache_path: str | Path,
+    *,
+    execution_mode: str,
+) -> tuple[
+    dict[str, Any], dict[str, Any], dict[str, Any], dict[str, str]
+]:
+    """Validate explicit trusted preparation evidence without exposing raw probes."""
+    if execution_mode not in {"full", "proof_only"}:
+        raise ContractError("prepared execution mode is invalid")
+    paths = {
+        "preparation manifest": _absolute_path(
+            preparation_manifest_path, "preparation manifest", directory=False
+        ),
+        "probe-rust evidence": _absolute_path(
+            probe_rust_path, "probe-rust evidence", directory=False
+        ),
+        "probe-aeneas evidence": _absolute_path(
+            probe_aeneas_path, "probe-aeneas evidence", directory=False
+        ),
+        "dependency cache": _absolute_path(
+            dependency_cache_path, "dependency cache", directory=False
+        ),
+    }
+    if any(path.is_relative_to(target) for path in paths.values()):
+        raise ContractError("trusted preparation evidence must be external to the target")
+    preparation = _read_json(paths["preparation manifest"], "preparation manifest")
+    if not isinstance(preparation, dict):
+        raise ContractError("preparation manifest must be an object")
+    canonical = canonical_json_bytes(preparation)
+    if paths["preparation manifest"].read_bytes() not in {canonical, canonical + b"\n"}:
+        raise ContractError("preparation manifest must be canonical JSON")
+    rust_raw = paths["probe-rust evidence"].read_bytes()
+    aeneas_raw = paths["probe-aeneas evidence"].read_bytes()
+    graph = probes.parse_probe_bytes(target_manifest, rust_raw, aeneas_raw)
+    try:
+        verifier.terminal_verifier._preparation_identity(
+            preparation, graph, worker.hash_tree(target)
+        )
+    except verifier.VerifierError as exc:
+        raise ContractError(str(exc)) from exc
+    target_report_sha256 = hashlib.sha256(
+        probes.render_target_report(graph)
+    ).hexdigest()
+    if preparation.get("target_report_sha256") != target_report_sha256:
+        raise ContractError("prepared target report identity mismatch")
+    if execution_mode == "proof_only" and (
+        preparation.get("mode") != "small"
+        or len(graph.get("frozen_targets", [])) != 1
+        or len(target_manifest.get("targets", [])) != 1
+    ):
+        raise ContractError("proof-only execution requires one prepared small target")
+    dependency_digest = hashlib.sha256()
+    with paths["dependency cache"].open("rb") as stream:
+        while chunk := stream.read(8 * 1024 * 1024):
+            dependency_digest.update(chunk)
+    receipt_body = {
+        "schema": "autofv-prepared-graph-binding/v1",
+        "execution_mode": execution_mode,
+        "preparation_manifest_sha256": preparation["manifest_sha256"],
+        "probe_rust_sha256": graph["probe_rust_sha256"],
+        "probe_aeneas_sha256": graph["probe_aeneas_sha256"],
+        "target_report_sha256": target_report_sha256,
+        "graph_sha256": graph["graph_sha256"],
+        "dependency_cache_sha256": dependency_digest.hexdigest(),
+        "dependency_cache_size": paths["dependency cache"].stat().st_size,
+    }
+    receipt = {
+        **receipt_body,
+        "receipt_sha256": _canonical_sha256(receipt_body),
+    }
+    sources = {
+        "probe-rust": str(paths["probe-rust evidence"]),
+        "probe-aeneas": str(paths["probe-aeneas evidence"]),
+        "dependency-cache": str(paths["dependency cache"]),
+    }
+    return preparation, graph, receipt, sources
+
+
 def _bind_provider_selection(
     run: dict[str, Any], selection_path: str | Path
 ) -> None:
@@ -375,6 +460,11 @@ def run_experiment(
     run_round=agentproc.run_round,
     resume_from: str | Path | None = None,
     verifier_reference: str | Path | None = None,
+    preparation_manifest: str | Path | None = None,
+    probe_rust_evidence: str | Path | None = None,
+    probe_aeneas_evidence: str | Path | None = None,
+    dependency_cache: str | Path | None = None,
+    execution_mode: str | None = None,
     env_file: str | Path | None = None,
     provider_selection: str | Path | None = None,
 ) -> dict[str, Any]:
@@ -382,6 +472,20 @@ def run_experiment(
     if (env_file is None) != (provider_selection is None):
         raise ContractError(
             "provider env file and selected model record must be supplied together"
+        )
+    prepared_arguments = (
+        preparation_manifest,
+        probe_rust_evidence,
+        probe_aeneas_evidence,
+        dependency_cache,
+        execution_mode,
+    )
+    if any(value is not None for value in prepared_arguments) and not all(
+        value is not None for value in prepared_arguments
+    ):
+        raise ContractError(
+            "preparation manifest, evidence directory, dependency cache, and "
+            "execution mode must be supplied together"
         )
     wall_started = time.monotonic_ns()
     results.validate_output_root(target, output_root)
@@ -457,6 +561,29 @@ def run_experiment(
             "infrastructure_failed", "toolchain_contract_invalid", exc
         )
 
+    prepared_inputs = None
+    if preparation_manifest is not None:
+        try:
+            prepared_inputs = _load_prepared_inputs(
+                target_path,
+                manifest,
+                preparation_manifest,
+                probe_rust_evidence,
+                probe_aeneas_evidence,
+                dependency_cache,
+                execution_mode=execution_mode,
+            )
+        except (ContractError, OSError, probes.ProbeError) as exc:
+            return persist_unallocated(
+                "invalid_config", "prepared_inputs_invalid", exc
+            )
+        if verifier_reference is None:
+            return persist_unallocated(
+                "invalid_config",
+                "verifier_reference_invalid",
+                ContractError("prepared run requires an external verifier reference"),
+            )
+
     preparation_failure = None
 
     def prepare_provider(prepared: dict[str, Any]) -> None:
@@ -531,6 +658,25 @@ def run_experiment(
             return persist_unallocated(
                 "infrastructure_failed", "worker_preparation_failed", exc
             )
+        if prepared_inputs is not None and run.get("execution_tier") == "sealed_runsc":
+            try:
+                prepared_receipt = prepared_inputs[2]
+                run["dependency_cache_receipt"] = worker.seed_dependency_cache(
+                    run,
+                    prepared_inputs[3]["dependency-cache"],
+                    prepared_receipt["dependency_cache_sha256"],
+                )
+                run["events"].append("dependency_cache_seeded")
+            except BaseException as exc:
+                try:
+                    worker.force_destroy_worker(run)
+                except BaseException as destroy_exc:
+                    exc = RuntimeError(
+                        f"{exc}; forced worker destruction failed: {destroy_exc}"
+                    )
+                return persist_unallocated(
+                    "infrastructure_failed", "worker_preparation_failed", exc
+                )
         if output_root is not None or run.get("execution_tier") != "simulation":
             prepared_run = run
             allocation = None
@@ -562,6 +708,29 @@ def run_experiment(
                     detail,
                     existing_run=allocation,
                 )
+        if prepared_inputs is not None:
+            (
+                prepared_manifest,
+                prepared_graph,
+                prepared_receipt,
+                prepared_probe_sources,
+            ) = prepared_inputs
+            run.update(
+                {
+                    "preparation_manifest": prepared_manifest,
+                    "prepared_graph_receipt": prepared_receipt,
+                    "prepared_probe_sources": prepared_probe_sources,
+                    "execution_mode": execution_mode,
+                    "probe_rust_sha256": prepared_graph["probe_rust_sha256"],
+                    "probe_aeneas_sha256": prepared_graph["probe_aeneas_sha256"],
+                    "graph_sha256": prepared_graph["graph_sha256"],
+                }
+            )
+            evidence_path = Path(run["evidence_dir"]) / "prepared-graph.json"
+            evidence_path.parent.mkdir(parents=True, exist_ok=True)
+            evidence_path.write_bytes(canonical_json_bytes(prepared_receipt) + b"\n")
+            if "prepared_graph_bound" not in run.setdefault("events", []):
+                run["events"].append("prepared_graph_bound")
         run.update(
             {
                 "lock": lock,
@@ -591,6 +760,10 @@ def run_experiment(
             "wall_seconds_used": Decimal("0.000000"),
             "finalization_reserve_seconds": _finalization_reserve(config),
         }
+        if prepared_inputs is not None:
+            state["graph"] = prepared_inputs[1]
+            if "targets_frozen" not in run["events"]:
+                run["events"].append("targets_frozen")
         if isinstance(run.get("preparation_manifest"), dict):
             try:
                 if verifier_reference is None:
@@ -823,6 +996,11 @@ def _parser() -> argparse.ArgumentParser:
     run.add_argument("--output-root")
     run.add_argument("--env-file")
     run.add_argument("--selection-record")
+    run.add_argument("--preparation-manifest")
+    run.add_argument("--preparation-evidence")
+    run.add_argument("--preparation-cache")
+    run.add_argument("--verifier-reference")
+    run.add_argument("--execution-mode", choices=("full", "proof-only"))
     run.add_argument("--target", dest="target_alias")
     run.add_argument("--run-config", dest="config_alias")
     preflight_command = commands.add_parser("preflight")
@@ -879,6 +1057,34 @@ def main() -> None:
             options.update(
                 env_file=args.env_file,
                 provider_selection=args.selection_record,
+            )
+        if any(
+            value is not None
+            for value in (
+                args.preparation_manifest,
+                args.preparation_evidence,
+                args.preparation_cache,
+                args.verifier_reference,
+                args.execution_mode,
+            )
+        ):
+            options.update(
+                preparation_manifest=args.preparation_manifest,
+                probe_rust_evidence=(
+                    str(Path(args.preparation_evidence) / "probe-rust.json")
+                    if args.preparation_evidence
+                    else None
+                ),
+                probe_aeneas_evidence=(
+                    str(Path(args.preparation_evidence) / "probe-aeneas.json")
+                    if args.preparation_evidence
+                    else None
+                ),
+                dependency_cache=args.preparation_cache,
+                verifier_reference=args.verifier_reference,
+                execution_mode=args.execution_mode.replace("-", "_")
+                if args.execution_mode
+                else None,
             )
         result = run_experiment(target, run_config, **options)
     except (ContractError, results.ResultError) as exc:

@@ -402,6 +402,7 @@ def configure_provider(
     run["proxy_client_identity_sha256"] = public["client_identity_sha256"]
     run["proxy_model_id"] = model_id
     run["cost_classification"] = "provider_authenticated"
+    run.setdefault("provider_journal", {})
     return copy.deepcopy(public)
 
 

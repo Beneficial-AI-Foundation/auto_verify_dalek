@@ -192,8 +192,12 @@ def run_generic_role_path(state: _RunState) -> dict[str, Any]:
     top_fingerprint = supplied_statement["model_fingerprint"]
     supplied_spec = graph["supplied_specs"][root]
     supplied_source = supplied_statement["canon"]
+    proof_only = run.get("execution_mode") == "proof_only"
     expected_lanes = _lane_descriptors(
-        run, graph, graph["selected_nodes"], base_commit=run["base_commit"]
+        run,
+        graph,
+        [root] if proof_only else graph["selected_nodes"],
+        base_commit=run["base_commit"],
     )
     previous_lanes = state.get("lanes")
     if isinstance(previous_lanes, list) and previous_lanes:
@@ -248,37 +252,39 @@ def run_generic_role_path(state: _RunState) -> dict[str, Any]:
     lanes_by_node = {lane["node"]: lane for lane in lanes}
     run["lanes"] = state["lanes"] = lanes
 
-    scout = _run_role_lane(
-        state,
-        graph,
-        lanes_by_node[root],
-        "scout",
-        statement_sha256=top_fingerprint,
-        contract_fingerprint=top_fingerprint,
-        input_hashes=[graph["graph_sha256"]],
-        role_context={
-            "target": root,
-            "supplied_spec": supplied_spec,
-            "supplied_source": supplied_source,
-            "selected_nodes": graph["selected_nodes"],
-            "term_dependencies": graph["term_dependencies"],
-        },
-    )
-    dependency = _run_role_lane(
-        state,
-        graph,
-        lanes_by_node[root],
-        "dependency_planner",
-        statement_sha256=top_fingerprint,
-        contract_fingerprint=top_fingerprint,
-        input_hashes=[graph["graph_sha256"], _canonical_sha256(scout)],
-        role_context={
-            "target": root,
-            "scout_candidate": scout,
-            "selected_nodes": graph["selected_nodes"],
-            "term_dependencies": graph["term_dependencies"],
-        },
-    )
+    dependency = None
+    if not proof_only:
+        scout = _run_role_lane(
+            state,
+            graph,
+            lanes_by_node[root],
+            "scout",
+            statement_sha256=top_fingerprint,
+            contract_fingerprint=top_fingerprint,
+            input_hashes=[graph["graph_sha256"]],
+            role_context={
+                "target": root,
+                "supplied_spec": supplied_spec,
+                "supplied_source": supplied_source,
+                "selected_nodes": graph["selected_nodes"],
+                "term_dependencies": graph["term_dependencies"],
+            },
+        )
+        dependency = _run_role_lane(
+            state,
+            graph,
+            lanes_by_node[root],
+            "dependency_planner",
+            statement_sha256=top_fingerprint,
+            contract_fingerprint=top_fingerprint,
+            input_hashes=[graph["graph_sha256"], _canonical_sha256(scout)],
+            role_context={
+                "target": root,
+                "scout_candidate": scout,
+                "selected_nodes": graph["selected_nodes"],
+                "term_dependencies": graph["term_dependencies"],
+            },
+        )
 
     policy_sha256 = run["native_decide_policy_sha256"]
     previous_contracts = state.get("contracts")
@@ -314,7 +320,7 @@ def run_generic_role_path(state: _RunState) -> dict[str, Any]:
     }
     state["contracts"] = contracts
     contract_nodes: list[str] = []
-    completed_contracts = {root}
+    completed_contracts = set(graph["selected_nodes"]) if proof_only else {root}
     while len(completed_contracts) < len(graph["selected_nodes"]):
         frontier = _contract_frontier(graph, completed_contracts)
         if not frontier:
@@ -409,7 +415,11 @@ def run_generic_role_path(state: _RunState) -> dict[str, Any]:
         contracts["feasibility"].append(outcome)
         return outcome
 
-    outcome = feasibility("build:generic-provisional-consumer")
+    outcome = (
+        {"status": "passed"}
+        if proof_only
+        else feasibility("build:generic-provisional-consumer")
+    )
     if outcome["status"] != "passed" and contract_nodes:
         failed_declaration = outcome.get("declaration")
         targets = [
@@ -486,9 +496,9 @@ def run_generic_role_path(state: _RunState) -> dict[str, Any]:
     for node, target in state["target_states"].items():
         target.update(
             {
-                "phase": "proof",
+                "phase": "proof" if not proof_only or node == root else target["phase"],
                 "status": "accepted" if node in state.get("accepted_nodes", []) else "pending",
-                "contract_fingerprint": contracts["node_fingerprints"][node],
+                "contract_fingerprint": contracts["node_fingerprints"].get(node),
             }
         )
     for key in (
@@ -503,7 +513,7 @@ def run_generic_role_path(state: _RunState) -> dict[str, Any]:
     state.setdefault("proof_patch_sha256", {})
 
     def prepare_proof(node: str) -> dict[str, Any]:
-        dependencies = sorted(
+        dependencies = [] if proof_only else sorted(
             dependency_node
             for consumer, dependency_node in graph["term_dependencies"]
             if consumer == node
@@ -644,33 +654,41 @@ def run_generic_role_path(state: _RunState) -> dict[str, Any]:
             return False
         return True
 
-    accepted_nodes = _schedule_proofs(
-        graph,
-        run_proof,
-        accept_proof,
-        prepare_job=prepare_proof,
-        accepted_nodes=state["accepted_nodes"],
-    )
+    if proof_only:
+        accepted_nodes = set(state["accepted_nodes"])
+        if root not in accepted_nodes:
+            job = run_proof(prepare_proof(root))
+            if accept_proof(root, job):
+                accepted_nodes.add(root)
+    else:
+        accepted_nodes = _schedule_proofs(
+            graph,
+            run_proof,
+            accept_proof,
+            prepare_job=prepare_proof,
+            accepted_nodes=state["accepted_nodes"],
+        )
     state["accepted_nodes"][:] = sorted(accepted_nodes)
 
-    _run_role_lane(
-        state,
-        graph,
-        lanes_by_node[root],
-        "verification_adviser",
-        statement_sha256=top_fingerprint,
-        contract_fingerprint=contracts["node_fingerprints"][root],
-        input_hashes=[
-            contracts["node_fingerprints"][root],
-            hashlib.sha256(state["accepted"]["accepted_commit"].encode()).hexdigest(),
-        ],
-        role_context={
-            "target": root,
-            "frozen_contracts": contracts["frozen"],
-            "accepted": state["accepted"],
-            "accepted_nodes": state["accepted_nodes"],
-        },
-    )
+    if not proof_only:
+        _run_role_lane(
+            state,
+            graph,
+            lanes_by_node[root],
+            "verification_adviser",
+            statement_sha256=top_fingerprint,
+            contract_fingerprint=contracts["node_fingerprints"][root],
+            input_hashes=[
+                contracts["node_fingerprints"][root],
+                hashlib.sha256(state["accepted"]["accepted_commit"].encode()).hexdigest(),
+            ],
+            role_context={
+                "target": root,
+                "frozen_contracts": contracts["frozen"],
+                "accepted": state["accepted"],
+                "accepted_nodes": state["accepted_nodes"],
+            },
+        )
     return _node_update(
         state,
         accepted=state["accepted"],

@@ -494,7 +494,9 @@ def _generic_attempt(root: Path, *, attempt_id: str = "attempt-generic"):
     return run, state
 
 
-def _provider_attempt(root: Path, *, provider_reports_cost: bool = False):
+def _provider_attempt(
+    root: Path, *, provider_reports_cost: bool = False, dispatch: bool = True
+):
     run, state = _generic_attempt(root, attempt_id="attempt-provider")
     run["fixed_proxy_sha256"] = provider_config.canonical_sha256(
         run["lock"]["fixed_proxy"]
@@ -520,6 +522,17 @@ def _provider_attempt(root: Path, *, provider_reports_cost: bool = False):
     (root / "evidence" / "egress.json").write_bytes(
         experiment.canonical_json_bytes(egress) + b"\n"
     )
+
+    if not dispatch:
+        state["receipts"] = []
+        state["model_exchanges"] = {}
+        state["receipt_rejections"] = []
+        state["pending_model_exchanges"] = {}
+        state["cost"] = Decimal("0.000000")
+        for name in results.PERSISTED_SOURCE_ITEMS:
+            (root / results.FILE_LOCATIONS[name]).unlink(missing_ok=True)
+        results.persist_l0_sources(run, state)
+        return run, state
 
     messages = _messages()
     request = model._model_envelope(
@@ -1081,16 +1094,7 @@ class ResultEvidenceTests(unittest.TestCase):
     def test_provider_failure_before_first_call_persists_zero_accounting(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp) / "run"
-            run, state = _provider_attempt(root)
-            for path in (root / "evidence" / "provider-journal").iterdir():
-                path.unlink()
-            (root / "evidence" / "provider-preflight.json").unlink()
-            run["provider_journal"] = {}
-            run.pop("provider_preflight_sha256")
-            state["receipts"] = []
-            state["model_exchanges"] = {}
-            state["pending_model_exchanges"] = {}
-            state["cost"] = Decimal("0.000000")
+            run, state = _provider_attempt(root, dispatch=False)
 
             results.reconcile_provider_finalization(
                 run, state, outcome="infrastructure_failed"

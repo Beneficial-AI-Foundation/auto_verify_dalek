@@ -136,13 +136,22 @@ def _preparation_identity(
             and entry["size"] >= 0
             for entry in files
         )
-        and [entry["path"] for entry in files]
-        == sorted({entry["path"] for entry in files})
+        and len({entry["path"] for entry in files}) == len(files)
         and manifest.get("tree_sha256") == _sha(files)
+        and snapshot_sha256 == _sha(sorted(files, key=lambda entry: entry["path"]))
     )
+    reported_declarations = graph.get("target_report", {}).get("declarations", {})
+    mapped_roots = (
+        [
+            reported_declarations.get(root, {}).get("declaration")
+            for root in roots
+        ]
+        if isinstance(roots, list) and isinstance(reported_declarations, dict)
+        else []
+    )
+    roots_match = roots == frozen or mapped_roots == frozen
     if (
-        manifest.get("tree_sha256") != snapshot_sha256
-        or not _is_sha256(manifest.get("target_report_sha256"))
+        not _is_sha256(manifest.get("target_report_sha256"))
         or not _is_sha256(manifest.get("probe_identities_sha256"))
         or not valid_source
         or not valid_probes
@@ -150,7 +159,7 @@ def _preparation_identity(
         or not isinstance(roots, list)
         or not roots
         or roots != sorted(set(roots))
-        or roots != frozen
+        or not roots_match
         or not isinstance(closures, dict)
         or set(closures) != set(roots)
         or not isinstance(selected, list)
@@ -163,7 +172,8 @@ def _preparation_identity(
         or set().union(*(set(closures[root]) for root in roots)) != set(selected)
         or not isinstance(retained, list)
         or retained != sorted(set(retained))
-        or retained != selected
+        or not set(selected) <= set(retained)
+        or not set(graph.get("supplied_specs", {}).values()) <= set(retained)
         or not isinstance(gates, dict)
         or set(gates) != PREPARATION_GATES
         or any(value != "passed" for value in gates.values())

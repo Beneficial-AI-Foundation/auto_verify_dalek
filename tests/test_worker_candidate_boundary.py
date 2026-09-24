@@ -59,6 +59,48 @@ def _lane(run_root: Path) -> dict[str, str]:
 
 
 class CandidateRuntimeBoundaryTests(unittest.TestCase):
+    def test_dependency_cache_prepares_public_mathlib_without_building_it(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            archive = Path(tmp) / "cache.tar.zst"
+            archive.write_bytes(b"offline cache")
+            run = {"volume": "run-volume", "lock": _LOCK}
+            completed = subprocess.CompletedProcess((), 0, b"", b"")
+            with (
+                mock.patch.object(worker_runtime, "_docker", return_value=completed) as docker,
+                mock.patch.object(worker_runtime, "_lima_stream_file", return_value=completed),
+            ):
+                receipt = worker_runtime.seed_dependency_cache(
+                    run, archive, hashlib.sha256(archive.read_bytes()).hexdigest()
+                )
+            calls = [call.args for call in docker.call_args_list]
+            self.assertEqual(receipt["size"], len(b"offline cache"))
+            prep = next(args for args in calls if "lake exe cache get" in str(args))
+            gate = next(args for args in calls if "--no-build" in args)
+            self.assertLess(calls.index(prep), calls.index(gate))
+            self.assertIn("runc", prep)
+            self.assertIn("runsc-hardened", gate)
+            self.assertIn("--network", prep)
+            self.assertIn("none", prep)
+            self.assertIn("lake exe cache unpack!", str(prep))
+            self.assertIn("curl 8.10.0", str(prep))
+            self.assertIn("else exit 97", str(prep))
+            self.assertEqual(gate[-4:], ("lake", "build", "--no-build", "Mathlib"))
+            warmed = next(
+                args for args in calls
+                if "export LEAN_NUM_THREADS=1; lake build" in str(args)
+            )
+            sealed = next(
+                args for args in calls
+                if "lake build --no-build" in str(args)
+            )
+            self.assertLess(calls.index(gate), calls.index(warmed))
+            self.assertLess(calls.index(warmed), calls.index(sealed))
+            self.assertIn("runc", warmed)
+            self.assertIn("8g", warmed)
+            self.assertIn("runsc-hardened", sealed)
+            self.assertIn("--network", warmed)
+            self.assertIn("none", warmed)
+
     def test_candidate_source_digest_ignores_lake_generated_manifest(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
@@ -124,10 +166,22 @@ class CandidateRuntimeBoundaryTests(unittest.TestCase):
                 "/home/autofv/.cache:rw,noexec,nosuid,nodev,size=64m,mode=1777",
                 "--env",
                 "CARGO_NET_OFFLINE=true",
+                "--env",
+                "CI=1",
+                "--env",
+                (
+                    "PATH=/dependencies/toolchain/bin:/opt/autofv-venv/bin:/opt/git/bin:"
+                    "/opt/lean/bin:/opt/rust-bin:/usr/local/bin:/usr/bin:/bin"
+                ),
                 "--mount",
                 (
                     "type=volume,src=run-volume,dst=/candidate,"
                     "volume-subpath=lanes/proof-left-001/work,volume-nocopy"
+                ),
+                "--mount",
+                (
+                    "type=volume,src=run-volume,dst=/dependencies,"
+                    "volume-subpath=dependencies,volume-nocopy,readonly"
                 ),
                 "sha256:" + "1" * 64,
                 "lake",
@@ -135,8 +189,14 @@ class CandidateRuntimeBoundaryTests(unittest.TestCase):
             ),
         )
         mounts = [argv[index + 1] for index, item in enumerate(argv) if item == "--mount"]
-        self.assertEqual(len(mounts), 1)
-        self.assertNotIn("dst=/volume", mounts[0])
+        self.assertEqual(len(mounts), 2)
+        self.assertIn("dst=/candidate", mounts[0])
+        self.assertEqual(
+            mounts[1],
+            "type=volume,src=run-volume,dst=/dependencies,"
+            "volume-subpath=dependencies,volume-nocopy,readonly",
+        )
+        self.assertFalse(any("dst=/volume" in mount for mount in mounts))
         self.assertNotIn("/volume/work/project", argv)
         self.assertNotIn("/volume/evidence", argv)
 
@@ -337,10 +397,15 @@ class SealedAcceptanceBoundaryTests(unittest.TestCase):
             for index, value in enumerate(verify_argv)
             if value == "--mount"
         ]
-        self.assertEqual(len(mounts), 1)
+        self.assertEqual(len(mounts), 2)
         self.assertIn("dst=/candidate", mounts[0])
         self.assertIn("volume-subpath=lanes/accept-", mounts[0])
-        self.assertNotIn("dst=/volume", mounts[0])
+        self.assertEqual(
+            mounts[1],
+            "type=volume,src=run-volume,dst=/dependencies,"
+            "volume-subpath=dependencies,volume-nocopy,readonly",
+        )
+        self.assertFalse(any("dst=/volume" in mount for mount in mounts))
         self.assertFalse(
             any(
                 kind == "docker"
@@ -423,10 +488,15 @@ class ResumeVerificationBoundaryTests(unittest.TestCase):
             for index, value in enumerate(builds[0])
             if value == "--mount"
         ]
-        self.assertEqual(len(mounts), 1)
+        self.assertEqual(len(mounts), 2)
         self.assertIn("dst=/candidate", mounts[0])
         self.assertIn("volume-subpath=lanes/resume-", mounts[0])
-        self.assertNotIn("dst=/volume", mounts[0])
+        self.assertEqual(
+            mounts[1],
+            "type=volume,src=run-volume,dst=/dependencies,"
+            "volume-subpath=dependencies,volume-nocopy,readonly",
+        )
+        self.assertFalse(any("dst=/volume" in mount for mount in mounts))
         self.assertGreaterEqual(
             sum(
                 "autofv-resume-source/v1" in " ".join(argv)

@@ -333,8 +333,16 @@ class PreflightCliTests(unittest.TestCase):
                 for index, item in enumerate(runner_argv[:-1])
                 if item == "--mount"
             ]
-            self.assertEqual(len(mounts), 1)
-            self.assertNotIn("type=bind", mounts[0])
+            self.assertEqual(len(mounts), 2)
+            self.assertEqual(
+                mounts[0], "type=volume,src=preflight-volume,dst=/volume,volume-nocopy"
+            )
+            self.assertEqual(
+                mounts[1],
+                "type=volume,src=preflight-volume,dst=/dependencies,"
+                "volume-subpath=dependencies,volume-nocopy,readonly",
+            )
+            self.assertFalse(any("type=bind" in mount for mount in mounts))
             destroy.assert_called_once_with(run)
             upstream.assert_not_called()
             retained = b"".join(

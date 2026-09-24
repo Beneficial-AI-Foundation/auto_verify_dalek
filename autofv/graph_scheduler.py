@@ -9,6 +9,7 @@ from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, wait
 from pathlib import PurePosixPath
 from typing import Any
 
+from . import probes
 from .contracts import ContractError, canonical_json_bytes
 
 
@@ -170,7 +171,7 @@ def _validate_scheduling_graph(state: _RunState) -> str:
             "immediate_consumer_requirements": _immediate_consumers(graph, node),
             "contract_revision": 0,
             "contract_fingerprint": None,
-            "file": paths[node],
+            "file": probes.proof_source_path(graph, node),
             "block_chain": None,
         }.items():
             target.setdefault(key, value)
@@ -218,7 +219,7 @@ def _validate_dependency_plan(
         seen.add(declaration)
         depends_on = lane.get("depends_on")
         if (
-            lane.get("source_path") != graph["source_paths"][declaration]
+            lane.get("source_path") != probes.proof_source_path(graph, declaration)
             or not isinstance(depends_on, list)
             or any(not isinstance(item, str) for item in depends_on)
             or sorted(depends_on) != sorted(expected_dependencies[declaration])

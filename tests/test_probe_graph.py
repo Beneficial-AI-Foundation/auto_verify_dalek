@@ -38,6 +38,122 @@ class ProbeGraphTests(unittest.TestCase):
         self.rust = json.loads(self.rust_raw)
         self.aeneas = json.loads(self.aeneas_raw)
 
+    def test_prepared_input_binding_uses_external_probe_evidence(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            target = Path(tmp) / "target"
+            shutil.copytree(TARGET, target)
+            manifest = json.loads((target / "autofv.json").read_text())
+            graph = probes.parse_probe_bytes(
+                manifest, RUST_PATH.read_bytes(), AENEAS_PATH.read_bytes()
+            )
+            files = [
+                {
+                    "path": name,
+                    "sha256": hashlib.sha256(raw).hexdigest(),
+                    "size": len(raw),
+                }
+                for name, raw, _mode in worker._runtime._tree_files(target)
+            ]
+            body = {
+                "schema": "preparation-manifest/v1",
+                "mode": "small",
+                "source": {
+                    "repository": "https://example.invalid/source.git",
+                    "revision": "1" * 40,
+                    "tree_sha256": "2" * 64,
+                },
+                "probes": {
+                    name: {
+                        "repository": f"https://example.invalid/{name}.git",
+                        "revision": digit * 40,
+                        "tree_sha256": digit * 64,
+                        "version": "1.0.0",
+                    }
+                    for name, digit in (
+                        ("probe-rust", "3"),
+                        ("probe-aeneas", "4"),
+                        ("probe-lean", "5"),
+                    )
+                },
+                "target_report_sha256": hashlib.sha256(
+                    probes.render_target_report(graph)
+                ).hexdigest(),
+                "probe_identities_sha256": "6" * 64,
+                "roots": graph["frozen_targets"],
+                "closures": {
+                    root: graph["selected_nodes"]
+                    for root in graph["frozen_targets"]
+                },
+                "retained_declarations": sorted(
+                    set(graph["selected_nodes"])
+                    | set(graph["supplied_specs"].values())
+                ),
+                "files": files,
+                "tree_sha256": hashlib.sha256(
+                    experiment.canonical_json_bytes(files)
+                ).hexdigest(),
+                "gates": {
+                    name: "passed"
+                    for name in (
+                        "build",
+                        "provenance",
+                        "reproducibility",
+                        "secret_scan",
+                        "spoiler_scan",
+                        "symlink_scan",
+                    )
+                },
+            }
+            preparation = {
+                **body,
+                "manifest_sha256": hashlib.sha256(
+                    experiment.canonical_json_bytes(body)
+                ).hexdigest(),
+            }
+            preparation_path = Path(tmp) / "preparation.json"
+            preparation_path.write_bytes(
+                experiment.canonical_json_bytes(preparation) + b"\n"
+            )
+            dependency_cache = Path(tmp) / "dependency-cache.tar.zst"
+            dependency_cache.write_bytes(b"test dependency cache")
+
+            observed, observed_graph, receipt, sources = (
+                experiment._load_prepared_inputs(
+                    target.resolve(),
+                    manifest,
+                    preparation_path.resolve(),
+                    RUST_PATH.resolve(),
+                    AENEAS_PATH.resolve(),
+                    dependency_cache.resolve(),
+                    execution_mode="proof_only",
+                )
+            )
+
+            self.assertEqual(observed, preparation)
+            self.assertEqual(observed_graph, graph)
+            self.assertEqual(receipt["execution_mode"], "proof_only")
+            self.assertEqual(
+                receipt["dependency_cache_sha256"],
+                hashlib.sha256(dependency_cache.read_bytes()).hexdigest(),
+            )
+            self.assertEqual(sources["probe-rust"], str(RUST_PATH.resolve()))
+
+    def test_proof_source_path_uses_the_supplied_spec_file(self):
+        graph = {
+            "supplied_specs": {"probe:target": "probe:target_spec"},
+            "source_paths": {
+                "probe:target": "Generated/Funs.lean",
+                "probe:target_spec": "Specs/Target.lean",
+                "probe:helper": "Generated/Funs.lean",
+            },
+        }
+        self.assertEqual(
+            probes.proof_source_path(graph, "probe:target"), "Specs/Target.lean"
+        )
+        self.assertEqual(
+            probes.proof_source_path(graph, "probe:helper"), "Generated/Funs.lean"
+        )
+
     def parse(self, *, rust=None, aeneas=None):
         return probes.parse_probe_bytes(
             self.manifest,

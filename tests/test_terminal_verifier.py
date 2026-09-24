@@ -7,7 +7,7 @@ import unittest
 from pathlib import Path
 from unittest import mock
 
-from autofv import experiment, verifier
+from autofv import experiment, terminal_verifier, verifier
 from tests.test_clean_verifier import (
     REFERENCE,
     TARGET,
@@ -68,6 +68,47 @@ def _prepared_report(*, incomplete=False):
 
 
 class TerminalReportAuthorityTests(unittest.TestCase):
+    def test_real_preparation_shape_maps_rust_roots_and_retained_support(self):
+        state = _terminal_state()
+        graph = copy.deepcopy(state["graph"])
+        rust_root = "probe:crate/1.0/root()"
+        graph["target_report"] = {
+            "declarations": {
+                rust_root: {"declaration": graph["frozen_targets"][0]}
+            }
+        }
+        files = [
+            {"path": "Dir/File.lean", "sha256": "1" * 64, "size": 1},
+            {"path": "Root.lean", "sha256": "2" * 64, "size": 1},
+        ]
+        manifest = _preparation_manifest(state)
+        manifest.update(
+            roots=[rust_root],
+            closures={rust_root: graph["selected_nodes"]},
+            retained_declarations=sorted(
+                set(graph["selected_nodes"])
+                | set(graph["supplied_specs"].values())
+                | {"probe:retained.type"}
+            ),
+            files=files,
+            tree_sha256=_sha256(_canonical(files)),
+        )
+        body = {
+            key: value for key, value in manifest.items()
+            if key != "manifest_sha256"
+        }
+        manifest["manifest_sha256"] = _sha256(_canonical(body))
+        snapshot = _sha256(
+            _canonical(sorted(files, key=lambda item: item["path"]))
+        )
+
+        identity = terminal_verifier._preparation_identity(manifest, graph, snapshot)
+
+        self.assertEqual(
+            identity["preparation_manifest_sha256"], manifest["manifest_sha256"]
+        )
+        self.assertEqual(identity["preparation_tree_sha256"], snapshot)
+
     def test_report_intake_rejects_self_consistent_unauthorized_axioms(self):
         report, run, expected = _prepared_report()
         forged = copy.deepcopy(report)

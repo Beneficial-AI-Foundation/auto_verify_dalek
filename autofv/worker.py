@@ -49,6 +49,7 @@ inspect_lima_instance = _runtime.inspect_lima_instance
 inspect_scored_container = _runtime.inspect_scored_container
 inspect_worker = _runtime.inspect_worker
 lima_host_address = _runtime.lima_host_address
+seed_dependency_cache = _runtime.seed_dependency_cache
 
 
 def control_manifest(
@@ -108,10 +109,10 @@ def prepare_run(
     }
     seed = (
         "mkdir -p /volume/work/project /volume/evidence /volume/accepted "
-        "/volume/logs /volume/lanes /volume/autofv-control && "
+        "/volume/logs /volume/lanes /volume/dependencies /volume/autofv-control && "
         "tar -xf - -C /volume && "
         "chown -R 65532:65532 /volume/work /volume/evidence /volume/accepted "
-        "/volume/logs /volume/lanes && "
+        "/volume/logs /volume/lanes /volume/dependencies && "
         "chmod -R a-w /volume/autofv-control && chmod 0555 /volume/autofv-control"
     )
     git_env = (
@@ -366,6 +367,21 @@ def prepare_lanes(run: dict[str, Any], lanes: list[dict[str, Any]]) -> None:
             _runtime._git(
                 run, "worktree", "add", "--detach", worktree, lane["base_commit"]
             )
+            if isinstance(run.get("dependency_cache_receipt"), dict):
+                _runtime._docker(
+                    *_runtime._runtime_argv(
+                        run["lock"],
+                        run["volume"],
+                        "sh",
+                        "-eu",
+                        "-c",
+                        'mkdir -p "$1/.lake"; '
+                        'test ! -e "$1/.lake/packages"; '
+                        'ln -s /dependencies/packages "$1/.lake/packages"',
+                        "autofv-lane-cache",
+                        worktree,
+                    )
+                )
     if "proof_lanes:prepared" not in run["events"]:
         run["events"].append("proof_lanes:prepared")
 

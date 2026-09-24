@@ -3,9 +3,12 @@
 from __future__ import annotations
 
 import copy
+import hashlib
 import io
 import re
 import secrets
+import shlex
+import stat
 import subprocess
 import tarfile
 from pathlib import Path, PurePosixPath
@@ -19,6 +22,7 @@ from . import (
     terminal_verifier,
     verifier_bundle,
     worker,
+    worker_runtime,
 )
 from .verifier_bundle import (
     INVOCATION_FIELDS,
@@ -65,12 +69,18 @@ def _command_detail(completed: subprocess.CompletedProcess[bytes]) -> str:
     )[-4000:]
 
 
-def _shell(*argv: str, input_bytes: bytes | None = None) -> subprocess.CompletedProcess[bytes]:
-    completed = subprocess.run(
-        ("limactl", "shell", VERIFIER_VM, "--", *argv),
-        input=input_bytes,
-        capture_output=True,
-    )
+def _shell(
+    *argv: str, input_bytes: bytes | None = None, timeout: int | None = None
+) -> subprocess.CompletedProcess[bytes]:
+    try:
+        completed = subprocess.run(
+            ("limactl", "shell", VERIFIER_VM, "--", *argv),
+            input=input_bytes,
+            capture_output=True,
+            timeout=timeout,
+        )
+    except subprocess.TimeoutExpired as exc:
+        raise VerifierInfrastructureError("clean verifier command timed out") from exc
     if completed.returncode:
         detail = _command_detail(completed)
         raise VerifierInfrastructureError(
@@ -79,8 +89,10 @@ def _shell(*argv: str, input_bytes: bytes | None = None) -> subprocess.Completed
     return completed
 
 
-def _docker(*argv: str, input_bytes: bytes | None = None) -> subprocess.CompletedProcess[bytes]:
-    return _shell("sudo", "docker", *argv, input_bytes=input_bytes)
+def _docker(
+    *argv: str, input_bytes: bytes | None = None, timeout: int | None = None
+) -> subprocess.CompletedProcess[bytes]:
+    return _shell("sudo", "docker", *argv, input_bytes=input_bytes, timeout=timeout)
 
 
 def _check_verifier_runtime(lock: dict[str, Any]) -> None:
@@ -121,7 +133,30 @@ def _runtime_argv(
     workdir: str = "/project",
     runtime: str = "runsc-hardened",
     read_only_volume: bool = False,
+    dependency_volume: str | None = None,
 ) -> tuple[str, ...]:
+    dependency_mount = (
+        (
+            "--mount",
+            f"type=volume,src={dependency_volume},dst=/project/dependencies,volume-nocopy,readonly",
+        )
+        if dependency_volume is not None
+        else ()
+    )
+    dependency_env = (
+        (
+            "--env",
+            "CI=1",
+            "--env",
+            (
+                "PATH=/project/dependencies/toolchain/bin:/opt/autofv-venv/bin:"
+                "/opt/git/bin:/opt/lean/bin:/opt/rust-bin:/usr/local/bin:"
+                "/usr/bin:/bin"
+            ),
+        )
+        if dependency_volume is not None
+        else ()
+    )
     return (
         "run",
         "--rm",
@@ -150,11 +185,13 @@ def _runtime_argv(
         "/home/autofv/.cache:rw,noexec,nosuid,nodev,size=64m",
         "--env",
         "CARGO_NET_OFFLINE=true",
+        *dependency_env,
         "--mount",
         (
             f"type=volume,src={volume},dst=/project,volume-nocopy"
             + (",readonly" if read_only_volume else "")
         ),
+        *dependency_mount,
         image,
         *command,
     )
@@ -180,13 +217,234 @@ def compiler_assumptions(lock: dict[str, Any]) -> list[dict[str, str]]:
     ]
 
 
+def _prepared_probe_evidence(run: dict[str, Any]) -> tuple[bytes, bytes]:
+    sources = run.get("prepared_probe_sources")
+    receipt = run.get("prepared_graph_receipt")
+    receipt_fields = {
+        "schema",
+        "execution_mode",
+        "preparation_manifest_sha256",
+        "probe_rust_sha256",
+        "probe_aeneas_sha256",
+        "target_report_sha256",
+        "graph_sha256",
+        "dependency_cache_sha256",
+        "dependency_cache_size",
+        "receipt_sha256",
+    }
+    receipt_body = (
+        {key: value for key, value in receipt.items() if key != "receipt_sha256"}
+        if isinstance(receipt, dict)
+        else {}
+    )
+    preparation = run.get("preparation_manifest")
+    if (
+        not isinstance(sources, dict)
+        or set(sources) != {"probe-rust", "probe-aeneas", "dependency-cache"}
+        or not isinstance(receipt, dict)
+        or set(receipt) != receipt_fields
+        or receipt.get("schema") != "autofv-prepared-graph-binding/v1"
+        or receipt.get("receipt_sha256") != _sha256(_canonical_bytes(receipt_body))
+        or not isinstance(preparation, dict)
+        or receipt.get("preparation_manifest_sha256")
+        != preparation.get("manifest_sha256")
+        or receipt.get("execution_mode") != run.get("execution_mode")
+        or any(
+            receipt.get(name) != run.get(name)
+            for name in (
+                "probe_rust_sha256",
+                "probe_aeneas_sha256",
+                "graph_sha256",
+            )
+        )
+    ):
+        raise VerifierError("clean verifier prepared probe binding is missing")
+    raw_by_name = {}
+    for name in ("probe-rust", "probe-aeneas"):
+        try:
+            source = Path(sources[name])
+            if source.is_symlink():
+                raise OSError("symlinked prepared probe evidence")
+            path = source.resolve(strict=True)
+            before = path.stat()
+            if not path.is_file() or before.st_size > MAX_MEMBER_BYTES:
+                raise OSError("unsafe prepared probe evidence")
+            if any(
+                path.is_relative_to(Path(run[root]).resolve(strict=True))
+                for root in ("input_root", "run_root")
+                if isinstance(run.get(root), str)
+            ):
+                raise OSError("prepared probe evidence crossed a run boundary")
+            raw = path.read_bytes()
+            after = path.stat()
+        except (OSError, TypeError) as exc:
+            raise VerifierError("clean verifier prepared probe evidence is invalid") from exc
+        if before != after or len(raw) != before.st_size:
+            raise VerifierError("clean verifier prepared probe evidence changed")
+        expected = receipt.get(name.replace("-", "_") + "_sha256")
+        if _sha256(raw) != expected:
+            raise VerifierError("clean verifier prepared probe identity mismatch")
+        raw_by_name[name] = raw
+    try:
+        graph = probes.parse_probe_bytes(
+            run["manifest"],
+            raw_by_name["probe-rust"],
+            raw_by_name["probe-aeneas"],
+        )
+    except (KeyError, probes.ProbeError) as exc:
+        raise VerifierError("clean verifier prepared probe evidence is invalid") from exc
+    if (
+        graph["graph_sha256"] != receipt["graph_sha256"]
+        or _sha256(probes.render_target_report(graph))
+        != receipt["target_report_sha256"]
+    ):
+        raise VerifierError("clean verifier prepared graph identity mismatch")
+    return raw_by_name["probe-rust"], raw_by_name["probe-aeneas"]
+
+
+def _prepared_dependency_cache(run: dict[str, Any]) -> Path:
+    sources = run.get("prepared_probe_sources")
+    prepared = run.get("prepared_graph_receipt")
+    receipt = run.get("dependency_cache_receipt")
+    if (
+        not isinstance(sources, dict)
+        or not isinstance(prepared, dict)
+        or not isinstance(receipt, dict)
+        or set(receipt) != {"schema", "sha256", "size", "receipt_sha256"}
+        or receipt.get("schema") != "autofv-dependency-cache-binding/v1"
+        or receipt.get("receipt_sha256")
+        != _sha256(
+            _canonical_bytes(
+                {key: value for key, value in receipt.items() if key != "receipt_sha256"}
+            )
+        )
+        or receipt.get("sha256") != prepared.get("dependency_cache_sha256")
+        or receipt.get("size") != prepared.get("dependency_cache_size")
+    ):
+        raise VerifierError("clean verifier dependency cache binding is invalid")
+    try:
+        source = Path(sources["dependency-cache"])
+        if source.is_symlink():
+            raise OSError("symlinked dependency cache")
+        path = source.resolve(strict=True)
+        before = path.stat()
+        digest = hashlib.sha256()
+        with path.open("rb") as stream:
+            while chunk := stream.read(8 * 1024 * 1024):
+                digest.update(chunk)
+        after = path.stat()
+    except (KeyError, OSError, TypeError) as exc:
+        raise VerifierError("clean verifier dependency cache is invalid") from exc
+    if (
+        before != after
+        or not stat.S_ISREG(before.st_mode)
+        or before.st_size != receipt["size"]
+        or digest.hexdigest() != receipt["sha256"]
+    ):
+        raise VerifierError("clean verifier dependency cache identity mismatch")
+    return path
+
+
+def _seed_verifier_dependency_cache(
+    run: dict[str, Any], image: str, volume: str,
+    repository_bundle: bytes, base_commit: str,
+) -> None:
+    archive = _prepared_dependency_cache(run)
+    _docker("volume", "create", volume)
+    _docker(
+        "run", "--rm", "--pull", "never", "--network", "none",
+        "--user", "0:0", "--mount",
+        f"type=volume,src={volume},dst=/packages,volume-nocopy",
+        image, "sh", "-eu", "-c", f"chown {worker.AGENT_UID} /packages",
+    )
+    extract = _runtime_argv(
+        image, volume, "tar", "-xf", "-", "-C", "/project"
+    )
+    command = "zstd -dc | " + shlex.join(("sudo", "docker", *extract[:2], "-i", *extract[2:]))
+    try:
+        with archive.open("rb") as stream:
+            completed = subprocess.run(
+                ("limactl", "shell", VERIFIER_VM, "--", "sh", "-eu", "-c", command),
+                stdin=stream,
+                capture_output=True,
+            )
+    except OSError as exc:
+        raise VerifierInfrastructureError(
+            "clean verifier dependency cache seed failed"
+        ) from exc
+    if completed.returncode:
+        raise VerifierInfrastructureError(
+            "clean verifier dependency cache seed failed: "
+            + _command_detail(completed)
+        )
+    warm_volume = f"{volume}-warm"
+    _docker("volume", "create", warm_volume)
+    try:
+        def warm_argv(image: str, project_volume: str, *command: str, **options: Any) -> tuple[str, ...]:
+            args = list(_runtime_argv(image, project_volume, *command, **options))
+            args[args.index(image):args.index(image)] = [
+                "--env", "CI=1", "--env", "LEAN_NUM_THREADS=1", "--env",
+                "PATH=/project/dependencies/toolchain/bin:/opt/autofv-venv/bin:"
+                "/opt/git/bin:/opt/lean/bin:/opt/rust-bin:/usr/local/bin:/usr/bin:/bin",
+                "--mount",
+                f"type=volume,src={volume},dst=/project/dependencies,volume-nocopy",
+            ]
+            return tuple(args)
+
+        axiom_audit.checkout_volume(
+            image=image,
+            volume=warm_volume,
+            repository_bundle=repository_bundle,
+            commit=base_commit,
+            runtime="runc",
+            docker=_docker,
+            runtime_argv=warm_argv,
+            seed_file=_seed_file,
+        )
+        _docker(*warm_argv(
+            image, warm_volume, "sh", "-eu", "-c",
+            worker_runtime.offline_mathlib_cache_script("/project/dependencies"),
+            workdir="/project/repo", runtime="runc",
+        ))
+        _docker(*warm_argv(
+            image, warm_volume, "lake", "build", "--no-build", "Mathlib",
+            workdir="/project/repo", runtime="runc",
+        ), timeout=120)
+        warm = list(warm_argv(
+            image, warm_volume, "sh", "-eu", "-c",
+            "export LEAN_NUM_THREADS=1; lake build",
+            workdir="/project/repo", runtime="runc",
+        ))
+        warm[warm.index("--memory") + 1] = "8g"
+        warm_name = f"{warm_volume}-build"
+        warm[2:2] = ["--name", warm_name]
+        try:
+            _docker(*warm, timeout=540)
+        finally:
+            try:
+                _docker("rm", "-f", warm_name)
+            except VerifierInfrastructureError as exc:
+                if "No such container" not in str(exc):
+                    raise
+        _docker(*warm_argv(
+            image, warm_volume, "sh", "-eu", "-c",
+            "export LEAN_NUM_THREADS=1; lake build --no-build",
+            workdir="/project/repo", runtime="runc",
+        ), timeout=150)
+    finally:
+        _docker("volume", "rm", "-f", warm_volume)
+
+
 def _run_bundle(run: dict[str, Any], state: dict[str, Any]) -> bytes:
     evidence = Path(run["evidence_dir"])
-    try:
-        rust = (evidence / "probe-rust.json").read_bytes()
-        aeneas = (evidence / "probe-aeneas.json").read_bytes()
-    except OSError as exc:
-        raise VerifierError("clean verifier probe evidence is missing") from exc
+    if isinstance(run.get("preparation_manifest"), dict):
+        rust, aeneas = _prepared_probe_evidence(run)
+    else:
+        try:
+            rust = (evidence / "probe-rust.json").read_bytes()
+            aeneas = (evidence / "probe-aeneas.json").read_bytes()
+        except OSError as exc:
+            raise VerifierError("clean verifier probe evidence is missing") from exc
     accepted_commit = run["accepted"]["accepted_commit"]
     repository = worker.verification_repository(run, accepted_commit)
     if repository is None:
@@ -411,11 +669,27 @@ def _clean_worker_checks(
     expected_axioms = axiom_audit.expected_inventory(state, reference)
     artifacts = axiom_audit.olean_paths(state["graph"])
     created = []
+    dependency_volume = (
+        f"autofv-verify-dependencies-{nonce}"
+        if isinstance(run.get("preparation_manifest"), dict)
+        else None
+    )
+
+    def runtime_argv(*args, **kwargs):
+        return _runtime_argv(
+            *args, dependency_volume=dependency_volume, **kwargs
+        )
 
     try:
         for isolated_volume in (audit_volume, volume):
             _docker("volume", "create", isolated_volume)
             created.append(isolated_volume)
+        if dependency_volume is not None:
+            created.append(dependency_volume)
+            _seed_verifier_dependency_cache(
+                run, image, dependency_volume,
+                members["accepted/repository.bundle"], state["base_commit"],
+            )
         baseline_identities = axiom_audit.prepare_auditor(
             image=image,
             volume=audit_volume,
@@ -427,7 +701,7 @@ def _clean_worker_checks(
             reference=reference,
             runtime=runtime,
             docker=_docker,
-            runtime_argv=_runtime_argv,
+            runtime_argv=runtime_argv,
             seed_file=_seed_file,
             permitted_incomplete_accepted=permitted_incomplete_accepted,
         )
@@ -438,11 +712,11 @@ def _clean_worker_checks(
             commit=invocation["accepted_commit"],
             runtime=runtime,
             docker=_docker,
-            runtime_argv=_runtime_argv,
+            runtime_argv=runtime_argv,
             seed_file=_seed_file,
         )
         commit = _docker(
-            *_runtime_argv(
+            *runtime_argv(
                 image,
                 volume,
                 "git",
@@ -453,7 +727,7 @@ def _clean_worker_checks(
             )
         ).stdout.decode().strip()
         archive = _docker(
-            *_runtime_argv(
+            *runtime_argv(
                 image,
                 volume,
                 "git",
@@ -465,7 +739,7 @@ def _clean_worker_checks(
             )
         ).stdout
         base_archive = _docker(
-            *_runtime_argv(
+            *runtime_argv(
                 image,
                 volume,
                 "git",
@@ -477,7 +751,7 @@ def _clean_worker_checks(
             )
         ).stdout
         changed = _docker(
-            *_runtime_argv(
+            *runtime_argv(
                 image,
                 volume,
                 "git",
@@ -490,7 +764,7 @@ def _clean_worker_checks(
             )
         ).stdout.decode().splitlines()
         _docker(
-            *_runtime_argv(
+            *runtime_argv(
                 image,
                 volume,
                 "sh",
@@ -502,7 +776,7 @@ def _clean_worker_checks(
             )
         )
         _docker(
-            *_runtime_argv(
+            *runtime_argv(
                 image,
                 volume,
                 *run["manifest"]["verify"],
@@ -510,33 +784,39 @@ def _clean_worker_checks(
                 runtime=runtime,
             )
         )
-        final_rust = _probe_output(
-            image,
-            volume,
-            "probe-rust",
-            "extract",
-            "/project/repo",
-            "--with-locations",
-            "--with-public-api",
-            runtime=runtime,
+        if isinstance(run.get("preparation_manifest"), dict):
+            final_rust = members["evidence/probe-rust.json"]
+            final_aeneas = members["evidence/probe-aeneas.json"]
+        else:
+            final_rust = _probe_output(
+                image,
+                volume,
+                "probe-rust",
+                "extract",
+                "/project/repo",
+                "--with-locations",
+                "--with-public-api",
+                runtime=runtime,
+            )
+            _seed_file(
+                image,
+                volume,
+                "repo/functions.json",
+                worker.probe_bridge(final_rust, run["manifest"]),
+                runtime=runtime,
+            )
+            final_aeneas = _probe_output(
+                image,
+                volume,
+                "probe-aeneas",
+                "extract",
+                "/project/repo",
+                "--with-public-api",
+                runtime=runtime,
+            )
+        final_graph = probes.parse_probe_bytes(
+            run["manifest"], final_rust, final_aeneas
         )
-        _seed_file(
-            image,
-            volume,
-            "repo/functions.json",
-            worker.probe_bridge(final_rust, run["manifest"]),
-            runtime=runtime,
-        )
-        final_aeneas = _probe_output(
-            image,
-            volume,
-            "probe-aeneas",
-            "extract",
-            "/project/repo",
-            "--with-public-api",
-            runtime=runtime,
-        )
-        final_graph = probes.parse_probe_bytes(run["manifest"], final_rust, final_aeneas)
         graph_matches = final_graph["graph_sha256"] == state["graph"]["graph_sha256"]
 
         program = axiom_audit.reference_program(reference)
@@ -548,7 +828,7 @@ def _clean_worker_checks(
             runtime=runtime,
         )
         _docker(
-            *_runtime_argv(
+            *runtime_argv(
                 image,
                 volume,
                 "lake",
@@ -573,7 +853,7 @@ def _clean_worker_checks(
             runtime=runtime,
             max_artifact_bytes=MAX_MEMBER_BYTES,
             docker=_docker,
-            runtime_argv=_runtime_argv,
+            runtime_argv=runtime_argv,
             seed_file=_seed_file,
             permitted_incomplete_accepted=permitted_incomplete_accepted,
         )

@@ -1325,14 +1325,11 @@ def main():
                 "isolation": dict(isolation,
                                   work=os.path.relpath(work, REPO))}
         if not args.no_isolation:
-            cfg, seeded = agentproc.make_config_dir(
-                os.path.join(run_dir, f"slot{i}"))
-            if not seeded and not any(
-                    k in env for k in ("ANTHROPIC_API_KEY",
-                                       "ANTHROPIC_AUTH_TOKEN")):
-                sys.exit("no credentials: neither ~/.claude/.credentials.json "
-                         "nor ANTHROPIC_API_KEY — the isolated agent cannot "
-                         "authenticate")
+            try:
+                cfg, seeded = agentproc.make_config_dir(
+                    os.path.join(run_dir, f"slot{i}"))
+            except RuntimeError as e:
+                sys.exit(str(e))
             slot["env"] = agentproc.isolated_env(env, cfg)
             slot["isolation"].update({
                 "config_dir": os.path.relpath(cfg, REPO),

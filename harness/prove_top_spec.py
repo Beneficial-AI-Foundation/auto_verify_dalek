@@ -749,9 +749,10 @@ def main():
 
     env, prefix, isolation = os.environ.copy(), None, {"isolated": not args.no_isolation}
     if not args.no_isolation:
-        cfg, seeded = agentproc.make_config_dir(os.path.join(run_dir, "slot0"))
-        if not seeded and not any(k in env for k in ("ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN")):
-            sys.exit("no credentials: neither ~/.claude/.credentials.json nor ANTHROPIC_API_KEY")
+        try:
+            cfg, seeded = agentproc.make_config_dir(os.path.join(run_dir, "slot0"))
+        except RuntimeError as e:
+            sys.exit(str(e))
         env = agentproc.isolated_env(env, cfg)
         isolation["credentials_seeded"] = seeded
         if args.sandbox == "bwrap":

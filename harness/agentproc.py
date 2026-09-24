@@ -146,30 +146,42 @@ def kill_wire_proxy():
 CREDENTIALS_FILE = ".credentials.json"
 
 
+# Auth policy: the isolated agent authenticates ONLY via the operator's
+# Anthropic-account OAuth credentials file. API keys are not an accepted
+# fallback: make_config_dir refuses to proceed without the credentials file,
+# and isolated_env strips ANTHROPIC_API_KEY / ANTHROPIC_AUTH_TOKEN so a key
+# in the operator's shell can never reach the child.
+API_KEY_VARS = ("ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN")
+
+
 def make_config_dir(run_dir):
     """Create <run_dir>/claude_config holding only the credentials file.
-    Returns (config_dir, seeded: bool)."""
+    Returns (config_dir, seeded: bool); seeded is always True on return.
+    Raises RuntimeError when the operator has no OAuth credentials file."""
     real_home = os.environ.get("CLAUDE_CONFIG_DIR") \
         or os.path.join(os.path.expanduser("~"), ".claude")
+    src = os.path.join(real_home, CREDENTIALS_FILE)
+    if not os.path.isfile(src):
+        raise RuntimeError(
+            f"no Anthropic-account credentials at {src}; run `claude login` "
+            "first (API keys are not accepted by this harness)")
     cfg = os.path.join(run_dir, "claude_config")
     os.makedirs(cfg, exist_ok=True)
     os.chmod(cfg, 0o700)  # holds a credentials copy; gitignored too
-    src = os.path.join(real_home, CREDENTIALS_FILE)
-    seeded = False
-    if os.path.isfile(src):
-        shutil.copy2(src, os.path.join(cfg, CREDENTIALS_FILE))
-        os.chmod(os.path.join(cfg, CREDENTIALS_FILE), 0o600)
-        seeded = True
-    return cfg, seeded
+    shutil.copy2(src, os.path.join(cfg, CREDENTIALS_FILE))
+    os.chmod(os.path.join(cfg, CREDENTIALS_FILE), 0o600)
+    return cfg, True
 
 
 def isolated_env(base_env, config_dir):
     """Copy of base_env with every CLAUDE* variable removed (the driver may
     itself be running inside an interactive Claude Code session, whose
     CLAUDECODE / CLAUDE_CODE_SESSION_ID / messaging-socket vars would link
-    the child to it) and CLAUDE_CONFIG_DIR pointing at the fresh dir.
-    ANTHROPIC_* (API key / wire-proxy base URL) is kept."""
-    env = {k: v for k, v in base_env.items() if not k.startswith("CLAUDE")}
+    the child to it), API-key variables removed (account OAuth is the only
+    permitted auth), and CLAUDE_CONFIG_DIR pointing at the fresh dir.
+    ANTHROPIC_BASE_URL (wire proxy) is kept."""
+    env = {k: v for k, v in base_env.items()
+           if not k.startswith("CLAUDE") and k not in API_KEY_VARS}
     env["CLAUDE_CONFIG_DIR"] = config_dir
     return env
 

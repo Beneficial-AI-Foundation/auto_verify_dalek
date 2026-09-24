@@ -5,6 +5,7 @@ Released under Apache 2.0 license as described in the file LICENSE.
 import Curve25519Dalek.Funs
 import Curve25519Dalek.Math.Basic
 import Curve25519Dalek.Specs.Backend.Serial.U64.Field.FieldElement51.Reduce
+import Curve25519Dalek.Specs.Backend.Serial.U64.Field.FieldElement51.Sub
 import Mathlib.Data.Nat.ModEq
 
 open Aeneas Aeneas.Std Result Aeneas.Std.WP
@@ -19,6 +20,8 @@ theorem sub_assign_spec (self _rhs : backend.serial.u64.field.FieldElement51)
     sub_assign self _rhs ⦃ (result : backend.serial.u64.field.FieldElement51) =>
       (∀ i < 5, result[i]!.val < 2 ^ 52) ∧
       (Field51_as_Nat result + Field51_as_Nat _rhs) % p = Field51_as_Nat self % p ⦄ := by
-  sorry
+  unfold sub_assign
+  progress as ⟨result, hresult1, hresult2⟩
+  exact ⟨hresult1, hresult2⟩
 
 end curve25519_dalek.backend.serial.u64.field.FieldElement51.Insts.CoreOpsArithSubAssignSharedAFieldElement51

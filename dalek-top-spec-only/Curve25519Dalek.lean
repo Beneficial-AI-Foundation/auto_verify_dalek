@@ -24,6 +24,7 @@ import Curve25519Dalek.Specs.Backend.Serial.U64.Field.FieldElement51.FromBytes
 import Curve25519Dalek.Specs.Backend.Serial.U64.Field.FieldElement51.FromLimbs
 import Curve25519Dalek.Specs.Backend.Serial.U64.Field.FieldElement51.ONE
 import Curve25519Dalek.Specs.Backend.Serial.U64.Field.FieldElement51.Reduce
+import Curve25519Dalek.Specs.Backend.Serial.U64.Field.FieldElement51.Sub
 import Curve25519Dalek.Specs.Backend.Serial.U64.Field.FieldElement51.SubAssign
 import Curve25519Dalek.Specs.Backend.Serial.U64.Field.FieldElement51.ToBytes
 import Curve25519Dalek.Specs.Backend.Serial.U64.Field.FieldElement51.ZERO

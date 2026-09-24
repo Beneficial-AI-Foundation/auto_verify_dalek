@@ -119,6 +119,77 @@ rebuilt `.olean` counted as an out-of-scope edit; the rollback then crashed
 decoding the binary. Fixed by writing `.gitignore` (`.lake/`) into the slot
 before sealing. No ledger record for that attempt.
 
+### 2026-09-21 … 09-24 — `FieldElement51.as_bytes_spec` — not proved (3 runs)
+
+Closure: `reduce.LOW_51_BIT_MASK` → `reduce` → `to_bytes` → `as_bytes_spec`.
+Upstream human proof (`~/curve25519-dalek-lean-verify`): Reduce.lean 105
+lines (`maxHeartbeats 500000`), ToBytes.lean 711 lines (`maxHeartbeats
+1600000`, 10 helper lemmas), AsBytes.lean 33 lines (`unfold as_bytes;
+step*`). `to_bytes` is ~85% of the work. All runs claude-sonnet-5, joint
+mode. Full post-mortem of the second run:
+[RUN-2026-09-22-as_bytes-analysis.md](RUN-2026-09-22-as_bytes-analysis.md).
+
+| run | limits | outcome | what happened |
+|---|---|---|---|
+| 09-21 14:20 | 3 × 900 s | `agent_error: deadline` | at the time a deadline kill was an agent error, no gate, no resume; 15 min is far too short for this closure |
+| 09-22 08:31 | 5 × 3600 s | `rejected_kernel_budget` after r3 | r1 Reduce.lean done (4 `@[progress]`, 0 sorry); r2 `to_bytes_spec` ~170 `progress` steps, final `omega` fails; r3 raises `maxHeartbeats` to 20000000, gate build killed at 1200 s, run ends (kernel budget was terminal) |
+| 09-24 07:05 | 5 × 3600 s | `rejected_scope` after r1 | `reduce` seeded from the 09-22 partials; agent writes 8 helper lemmas, no `to_bytes_spec` yet; leaves `scratch_omega_test.lean` at the slot root → scope violation, run ends after 1 of 5 rounds |
+
+**Difficulties met, in the order they bit**
+
+1. **Budget is not weighted by difficulty.** Steps run in dependency order
+   with equal standing; `reduce` took 40 min of r1 and `to_bytes` got the
+   remainder. Fix so far: `reduce` specs hand-published from the 09-22
+   partials into the bundle (`internal_specs.json`, commit d0d8cab), so the
+   plan is now `to_bytes` + top only.
+2. **Feedback carried no location.** `rejected_build` kept only the last
+   4000 chars of the build output; for r2 that was the `omega`
+   counterexample listing, the `error: file:line:col` header was cut off,
+   and the agent got "lake build fails". Fixed (74fe138, 5945709): the gate
+   parses `error:` lines (≤3 per file, 8 total), classifies
+   resource / omega_failed / other, and the resumed session gets locations
+   plus a two-sentence hint per kind.
+3. **`omega` / `scalar_tac` over the full context.** After ~170 `progress`
+   steps the context holds ~400 hypotheses, many with `/ 2^51`, `% 2^51`;
+   one `omega` at the end of a 300-line theorem either times out or returns
+   a spurious counterexample (atoms like `((a.set i x).set j y)[k]!` are
+   opaque to it). `maxHeartbeats` is charged per declaration, so that one
+   call also times out the 170 steps before it. Manual probe: with
+   `clear * - …` the same `omega` returns in 54 s; the array-of-32-`set`s
+   value lemma alone takes 4.5 s. Fixed in the prompt (b0519c0, bfffb7d):
+   PROOF_SKETCH says `clear * -` first or split into standalone lemmas, and
+   do not raise `maxHeartbeats`.
+4. **Raising `maxHeartbeats` looked like a fix to the agent.** Lean's own
+   error text suggests it. Result: its build stopped reporting the timeout,
+   the gate's 1200 s wall clock killed the build instead. Fixed: the gate
+   reports `maxHeartbeats` values the edit introduced and tells the agent
+   to revert; `rejected_kernel_budget` now resumes with the unfinished
+   modules instead of ending the run (4f4a569).
+5. **Scratch files.** The agent tested an `omega` in `scratch_omega_test.lean`
+   at the slot root (could not even run it: `lake env lean` is denied),
+   deleted it, wrote it again, forgot it. Any new file was `rejected_scope`,
+   a terminal verdict. Fixed (cce4ea6): the gate deletes created files,
+   reports them in the feedback and continues; prompts say "Do NOT create
+   files".
+6. **Waiting on its own slow builds.** In the 09-24 run a 37-atom `omega`
+   in `pack_bytes_nat` made `lake build` of ToBytes.lean run past 590 s;
+   the agent polled background builds for ~50 of its 60 min and made 9
+   edits. It did decide to split the lemma (07:48) but never saw the result.
+   PROOF_SKETCH now says: a build past ~5 min means the lemma is too heavy,
+   split it, do not wait (cce4ea6). No wall clock on the agent's own build
+   exists (`Bash(lake build*)` allows no `timeout` prefix).
+7. **Accounting gaps under deadline kills.** A round killed at the deadline
+   has no `result` event: `num_turns` is None and `cache_creation_tokens`
+   is 0, so the bloat reset (200k) never fires and a 5-round session only
+   grows. Not fixed.
+
+State after the third run: `reduce` in the bundle; `to_bytes_spec` never
+compiled in any run; `as_bytes_spec` never attempted. Both 09-22 and 09-24
+partials have the agent's ToBytes.lean drafts
+(`ledger/runs/topspec_2026-09-2{2,4}T*/partials/attempt-1/files/`); the
+09-24 draft has the lemma structure the upstream proof uses, the 09-22 one
+is a single 300-line theorem and should not be reused.
+
 ## Bottom-up mode (2026-09-18)
 
 Since 2026-09-21 `--bottom-up` alone runs the *joint* mode of
@@ -169,7 +240,11 @@ consecutive steps on that file.
 
 ## Next
 
-Configured in `harness/exp.sh`: `identity_spec`, bottom-up, 4 steps
-(3 trivial-ish internal specs, then structure + `Field51_as_Nat`). Then
-`FieldElement51 ... sub_assign_spec` (bottom-up: `LOW_51_BIT_MASK`,
-`reduce`, `sub`, first with limb arithmetic and Math lemmas).
+Configured in `harness/exp.sh`: `as_bytes_spec` again with `reduce`
+seeded, 5 × 3600 s, all fixes above in place. Estimated 4–5 in 10.
+Easier multi-callee targets for checking the joint loop itself (upstream
+proof sizes, lines): `RistrettoPoint.conditional_select_spec`
+(FieldElement51.conditional_select 58 → EdwardsPoint.conditional_select 50 →
+top 36), `sub_assign_spec` (sub 166 → top 41). Three `conditional_select`
+tops share the FieldElement51 callee: once one is published the other two
+have no internal step left.

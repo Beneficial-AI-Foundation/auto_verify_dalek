@@ -92,6 +92,14 @@ class FeedbackMessageTests(unittest.TestCase):
         self.assertIn("modules not finished: " + driver.path_to_module(TOBYTES), diag)
         self.assertIn("raising it is never the fix", diag)
 
+    def test_removed_files_are_reported(self):
+        detail = {"removed_new_files": ["scratch_omega_test.lean"],
+                  "errors": [], "gate_build_seconds": 3.0}
+        msg = driver.feedback_message("rejected_sorry_remains", detail)
+        self.assertIn("deleted file(s) you created outside the allowlist: "
+                      "scratch_omega_test.lean", msg)
+        self.assertIn("Do not create files", msg)
+
     def test_kernel_budget_is_feedback(self):
         detail = {"gate_build_seconds": 1200.1, "build_timeout": 1200,
                   "unfinished": ["Top"], "errors": [], "deadline_exhausted": True}

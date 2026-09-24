@@ -404,7 +404,10 @@ A session reset starts a fresh context with the original prompt plus a compact
 round history (edits stay in the file). Policy violations (scope, forbidden
 attribute, sorry migration, trust-base) abort at once; a kernel-budget
 timeout resumes like a failing build, with the unfinished modules as
-feedback (2026-09-24, after the as_bytes run died on its first one). No
+feedback (2026-09-24, after the as_bytes run died on its first one). A file
+the agent created outside the allowlist is not a scope violation: the gate
+deletes it, reports it in the feedback and carries on (2026-09-24, after a
+scratch file ended a run in round 1). No
 outcome is discarded: timeouts, budget exhaustion and checker failures are
 ledger records like any other. Unlike CryptoProver there is no separate
 whole-target clock: a round is one agent process with a fixed slice, and the

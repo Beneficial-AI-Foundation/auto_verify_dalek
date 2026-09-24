@@ -75,6 +75,20 @@ class JointGateTests(unittest.TestCase):
         self.assertEqual(outcome, "rejected_scope")
         self.assertEqual(detail["outside"], ["Other.lean"])
 
+    def test_new_file_is_deleted_and_reported_not_fatal(self):
+        stray = os.path.join(self.work, "scratch_omega_test.lean")
+        with open(stray, "w") as fh:
+            fh.write("example : True := trivial\n")
+        os.makedirs(os.path.join(self.work, "tmpdir"))
+        with open(os.path.join(self.work, "tmpdir", "x.lean"), "w") as fh:
+            fh.write("-- stray\n")
+        outcome, detail = self._run_gate()
+        self.assertEqual(outcome, "accepted")
+        self.assertEqual(sorted(detail["removed_new_files"]),
+                         ["scratch_omega_test.lean", "tmpdir/"])
+        self.assertFalse(os.path.exists(stray))
+        self.assertFalse(os.path.exists(os.path.join(self.work, "tmpdir")))
+
     def test_sorry_migration_outside_batch_is_rejected(self):
         with open(os.path.join(self.work, "Top.lean"), "a") as fh:
             fh.write("-- proof\n")

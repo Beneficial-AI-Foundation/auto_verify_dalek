@@ -30,6 +30,7 @@ proxy — ported from CryptoProver run.py). Multi-round policy here:
 
 Gate stack per attempt (all must pass to accept):
   a. scope: `git status --porcelain` shows changes ONLY in the target file
+     (files the agent created are deleted and reported, not fatal)
   b. no new `axiom`, `@[implemented_by]`, `@[extern]` in the changed file
      (the native_decide hijack path — plan.md §4 policy)
   c. `lake build` exits 0 within --build-timeout (default 1200s; a
@@ -109,7 +110,7 @@ FORBIDDEN_RE = re.compile(r"@\[\s*(implemented_by|extern)\b|^\s*axiom\s", re.M)
 PROMPT = """Fill the `sorry` in declaration `{decl}` in {path} (currently near line {line}).
 
 Rules — violations are auto-rejected by the harness:
-- Edit ONLY {path}. No other file.
+- Edit ONLY {path}. No other file. Do NOT create files (no scratch files).
 - Do NOT change the statement of `{decl}` or any other declaration; replace only its `sorry` with a proof.
 - Do NOT add `axiom` declarations or `@[implemented_by]` / `@[extern]` attributes.
 - `native_decide` IS allowed.
@@ -291,6 +292,11 @@ def diagnostics_block(outcome, detail):
                      + ("; modules not finished: " + ", ".join(stuck)
                         if stuck else "") + ".")
         hints.append(KERNEL_BUDGET_HINT)
+    removed = detail.get("removed_new_files") or []
+    if removed:
+        lines.append("The harness deleted file(s) you created outside the "
+                     "allowlist: " + ", ".join(removed) + ". Do not create "
+                     "files; test lemmas inside the allowed files.")
     raised = detail.get("heartbeats_raised") or []
     if raised:
         lines.append("Your edit sets `maxHeartbeats` to "
@@ -920,23 +926,38 @@ def gate(work, target_path, before_counts, build_timeout=BUILD_TIMEOUT,
                                   "target_path": target_path,
                                   "editable_paths": list(editable_paths)}
     mod, new = changed_files(work)
-    outside = (set(mod) | set(new)) - editable_set
-    # Joint skeletons are created before the sealed baseline. Any file first
-    # appearing during the agent session is therefore outside the contract.
-    if new or outside:
+    outside = set(mod) - editable_set
+    # Editing a file outside the allowlist is a scope violation: it needs a
+    # rollback, so the target ends here.
+    if outside:
         return "rejected_scope", {"modified": mod, "new": new,
                                   "outside": sorted(outside),
                                   "editable_paths": list(editable_paths)}
+    # Joint skeletons are created before the sealed baseline, so any file
+    # first appearing during the session is the agent's (a scratch file,
+    # 2026-09-24 as_bytes r1). Legitimate work cannot live there — the
+    # allowlist is the whole contract — so the gate deletes it, records it,
+    # and carries on; if an editable file imports it the build fails and
+    # the feedback says why (CryptoProver's frozen-edit handling).
+    removed = []
+    for f in new:
+        full = os.path.join(work, f)
+        if os.path.isdir(full):
+            shutil.rmtree(full)
+        else:
+            os.remove(full)
+        removed.append(f)
+    b0 = {"removed_new_files": removed} if removed else {}
     added = ""
     if mod:  # scan added lines in every changed allowlisted file
         diff = sh(["git", "diff", "--unified=0", "--", *sorted(mod)], work).stdout
         added = "\n".join(l[1:] for l in diff.splitlines()
                           if l.startswith("+") and not l.startswith("+++"))
         if FORBIDDEN_RE.search(added):
-            return "rejected_forbidden_attr", {}
+            return "rejected_forbidden_attr", {**b0}
     rc, after, build_s, build_out = build_sorry_counts(
         work, build_timeout, include_output=True)
-    b = {"gate_build_seconds": build_s}
+    b = {**b0, "gate_build_seconds": build_s}
     raised = heartbeat_raises(added)
     if raised:  # diagnostics only; the feedback tells the agent to revert
         b["heartbeats_raised"] = raised

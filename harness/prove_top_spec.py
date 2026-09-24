@@ -376,6 +376,9 @@ How a `@[progress]` proof goes here (Aeneas + this project):
   the step into its own lemma.
 - `maxHeartbeats` is per declaration, not per tactic. Do not raise it; split
   the proof.
+- A `lake build` of your file that runs past ~5 minutes means the lemma you
+  just wrote is too heavy (an `omega` over ~15+ atoms, say). Do not wait for
+  it; split the lemma.
 - Where things are: Aeneas lemmas in
   `.lake/packages/aeneas/backends/lean/Aeneas/Std/` (`Scalar/`, `Array/`,
   `WP.lean`); project helpers in `Curve25519Dalek/Aux.lean` and
@@ -400,7 +403,8 @@ statement so it is strong enough for them and for the final goal (bounds and
 the `as_Nat`-style value equations the goal needs).
 {available}{sketch}
 Rules — violations are auto-rejected by the harness:
-- Edit ONLY {path}. No other file. Adding `import` lines to it is fine.
+- Edit ONLY {path}. No other file. Do NOT create files (no scratch files);
+  test lemmas inside {path}. Adding `import` lines to it is fine.
 - The file must end up containing at least one fully proved theorem whose
   statement mentions `{fn}` ({attr_rule}). Helper lemmas in the same
   file are fine. The file's `sorry` warning count must not increase: your new
@@ -449,7 +453,8 @@ Fill the top theorem's existing `sorry`, add required imports inside the
 allowlist, and run `lake build` until the complete project succeeds.
 {available}{sketch}
 Rules — violations are auto-rejected by the harness:
-- Edit only the exact files in the allowlist above.
+- Edit only the exact files in the allowlist above. Do NOT create files (no
+  scratch files); test lemmas inside the allowed files.
 - Do not change or remove any pre-existing declaration statement. In
   particular, the fixed top theorem statement is immutable.
 - Do not add `axiom` declarations or `@[implemented_by]` / `@[extern]`

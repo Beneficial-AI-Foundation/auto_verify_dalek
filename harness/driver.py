@@ -9,7 +9,12 @@ process-group kill, wall-clock deadline, signal handling, optional wire
 proxy — ported from CryptoProver run.py). Multi-round policy here:
   * round 1 starts a fresh session pinned to an explicit UUID; rounds 2..N
     `--resume` it with the gate verdict as feedback, so the agent keeps its
-    exploration context (failed tactics, half-built lemmas).
+    exploration context (failed tactics, half-built lemmas). The feedback
+    carries the gate's diagnostics (feedback_message / diagnostics_block):
+    `error: file:line:col` lines classified by kind, the modules a
+    timed-out build never finished, any `maxHeartbeats` the agent raised,
+    and a hint per kind (shrink the context / split into lemmas, do not
+    raise heartbeats). Also recorded per round under `feedback`.
   * only "not done yet" rejections continue (rejected_build,
     rejected_sorry_remains). Policy violations (scope / forbidden attr /
     sorry migration / g2) abort the target immediately: they require a
@@ -158,9 +163,11 @@ def build_sorry_counts(work, timeout=BUILD_TIMEOUT, include_output=False):
             os.killpg(proc.pid, signal.SIGKILL)
         except ProcessLookupError:
             pass
-        proc.wait()
+        # the pipe still holds what lake printed before the kill: which
+        # module it was building tells the next round where the blow-up is
+        out, _ = proc.communicate()
         result = ("timeout", {}, round(time.time() - t0, 1))
-        return (*result, out) if include_output else result
+        return (*result, out or "") if include_output else result
     counts = {}
     for ln in out.splitlines():
         if "declaration uses `sorry`" in ln or "declaration uses 'sorry'" in ln:
@@ -170,6 +177,154 @@ def build_sorry_counts(work, timeout=BUILD_TIMEOUT, include_output=False):
             counts[f] = counts.get(f, 0) + 1
     result = (rc, counts, round(time.time() - t0, 1))
     return (*result, out) if include_output else result
+
+
+# ── gate diagnostics (fed back into the next round's prompt) ─────────────
+# The bare verdict ("lake build fails") sent the 2026-09-22 as_bytes run in
+# circles: the build tail is cut at 4000 chars, so an `omega` counterexample
+# listing hid the `error: file:line:col:` header, and the agent's answer to a
+# heartbeat timeout was to raise `maxHeartbeats`. Parse the error lines into
+# (location, kind, first message line) and attach a hint per kind.
+ERROR_LINE_RE = re.compile(
+    r"(?:^|\n)error: (?:\./)*([^:\n]+\.lean):(\d+):(\d+): ([^\n]*)")
+HEARTBEATS_RE = re.compile(r"set_option\s+maxHeartbeats\s+(\d+)")
+MAX_ERRORS_FED_BACK = 8
+
+ERROR_KINDS = (  # first match wins
+    ("heartbeats", re.compile(r"maximum number of heartbeats|\(deterministic\) timeout")),
+    ("recursion", re.compile(r"maximum recursion depth")),
+    ("omega_failed", re.compile(r"omega could not prove")),
+    ("scalar_tac_failed", re.compile(r"scalar_tac failed")),
+    ("progress_failed", re.compile(r"progress failed|could not find a progress")),
+    ("unsolved_goals", re.compile(r"unsolved goals")),
+    ("unknown_ident", re.compile(r"unknown (identifier|constant)")),
+    ("type_mismatch", re.compile(r"type mismatch|application type mismatch")),
+)
+
+HINTS = {
+    "heartbeats": (
+        "`maxHeartbeats` is charged to the WHOLE declaration, not to one "
+        "tactic, and raising it does not make a blow-up finish: the gate "
+        "builds under a fixed wall clock and a build that exceeds it is a "
+        "hard rejection. Fix the slow step instead: `omega` / `scalar_tac` / "
+        "`simp` read every hypothesis in context (hundreds after a long "
+        "`progress` chain, each `/` or `%` adds variables), so run "
+        "`clear * - h1 h2 ...` right before them, keeping only the facts the "
+        "goal needs, or move the step into its own lemma stated over just the "
+        "variables involved and `have` it (a separate theorem gets its own "
+        "heartbeat budget and its own small context)."),
+    "recursion": (
+        "Maximum recursion depth: a term is being unfolded too deep "
+        "(often `decide`, `simp` on a huge literal, or `whnf` of a long "
+        "`Array.set` chain). Split the declaration and prove the offending "
+        "step as a separate lemma."),
+    "omega_failed": (
+        "`omega` returned a counterexample, so the goal does not follow "
+        "linearly from the atoms as they stand — more heartbeats will not "
+        "help. Read the `where` list: atoms like "
+        "`((a.set i x).set j y)[k]!`, `↑↑z / 2^51`, `x <<< 3 % U64.size` are "
+        "opaque to omega; rewrite them first (`simp` with the indexing lemmas "
+        "for `set`/`update`, `Nat.div_add_mod`, `Nat.shiftLeft_eq`) or state "
+        "the needed relation as a hypothesis, then run omega in a standalone "
+        "lemma over only those hypotheses (`clear * - ...` in the main proof)."),
+    "scalar_tac_failed": (
+        "`scalar_tac` failed: the bound is not implied by the hypotheses it "
+        "can see, or the context is too big. Add the missing bound with a "
+        "`have` from earlier postconditions, or shrink the context first."),
+    "progress_failed": (
+        "`progress` could not find or apply a lemma: the callee has no "
+        "`@[progress]` spec yet, or its precondition (overflow / index bound) "
+        "is not in context — prove it just before with `have : ... := by "
+        "scalar_tac`."),
+    "unsolved_goals": (
+        "Unsolved goals remain at the shown position; inspect the goal state "
+        "there and close each goal explicitly, or add the missing step."),
+}
+
+KERNEL_BUDGET_HINT = (
+    "The gate's `lake build` did not finish within the wall-clock limit "
+    "and was killed. Lean's `maxHeartbeats` does not bound this (kernel "
+    "checking and `decide`/`native_decide`/huge `omega` or `simp` calls run "
+    "past it), so raising it is never the fix. Find the slow declaration "
+    "(the unfinished modules are listed above), and split "
+    "it: separate lemmas with small contexts, `clear * - ...` before "
+    "arithmetic tactics, no `decide` on large terms.")
+
+
+def classify_error(message):
+    for kind, rx in ERROR_KINDS:
+        if rx.search(message):
+            return kind
+    return "other"
+
+
+def parse_build_errors(build_out, limit=MAX_ERRORS_FED_BACK):
+    """`error: file:line:col: msg` lines of a lake build → deduplicated
+    [{file, line, col, kind, message}], first `limit` in build order."""
+    seen, errs = set(), []
+    for f, ln, col, msg in ERROR_LINE_RE.findall(build_out or ""):
+        key = (f, int(ln), int(col))
+        if key in seen:
+            continue
+        seen.add(key)
+        errs.append({"file": f.lstrip("./"), "line": int(ln), "col": int(col),
+                     "kind": classify_error(msg), "message": msg.strip()})
+        if len(errs) >= limit:
+            break
+    return errs
+
+
+def unfinished_modules(build_out, editable_paths):
+    """Editable modules lake did not report finished (`Built` / `Replayed`)
+    before the output ended. Non-interactive lake prints a job only on
+    completion, so after a timeout kill these are where the build was
+    stuck (or downstream of it)."""
+    finished = set(re.findall(
+        r"\[\d+/\d+\] (?:Built|Replayed|Compiled|Ran) (\S+)", build_out or ""))
+    return [path_to_module(p) for p in editable_paths
+            if path_to_module(p) not in finished]
+
+
+def heartbeat_raises(added_lines):
+    """`set_option maxHeartbeats N` values the agent introduced."""
+    return sorted({int(v) for v in HEARTBEATS_RE.findall(added_lines or "")})
+
+
+def diagnostics_block(outcome, detail):
+    """Human-readable gate diagnostics for the next round's prompt (and the
+    reset history). Empty string when there is nothing to say."""
+    lines, hints = [], []
+    errs = detail.get("errors") or []
+    if errs:
+        secs = detail.get("gate_build_seconds")
+        lines.append("Gate `lake build`" + (f" ({secs:.0f}s)" if secs else "")
+                     + " errors, in build order:")
+        for e in errs:
+            lines.append(f"  {e['file']}:{e['line']}:{e['col']}: {e['message']}")
+        if detail.get("errors_truncated"):
+            lines.append("  ... (more errors omitted)")
+        for kind in dict.fromkeys(e["kind"] for e in errs):
+            if kind in HINTS:
+                hints.append(HINTS[kind])
+    if outcome == "rejected_kernel_budget":
+        stuck = detail.get("unfinished") or []
+        lines.append(f"Gate `lake build` killed at the "
+                     f"{detail.get('build_timeout')}s wall-clock limit"
+                     + ("; modules not finished: " + ", ".join(stuck)
+                        if stuck else "") + ".")
+        hints.append(KERNEL_BUDGET_HINT)
+    raised = detail.get("heartbeats_raised") or []
+    if raised:
+        lines.append("Your edit sets `maxHeartbeats` to "
+                     + ", ".join(str(v) for v in raised) + ".")
+        hints.append("Revert the `maxHeartbeats` increase; it is not the fix "
+                     "(see above) and it makes every build slower.")
+    if not lines:
+        return ""
+    out = "\n".join(lines)
+    if hints:
+        out += "\nHints:\n" + "\n".join("- " + h for h in dict.fromkeys(hints))
+    return out
 
 
 # ── target resolution (robust to line drift from earlier accepts) ───────
@@ -326,14 +481,44 @@ def _file_sha(path, work):
         return None
 
 
+def feedback_message(outcome, detail, timeout=None, end_reason=None):
+    """The message a FEEDBACK-rejected round is resumed with: the fixed
+    verdict text, the round-end circumstance, then the gate diagnostics
+    (error locations, timeout kind, hints) — see diagnostics_block."""
+    msg = FEEDBACK[outcome]
+    if end_reason == "COMPLETE":
+        msg = "You declared END_REASON:COMPLETE but " + msg
+    elif detail.get("deadline_exhausted") and timeout:
+        msg = (f"The previous round was killed at the {timeout}s wall-clock "
+               "limit; your last command may not have finished. Re-check the "
+               "file state before continuing. " + msg)
+    diag = diagnostics_block(outcome, detail)
+    if diag:
+        msg += "\n\n" + diag
+    return msg
+
+
 def _history_block(rounds):
-    lines = [f"round {r['round']}: {r['outcome']}"
-             + (f" ({json.dumps(r['detail'], ensure_ascii=False)[:200]})"
-                if r.get('detail') else "")
-             for r in rounds]
+    lines = []
+    for r in rounds:
+        detail = r.get("detail") or {}
+        brief = {k: v for k, v in detail.items()
+                 if k not in ("build_error_tail", "g1_after", "errors",
+                              "result_specs")}
+        lines.append(f"round {r['round']}: {r['outcome']}"
+                     + (f" ({json.dumps(brief, ensure_ascii=False)[:200]})"
+                        if brief else ""))
+        diag = diagnostics_block(r["outcome"], detail)
+        if diag:  # locations + hints only; the hints repeat, keep the first
+            lines.extend("  " + ln for ln in diag.split("\nHints:")[0].splitlines())
+    hints = dict.fromkeys(
+        h for r in rounds
+        for h in diagnostics_block(r["outcome"], r.get("detail") or {})
+        .split("\nHints:\n")[1:2])
     return ("Round history so far (a previous session worked on this target; "
             "its edits were kept in the file, its context was not):\n  "
-            + "\n  ".join(lines))
+            + "\n  ".join(lines)
+            + ("\nHints:\n" + "\n".join(hints) if hints else ""))
 
 
 # ── seal (DEC-12): hash the main checkout at run start ──────────────────
@@ -651,16 +836,9 @@ def run_rounds(prompt, tid, path, before_counts, args, env, settings_path,
             log(f"    reset→fresh session ({rounds[-1]['reset_after']})")
             continue_message = None
         else:
-            continue_message = FEEDBACK[outcome]
-            if end_reason == "COMPLETE":
-                continue_message = ("You declared END_REASON:COMPLETE but "
-                                    + continue_message)
-            elif detail.get("deadline_exhausted"):
-                continue_message = (
-                    f"The previous round was killed at the {args.timeout}s "
-                    "wall-clock limit; your last command may not have "
-                    "finished. Re-check the file state before continuing. "
-                    + continue_message)
+            continue_message = feedback_message(
+                outcome, detail, timeout=args.timeout, end_reason=end_reason)
+            rounds[-1]["feedback"] = continue_message
     return outcome, detail, rounds, session_ids
 
 
@@ -767,6 +945,7 @@ def gate(work, target_path, before_counts, build_timeout=BUILD_TIMEOUT,
         return "rejected_scope", {"modified": mod, "new": new,
                                   "outside": sorted(outside),
                                   "editable_paths": list(editable_paths)}
+    added = ""
     if mod:  # scan added lines in every changed allowlisted file
         diff = sh(["git", "diff", "--unified=0", "--", *sorted(mod)], work).stdout
         added = "\n".join(l[1:] for l in diff.splitlines()
@@ -776,18 +955,28 @@ def gate(work, target_path, before_counts, build_timeout=BUILD_TIMEOUT,
     rc, after, build_s, build_out = build_sorry_counts(
         work, build_timeout, include_output=True)
     b = {"gate_build_seconds": build_s}
+    raised = heartbeat_raises(added)
+    if raised:  # diagnostics only; the feedback tells the agent to revert
+        b["heartbeats_raised"] = raised
     if rc == "timeout":
         # policy violation, not "not done yet": resuming would just make
         # the agent try another blow-up. Rolled back like any rejection.
-        return "rejected_kernel_budget", {**b, "build_timeout": build_timeout}
+        return "rejected_kernel_budget", {
+            **b, "build_timeout": build_timeout,
+            "unfinished": unfinished_modules(build_out, editable_paths),
+            "errors": parse_build_errors(build_out)}
     if rc != 0:
         # only `error:` lines: a failing build also replays every file's
         # `sorry` warnings, which would list the whole package as broken
         paths = sorted(set(re.findall(
             r"(?:^|\n)error: (?:\./)*([^:\n]+\.lean):\d+",
             build_out)))
+        errors = parse_build_errors(build_out)
         return "rejected_build", {
             **b, "broken_files": paths,
+            "errors": errors,
+            "errors_truncated": len(parse_build_errors(
+                build_out, limit=MAX_ERRORS_FED_BACK + 1)) > len(errors),
             "build_error_tail": build_out[-4000:]}
     if g1_base is not None:
         modules = [path_to_module(p) for p in editable_paths]

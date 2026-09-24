@@ -51,7 +51,7 @@ class JointGateTests(unittest.TestCase):
              mock.patch.object(driver, "stmt_fingerprints",
                                return_value=(self._fps(), 0.1)), \
              mock.patch.object(driver, "progress_specs_for",
-                               side_effect=lambda fn, fps, path, work:
+                               side_effect=lambda fn, fps, path, work, require_progress=True:
                                ["A.spec"] if fn == "pkg.a" else ["B.spec"]):
             return driver.gate(
                 self.work, "Top.lean", {"Top.lean": 1}, g1_base={

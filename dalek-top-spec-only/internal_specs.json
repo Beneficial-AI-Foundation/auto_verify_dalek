@@ -31,5 +31,27 @@
   "theorems": [
    "curve25519_dalek.backend.serial.u64.field.FieldElement51.from_limbs_spec"
   ]
+ },
+ "curve25519_dalek.backend.serial.u64.field.FieldElement51.reduce": {
+  "path": "Curve25519Dalek/Specs/Backend/Serial/U64/Field/FieldElement51/Reduce.lean",
+  "pp": {
+   "curve25519_dalek.backend.serial.u64.field.FieldElement51.reduce_spec": "\u2200 (limbs : Aeneas.Std.Array Aeneas.Std.U64 (Aeneas.Std.Usize.ofNat 5 \u22ef)),\n  Aeneas.Std.WP.spec (curve25519_dalek.backend.serial.u64.field.FieldElement51.reduce limbs) fun result =>\n    And\n      (\u2200 (i : Nat),\n        instLTNat.lt i 5 \u2192\n          instLTNat.lt (Aeneas.Std.UScalar.val (Aeneas.Std.instGetElem?ArrayNatLtLengthValListEqVal.getElem! result i))\n            (instHAdd.hAdd (instHPow.hPow 2 51) (instHPow.hPow 2 18)))\n      (Eq\n        (instHAdd.hAdd (Field51_as_Nat result)\n          (instHMul.hMul\n            (instHDiv.hDiv\n              (Aeneas.Std.UScalar.val (Aeneas.Std.instGetElem?ArrayNatLtLengthValListEqVal.getElem! limbs 4))\n              (instHPow.hPow 2 51))\n            p))\n        (Field51_as_Nat limbs))"
+  },
+  "revisions": [],
+  "run_id": "2026-09-22T08:31:11+00:00",
+  "theorems": [
+   "curve25519_dalek.backend.serial.u64.field.FieldElement51.reduce_spec"
+  ]
+ },
+ "curve25519_dalek.backend.serial.u64.field.FieldElement51.reduce.LOW_51_BIT_MASK": {
+  "path": "Curve25519Dalek/Specs/Backend/Serial/U64/Field/FieldElement51/Reduce.lean",
+  "pp": {
+   "curve25519_dalek.backend.serial.u64.field.FieldElement51.reduce.LOW_51_BIT_MASK_spec": "Aeneas.Std.WP.spec curve25519_dalek.backend.serial.u64.field.FieldElement51.reduce.LOW_51_BIT_MASK fun r =>\n  Eq (Aeneas.Std.UScalar.val r) (instHSub.hSub (instHPow.hPow 2 51) 1)"
+  },
+  "revisions": [],
+  "run_id": "2026-09-22T08:31:11+00:00",
+  "theorems": [
+   "curve25519_dalek.backend.serial.u64.field.FieldElement51.reduce.LOW_51_BIT_MASK_spec"
+  ]
  }
 }

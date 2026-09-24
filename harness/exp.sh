@@ -11,7 +11,7 @@
 #         harness/prove_top_spec.py ONE top spec of the bundle dalek-top-spec-only (--target)
 SCRIPT=harness/prove_top_spec.py
 EXP_NAME=""                       # empty = top-spec-<YYYYmmdd-HHMM>
-EXP_MSG="top-spec round: FieldElement51 as_bytes_spec, bottom-up joint (LOW_51_BIT_MASK, reduce, to_bytes), claude-sonnet-5"
+EXP_MSG="top-spec round: FieldElement51 as_bytes_spec, bottom-up joint (to_bytes; reduce seeded from 09-22 partials), claude-sonnet-5"
 DRIVER_ARGS=(
   --target curve25519_dalek.backend.serial.u64.field.FieldElement51.as_bytes_spec
                                   # closure: reduce.LOW_51_BIT_MASK (trivial), reduce (carry chain, bounds < 2^52,

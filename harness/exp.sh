@@ -11,12 +11,13 @@
 #         harness/prove_top_spec.py ONE top spec of the bundle dalek-top-spec-only (--target)
 SCRIPT=harness/prove_top_spec.py
 EXP_NAME=""                       # empty = top-spec-<YYYYmmdd-HHMM>
-EXP_MSG="top-spec round: RistrettoPoint conditional_select_spec, bottom-up joint (FieldElement51.conditional_select, EdwardsPoint.conditional_select), claude-sonnet-5"
+EXP_MSG="top-spec round: FieldElement51 sub_assign_spec, bottom-up joint (FieldElement51.sub), claude-sonnet-5"
 DRIVER_ARGS=(
-  --target curve25519_dalek.ristretto.RistrettoPoint.Insts.SubtleConditionallySelectable.conditional_select_spec
-                                  # closure: FieldElement51.conditional_select (5-limb select, upstream 58 lines)
-                                  # -> EdwardsPoint.conditional_select (4 coordinates, upstream 50 lines) -> top (36 lines)
-                                  # same two-level shape as as_bytes_spec, an order of magnitude smaller
+  --target curve25519_dalek.backend.serial.u64.field.FieldElement51.Insts.CoreOpsArithSubAssignSharedAFieldElement51.sub_assign_spec
+                                  # closure: FieldElement51.sub (5-limb subtraction with a 16p bias and a carry
+                                  # chain; upstream 166 lines, maxRecDepth 4096) -> top (41 lines, delegates to sub).
+                                  # Conclusion: limbs < 2^52 and (d + b) % p = a % p. Real limb arithmetic,
+                                  # one internal spec — one step up from conditional_select (accepted 2026-09-24).
   --bottom-up                     # joint: all missing internal spec files + top file, one session, one gate
   # --stepwise                    # A/B control: one session per internal callee, published step by step
   --model claude-sonnet-5
@@ -26,9 +27,11 @@ DRIVER_ARGS=(
   --max-turns 300                 # joint mode edits several files per session
   # --dry-run                     # no fee; print the plan and every step's prompt
 )
-# Previous prove_top_spec.py target, kept for reference (see docs/TOP-SPEC-RESULTS.md):
+# Previous prove_top_spec.py targets, kept for reference (see docs/TOP-SPEC-RESULTS.md):
+#   --target curve25519_dalek.ristretto.RistrettoPoint.Insts.SubtleConditionallySelectable.conditional_select_spec
+#   closure: FieldElement51.conditional_select -> EdwardsPoint.conditional_select -> top; accepted in 1 round (2026-09-24)
 #   --target curve25519_dalek.backend.serial.u64.field.FieldElement51.as_bytes_spec
-#   closure: reduce (seeded from the 09-22 partials, commit d0d8cab) -> to_bytes (upstream 711 lines) -> top
+#   closure: reduce (seeded from the 09-22 partials, commit d0d8cab) -> to_bytes (upstream 711 lines) -> top; not proved
 # Previous driver.py configuration, kept for reference:
 #   SCRIPT=harness/driver.py
 #   EXP_MSG="top-spec round: Scalar, claude-sonnet-5, limit 3"

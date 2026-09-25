@@ -28,6 +28,7 @@ Results must say this clearly. See [Isolation and integrity](ISOLATION-AND-INTEG
 
 | Document | Purpose |
 | --- | --- |
+| [AutoFV](../autofv/README.md) | Current sealed controller, local checks, CLI, and evidence boundaries (also [HTML](../autofv/README.html)). |
 | [Method](METHOD.md) | How `T` is chosen, why top-level specs are frozen before proving bottom-up, and how internal specs are repaired when a proof fails. |
 | [Project scope](PROJECT-SCOPE.md) | What we are trying to learn and what counts as success. |
 | [Architecture](ARCHITECTURE.md) | The proposed builder, agent runner, verifier, and result storage. |
@@ -40,8 +41,9 @@ Results must say this clearly. See [Isolation and integrity](ISOLATION-AND-INTEG
 
 - [`.verilib/sorry_inventory.json`](../.verilib/sorry_inventory.json) records
   347 task declarations with `sorry`.
-- [`.verilib/top_level_specs.json`](../.verilib/top_level_specs.json) records
-  94 top-level candidates among 263 specifications: 38 `api` and 56
-  `trait-instance`.
+- [`.verilib/top_level_funs.json`](../.verilib/top_level_funs.json) records
+  134 lean-top functions among 338 extracted function candidates, selected by
+  [`harness/lean_top.py`](../harness/lean_top.py). This is not the public API
+  catalogue; see [DEC-04](DECISIONS.md).
 - [`harness/driver.py`](../harness/driver.py) and the existing gates are useful
   prototypes, but they are not yet a complete sandbox or independent verifier.

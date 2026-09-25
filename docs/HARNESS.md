@@ -1,5 +1,9 @@
 # Harness — status brief (2026-08-28)
 
+Historical snapshot of the earlier `harness/` runner, not the sealed AutoFV
+path. Current runner: [AutoFV](../autofv/README.md). Current target rule:
+[DEC-04](DECISIONS.md).
+
 Detail: [HARNESS-DETAIL.md](HARNESS-DETAIL.md) · decisions: [DECISIONS.md](DECISIONS.md)
 
 ## What it does
@@ -84,7 +88,7 @@ TODO: use OpenTelemetry to check a posteriori if the agent accessed the internet
 | ✅ | How many runs, which models? | DEC-13 solved for now: n = 1 runs, one pinned model (saves tokens, like CryptoProver); **no comparative claim from n = 1**; records already carry hashes/limits/`models_used`, so `--repeats K` + k/K aggregation can be added when comparisons are needed | accepted (repeats deferred) |
 | ⬜ | Agent writes the spec itself? | DEC-05/06/07 seed `S`, `Math/` visibility, writer/reviewer roles | not started (Phase 2) |
 | 🟡 | Where do transcripts live, who reads? | DEC-01/02/15 transcripts in `ledger/transcripts/`, never discarded, `ledger/` git-ignored; raw restricted, publish hashes + outcomes + redacted summaries; open: which BAIF bucket gets the sealed tars | partial |
-| ✅ | Is `T` really all the public APIs? | DEC-04 fixed checked-in list, pinned by tree hash; API face from `harness/api_top.py` (pub visibility × extraction × specs), CryptoProver cross-check + manual audit (`debug_top_api.md`) — "all public APIs" wording allowed; re-derivation hardening deferred (`top_func.md`) | accepted for now |
+| ✅ | What is `T`? | Superseded by the 2026-09-11 DEC-04 revision: `T` is the fixed 134-function lean-top list; `harness/api_top.py` is a separate public-API catalogue. Do not claim `T` covers all public APIs. | revised |
 | ⬜ | Misc | DEC-18 claim boundary in report · run-invalidation rules | open |
 
 ## Next

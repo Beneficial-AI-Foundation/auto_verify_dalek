@@ -9,13 +9,17 @@ instead of a human, without weakening any guarantee?
 - `S ⊆ T`: the specs we give the agent.
 - `W = T \ S`: the specs the agent must recover.
 
-The agent recovers `W`, writes all internal specs, and fills all proofs. The
-harness guarantees the result is not weaker than the human version.
+The agent recovers `W`, writes internal specs, and fills proofs. A build alone
+cannot establish that a recovered specification says the right thing; a
+separate quality check against the reference is required.
 
 ## Top-level functions
 
-A function is **top-level** when no other function in the crate calls it: it is
-a source of the call graph of `Funs.lean`. 
+For the selected `T`, a function is **lean-top** when no other extracted
+function depends on it. The checked-in
+[lean-top list](../.verilib/top_level_funs.json) contains 134 of 338 extracted
+function candidates. It does not describe every public API; see
+[DEC-04](DECISIONS.md) for the edge rules and the separate API catalogue.
 
 ## Freeze the top, prove from the leaves
 

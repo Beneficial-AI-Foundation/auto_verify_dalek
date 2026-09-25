@@ -3,16 +3,18 @@
 AutoFV is the trusted host-side controller for experiments that ask an agent
 to recover Lean specifications and proofs inside a sealed Linux worker.
 
-This page describes the code as it exists on 10 September 2026. The Phase 1
-vertical slice is complete. Keep this file and [README.html](README.html) in
-sync.
+The Phase 1 fixture diamond is complete. Later code adds prepared Dalek inputs,
+role-based lanes, provider dispatch, and scoped helper verification; those paths
+have separate evidence boundaries. Keep this file and [README.html](README.html)
+in sync.
 
 ## Status
 
 The current launcher completed one full sealed diamond under `runsc` and passed
 on the separate verifier VM. The two leaf requests overlapped, all three source
-changes were accepted serially, and the final result reached complete L4. No
-provider call has run.
+changes were accepted serially, and the final result reached complete L4. That
+fixture run made no provider call; this repository has no retained real-provider
+run with a clean-verifier success claim.
 
 | Area | Current evidence |
 | --- | --- |
@@ -22,7 +24,8 @@ provider call has run.
 | Pinned probe output | Captured from the toolchain image and checked byte-for-byte |
 | Result and evidence contract | Fourteen local tests cover complete L4, receipt/file mismatch, missing or symlinked evidence, typed pre-worker failures, finalization failure, and append-only attempt records |
 | End-to-end diamond on the current launcher | `success`, `sealed_runsc`, complete L4, one sorry removed, eight signed fixture receipts, `$0.022350` synthetic cost, and a distinct clean-verifier `PASS` |
-| Provider model call and billed usage | Not run |
+| Prepared Dalek and role paths | Local tests cover deterministic preparation, restartable role lanes, one accepted helper's scoped clean verification, and the distinct terminal verifier; test-double outcomes are not sealed-provider results |
+| Provider model call and billed usage | Local provider service and transport are implemented and locally tested; no retained real-provider billing/success trace is documented here |
 
 The current `$0.022350` result is fixture data: eight handwritten receipts for
 2,235 invented tokens at `$0.000010` per token. The fixture uses
@@ -33,10 +36,13 @@ and are repeated as expectations in the proxy fixture test.
 
 `cost_usd` is never guessed from terminal activity. It changes only after the
 controller validates a signed proxy receipt containing usage and cost for the
-current run, request, response, model, route, and sequence. A real deployment
-needs an external proxy that obtains provider billing data, signs that receipt,
-and binds it to the institutional account. This repository does not yet ship
-that proxy.
+current run, request, response, model, route, and sequence. The trusted host now includes a fixed-route provider service
+([`provider_service.py`](provider_service.py)) that dispatches through
+[`provider_transport.py`](provider_transport.py) and signs accounting receipts.
+The fixture receipt path and provider-authenticated path have different cost
+classifications. Provider selection, credentials, billing, and spending
+authorization remain deployment inputs; the existing fixture run proves none
+of those external facts.
 
 The `cryptography` Python package verifies the receipt's Ed25519 signature.
 The repository contains only the public verification key. The signing key
@@ -74,7 +80,7 @@ receipt before exit, without making a model request. Invalid targets and run
 configurations also write typed, unscored attempts before worker allocation.
 All non-success outcomes return a non-zero CLI status.
 
-## Intended run
+## Phase 1 fixture run
 
 ```text
 trusted host
@@ -112,8 +118,10 @@ diamond test in the same file exercised the disposable VM, pinned `runsc`
 container, local trusted proxy, and separate verifier VM. Neither path called a
 model provider.
 
-The current deterministic proxy returns patch text; no shell-capable model
-process edits a lane worktree yet. Each lane writes a hash-only preflight receipt
+The Phase 1 deterministic proxy returns patch text; the newer
+[`agent_lane.py`](agent_lane.py) and [`generic_role_runtime.py`](generic_role_runtime.py)
+paths execute bounded tool-using roles in private lanes. Each lane writes a
+hash-only candidate preflight receipt
 covering scope, patch identity, statement fingerprints, and the selected policy
 hash. That is not a local kernel proof. The controller applies each patch to the
 canonical tree and runs the configured Lean build before committing it; the
@@ -174,7 +182,40 @@ Show the CLI without starting a worker:
 
 ```bash
 .venv/bin/python -m autofv.experiment --help
+.venv/bin/python -m autofv.prepare_dalek --help
 ```
+
+### Prepared and provider paths
+
+[`prepare_dalek.py`](prepare_dalek.py) accepts a pinned solved source, target
+report, probe identities, and `--mode full|small`; it emits a reproducibly built
+redacted target and a separate preparation manifest. These inputs must be
+supplied explicitly, outside the prepared target. `autofv inspect REPO
+--output REPORT` writes a target report but not probe identities or a hidden
+verifier reference.
+
+For an already prepared target, `autofv preflight REPO --config RUN_JSON
+--output NEW_DIR --env-file PRIVATE_ENV` runs a sealed fixed suite and validates
+a separate verifier identity. It **starts Lima VMs**; do not use it as an
+offline unit check. The output includes `preflight-result.json`, sealed check
+receipts, and provider authorization. A configured provider run uses `autofv
+run REPO --config RUN_JSON --env-file PRIVATE_ENV --selection-record
+SELECTION_JSON` (both flags are required together). The canonical selection
+record must match the pinned provider binding; selecting a model alone does not
+authorize a provider request or spending. The run rechecks sealed preflight
+against its own prepared worker before dispatch.
+
+Prepared runs additionally require `--preparation-manifest`,
+`--preparation-evidence` (with `probe-rust.json` and `probe-aeneas.json`),
+`--preparation-cache`, `--verifier-reference`, and `--execution-mode full` or
+`proof-only`. The `proof-only` mode needs one prepared small target. The generic
+role path uses private lanes for scouting, dependency planning, specification
+review/repair, and proofs; a helper's accepted patch must receive a separate
+`SCOPED_PASS` bound to its dependency closure before a dependent is released.
+The current scoped audit still imports/builds the project's full module set;
+an unrelated unfinished module can block a helper. Only the terminal clean
+verifier can pass the root. Local tests use doubles and fixtures; no
+provider-backed result is claimed here.
 
 ## Experiment command
 
@@ -223,26 +264,27 @@ Verification creates a fresh Docker volume in `autofv-verifier`, runs the
 pinned image with `--network none`, and removes the volume when the build ends.
 Both launchers use `--pull never` and force Cargo offline. The verifier does not
 reuse the agent volume or caches. It regenerates the `probe-aeneas` bridge from
-fresh Rust output, imports the exact Lean source modules named by the hidden
-reference, and checks its own pinned runtime identity. Its distinct worker
+fresh Rust output, imports the project's Lean modules for full and scoped
+audits, and checks its own pinned runtime identity. Its distinct worker
 identity is what `clean verifier` means in results and receipts.
 
 The provider credential belongs in the proxy service. Do not put it in this
 repository, either VM, the container, or either environment variable above.
-The current repository does not include a real proxy deployment or provider
-billing trace, so this command is still an integration target. The signing key
-pinned today belongs to the local fixture. A real proxy needs a separate
-signing key and a corresponding lock update.
+The fixture command uses the locked synthetic proxy, not the new local
+provider service. The provider path requires a private environment file,
+selection record, and sealed preflight authorization; it has no retained
+real-provider billing or clean-verifier success trace here. Keep provider keys
+and the receipt signing key outside the repository and worker.
 
 The CLI prints the result JSON. Every attempt writes `result.json` and
-`evidence/l0.json` in a host temporary run directory. An allocated sealed run
+`evidence/l0.json` in a host run directory. An allocated sealed run
 also writes checkpoints, proxy and egress evidence, an `export/` tree,
 `disposal.json`, `evidence/final-result-scan.json`, and
 `evidence/verifier.json` when verification ran. Read `run_root` in the printed
 result, then inspect it with:
 
 ```bash
-run_dir=$(ls -td "${TMPDIR%/}"/fixture-diamond-run-0001-* | head -1)
+run_dir=/absolute/path/from/printed/run_root
 .venv/bin/python -m json.tool "$run_dir/result.json"
 .venv/bin/python -m json.tool "$run_dir/evidence/l0.json"
 .venv/bin/python -m json.tool "$run_dir/evidence/egress.json"
@@ -252,8 +294,9 @@ run_dir=$(ls -td "${TMPDIR%/}"/fixture-diamond-run-0001-* | head -1)
 .venv/bin/python -m json.tool "$run_dir/disposal.json"
 ```
 
-A stable output directory has not been added to the CLI yet. Each new attempt
-appends one record to `AUTOFV_ATTEMPT_LEDGER`; the variable must be
+Use `--output-root /absolute/path/outside/target` to choose the parent of new
+attempt directories; without it they go under the system temporary directory.
+Each new attempt appends one record to `AUTOFV_ATTEMPT_LEDGER`; the variable must be
 an absolute path. Without it, AutoFV uses `autofv-attempts.jsonl` in the system
 temporary directory. Existing result/L0 files and records for the same
 `attempt_id` cannot be replaced with different content through the result
@@ -291,7 +334,7 @@ recreates the accepted and working state in a fresh clone and volume.
 | `outcome` | One of `success`, `budget_exhausted`, `verification_failed`, `infrastructure_failed`, `invalid_target`, `invalid_config`, or `contract_inconclusive`; `termination_reason` carries the narrower cause |
 | `attempt_id`, `run_root`, `attempt_ledger` | Immutable attempt identity, artifact directory, and append-only ledger path |
 | `execution_tier` | `sealed_runsc` for the real worker path; `simulation` when tests replace external boundaries |
-| `cost_classification` | `synthetic_fixture` for the current locked proxy fixture |
+| `cost_classification` | `synthetic_fixture` for the locked fixture; `provider_authenticated` for the configured provider service |
 | `sets` | Explicit target `T`, supplied-spec `S`, empty Phase 1 withheld set `W`, and recovered internal-spec identities |
 | `targets_verified_final` | Fixture-specific value: `1` on success |
 | `internal_specs_accepted` | Fixture-specific value: `2` on success |
@@ -314,8 +357,9 @@ recreates the accepted and working state in a fresh clone and volume.
 | `events` | Ordered controller transitions, not a provider or VM execution trace by itself |
 
 The accepted-count fields are derived from frozen contracts, accepted internal
-nodes, and the final verifier result. The surrounding tracer still supports
-only the Phase 1 diamond.
+nodes, and the final verifier result. The generic role path also supports
+prepared single-root runs; a helper's `SCOPED_PASS` is not a terminal root
+verdict or a complete L4 claim.
 
 ## Where to change things
 
@@ -327,8 +371,8 @@ only the Phase 1 diamond.
 | Proxy address and run token | `AUTOFV_PROXY_BASE` and `AUTOFV_RUN_TOKEN` in the trusted host environment | The address selects one literal-IP proxy endpoint. The token must be unique to the experiment and accepted by that proxy; neither value belongs in target files. |
 | Input validation, proxy receipts, and the `native_decide` rule | [`contracts.py`](contracts.py) | For the current vertical slice we allow `native_decide` under `allow_audited`. Future count caps or named-spec allowlists belong in this policy criterion and seam, not in separate gate defaults. |
 | Probe byte, node, and edge limits; dependency scheduling | [`probes.py`](probes.py) | Current limits are 16 MiB, 10,000 nodes, and 100,000 edges. |
-| Proof readiness, lane overlap, candidate replay, and contract repair | [`diamond.py`](diamond.py) | Owns the bounded Phase 1 diamond scheduler and its sole candidate-acceptance path. |
-| Model requests and authenticated cost accounting | [`model.py`](model.py) | Sends work through the fixed proxy and commits receipts in sequence. |
+| Proof readiness, lane overlap, candidate replay, and contract repair | [`diamond.py`](diamond.py), [`graph_scheduler.py`](graph_scheduler.py), [`generic_role_runtime.py`](generic_role_runtime.py) | Diamond fixture and generic role paths share serial candidate acceptance; the prepared path checks helpers separately before releasing dependents. |
+| Model requests and authenticated cost accounting | [`model.py`](model.py), [`provider_service.py`](provider_service.py), [`provider_config.py`](provider_config.py) | Fixture receipts remain synthetic; provider configuration/transport signs and reconciles authenticated usage. |
 | Wall/cost budgets, checkpoints, and restart recovery | [`run_state.py`](run_state.py) | Owns durable state transitions; [`experiment.py`](experiment.py) remains the CLI and stable composition entry point. |
 | Result fields and the attempt ledger | [`results.py`](results.py) | Builds and immutably writes each canonical result/L0 pair and refuses attempt replacement. |
 | L0 sources, levels, and claims | [`evidence.py`](evidence.py) | Binds retained evidence bytes to trusted receipts and withholds recovery below complete L4. |
@@ -339,7 +383,7 @@ only the Phase 1 diamond.
 | Candidate scope and acceptance checks | `accept_candidate(...)` in [`worker.py`](worker.py) | It checks one-file scope, base and patch hashes, patch application, forbidden source markers, and the configured build. A failed post-apply check reverses and restages the patch before returning. |
 | Canonical statement and trust-base implementations | [`../harness/gates/StmtCanon.lean`](../harness/gates/StmtCanon.lean) and [`../harness/gates/g2_trust_base.py`](../harness/gates/g2_trust_base.py) | These gates exist in the earlier runner and are locked into the control bundle. The new tracer does not call them yet. |
 | Hostile verifier bundle intake and report reduction | [`verifier_bundle.py`](verifier_bundle.py) | Rejects unsafe or mismatched bundle members before any clean-worker checks run. |
-| Clean verifier VM execution and report binding | [`verifier.py`](verifier.py) | Checks the verifier's pinned Docker/`runsc` identity, rebuilds the exact accepted commit in a fresh no-network volume, regenerates probe inputs, and runs the hidden reference. |
+| Clean verifier VM execution and report binding | [`verifier.py`](verifier.py), [`terminal_run.py`](terminal_run.py) | Checks the pinned runtime and exact accepted commit in a fresh no-network volume; a partial helper audit binds the dependency closure but still imports all project modules and cannot pass the root. |
 
 Canonical statements, `native_decide` use, and the trust base are recomputed on
 the clean verifier. The candidate receipt remains a preflight record and cannot
@@ -356,6 +400,8 @@ authorize success.
 | [`tests/test_restart_budget.py`](../tests/test_restart_budget.py) | Atomic checkpoint selection, working/accepted recovery, graph-state replay, wall/cost exhaustion, exact fixture totals, and rejected-receipt evidence |
 | [`tests/test_phase1_diamond.py`](../tests/test_phase1_diamond.py) | Controller flow with test doubles, concurrent evidence-write regression, worker/verifier command construction, and the full sealed two-worker diamond |
 | [`tests/test_probe_graph.py`](../tests/test_probe_graph.py) | Probe schema and closure mutations, deterministic graph direction and scheduling, raw-byte retention, and pre-model failure results |
+| [`tests/test_prepare_dalek.py`](../tests/test_prepare_dalek.py), [`tests/test_generic_role_e2e.py`](../tests/test_generic_role_e2e.py) | Deterministic preparation and role-path restart/scheduling with test doubles; not a provider-backed VM run |
+| [`tests/test_preflight_cli.py`](../tests/test_preflight_cli.py), [`tests/test_clean_verifier.py`](../tests/test_clean_verifier.py) | Preflight CLI/binding and scoped helper/terminal verifier checks; local mocks do not establish a provider-backed run |
 | [`tests/test_results_evidence.py`](../tests/test_results_evidence.py) | Complete L0/L4 claims, receipt/file binding, missing evidence, typed failures, and append-only attempt records |
 | [`tests/test_image_contract.py`](../tests/test_image_contract.py) | Pinned image contents and runtime contract |
 | [`harness/gates/tests/test_g1.py`](../harness/gates/tests/test_g1.py) | Canonical Lean statement fingerprinting |
@@ -375,6 +421,6 @@ not the sealed AutoFV execution path.
 - Do not call a run successful until the accepted tree passes on the separate
   clean verifier and every bound identity matches.
 
-Phase 1 now has the required local sealed-run evidence. A real provider proxy,
-cloud host/VPC policy, and stable user-selected run directory remain outside
-this vertical slice.
+Phase 1 has local sealed-run evidence with synthetic fixture usage. Provider
+service code and a selectable output parent now exist, but a real-provider
+retained run and cloud host/VPC policy remain unverified here.

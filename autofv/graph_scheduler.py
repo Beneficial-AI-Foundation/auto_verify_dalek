@@ -393,8 +393,11 @@ def _schedule_progressive(
     """
     accepted = set(accepted_nodes)
     pending = set(graph["selected_nodes"]) - accepted
-    if not accepted <= set(graph["selected_nodes"]):
-        raise ContractError("progressive accepted nodes changed")
+    if not accepted <= set(graph["selected_nodes"]) or any(
+        consumer in accepted and dependency not in accepted
+        for consumer, dependency in graph["term_dependencies"]
+    ):
+        raise ContractError("progressive accepted nodes are not dependency-closed")
     if preferred_leaf is not None and preferred_leaf not in _proof_ready_nodes(graph, accepted):
         raise ContractError("preferred smoke leaf is not dependency-ready")
     while pending:

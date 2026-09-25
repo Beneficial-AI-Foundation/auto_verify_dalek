@@ -285,6 +285,7 @@ def _report(
     axiom_inventory: list[dict[str, Any]] | None = None,
     sorry_count_before: int | None = None,
     sorry_count_after: int | None = None,
+    partial_target: str | None = None,
 ) -> dict[str, Any]:
     inventory = axiom_inventory or []
     try:
@@ -296,7 +297,12 @@ def _report(
         accepted_uses, hidden_uses, all_uses = [], [], []
         inventory_sha256 = _sha256(_canonical_bytes(inventory))
     body = {
-        "schema": "autofv-verifier-report/v1",
+        "schema": (
+            "autofv-verifier-partial-report/v1" if partial_target is not None
+            else "autofv-verifier-report/v1"
+        ),
+        **({"partial_target": partial_target, "root_status": "unverified"}
+           if partial_target is not None else {}),
         **{key: invocation[key] for key in sorted(INVOCATION_FIELDS - {"schema"})},
         "checks": checks or {},
         "failures": failures,
@@ -309,8 +315,8 @@ def _report(
         "meaning": meaning or {},
         "sorry_count_before": sorry_count_before,
         "sorry_count_after": sorry_count_after,
-        "evidence_level": "L4" if not failures else "L0",
-        "verdict": "PASS" if not failures else "FAIL",
+        "evidence_level": ("P1" if partial_target is not None else "L4") if not failures else "L0",
+        "verdict": ("SCOPED_PASS" if partial_target is not None else "PASS") if not failures else "FAIL",
     }
     return {**body, "report_sha256": _sha256(_canonical_bytes(body))}
 
@@ -367,6 +373,7 @@ def verify_bundle(
     run_checks: Callable[
         [dict[str, bytes], dict[str, Any], bytes], dict[str, Any]
     ],
+    partial_target: str | None = None,
 ) -> dict[str, Any]:
     """Validate hostile input, then reduce clean-worker observations to a report."""
     invocation = _valid_invocation(invocation)
@@ -410,7 +417,11 @@ def verify_bundle(
         _sha256(members["evidence/probe-aeneas.json"])
         != invocation["probe_aeneas_sha256"],
     )
-    if set(state) != STATE_FIELDS or state.get("schema") != "autofv-verifier-state/v1":
+    if (
+        set(state) != (STATE_FIELDS | ({"partial_target"} if partial_target is not None else set()))
+        or state.get("schema") != "autofv-verifier-state/v1"
+        or (partial_target is not None and state["partial_target"] != partial_target)
+    ):
         return _report(invocation, failures + ["verifier_state_mismatch"], checks=checks)
 
     try:
@@ -429,12 +440,24 @@ def verify_bundle(
     )
 
     accepted_nodes = state.get("accepted_nodes")
+    selected = recomputed_graph["selected_nodes"]
     _append(
         failures,
         "accepted_nodes_mismatch",
         not isinstance(accepted_nodes, list)
         or accepted_nodes != sorted(set(accepted_nodes))
-        or accepted_nodes != recomputed_graph["selected_nodes"],
+        or (
+            accepted_nodes != selected if partial_target is None else
+            not accepted_nodes or len(accepted_nodes) >= len(selected)
+            or partial_target not in accepted_nodes
+            or partial_target in recomputed_graph["frozen_targets"]
+            or bool(set(accepted_nodes) & set(recomputed_graph["frozen_targets"]))
+            or not set(accepted_nodes) <= set(selected)
+            or any(
+                consumer in accepted_nodes and dependency not in accepted_nodes
+                for consumer, dependency in recomputed_graph["term_dependencies"]
+            )
+        ),
     )
 
     contracts = state.get("frozen_contracts")
@@ -465,6 +488,19 @@ def verify_bundle(
                 != invocation["native_decide_policy_sha256"],
             )
     _append(failures, "frozen_contract_invalid", contract_invalid)
+    if partial_target is not None:
+        try:
+            claimed_nodes = {
+                axiom_audit._contract_nodes(state, {"leaves": []})[name]
+                for name in contract_fingerprints
+            }
+        except (KeyError, TypeError, contract_rules.ContractError):
+            claimed_nodes = set()
+        _append(
+            failures, "partial_contract_mismatch",
+            claimed_nodes != set(accepted_nodes or [])
+            or len(contract_fingerprints) != len(accepted_nodes or []),
+        )
 
     reference_specs = {
         item.get("spec")
@@ -476,8 +512,19 @@ def verify_bundle(
         "reference_contract_mismatch",
         reference.get("schema") != "autofv-verifier-reference/v1"
         or reference.get("delivery") != "clean-verifier-only"
-        or reference_specs != set(contract_fingerprints),
+        or (partial_target is None and reference_specs != set(contract_fingerprints)),
     )
+    audit_reference = reference if partial_target is None else {"leaves": []}
+    if partial_target is not None:
+        try:
+            expected_scope = axiom_audit.expected_inventory(state, audit_reference)
+            _append(
+                failures, "axiom_scope_mismatch",
+                axiom_audit.inventory_scope_sha256(expected_scope)
+                != invocation["axiom_scope_sha256"],
+            )
+        except (KeyError, TypeError, contract_rules.ContractError):
+            _append(failures, "axiom_scope_mismatch", True)
 
     from . import experiment
 
@@ -516,7 +563,10 @@ def verify_bundle(
     if failures:
         return _report(invocation, failures, checks=checks, state=state)
     try:
-        observed = run_checks(members, state, reference_bytes)
+        observed = run_checks(
+            members, state,
+            reference_bytes if partial_target is None else _canonical_bytes(audit_reference),
+        )
     except VerifierInfrastructureError:
         raise
     except Exception as exc:
@@ -573,7 +623,11 @@ def verify_bundle(
         "accepted_status_mismatch",
         not isinstance(statuses, dict)
         or set(statuses) != set(recomputed_graph["selected_nodes"])
-        or any(value != "accepted" for value in statuses.values()),
+        or (
+            any(value != "accepted" for value in statuses.values())
+            if partial_target is None else
+            any(value not in {"accepted", "unknown"} for value in statuses.values())
+        ),
     )
     _append(
         failures,
@@ -582,7 +636,7 @@ def verify_bundle(
     )
     allowed_paths = {
         probes.proof_source_path(recomputed_graph, node)
-        for node in recomputed_graph["selected_nodes"]
+        for node in (recomputed_graph["selected_nodes"] if partial_target is None else accepted_nodes)
     }
     changed_paths = observed.get("changed_paths")
     _append(
@@ -592,13 +646,24 @@ def verify_bundle(
         or changed_paths != sorted(set(changed_paths))
         or not set(changed_paths) <= allowed_paths,
     )
-    _append(failures, "holes_present", observed.get("holes") != [])
+    _append(
+        failures, "holes_present",
+        not isinstance(observed.get("holes"), list)
+        or (partial_target is None and observed["holes"] != [])
+        or (partial_target is not None and any(
+            not isinstance(hole, str) or not hole for hole in observed["holes"]
+        )),
+    )
     _append(
         failures,
         "sorry_count_mismatch",
         type(observed.get("sorry_count_before")) is not int
         or observed["sorry_count_before"] < 0
-        or observed.get("sorry_count_after") != 0,
+        or type(observed.get("sorry_count_after")) is not int
+        or (observed["sorry_count_after"] != 0 if partial_target is None else
+            observed["sorry_count_after"] < 0 or
+            observed["sorry_count_after"] > observed["sorry_count_before"] or
+            observed["sorry_count_after"] != len(observed["holes"])),
     )
     _append(failures, "trust_failed", observed.get("trust_passed") is not True)
     _append(
@@ -612,7 +677,7 @@ def verify_bundle(
         "compiler_assumptions_mismatch",
         observed.get("compiler_assumptions") != state["compiler_assumptions"],
     )
-    expected_contract = axiom_audit.expected_inventory(state, reference)
+    expected_contract = axiom_audit.expected_inventory(state, audit_reference)
     observed_inventory = observed.get("axiom_inventory")
     try:
         if (
@@ -630,7 +695,7 @@ def verify_bundle(
         }
         expected_axioms = axiom_audit.expected_inventory(
             state,
-            reference,
+            audit_reference,
             observed_closures=observed_closures,
         )
         accepted_uses, hidden_uses, all_uses = (
@@ -664,13 +729,14 @@ def verify_bundle(
         except (KeyError, TypeError, contract_rules.ContractError):
             _append(failures, "axiom_inventory_invalid", True)
     meaning = observed.get("meaning")
-    _append(
-        failures,
-        "meaning_incomplete",
-        not isinstance(meaning, dict)
-        or set(meaning) != MEANING_FIELDS
-        or any(value is not True for value in meaning.values()),
-    )
+    if partial_target is None:
+        _append(
+            failures,
+            "meaning_incomplete",
+            not isinstance(meaning, dict)
+            or set(meaning) != MEANING_FIELDS
+            or any(value is not True for value in meaning.values()),
+        )
     checks.update(
         {
             "runtime_identity": "runtime_identity_mismatch" not in failures,
@@ -694,7 +760,7 @@ def verify_bundle(
             }
             & set(failures),
             "kernel_axioms": "axiom_inventory_invalid" not in failures,
-            "meaning": "meaning_incomplete" not in failures,
+            "meaning": partial_target is None and "meaning_incomplete" not in failures,
         }
     )
     return _report(
@@ -710,4 +776,5 @@ def verify_bundle(
         ),
         sorry_count_before=observed["sorry_count_before"],
         sorry_count_after=observed["sorry_count_after"],
+        partial_target=partial_target,
     )

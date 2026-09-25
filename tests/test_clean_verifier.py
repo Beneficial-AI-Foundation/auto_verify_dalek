@@ -15,6 +15,7 @@ from autofv import (
     experiment,
     generic_role_runtime,
     probes,
+    terminal_run,
     verifier,
     verifier_bundle,
     worker,
@@ -113,7 +114,7 @@ def _members(state=None):
     }
 
 
-def _invocation(bundle, state=None):
+def _invocation(bundle, state=None, *, audit_reference=None):
     state = state or _state()
     graph = state["graph"]
     lock = experiment.load_toolchain_lock()
@@ -135,7 +136,7 @@ def _invocation(bundle, state=None):
         "native_decide_policy_sha256": lock["native_decide_policy_sha256"],
         "axiom_scope_sha256": axiom_audit.inventory_scope_sha256(
             axiom_audit.expected_inventory(
-                state, json.loads(REFERENCE.read_text())
+                state, audit_reference if audit_reference is not None else json.loads(REFERENCE.read_text())
             )
         ),
         "toolchain_lock_sha256": _sha256(_canonical(lock)),
@@ -146,7 +147,7 @@ def _invocation(bundle, state=None):
     }
 
 
-def _observed(state=None):
+def _observed(state=None, *, audit_reference=None):
     state = state or _state()
     graph = state["graph"]
     return {
@@ -180,7 +181,7 @@ def _observed(state=None):
         "hidden_native_decide_uses": [],
         "compiler_assumptions": state["compiler_assumptions"],
         "axiom_inventory": axiom_audit.expected_inventory(
-            state, json.loads(REFERENCE.read_text())
+            state, audit_reference if audit_reference is not None else json.loads(REFERENCE.read_text())
         ),
         "meaning": {
             "reference_integrity": True,
@@ -278,6 +279,230 @@ def _tar_entries(raw):
             extracted = archive.extractfile(member) if member.isfile() else None
             entries.append((copy.copy(member), extracted.read() if extracted else b""))
     return entries
+
+
+class PartialDeclarationTests(unittest.TestCase):
+    def test_empty_reference_program_is_only_allowed_for_scoped_replay(self):
+        with self.assertRaisesRegex(Exception, "verifier_reference_leaves_invalid"):
+            axiom_audit.reference_program({"leaves": []})
+        source = axiom_audit.reference_program({"leaves": []}, allow_empty=True)
+        self.assertIn(b"namespace AutoFVVerifier", source)
+        self.assertNotIn(b"hidden_", source)
+
+    def _case(self):
+        state = _state()
+        state["compiler_assumptions"] = verifier.compiler_assumptions(experiment.load_toolchain_lock())
+        helper = state["graph"]["selected_nodes"][0]
+        self.assertNotEqual(helper, state["graph"]["frozen_targets"][0])
+        state["accepted_nodes"] = [helper]
+        state["frozen_contracts"] = {
+            name: record for name, record in state["frozen_contracts"].items()
+            if f"probe:{name.removesuffix('_spec')}" == helper
+        }
+        state["partial_target"] = helper
+        audit_reference = {"leaves": []}
+        observed = _observed(state, audit_reference=audit_reference)
+        observed["status_by_node"] = {
+            node: "unknown" for node in state["graph"]["selected_nodes"]
+        }
+        observed["changed_paths"] = [state["graph"]["source_paths"][helper]]
+        observed["holes"] = ["Diamond/Top.lean:99"]
+        observed["sorry_count_before"] = 2
+        observed["sorry_count_after"] = 1
+        observed["meaning"] = {}
+        return state, helper, audit_reference, observed
+
+    def _verify(self, state, helper, audit_reference, observed):
+        bundle = verifier_bundle.build_bundle(_members(state))
+        invocation = _invocation(bundle, state, audit_reference=audit_reference)
+        return verifier_bundle.verify_bundle(
+            bundle, invocation, reference_bytes=REFERENCE.read_bytes(),
+            run_checks=lambda _members, _state, _reference: observed,
+            partial_target=helper,
+        )
+
+    def test_helper_can_pass_without_claiming_unverified_root(self):
+        state, helper, audit_reference, observed = self._case()
+        report = self._verify(state, helper, audit_reference, observed)
+        self.assertEqual(report["verdict"], "SCOPED_PASS")
+        self.assertEqual(report["evidence_level"], "P1")
+        self.assertEqual(report["partial_target"], helper)
+        self.assertEqual(report["root_status"], "unverified")
+        self.assertFalse(report["checks"]["meaning"])
+        self.assertNotEqual(report["verdict"], "PASS")
+
+    def test_partial_receipt_validation_binds_worker_commit_statement_and_root(self):
+        state, helper, audit_reference, observed = self._case()
+        report = self._verify(state, helper, audit_reference, observed)
+        bundle = verifier_bundle.build_bundle(_members(state))
+        invocation = _invocation(bundle, state, audit_reference=audit_reference)
+        run = {"run_id": invocation["run_id"], "agent_worker_id": invocation["agent_worker_id"]}
+        self.assertIs(
+            verifier.validate_partial_report(report, run, invocation, helper, state), report
+        )
+        with self.assertRaises(verifier.VerifierError):
+            verifier.validate_report(report, run, invocation)
+        for field, value in (
+            ("verifier_worker_id", run["agent_worker_id"]),
+            ("accepted_commit", "f" * 40),
+            ("partial_target", state["graph"]["frozen_targets"][0]),
+            ("root_status", "accepted"),
+            ("evidence_level", "L4"),
+        ):
+            with self.subTest(field=field), self.assertRaises(verifier.VerifierError):
+                forged = {**report, field: value}
+                forged["report_sha256"] = _sha256(_canonical({
+                    key: item for key, item in forged.items() if key != "report_sha256"
+                }))
+                verifier.validate_partial_report(forged, run, invocation, helper, state)
+
+    def test_forged_helper_closure_and_commit_never_pass(self):
+        state, helper, audit_reference, observed = self._case()
+        cases = []
+        drift = copy.deepcopy(observed)
+        drift["accepted_commit"] = "f" * 40
+        cases.append(("accepted_commit_mismatch", state, helper, drift))
+        drift = copy.deepcopy(observed)
+        drift["statement_fingerprints"] = {}
+        cases.append(("statement_mismatch", state, helper, drift))
+        drift = copy.deepcopy(observed)
+        drift["axiom_inventory"][0]["axioms"] = ["sorryAx"]
+        cases.append(("axiom_inventory_invalid", state, helper, drift))
+        drift = copy.deepcopy(observed)
+        drift["changed_paths"].append(state["graph"]["source_paths"][state["graph"]["frozen_targets"][0]])
+        cases.append(("scope_mismatch", state, helper, drift))
+        drift = copy.deepcopy(observed)
+        drift["trust_passed"] = False
+        cases.append(("trust_failed", state, helper, drift))
+        for failure, case_state, target, case_observed in cases:
+            with self.subTest(failure=failure):
+                report = self._verify(case_state, target, audit_reference, case_observed)
+                self.assertEqual(report["verdict"], "FAIL")
+                self.assertIn(failure, report["failures"])
+
+    def test_controller_retains_exact_first_helper_receipt_without_root_upgrade(self):
+        verification, helper, audit_reference, observed = self._case()
+        bundle = verifier_bundle.build_bundle(_members(verification))
+        invocation = _invocation(bundle, verification, audit_reference=audit_reference)
+        run = {
+            "run_id": invocation["run_id"], "agent_worker_id": invocation["agent_worker_id"],
+            "base_commit": verification["base_commit"],
+            "snapshot_sha256": invocation["snapshot_sha256"],
+            "manifest_sha256": invocation["manifest_sha256"],
+            "image_digest": invocation["image_digest"],
+            "control_bundle_sha256": invocation["control_bundle_sha256"],
+            "native_decide_policy_sha256": invocation["native_decide_policy_sha256"],
+            "lock": experiment.load_toolchain_lock(),
+            "preparation_manifest": {"schema": "preparation-manifest/v1"},
+        }
+        accepted = {
+            "accepted_commit": invocation["accepted_commit"],
+            "accepted_tree_sha256": invocation["accepted_tree_sha256"],
+        }
+        state = {
+            "run": run, "graph": verification["graph"], "accepted": accepted,
+            "contracts": {"frozen": verification["frozen_contracts"]},
+            "accepted_nodes": verification["accepted_nodes"],
+            "target_states": {
+                node: {"status": "accepted" if node == helper else "pending"}
+                for node in verification["graph"]["selected_nodes"]
+            },
+            "native_decide_uses": [],
+        }
+        checkpoints = []
+        def clean(_run, expected, *, verification_state):
+            self.assertEqual(verification_state["partial_target"], helper)
+            self.assertNotIn("target_states", verification_state)
+            self.assertEqual(expected["accepted_commit"], accepted["accepted_commit"])
+            return verifier_bundle.verify_bundle(
+                bundle, {**invocation, "invocation_id": expected["invocation_id"]},
+                reference_bytes=REFERENCE.read_bytes(),
+                run_checks=lambda *_args: observed, partial_target=helper,
+            )
+        with (
+            mock.patch.object(verifier, "_trusted_reference", return_value=REFERENCE.read_bytes()),
+            mock.patch.object(verifier, "verify_run", side_effect=clean) as verified,
+        ):
+            receipt = terminal_run.clean_verify_partial(
+                state, helper, checkpoint=lambda _state, name: checkpoints.append(name),
+                charge_wall=lambda _state: None,
+            )
+            self.assertEqual(receipt["verdict"], "SCOPED_PASS")
+            self.assertEqual(state["target_states"][helper]["status"], "accepted")
+            self.assertEqual(state["target_states"][verification["graph"]["frozen_targets"][0]]["status"], "pending")
+            self.assertIs(
+                terminal_run.clean_verify_partial(
+                    state, helper, checkpoint=lambda _state, name: checkpoints.append(name),
+                    charge_wall=lambda _state: None,
+                ), receipt,
+            )
+            verified.assert_called_once()
+        self.assertIn("partial_verifier:before", checkpoints)
+        self.assertIn("partial_verifier:after", checkpoints)
+        state["accepted"] = {**accepted, "accepted_commit": "f" * 40}
+        with (
+            mock.patch.object(verifier, "_trusted_reference", return_value=REFERENCE.read_bytes()),
+            mock.patch.object(verifier, "verify_run", side_effect=RuntimeError("fresh commit requires recheck")) as fresh,
+        ):
+            with self.assertRaisesRegex(RuntimeError, "fresh commit requires recheck"):
+                terminal_run.clean_verify_partial(
+                    state, helper, checkpoint=lambda _state, name: checkpoints.append(name),
+                    charge_wall=lambda _state: None,
+                )
+            fresh.assert_called_once()
+
+    def test_unresolved_partial_invocation_does_not_repeat_verifier(self):
+        state, helper, _, _ = self._case()
+        run = {
+            "preparation_manifest": {}, "base_commit": state["base_commit"],
+            "lock": experiment.load_toolchain_lock(),
+        }
+        controller = {
+            "run": run, "graph": state["graph"],
+            "accepted": {"accepted_commit": "2" * 40},
+            "accepted_nodes": state["accepted_nodes"],
+            "partial_verifier_inflight": {
+                "node": helper, "accepted_commit": "2" * 40,
+                "invocation_id": "partial-locked",
+            },
+        }
+        with mock.patch.object(verifier, "verify_run") as live:
+            with self.assertRaisesRegex(verifier.VerifierError, "unresolved"):
+                terminal_run.clean_verify_partial(
+                    controller, helper, checkpoint=lambda *_: None,
+                    charge_wall=lambda *_: None,
+                )
+            live.assert_not_called()
+
+    def test_partial_report_cannot_mask_locally_accepted_root(self):
+        state, helper, audit_reference, observed = self._case()
+        state["accepted_nodes"] = sorted([helper, state["graph"]["frozen_targets"][0]])
+        bundle = verifier_bundle.build_bundle(_members(state))
+        invocation = _invocation(bundle, state, audit_reference=audit_reference)
+        called = []
+        report = verifier_bundle.verify_bundle(
+            bundle, invocation, reference_bytes=REFERENCE.read_bytes(),
+            run_checks=lambda *_args: called.append(1) or observed,
+            partial_target=helper,
+        )
+        self.assertEqual(report["verdict"], "FAIL")
+        self.assertIn("accepted_nodes_mismatch", report["failures"])
+        self.assertEqual(called, [])
+
+    def test_unbound_partial_target_fails_before_clean_worker(self):
+        state, helper, audit_reference, observed = self._case()
+        state["partial_target"] = state["graph"]["frozen_targets"][0]
+        called = []
+        bundle = verifier_bundle.build_bundle(_members(state))
+        invocation = _invocation(bundle, state, audit_reference=audit_reference)
+        report = verifier_bundle.verify_bundle(
+            bundle, invocation, reference_bytes=REFERENCE.read_bytes(),
+            run_checks=lambda *_args: called.append(1) or observed,
+            partial_target=helper,
+        )
+        self.assertEqual(report["verdict"], "FAIL")
+        self.assertIn("verifier_state_mismatch", report["failures"])
+        self.assertEqual(called, [])
 
 
 class BundleIntakeTests(unittest.TestCase):
@@ -636,6 +861,56 @@ class VerifyRunWiringTests(unittest.TestCase):
             ),
         ):
             verifier._check_verifier_runtime(lock)
+
+    def test_prepared_partial_routes_to_distinct_worker_without_root_claim(self):
+        state = _state()
+        helper = state["graph"]["selected_nodes"][0]
+        state["accepted_nodes"] = [helper]
+        state["frozen_contracts"] = {
+            name: record for name, record in state["frozen_contracts"].items()
+            if f"probe:{name.removesuffix('_spec')}" == helper
+        }
+        state["partial_target"] = helper
+        bundle = verifier.build_bundle(_members(state))
+        invocation = _invocation(bundle, state, audit_reference={"leaves": []})
+        run = {
+            "run_id": invocation["run_id"],
+            "agent_worker_id": invocation["agent_worker_id"],
+            "image_digest": invocation["image_digest"],
+            "manifest": json.loads((TARGET / "autofv.json").read_text()),
+            "lock": experiment.load_toolchain_lock(),
+            "accepted": {"accepted_commit": invocation["accepted_commit"]},
+            "verification_state": state,
+            "preparation_manifest": {"schema": "preparation-manifest/v1"},
+        }
+        expected = {
+            key: invocation[key] for key in verifier_bundle.INVOCATION_FIELDS - {"schema", "run_id", "agent_worker_id", "verifier_worker_id", "bundle_sha256"}
+        }
+        observed = _observed(state, audit_reference={"leaves": []})
+        observed.update(
+            status_by_node={node: "unknown" for node in state["graph"]["selected_nodes"]},
+            changed_paths=[state["graph"]["source_paths"][helper]],
+            holes=["Diamond/Top.lean:99"], sorry_count_before=2,
+            sorry_count_after=1, meaning={},
+        )
+        started = subprocess.CompletedProcess(("limactl", "start", verifier.VERIFIER_VM), 0, b"", b"")
+        machine = subprocess.CompletedProcess(("cat", "/etc/machine-id"), 0, b"verifier-machine\n", b"")
+        with (
+            mock.patch.object(verifier.subprocess, "run", return_value=started),
+            mock.patch.object(verifier, "_shell", return_value=machine),
+            mock.patch.object(verifier, "_check_quiet_verifier_vm"),
+            mock.patch.object(verifier, "_check_verifier_runtime"),
+            mock.patch.object(verifier, "_run_bundle", return_value=bundle),
+            mock.patch.object(verifier, "_trusted_reference", return_value=REFERENCE.read_bytes()),
+            mock.patch.object(verifier, "_clean_worker_checks", return_value=observed) as clean,
+            mock.patch.object(verifier.terminal_verifier, "verify_terminal_bundle") as full,
+        ):
+            report = verifier.verify_run(run, expected)
+        self.assertEqual(report["verdict"], "SCOPED_PASS")
+        self.assertEqual(report["partial_target"], helper)
+        self.assertEqual(report["root_status"], "unverified")
+        self.assertEqual(clean.call_args.args[-1], _canonical({"leaves": []}))
+        full.assert_not_called()
 
     def test_verify_run_binds_bundle_reference_worker_and_invocation(self):
         state = _state()

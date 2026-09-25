@@ -70,6 +70,46 @@ class ProgressiveSchedulerTests(unittest.TestCase):
             )
         self.assertEqual(attempted, [])
 
+    def test_restart_releases_only_dependents_of_confirmed_nodes(self):
+        attempted = []
+        accepted = graph_scheduler._schedule_progressive(
+            self.graph,
+            lambda node: attempted.append(node) or node,
+            lambda _node, _job: True,
+            accepted_nodes=["probe:leaf_a"],
+        )
+        self.assertEqual(attempted, ["probe:leaf_b", "probe:root"])
+        self.assertEqual(accepted, set(self.graph["selected_nodes"]))
+
+    def test_rejects_inconsistent_restarted_acceptance_before_jobs(self):
+        attempted = []
+        with self.assertRaisesRegex(graph_scheduler.ContractError, "dependency-closed"):
+            graph_scheduler._schedule_progressive(
+                self.graph, lambda node: attempted.append(node),
+                lambda _node, _job: True, accepted_nodes=["probe:root"]
+            )
+        self.assertEqual(attempted, [])
+
+    def test_failed_leaf_does_not_release_consumer(self):
+        attempted = []
+        accepted = graph_scheduler._schedule_progressive(
+            self.graph,
+            lambda node: attempted.append(node) or node,
+            lambda node, _job: node == "probe:leaf_a",
+        )
+        self.assertEqual(attempted, ["probe:leaf_a", "probe:leaf_b"])
+        self.assertEqual(accepted, {"probe:leaf_a"})
+
+    def test_restart_never_retries_previously_accepted_smoke_leaf(self):
+        attempted = []
+        with self.assertRaisesRegex(graph_scheduler.ContractError, "not dependency-ready"):
+            graph_scheduler._schedule_progressive(
+                self.graph, lambda node: attempted.append(node),
+                lambda _node, _job: True, accepted_nodes=["probe:leaf_a"],
+                preferred_leaf="probe:leaf_a", stop_after_accept=True,
+            )
+        self.assertEqual(attempted, [])
+
 
 class ProbeGraphTests(unittest.TestCase):
     def setUp(self):

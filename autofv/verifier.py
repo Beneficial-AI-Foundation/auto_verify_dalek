@@ -849,7 +849,9 @@ def _clean_worker_checks(
         )
         graph_matches = final_graph["graph_sha256"] == state["graph"]["graph_sha256"]
 
-        program = axiom_audit.reference_program(reference)
+        program = axiom_audit.reference_program(
+            reference, allow_empty=state.get("partial_target") is not None
+        )
         _seed_file(
             image,
             volume,
@@ -896,12 +898,16 @@ def _clean_worker_checks(
         )
         nodes = state["graph"]["selected_nodes"]
         statuses = _final_statuses(final_aeneas, nodes)
-        meaning = {
-            "reference_integrity": True,
-            "statement_equivalence": True,
-            "non_vacuity": True,
-            "broken_implementation_rejected": True,
-        }
+        meaning = (
+            {}
+            if state.get("partial_target") is not None else
+            {
+                "reference_integrity": True,
+                "statement_equivalence": True,
+                "non_vacuity": True,
+                "broken_implementation_rejected": True,
+            }
+        )
         return {
             "verifier_worker_id": invocation["verifier_worker_id"],
             "runtime_identity": True,
@@ -966,6 +972,9 @@ def verify_run(
     state = verification_state or run.get("verification_state")
     if not isinstance(state, dict):
         raise VerifierInfrastructureError("clean verifier state is missing")
+    partial_target = state.get("partial_target")
+    if partial_target is not None and not isinstance(run.get("preparation_manifest"), dict):
+        raise VerifierError("partial verification requires prepared input")
     bundle = _run_bundle(run, state)
     reference_bytes = _trusted_reference(run)
     reference_sha256 = _sha256(reference_bytes)
@@ -994,9 +1003,11 @@ def verify_run(
             "native_decide_policy_sha256"
         ],
         "axiom_scope_sha256": axiom_audit.inventory_scope_sha256(
-            axiom_audit.expected_inventory(state, _strict_json(
-                reference_bytes, "verifier_reference"
-            ))
+            axiom_audit.expected_inventory(
+                state,
+                {"leaves": []} if partial_target is not None
+                else _strict_json(reference_bytes, "verifier_reference"),
+            )
         ),
         "toolchain_lock_sha256": toolchain_lock_sha256,
         "accepted_commit": expected["accepted_commit"],
@@ -1015,6 +1026,10 @@ def verify_run(
             run, invocation, members, state, reference
         ),
     }
+    if partial_target is not None:
+        return verify_bundle(
+            bundle, invocation, partial_target=partial_target, **arguments
+        )
     if isinstance(run.get("preparation_manifest"), dict):
         return terminal_verifier.verify_terminal_bundle(
             bundle,
@@ -1198,6 +1213,97 @@ def _validate_legacy_report(
     body = {key: value for key, value in report.items() if key != "report_sha256"}
     if report["report_sha256"] != _sha256(_canonical_bytes(body)):
         raise VerifierError("clean verifier report hash mismatch")
+    return report
+
+
+def validate_partial_report(
+    report: Any,
+    run: dict[str, Any],
+    expected: dict[str, Any],
+    target: str,
+    state: dict[str, Any],
+) -> dict[str, Any]:
+    """Authorize only one kernel-checked helper; never upgrade the root or L4."""
+    fields = (INVOCATION_FIELDS - {"schema"}) | {
+        "schema", "partial_target", "root_status", "checks", "failures",
+        "native_decide_uses", "accepted_native_decide_uses",
+        "hidden_native_decide_uses", "compiler_assumptions", "axiom_inventory",
+        "axiom_inventory_sha256", "meaning", "sorry_count_before",
+        "sorry_count_after", "evidence_level", "verdict", "report_sha256",
+    }
+    if not isinstance(report, dict) or set(report) != fields:
+        raise VerifierError("partial verifier report fields mismatch")
+    _valid_invocation({
+        **{field: report[field] for field in INVOCATION_FIELDS - {"schema"}},
+        "schema": "autofv-verifier-invocation/v1",
+    })
+    accepted = state.get("accepted_nodes")
+    graph = state.get("graph", {})
+    if (
+        report["schema"] != "autofv-verifier-partial-report/v1"
+        or report["run_id"] != run.get("run_id")
+        or report["agent_worker_id"] != run.get("agent_worker_id")
+        or not report["verifier_worker_id"]
+        or report["verifier_worker_id"] == report["agent_worker_id"]
+        or report["partial_target"] != target
+        or state.get("partial_target") != target
+        or target in graph.get("frozen_targets", [])
+        or not isinstance(accepted, list)
+        or any(not isinstance(item, str) for item in accepted)
+        or bool(set(accepted) & set(graph.get("frozen_targets", [])))
+        or target not in accepted
+        or report["root_status"] != "unverified"
+        or report["verdict"] != "SCOPED_PASS"
+        or report["evidence_level"] != "P1"
+        or report["failures"] != []
+        or report["meaning"] != {}
+        or report["checks"] != {
+            name: name != "meaning" for name in verifier_bundle.REPORT_CHECKS
+        }
+        or any(type(value) is not bool for value in report["checks"].values())
+        or type(report["sorry_count_before"]) is not int
+        or type(report["sorry_count_after"]) is not int
+        or not 0 <= report["sorry_count_after"] <= report["sorry_count_before"]
+        or report["compiler_assumptions"] != state.get("compiler_assumptions")
+    ):
+        raise VerifierError("partial verifier report reduction mismatch")
+    for field, value in expected.items():
+        if field != "schema" and report.get(field) != value:
+            raise VerifierError(f"partial verifier {field} mismatch")
+    if report["report_sha256"] != _sha256(_canonical_bytes({
+        key: value for key, value in report.items() if key != "report_sha256"
+    })):
+        raise VerifierError("partial verifier report hash mismatch")
+    try:
+        audit_reference = {"leaves": []}
+        inventory = report["axiom_inventory"]
+        scope = axiom_audit.expected_inventory(state, audit_reference)
+        if axiom_audit.inventory_scope_sha256(scope) != expected["axiom_scope_sha256"]:
+            raise contracts.ContractError("partial verifier scope mismatch")
+        closures = {
+            item["declaration"]: sorted({item["declaration"], *item["dependencies"]})
+            for item in inventory
+        }
+        skeleton = axiom_audit.expected_inventory(
+            state, audit_reference, observed_closures=closures
+        )
+        lock = contracts.load_toolchain_lock()
+        axiom_audit.validate_inventory(
+            inventory, skeleton, lock=lock,
+            compiler_assumptions=state["compiler_assumptions"],
+        )
+        axiom_audit.validate_report_inventory(
+            inventory, lock=lock,
+            compiler_assumptions=report["compiler_assumptions"],
+            require_complete=False,
+            expected_scope_sha256=expected["axiom_scope_sha256"],
+            expected_identity_sha256=report["axiom_inventory_sha256"],
+            accepted_native_decide_uses=report["accepted_native_decide_uses"],
+            hidden_native_decide_uses=report["hidden_native_decide_uses"],
+            required_native_uses=report["native_decide_uses"],
+        )
+    except (KeyError, TypeError, ValueError, contracts.ContractError, OSError) as exc:
+        raise VerifierError("partial verifier axiom inventory mismatch") from exc
     return report
 
 

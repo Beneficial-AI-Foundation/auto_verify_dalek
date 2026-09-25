@@ -88,6 +88,8 @@ CHECKPOINT_STATE_FIELDS = (
     "verifier_report",
     "verifier_invocation_id",
     "verifier_axiom_inventory_sha256",
+    "partial_verifier_inflight",
+    "partial_verifier_reports",
     "counterexample_certificate",
     "contract_semantic_review",
     "lanes",
@@ -133,6 +135,8 @@ class _RunState(TypedDict, total=False):
     verifier_report: dict[str, Any]
     verifier_invocation_id: str
     verifier_axiom_inventory_sha256: str
+    partial_verifier_inflight: dict[str, str]
+    partial_verifier_reports: dict[str, dict[str, Any]]
     counterexample_certificate: dict[str, Any]
     contract_semantic_review: dict[str, Any]
     termination_detail: str | dict[str, str]

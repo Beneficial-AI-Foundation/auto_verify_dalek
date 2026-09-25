@@ -7,7 +7,7 @@ import hashlib
 from copy import deepcopy
 from typing import Any
 
-from . import agent_lane, role_journal, worker
+from . import agent_lane, role_journal, terminal_run, worker
 from .contracts import ContractError, ContractInconclusive
 from .diamond import (
     _candidate_record,
@@ -22,11 +22,13 @@ from .graph_scheduler import (
     _contract_frontier,
     _immediate_consumers,
     _revise_contract_fingerprint,
+    _schedule_progressive,
     _schedule_proofs,
 )
 from .run_state import (
     _RunState,
     _canonical_sha256,
+    _charge_wall,
     _event_once,
     _external_call,
     _node_update,
@@ -179,6 +181,227 @@ def _contract_record(
     }
 
 
+def _run_prepared_progressive(
+    state: _RunState,
+    lanes_by_node: dict[str, dict[str, Any]],
+    root: str,
+    supplied: dict[str, Any],
+    dependency: dict[str, Any],
+    *,
+    proof_only: bool,
+) -> dict[str, Any]:
+    """Bundle each ready contract and proof before releasing its consumers."""
+    graph, run, manifest = state["graph"], state["run"], state["manifest"]
+    top = supplied["model_fingerprint"]
+    previous = state.get("contracts")
+    if previous is None:
+        contracts = {
+            "attempts": [], "provisional": {}, "frozen": {},
+            "frozen_fingerprints": [top], "invalidated_fingerprints": [],
+            "feasibility": [], "immediate_consumer_requirements": {},
+            "node_fingerprints": {root: top}, "revision_lineage": [],
+            "max_revisions": 1, "proof_barrier": "progressive",
+        }
+        state["contracts"] = contracts
+    elif (
+        not isinstance(previous, dict)
+        or previous.get("proof_barrier") != "progressive"
+        or previous.get("node_fingerprints", {}).get(root) != top
+    ):
+        raise ContractError("progressive contract replay identity changed")
+    else:
+        contracts = previous
+    policy = run["native_decide_policy_sha256"]
+    supplied_spec = graph["supplied_specs"][root]
+    for key in ("candidate_receipts", "processed_candidate_sha256", "accepted_sequence", "accepted_nodes"):
+        run[key] = state.setdefault(key, [])
+    state.setdefault("lane_intervals", {})
+    state.setdefault("proof_patch_sha256", {})
+    state.setdefault("partial_verifier_reports", {})
+
+    # An interrupted local acceptance is not a verified helper. Replay its
+    # clean check (or fail closed if the earlier invocation is unresolved).
+    for node in sorted(state["accepted_nodes"]):
+        if node != root:
+            terminal_run.clean_verify_partial(
+                state, node, checkpoint=_checkpoint_if_enabled, charge_wall=_charge_wall
+            )
+
+    def run_bundle(node: str) -> dict[str, Any]:
+        lane = lanes_by_node[node]
+        dependencies = sorted(
+            required for consumer, required in graph["term_dependencies"] if consumer == node
+        )
+        if node != root:
+            declaration = f"{node.removeprefix('probe:')}_spec"
+            consumers = _immediate_consumers(graph, node)
+            known = [
+                contracts["node_fingerprints"][consumer]
+                for consumer in consumers if consumer in contracts["node_fingerprints"]
+            ]
+            requirements = [
+                {"consumer": consumer, "fingerprint": contracts["node_fingerprints"].get(consumer),
+                 "source_path": graph["source_paths"][consumer]}
+                for consumer in consumers
+            ]
+            contracts["immediate_consumer_requirements"][node] = requirements
+            candidate = _run_role_lane(
+                state, graph, lane, "specifier", statement_sha256=top,
+                contract_fingerprint=top,
+                input_hashes=[graph["graph_sha256"], _canonical_sha256(dependency), *known],
+                role_context={
+                    "node": node, "dependency_plan": dependency,
+                    "immediate_consumer_requirements": requirements,
+                    "supplied_target_contract": {"declaration": supplied_spec, "canon": supplied["canon"]},
+                    "accepted_dependency_contracts": [
+                        contracts["frozen"][f"{item.removeprefix('probe:')}_spec"]
+                        for item in dependencies
+                    ],
+                },
+            )
+            provisional = _contract_record(candidate, declaration, policy, known)
+            contracts["attempts"].append(provisional)
+            contracts["provisional"][declaration] = provisional
+            reviewed = _run_role_lane(
+                state, graph, lane, "spec_reviewer", statement_sha256=top,
+                contract_fingerprint=provisional["model_fingerprint"],
+                input_hashes=[provisional["model_fingerprint"], *known],
+                role_context={
+                    "node": node, "provisional_contract": provisional,
+                    "immediate_consumers": requirements,
+                    "diagnostic": {"status": "review_required_before_freeze"},
+                },
+            )
+            record = _contract_record(reviewed, declaration, policy, known)
+            prior = contracts["frozen"].get(declaration)
+            if prior is not None and prior["model_fingerprint"] != record["model_fingerprint"]:
+                raise ContractError("reviewed progressive contract changed on restart")
+            contracts["attempts"].append(record)
+            contracts["provisional"].pop(declaration, None)
+            contracts["frozen"][declaration] = {**record, "status": "frozen"}
+            contracts["node_fingerprints"][node] = record["model_fingerprint"]
+            contracts["frozen_fingerprints"] = sorted(set(contracts["node_fingerprints"].values()))
+            _checkpoint_if_enabled(state, f"contracts:progressive:{node}:frozen")
+        fingerprints = sorted({
+            contracts["node_fingerprints"][node],
+            *(contracts["node_fingerprints"][item] for item in dependencies),
+        })
+        state["target_states"][node].update(
+            phase="proof", contract_fingerprint=contracts["node_fingerprints"][node]
+        )
+        proposed = _run_role_lane(
+            state, graph, lane, "prover", statement_sha256=top,
+            contract_fingerprint=contracts["node_fingerprints"][node],
+            input_hashes=[
+                *fingerprints,
+                *(state["proof_patch_sha256"][item] for item in dependencies),
+                graph["graph_sha256"],
+            ],
+            role_context={
+                "node": node,
+                "contract": contracts["frozen"].get(
+                    f"{node.removeprefix('probe:')}_spec",
+                    {"declaration": supplied_spec, "canon": supplied["canon"]},
+                ),
+                "dependency_contracts": [
+                    contracts["frozen"][f"{item.removeprefix('probe:')}_spec"]
+                    for item in dependencies
+                ],
+            },
+        )
+        reviewed = _run_role_lane(
+            state, graph, lane, "proof_reviewer", statement_sha256=top,
+            contract_fingerprint=contracts["node_fingerprints"][node],
+            input_hashes=[*fingerprints, _canonical_sha256(proposed)],
+            role_context={
+                "node": node, "proposed_candidate": proposed,
+                "contract_fingerprints": fingerprints,
+            },
+        )
+        if reviewed["claimed_status"] != "candidate":
+            reviewed = _run_role_lane(
+                state, graph, lane, "repair", statement_sha256=top,
+                contract_fingerprint=contracts["node_fingerprints"][node],
+                input_hashes=[*fingerprints, _canonical_sha256(reviewed)],
+                role_context={
+                    "node": node, "proposed_candidate": proposed,
+                    "review_rejection": reviewed,
+                },
+            )
+        return {"node": node, "lane": lane, "fingerprints": fingerprints,
+                "reviewed": reviewed}
+
+    def accept_bundle(node: str, job: dict[str, Any]) -> bool:
+        selected = job["reviewed"]
+        if selected["claimed_status"] != "candidate":
+            _block_dependents(state, node, "proof_repair_exhausted:" + selected["claimed_status"])
+            return False
+        lane = job["lane"]
+        for attempt in range(2):
+            response = _lane_candidate_response(selected, lane, job["fingerprints"])
+            candidate = _candidate_record(response, lane, policy)
+            _external_call(
+                state, f"lane:{lane['lane_id']}:persist:{selected['role']}",
+                lambda: worker.persist_lane_result(
+                    run, lane, {key: value for key, value in candidate.items() if key != "response"}
+                ),
+            )
+            transition = _checkpoint_candidate(state, candidate, manifest)
+            if transition["status"].startswith("accepted"):
+                break
+            if attempt:
+                break
+            selected = _run_role_lane(
+                state, graph, lane, "repair", statement_sha256=top,
+                contract_fingerprint=contracts["node_fingerprints"][node],
+                input_hashes=[*job["fingerprints"], _canonical_sha256(selected),
+                              _canonical_sha256(transition)],
+                role_context={
+                    "node": node, "rejected_candidate": selected,
+                    "controller_rejection": transition,
+                },
+            )
+            if selected["claimed_status"] != "candidate":
+                break
+        if not transition["status"].startswith("accepted"):
+            _block_dependents(state, node, "proof_repair_exhausted:" + str(transition.get("reason")))
+            return False
+        if node != root:
+            state["target_states"][node]["status"] = "unverified"
+            report = terminal_run.clean_verify_partial(
+                state, node, checkpoint=_checkpoint_if_enabled, charge_wall=_charge_wall
+            )
+            if report["verdict"] != "SCOPED_PASS":
+                raise ContractError("helper lacks independent scoped verification")
+            state["target_states"][node]["status"] = "accepted"
+        return True
+
+    preferred = "probe:curve25519_dalek.backend.serial.u64.scalar.m"
+    if preferred not in graph["selected_nodes"]:
+        preferred = None
+    if proof_only and state["accepted_nodes"]:
+        if len(state["accepted_nodes"]) != 1 or root in state["accepted_nodes"]:
+            raise ContractError("resumed smoke accepted nodes changed")
+        accepted_nodes = set(state["accepted_nodes"])
+    else:
+        accepted_nodes = _schedule_progressive(
+            graph, run_bundle, accept_bundle, accepted_nodes=state["accepted_nodes"],
+            preferred_leaf=preferred if proof_only else None,
+            stop_after_accept=proof_only,
+        )
+    state["accepted_nodes"][:] = sorted(accepted_nodes)
+    return _node_update(
+        state, accepted=state["accepted"], contracts=contracts,
+        receipts=state["receipts"], cost=state["cost"], lanes=state["lanes"],
+        lane_intervals=state["lane_intervals"],
+        candidate_receipts=state["candidate_receipts"],
+        processed_candidate_sha256=state["processed_candidate_sha256"],
+        accepted_sequence=state["accepted_sequence"],
+        accepted_nodes=state["accepted_nodes"],
+        proof_patch_sha256=state["proof_patch_sha256"],
+    )
+
+
 def run_generic_role_path(state: _RunState) -> dict[str, Any]:
     """Execute the generic role sequence while retaining one acceptance writer."""
     graph, run, manifest = state["graph"], state["run"], state["manifest"]
@@ -194,10 +417,11 @@ def run_generic_role_path(state: _RunState) -> dict[str, Any]:
     supplied_spec = graph["supplied_specs"][root]
     supplied_source = supplied_statement["canon"]
     proof_only = run.get("execution_mode") == "proof_only"
+    prepared = isinstance(run.get("preparation_manifest"), dict)
     expected_lanes = _lane_descriptors(
         run,
         graph,
-        [root] if proof_only else graph["selected_nodes"],
+        [root] if proof_only and not prepared else graph["selected_nodes"],
         base_commit=run["base_commit"],
     )
     previous_lanes = state.get("lanes")
@@ -254,7 +478,7 @@ def run_generic_role_path(state: _RunState) -> dict[str, Any]:
     run["lanes"] = state["lanes"] = lanes
 
     dependency = None
-    if not proof_only:
+    if not proof_only or prepared:
         scout = _run_role_lane(
             state,
             graph,
@@ -285,6 +509,12 @@ def run_generic_role_path(state: _RunState) -> dict[str, Any]:
                 "selected_nodes": graph["selected_nodes"],
                 "term_dependencies": graph["term_dependencies"],
             },
+        )
+
+    if prepared:
+        return _run_prepared_progressive(
+            state, lanes_by_node, root, supplied_statement, dependency,
+            proof_only=proof_only,
         )
 
     policy_sha256 = run["native_decide_policy_sha256"]

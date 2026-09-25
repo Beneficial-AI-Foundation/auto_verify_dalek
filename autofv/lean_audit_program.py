@@ -631,10 +631,10 @@ def project_modules(state: dict[str, Any]) -> list[str]:
     )
 
 
-def reference_program(reference: dict[str, Any]) -> bytes:
+def reference_program(reference: dict[str, Any], *, allow_empty: bool = False) -> bytes:
     """Generate fixed names for every trusted hidden and meaning theorem."""
     leaves = reference.get("leaves")
-    if not isinstance(leaves, list) or not leaves:
+    if not isinstance(leaves, list) or (not leaves and not allow_empty):
         raise contracts.ContractError("verifier_reference_leaves_invalid")
     modules: set[str] = set()
     declarations = []

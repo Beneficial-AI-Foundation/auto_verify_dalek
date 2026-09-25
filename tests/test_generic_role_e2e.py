@@ -15,7 +15,7 @@ from unittest import mock
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
 
 from autofv import agent_lane, axiom_audit, contract_feasibility, contracts, diamond
-from autofv import experiment, generic_role_runtime, results, run_state, verifier, verifier_bundle, worker
+from autofv import experiment, generic_role_runtime, results, run_state, terminal_run, verifier, verifier_bundle, worker
 from autofv import worker_runtime
 from tests.test_phase1_diamond import _SignedRoleProvider, _role_test_lock
 from tests.test_restart_budget import _checkpoint_state
@@ -81,7 +81,19 @@ class GenericRoleE2ETests(unittest.TestCase):
     def test_proof_only_runs_only_the_supplied_root_proof_roles(self):
         self._run(crash=False, proof_only=True)
 
-    def _run(self, *, crash, snapshot_attack=None, initialization_crash=None, replay_crash=None, proof_only=False):
+    def test_prepared_smoke_verifies_leaf_before_stopping(self):
+        self._run(crash=False, proof_only=True, prepared=True)
+
+    def test_prepared_smoke_resumes_accepted_leaf_without_a_second_model_call(self):
+        self._run(crash=True, proof_only=True, prepared=True)
+
+    def test_prepared_full_releases_root_only_after_verified_leaf(self):
+        self._run(crash=False, prepared=True)
+
+    def test_prepared_full_resumes_accepted_leaf_before_root(self):
+        self._run(crash=True, prepared=True)
+
+    def _run(self, *, crash, snapshot_attack=None, initialization_crash=None, replay_crash=None, proof_only=False, prepared=False):
         key = Ed25519PrivateKey.from_private_bytes(bytes(range(1, 33)))
         lock = _role_test_lock(key)
         with tempfile.TemporaryDirectory() as tmp:
@@ -102,6 +114,8 @@ class GenericRoleE2ETests(unittest.TestCase):
             state['run'].update(project_dir=str(project), base_commit=commit, lock=lock)
             if proof_only:
                 state['run']['execution_mode'] = 'proof_only'
+            if prepared:
+                state['run']['preparation_manifest'] = {'schema': 'preparation-manifest/v1'}
             state['accepted'] = state['working'] = {'accepted_commit': commit, 'accepted_tree_sha256': hashlib.sha256(git('archive', 'HEAD')).hexdigest()}
             state['run']['accepted'] = state['accepted']
             graph = {'frozen_targets': [ROOT], 'selected_nodes': [LEAF, ROOT],
@@ -134,7 +148,7 @@ class GenericRoleE2ETests(unittest.TestCase):
                     evidence = []
                     if job['role'] in {'specifier', 'spec_reviewer'}:
                         repair = job['role_context'].get('diagnostic', {}).get('status') == 'failed'
-                        proposition = 'Arithmetic.increment n = n + 1' if repair else 'n ≤ Arithmetic.increment n'
+                        proposition = 'Arithmetic.increment n = n + 1' if repair or prepared else 'n ≤ Arithmetic.increment n'
                         evidence = ['statement:theorem Arithmetic.increment_spec (n : Nat) : ' + proposition]
                     action = {'name': 'submit_candidate', 'arguments': {
                         'patch': patches[path], 'claimed_status': 'candidate', 'evidence': evidence}}
@@ -195,7 +209,12 @@ class GenericRoleE2ETests(unittest.TestCase):
                     if (replay_crash == 'specifier' and is_specifier) or (replay_crash == 'feasibility' and transition == 'build:generic-provisional-consumer:after'):
                         replay_interrupted = True
                         raise KeyboardInterrupt('second interruption during contract replay')
-            with mock.patch.object(contracts, 'load_toolchain_lock', return_value=lock), mock.patch.object(agent_lane, 'run_role_conversation', side_effect=role), mock.patch.object(worker_runtime, '_git', side_effect=lambda _run, *args: git(*args)), mock.patch.object(worker_runtime, '_docker', side_effect=compiler_boundary), mock.patch.object(diamond, '_checkpoint_if_enabled', side_effect=checkpoint), mock.patch.object(run_state, '_checkpoint_if_enabled', side_effect=checkpoint), mock.patch.object(agent_lane, '_checkpoint_if_enabled', side_effect=checkpoint), mock.patch.object(worker, 'save_lane_snapshot', side_effect=save_snapshot):
+            def partial_receipt(_state, node, **_kwargs):
+                self.assertEqual(node, LEAF)
+                self.assertEqual(_state['accepted_nodes'], [LEAF])
+                return {'verdict': 'SCOPED_PASS', 'partial_target': node, 'root_status': 'unverified'}
+            with mock.patch.object(contracts, 'load_toolchain_lock', return_value=lock), mock.patch.object(agent_lane, 'run_role_conversation', side_effect=role), mock.patch.object(worker_runtime, '_git', side_effect=lambda _run, *args: git(*args)), mock.patch.object(worker_runtime, '_docker', side_effect=compiler_boundary), mock.patch.object(diamond, '_checkpoint_if_enabled', side_effect=checkpoint), mock.patch.object(run_state, '_checkpoint_if_enabled', side_effect=checkpoint), mock.patch.object(agent_lane, '_checkpoint_if_enabled', side_effect=checkpoint), mock.patch.object(worker, 'save_lane_snapshot', side_effect=save_snapshot), mock.patch.object(terminal_run, 'clean_verify_partial', side_effect=partial_receipt) as partial:
+
                 if crash or initialization_crash:
                     with self.assertRaises(KeyboardInterrupt):
                         diamond._agent_loop(state)
@@ -240,6 +259,18 @@ class GenericRoleE2ETests(unittest.TestCase):
                         self.assertEqual(state['proof_patch_sha256'][LEAF], proof_before)
                         self.assertEqual(len(calls), calls_before)
                 state.update(diamond._agent_loop(state))
+            if prepared:
+                partial.assert_called_once()
+                self.assertEqual(set(state['accepted_nodes']), {LEAF} if proof_only else {LEAF, ROOT})
+                self.assertEqual(state['target_states'][ROOT]['status'], 'pending' if proof_only else 'accepted')
+                roles = [job_by_request[call['request_id'].split('-')[1]]['role'] for call in calls]
+                self.assertLess(roles.index('spec_reviewer'), roles.index('prover'))
+                if not proof_only:
+                    self.assertEqual(roles.count('prover'), 3)
+                    self.assertEqual((project / 'Pipeline/Finish.lean').read_text(), patched['Pipeline/Finish.lean'])
+                else:
+                    self.assertEqual((project / 'Pipeline/Finish.lean').read_text(), SOURCES['Pipeline/Finish.lean'])
+                return
             if replay_crash:
                 self.assertEqual(state['proof_patch_sha256'][LEAF], proof_before)
                 self.assertEqual(state['target_states'][LEAF]['accepted_commit'], accepted_before['accepted_commit'])

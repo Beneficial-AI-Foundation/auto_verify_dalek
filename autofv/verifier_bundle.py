@@ -6,7 +6,8 @@ import hashlib
 import io
 import json
 import tarfile
-from pathlib import PurePosixPath
+import traceback
+from pathlib import Path, PurePosixPath
 from typing import Any, Callable
 
 from . import axiom_audit, contracts as contract_rules, probes, worker
@@ -377,16 +378,20 @@ def verify_bundle(
 ) -> dict[str, Any]:
     """Validate hostile input, then reduce clean-worker observations to a report."""
     invocation = _valid_invocation(invocation)
+
+    def report(*args: Any, **kwargs: Any) -> dict[str, Any]:
+        return _report(*args, partial_target=partial_target, **kwargs)
+
     failures: list[str] = []
     checks: dict[str, bool] = {}
     try:
         members = _read_bundle(bundle, invocation["bundle_sha256"])
     except VerifierError as exc:
-        return _report(invocation, [str(exc)], checks={"bundle": False})
+        return report(invocation, [str(exc)], checks={"bundle": False})
     checks["bundle"] = True
 
     if _sha256(reference_bytes) != invocation["reference_sha256"]:
-        return _report(
+        return report(
             invocation,
             ["reference_hash_mismatch"],
             checks={**checks, "reference_integrity": False},
@@ -398,7 +403,7 @@ def verify_bundle(
         state = _strict_json(members["state/verification.json"], "verifier_state")
         reference = _strict_json(reference_bytes, "verifier_reference")
     except VerifierError as exc:
-        return _report(invocation, [str(exc)], checks=checks)
+        return report(invocation, [str(exc)], checks=checks)
 
     _append(
         failures,
@@ -422,7 +427,7 @@ def verify_bundle(
         or state.get("schema") != "autofv-verifier-state/v1"
         or (partial_target is not None and state["partial_target"] != partial_target)
     ):
-        return _report(invocation, failures + ["verifier_state_mismatch"], checks=checks)
+        return report(invocation, failures + ["verifier_state_mismatch"], checks=checks)
 
     try:
         recomputed_graph = probes.parse_probe_bytes(
@@ -431,7 +436,7 @@ def verify_bundle(
             members["evidence/probe-aeneas.json"],
         )
     except probes.ProbeError:
-        return _report(invocation, failures + ["probe_recompute_failed"], checks=checks)
+        return report(invocation, failures + ["probe_recompute_failed"], checks=checks)
     _append(
         failures,
         "graph_mismatch",
@@ -561,7 +566,7 @@ def verify_bundle(
         _append(failures, "native_decide_inventory_invalid", True)
 
     if failures:
-        return _report(invocation, failures, checks=checks, state=state)
+        return report(invocation, failures, checks=checks, state=state)
     try:
         observed = run_checks(
             members, state,
@@ -570,15 +575,24 @@ def verify_bundle(
     except VerifierInfrastructureError:
         raise
     except Exception as exc:
-        return _report(
+        # Keep only the raising code location: exception text may carry Lean output.
+        origin = [
+            frame for frame in traceback.extract_tb(exc.__traceback__)
+            if Path(frame.filename).parent == Path(__file__).parent
+        ][-1]
+        return report(
             invocation,
             ["clean_worker_failed"],
             checks=checks,
             state=state,
-            meaning={"error_sha256": _sha256(str(exc).encode())},
+            meaning={
+                "error_sha256": _sha256(str(exc).encode()),
+                "error_type": type(exc).__name__,
+                "error_origin": f"{Path(origin.filename).name}:{origin.name}:{origin.lineno}",
+            },
         )
     if not isinstance(observed, dict) or set(observed) != OBSERVED_FIELDS:
-        return _report(invocation, ["clean_worker_report_invalid"], checks=checks, state=state)
+        return report(invocation, ["clean_worker_report_invalid"], checks=checks, state=state)
 
     _append(
         failures,
@@ -763,7 +777,7 @@ def verify_bundle(
             "meaning": partial_target is None and "meaning_incomplete" not in failures,
         }
     )
-    return _report(
+    return report(
         invocation,
         failures,
         checks=checks,
@@ -776,5 +790,4 @@ def verify_bundle(
         ),
         sorry_count_before=observed["sorry_count_before"],
         sorry_count_after=observed["sorry_count_after"],
-        partial_target=partial_target,
     )

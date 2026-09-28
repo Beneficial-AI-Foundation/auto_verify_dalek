@@ -370,6 +370,31 @@ class PartialDeclarationTests(unittest.TestCase):
                 }))
                 verifier.validate_partial_report(forged, run, invocation, helper, state)
 
+    def test_partial_worker_failure_names_fixed_code_not_error_text(self):
+        state, helper, audit_reference, _ = self._case()
+        bundle = verifier_bundle.build_bundle(_members(state))
+        invocation = _invocation(bundle, state, audit_reference=audit_reference)
+        run = {"run_id": invocation["run_id"], "agent_worker_id": invocation["agent_worker_id"]}
+        for crash, origin in (
+            (lambda *_: axiom_audit.single_environment(b"Secret.proof", "L", []),
+             r"lean_audit_program\.py:single_environment:\d+"),
+            (lambda *_: (_ for _ in ()).throw(KeyError("Secret.proof")),
+             r"verifier_bundle\.py:verify_bundle:\d+"),
+        ):
+            with self.subTest(origin=origin):
+                report = verifier_bundle.verify_bundle(
+                    bundle, invocation, reference_bytes=REFERENCE.read_bytes(),
+                    run_checks=crash, partial_target=helper,
+                )
+                self.assertEqual(report["failures"], ["clean_worker_failed"])
+                self.assertEqual((report["partial_target"], report["root_status"]), (helper, "unverified"))
+                with self.assertRaisesRegex(
+                    verifier.VerifierError,
+                    rf"^partial verifier failed: clean_worker_failed \((ContractError|KeyError) at {origin}\)$",
+                ) as caught:
+                    verifier.validate_partial_report(report, run, invocation, helper, state)
+                self.assertNotIn("Secret", str(caught.exception))
+
     def test_forged_helper_closure_and_commit_never_pass(self):
         state, helper, audit_reference, observed = self._case()
         cases = []

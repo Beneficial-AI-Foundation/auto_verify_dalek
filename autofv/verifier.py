@@ -1328,6 +1328,19 @@ def validate_partial_report(
         **{field: report[field] for field in INVOCATION_FIELDS - {"schema"}},
         "schema": "autofv-verifier-invocation/v1",
     })
+    if report["schema"] == "autofv-verifier-partial-report/v1" and report["verdict"] == "FAIL":
+        failures = report["failures"] if isinstance(report["failures"], list) else []
+        codes = ", ".join(
+            code if isinstance(code, str) and re.fullmatch(r"[a-z_]+", code) else "unclassified"
+            for code in failures
+        ) or "unclassified"
+        meaning = report["meaning"] if isinstance(report["meaning"], dict) else {}
+        where = (
+            f" ({meaning['error_type']} at {meaning['error_origin']})"
+            if "clean_worker_failed" in failures and {"error_type", "error_origin"} <= set(meaning)
+            else ""
+        )
+        raise VerifierError(f"partial verifier failed: {codes}{where}")
     accepted = state.get("accepted_nodes")
     graph = state.get("graph", {})
     if (

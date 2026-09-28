@@ -289,6 +289,20 @@ class PartialDeclarationTests(unittest.TestCase):
         self.assertIn(b"namespace AutoFVVerifier", source)
         self.assertNotIn(b"hidden_", source)
 
+    def test_partial_audit_imports_candidate_modules_without_hidden_reference(self):
+        reference = axiom_audit.reference_program({"leaves": []}, allow_empty=True)
+        self.assertNotIn(b"import Diamond.Top", reference)
+        source = axiom_audit.audit_program(
+            [{"declaration": "Diamond.helper_spec", "dependencies": []}],
+            project_modules=["Diamond.Top"],
+        )
+        self.assertIn(
+            b"def autofvAuditCandidateFiles : List (Name \xc3\x97 System.FilePath) := "
+            b"[(`Diamond.Top, \".lake/build/lib/lean/Diamond/Top.olean\"), "
+            b"(`AutoFVReferenceCheck, \".lake/build/lib/lean/AutoFVReferenceCheck.olean\")]",
+            source,
+        )
+
     def _case(self):
         state = _state()
         state["compiler_assumptions"] = verifier.compiler_assumptions(experiment.load_toolchain_lock())
@@ -979,3 +993,41 @@ class VerifyRunWiringTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class BoundedCommandTests(unittest.TestCase):
+    """Verifier commands cannot outlive their deadline or flood host memory."""
+
+    def test_output_is_captured_within_bounds(self):
+        done = verifier._bounded_run(("sh", "-c", "cat; echo err >&2"), b"in", 10)
+        self.assertEqual((done.returncode, done.stdout, done.stderr), (0, b"in", b"err\n"))
+
+    def test_timeout_kills_the_whole_process_group(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            marker = Path(tmp) / "survived"
+            with self.assertRaisesRegex(verifier.VerifierInfrastructureError, "timed out"):
+                verifier._bounded_run(
+                    ("sh", "-c", f"(sleep 2; touch {marker}) & sleep 30"), None, 0.5
+                )
+            subprocess.run(("sleep", "2.5"))
+            self.assertFalse(marker.exists())
+
+    def test_output_flood_is_cut_off(self):
+        with mock.patch.object(verifier, "MAX_COMMAND_OUTPUT_BYTES", 1024):
+            with self.assertRaisesRegex(verifier.VerifierInfrastructureError, "exceeded"):
+                verifier._bounded_run(("sh", "-c", "yes"), None, 10)
+
+    def test_failed_container_run_is_removed_by_name(self):
+        calls = []
+
+        def shell(*argv, **_kwargs):
+            calls.append(argv)
+            if "run" in argv:
+                raise verifier.VerifierInfrastructureError("clean verifier command timed out")
+            return subprocess.CompletedProcess(argv, 0, b"", b"")
+
+        with mock.patch.object(verifier, "_shell", side_effect=shell):
+            with self.assertRaisesRegex(verifier.VerifierInfrastructureError, "timed out"):
+                verifier._docker("run", "--rm", "image", "true")
+        name = calls[0][calls[0].index("--name") + 1]
+        self.assertEqual(calls[1], ("sudo", "docker", "rm", "-f", name))

@@ -27,8 +27,11 @@ from .axiom_inventory import (
     validate_report_inventory,
 )
 from .lean_audit_program import (
+    AUDIT_LIBRARY,
     AUDIT_SOURCE,
+    BASELINE_LIBRARY,
     BASELINE_SOURCE,
+    CANDIDATE_ROOT,
     EXPECTED_OLEAN,
     EXPECTED_SOURCE,
     REFERENCE_OLEAN,
@@ -41,6 +44,7 @@ from .lean_audit_program import (
     expected_program,
     project_modules,
     reference_program,
+    single_environment,
 )
 from .lean_kernel_audit import (
     _binding_pairs,
@@ -57,7 +61,8 @@ from .lean_kernel_audit import (
 )
 
 __all__ = [
-    "AUDIT_SOURCE", "BASELINE_SOURCE", "COMPILER_AXIOMS",
+    "AUDIT_LIBRARY", "AUDIT_SOURCE", "BASELINE_LIBRARY", "BASELINE_SOURCE",
+    "CANDIDATE_ROOT", "COMPILER_AXIOMS",
     "EXPECTED_OLEAN", "EXPECTED_SOURCE", "REFERENCE_OLEAN",
     "REFERENCE_SOURCE", "accepted_declaration_for_target",
     "audit_artifacts", "audit_program", "baseline_program",
@@ -68,7 +73,7 @@ __all__ = [
     "native_use_provenance", "olean_paths", "parse_inventory",
     "parse_kernel_identities", "parse_kernel_replay",
     "parse_kernel_replay_provenance", "parse_project_kernel_identities",
-    "prepare_auditor", "project_modules",
+    "prepare_auditor", "project_modules", "single_environment",
     "proof_generated_project_dependencies", "reference_program",
     "type_bindings", "validate_inventory", "validate_report_inventory",
 ]

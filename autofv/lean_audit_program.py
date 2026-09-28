@@ -22,6 +22,10 @@ BASELINE_SOURCE = "AutoFVBaselineAudit.lean"
 AUDIT_SOURCE = "AutoFVAxiomAudit.lean"
 EXPECTED_SOURCE = "AutoFVExpected.lean"
 EXPECTED_OLEAN = ".lake/build/lib/lean/AutoFVExpected.olean"
+AUDIT_LIBRARY = "AutoFVAxiomAuditLib"
+BASELINE_LIBRARY = "AutoFVBaselineAuditLib"
+# Transferred candidate oleans stay off the audit volume's import search path.
+CANDIDATE_ROOT = ".autofv-candidate/"
 
 
 def _trusted_baseline_prelude(
@@ -194,12 +198,9 @@ def _trusted_baseline_prelude(
         "          | none => {}\n"
         "        autofvAuditCheckedClosure env "
         "(dependencies.foldl (fun pending name => name :: pending) rest) seen\n"
-        "def autofvAuditReplayConstants "
+        "def autofvAuditReplayConstantsIn (pristine : Environment) "
         "(source : Std.HashMap Name ConstantInfo) (roots : List Name) : "
         "IO (Environment × NameSet) := do\n"
-        "  let artifacts \u2190 autofvAuditBaselineArtifacts\n"
-        "  let pristine \u2190 importModules autofvAuditBaselineImports {} 0 "
-        "(loadExts := true) (arts := artifacts)\n"
         "  let mut renamed := autofvAuditForcedReplay\n"
         "  for name in roots do\n"
         "    let some expected := source[name]?\n"
@@ -240,6 +241,21 @@ def _trusted_baseline_prelude(
         "closure.any renamed.contains then\n"
         "      throw <| IO.userError s!\"checked closure retained untrusted dependency {name}\"\n"
         "  return (checked.env, renamed)\n"
+        "unsafe def autofvAuditEnableInitializersImpl : IO Unit := "
+        "enableInitializersExecution\n"
+        "@[implemented_by autofvAuditEnableInitializersImpl] "
+        "opaque autofvAuditEnableInitializers : IO Unit\n"
+        "def autofvAuditReplayConstants "
+        "(source : Std.HashMap Name ConstantInfo) (roots : List Name) : "
+        "IO (Environment × NameSet) := do\n"
+        "  let artifacts \u2190 autofvAuditBaselineArtifacts\n"
+        "  -- Lean v4.31 refuses extension loading otherwise; only pristine\n"
+        "  -- baseline and dependency modules are imported here.\n"
+        "  autofvAuditEnableInitializers\n"
+        "  let pristine \u2190 importModules autofvAuditBaselineImports {} 0 "
+        "(loadExts := true) (arts := artifacts)\n"
+        "  autofvAuditReplayConstantsIn pristine source roots\n"
+
         "syntax (name := autofvReplayTransferred) "
         "\"#autofv_replay_transferred\" : command\n"
         "@[command_elab autofvReplayTransferred] "
@@ -371,7 +387,6 @@ def expected_program(project_modules: list[str], bindings: list[str]) -> bytes:
 
 
 def _audit_prelude(
-    imports: list[str],
     project_modules: list[str],
     replay_modules: list[str] | None = None,
     *,
@@ -379,9 +394,15 @@ def _audit_prelude(
     permitted_sorry: list[str] | None = None,
     preserved_baseline: bool = False,
     bindings: list[str] | None = None,
+    candidate_root: str = "",
+    subjects: list[tuple[str, str]] | None = None,
 ) -> str:
-    """Build a trusted-only executable that loads candidate constants inertly."""
-    imports = [_lean_name(name) for name in imports]
+    """Build a trusted-only executable that reads candidate module data inertly.
+
+    Candidate constants come from each replay module's own ``.olean`` via
+    ``readModuleData``; the candidate environment is never imported, so only
+    the pristine baseline environment is loaded in this process.
+    """
     replay_modules = [_lean_name(name) for name in (replay_modules or [])]
     bindings = bindings or []
     exact_types, defeq_types, exact_values = _binding_pairs(bindings)
@@ -401,21 +422,31 @@ def _audit_prelude(
         preserved_baseline=preserved_baseline,
         expected_module=bool(bindings),
     )
-    artifact_lines = []
-    for module in replay_modules:
-        relative = module.replace(".", "/")
-        artifact_lines.append(
-            f"  artifacts := artifacts.insert `{module} "
-            f"(.ofArray #[\".lake/build/lib/lean/{relative}.olean\"])"
-        )
+    candidate_files = ", ".join(
+        f"(`{module}, \"{candidate_root}.lake/build/lib/lean/"
+        f"{module.replace('.', '/')}.olean\")"
+        for module in replay_modules
+    )
     source += (
-        f"def autofvAuditCandidateImports : Array Import := "
-        f"#[{', '.join(f'{{module := `{name}}}' for name in imports)}]\n"
-        "def autofvAuditCandidateArtifacts : IO (NameMap ImportArtifacts) := do\n"
-        "  let mut artifacts : NameMap ImportArtifacts := {}\n"
-        + "\n".join(artifact_lines)
-        + ("\n" if artifact_lines else "")
-        + "  return artifacts\n"
+        f"def autofvAuditCandidateFiles : List (Name × System.FilePath) := "
+        f"[{candidate_files}]\n"
+        "def autofvAuditReadCandidates : "
+        "IO (Std.HashMap Name ConstantInfo × List Name × NameSet) := do\n"
+        "  let mut constants : Std.HashMap Name ConstantInfo := {}\n"
+        "  let mut roots : List Name := []\n"
+        "  let mut project : NameSet := {}\n"
+        "  for (module, path) in autofvAuditCandidateFiles do\n"
+        "    let (data, _region) ← readModuleData path\n"
+        "    if data.isModule || data.constNames.size != data.constants.size then\n"
+        "      throw <| IO.userError s!\"unsupported candidate module data {module}\"\n"
+        "    for name in data.constNames, info in data.constants do\n"
+        "      if info.name != name || constants.contains name then\n"
+        "        throw <| IO.userError s!\"inconsistent candidate constant {name}\"\n"
+        "      constants := constants.insert name info\n"
+        "      roots := name :: roots\n"
+        "      if autofvAuditProjectModules.contains module then\n"
+        "        project := project.insert name\n"
+        "  return (constants, roots, project)\n"
         f"def autofvAuditExactTypeBindings : List (Name × Name) := "
         f"[{lean_pairs(exact_types)}]\n"
         f"def autofvAuditDefeqTypeBindings : List (Name × Name) := "
@@ -502,7 +533,7 @@ def _audit_prelude(
         "  IO.println s!\"AUTOFV_VALUE_BEGIN:{publicName}\"\n"
         "  IO.println s!\"{repr (info.value?.map (autofvAuditPublicExpr renamed))}\"\n"
         "  IO.println s!\"AUTOFV_VALUE_END:{publicName}\"\n"
-        "def autofvAuditObserveIO (source checked : Environment) "
+        "def autofvAuditObserveIO (project : NameSet) (checked : Environment) "
         "(renamed : NameSet) (publicRoot : Name) : IO Unit := do\n"
         "  let actualRoot := autofvAuditActualName renamed publicRoot\n"
         "  unless checked.contains actualRoot do\n"
@@ -514,7 +545,7 @@ def _audit_prelude(
         "[(autofvAuditPublicName renamed name).toString]) []\n"
         "  let projectDependencies := closure.foldl (fun names dependency =>\n"
         "    let publicName := autofvAuditPublicName renamed dependency\n"
-        "    if autofvAuditIsProject source publicName then "
+        "    if project.contains publicName then "
         "names ++ [publicName.toString] else names) []\n"
         "  IO.println s!\"AUTOFV_CHECKED_DEPS:{publicRoot}:"
         "{String.intercalate \",\" checkedDependencies}\"\n"
@@ -524,8 +555,31 @@ def _audit_prelude(
         "{String.intercalate \",\" projectDependencies}\"\n"
         "  for dependency in closure do\n"
         "    let publicName := autofvAuditPublicName renamed dependency\n"
-        "    if publicName == publicRoot || autofvAuditIsProject source publicName then\n"
+        "    if publicName == publicRoot || project.contains publicName then\n"
         "      autofvAuditLogIdentityIO checked renamed publicName\n"
+        f"def autofvAuditSubjects : List (Name × Name) := "
+        f"[{lean_pairs([(_lean_name(a), _lean_name(b)) for a, b in subjects or []])}]\n"
+        "partial def autofvAuditConclusion : Expr → Expr\n"
+        "  | .forallE _ _ body _ => autofvAuditConclusion body\n"
+        "  | expression => expression\n"
+        "-- ponytail: rejects only the cheapest vacuous helper forms (subject never\n"
+        "-- mentioned, `True`, syntactically reflexive `=`/`↔`); semantic adequacy\n"
+        "-- remains the spec reviewer's and the fingerprint-bound L4 review's job.\n"
+        "def autofvAuditValidateSubjects (env : Environment) "
+        "(renamed : NameSet) : IO Unit := do\n"
+        "  for (spec, subject) in autofvAuditSubjects do\n"
+        "    let some info := env.find? (autofvAuditActualName renamed spec)\n"
+        "      | throw <| IO.userError s!\"helper declaration missing {spec}\"\n"
+        "    let conclusion := autofvAuditConclusion info.type\n"
+        "    let reflexive := match conclusion.eq?, conclusion.iff? with\n"
+        "      | some (_, lhs, rhs), _ => lhs == rhs\n"
+        "      | _, some (lhs, rhs) => lhs == rhs\n"
+        "      | none, none => false\n"
+        "    unless info.type.getUsedConstants.contains "
+        "(autofvAuditActualName renamed subject) do\n"
+        "      throw <| IO.userError s!\"helper statement omits its subject {spec}\"\n"
+        "    if conclusion.isConstOf ``True || reflexive then\n"
+        "      throw <| IO.userError s!\"helper statement is vacuous {spec}\"\n"
         "def autofvAuditPrintAxiomsIO (checked : Environment) "
         "(renamed : NameSet) (publicRoot : Name) : IO Unit := do\n"
         "  let actualRoot := autofvAuditActualName renamed publicRoot\n"
@@ -540,17 +594,13 @@ def _audit_prelude(
         "  else\n"
         "    IO.println s!\"'{publicRoot}' depends on axioms: "
         "[{String.intercalate \", \" names}]\"\n"
-        "def autofvAuditRunIO (observations declarations : List Name) : IO Unit := do\n"
-        "  let artifacts ← autofvAuditCandidateArtifacts\n"
-        "  let source ← importModules autofvAuditCandidateImports {} 0 "
-        "(plugins := #[]) (loadExts := false) (arts := artifacts)\n"
-        "  let mut constants : Std.HashMap Name ConstantInfo := {}\n"
-        "  let mut roots : List Name := []\n"
-        "  for (name, info) in source.constants.toList do\n"
-        "    constants := constants.insert name info\n"
-        "    if autofvAuditIsTransferred source name then roots := name :: roots\n"
-        "  let (checked, renamed) ← autofvAuditReplayConstants constants roots\n"
+        "def autofvAuditRunWith (replay : Std.HashMap Name ConstantInfo → List Name → "
+        "IO (Environment × NameSet)) (observations declarations : List Name) : "
+        "IO Unit := do\n"
+        "  let (constants, roots, project) ← autofvAuditReadCandidates\n"
+        "  let (checked, renamed) ← replay constants roots\n"
         "  autofvAuditValidateBindings checked renamed\n"
+        "  autofvAuditValidateSubjects checked renamed\n"
         "  let replayed := roots.map Name.toString\n"
         "  let checkedNames := roots.foldl (fun names name => if renamed.contains name "
         "then names ++ [name.toString] else names) []\n"
@@ -561,8 +611,12 @@ def _audit_prelude(
         "{String.intercalate \",\" checkedNames}\"\n"
         "  IO.println s!\"AUTOFV_BASELINE_BOUND:"
         "{String.intercalate \",\" baselineNames}\"\n"
-        "  for name in observations do autofvAuditObserveIO source checked renamed name\n"
+        "  for name in observations do autofvAuditObserveIO project checked renamed name\n"
         "  for name in declarations do autofvAuditPrintAxiomsIO checked renamed name\n"
+        "def autofvAuditRunIO : List Name → List Name → IO Unit :=\n"
+        "  autofvAuditRunWith autofvAuditReplayConstants\n"
+        "def autofvAuditRunIn (pristine : Environment) : List Name → List Name → IO Unit :=\n"
+        "  autofvAuditRunWith (autofvAuditReplayConstantsIn pristine)\n"
     )
     return source
 
@@ -573,6 +627,8 @@ def audit_program(
     bindings: list[str] | None = None,
     project_modules: list[str] | None = None,
     permitted_incomplete_accepted: list[str] | None = None,
+    candidate_root: str = "",
+    subjects: list[tuple[str, str]] | None = None,
 ) -> bytes:
     permitted = _permitted_incomplete_accepted(
         expected, permitted_incomplete_accepted
@@ -581,18 +637,39 @@ def audit_program(
     observations = _observation_names(expected)
     return (
         _audit_prelude(
-            ["AutoFVReferenceCheck"],
             project_modules or [],
             [*(project_modules or []), "AutoFVReferenceCheck"],
             forced_replay=declarations,
             permitted_sorry=permitted,
             preserved_baseline=bool(project_modules),
             bindings=bindings,
+            candidate_root=candidate_root,
+            subjects=subjects,
         )
         + f"def main : IO Unit := autofvAuditRunIO "
         f"[{', '.join(f'`{name}' for name in observations)}] "
         f"[{', '.join(f'`{name}' for name in declarations)}]\n"
     ).encode()
+
+
+def single_environment(
+    program: bytes, library: str, imports: list[str]
+) -> tuple[bytes, bytes]:
+    """Split a standalone auditor into a Lean-only library and a pristine entry.
+
+    ``lean --run`` loads ``Lean`` for the auditor and again inside its pristine
+    ``importModules``.  Elaborating an entry that imports the pristine modules
+    and the library keeps a single environment, like compiling any project file.
+    """
+    prelude, marker, arguments = program.decode().rpartition(
+        "def main : IO Unit := autofvAuditRunIO "
+    )
+    if not marker or "\n" in arguments.strip():
+        raise contracts.ContractError("kernel audit program is invalid")
+    entry = "".join(
+        f"import {_lean_name(module)}\n" for module in [*imports, library]
+    ) + f"run_cmd do autofvAuditRunIn (← Lean.getEnv) {arguments.strip()}\n"
+    return prelude.encode(), entry.encode()
 
 
 def baseline_program(
@@ -613,7 +690,7 @@ def baseline_program(
             for source in state["graph"]["source_paths"].values()
         }
     )
-    program = _audit_prelude(modules, modules, modules)
+    program = _audit_prelude(modules, modules)
     program += (
         f"def main : IO Unit := autofvAuditRunIO "
         f"[{', '.join(f'`{name}' for name in definitions)}] []\n"
@@ -708,7 +785,6 @@ def counterexample_audit_program(
     ]
     return (
         _audit_prelude(
-            [module],
             sorted({_lean_name(name) for name in baseline_modules or []}),
             [module],
             forced_replay=[theorem],

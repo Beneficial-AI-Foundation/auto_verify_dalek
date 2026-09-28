@@ -6,10 +6,13 @@ from pathlib import PurePosixPath
 from typing import Any, Callable
 
 from . import contracts
-from .axiom_inventory import expected_inventory, parse_inventory
+from .axiom_inventory import _contract_nodes, expected_inventory, parse_inventory
 from .lean_audit_program import (
+    AUDIT_LIBRARY,
     AUDIT_SOURCE,
+    BASELINE_LIBRARY,
     BASELINE_SOURCE,
+    CANDIDATE_ROOT,
     EXPECTED_OLEAN,
     EXPECTED_SOURCE,
     REFERENCE_OLEAN,
@@ -17,6 +20,7 @@ from .lean_audit_program import (
     baseline_program,
     expected_program,
     project_modules,
+    single_environment,
 )
 from .lean_kernel_audit import (
     _observation_names,
@@ -74,7 +78,10 @@ def checkout_volume(
             "test ! -e repo/AutoFVReferenceCheck.lean; "
             "test ! -e repo/AutoFVExpected.lean; "
             "test ! -e repo/AutoFVBaselineAudit.lean; "
-            "test ! -e repo/AutoFVAxiomAudit.lean",
+            "test ! -e repo/AutoFVAxiomAudit.lean; "
+            f"test ! -e repo/{AUDIT_LIBRARY}.lean; "
+            f"test ! -e repo/{BASELINE_LIBRARY}.lean; "
+            f"test ! -e repo/{CANDIDATE_ROOT}",
             "autofv-checkout",
             commit,
             runtime=runtime,
@@ -82,6 +89,40 @@ def checkout_volume(
     )
     if completed.returncode:
         raise contracts.ContractError("kernel audit checkout failed")
+
+
+def _install_auditor(
+    *,
+    image: str,
+    volume: str,
+    runtime: str,
+    docker: Callable[..., Any],
+    runtime_argv: Callable[..., tuple[str, ...]],
+    seed_file: Callable[..., None],
+    library: str,
+    library_source: bytes,
+    entry_path: str,
+    entry_source: bytes,
+) -> None:
+    """Compile the Lean-only auditor library, then seed its pristine entry."""
+    seed_file(image, volume, f"repo/{library}.lean", library_source, runtime=runtime)
+    built = docker(
+        *runtime_argv(
+            image,
+            volume,
+            "lake",
+            "env",
+            "lean",
+            "-o",
+            f".lake/build/lib/lean/{library}.olean",
+            f"{library}.lean",
+            workdir="/project/repo",
+            runtime=runtime,
+        )
+    )
+    if built.returncode:
+        raise contracts.ContractError("kernel auditor build failed")
+    seed_file(image, volume, f"repo/{entry_path}", entry_source, runtime=runtime)
 
 
 def prepare_auditor(
@@ -177,13 +218,18 @@ def prepare_auditor(
     )
     if preserved.returncode:
         raise contracts.ContractError("kernel baseline preservation failed")
+    modules = project_modules(state)
+    auditor = {
+        "image": image, "volume": volume, "runtime": runtime, "docker": docker,
+        "runtime_argv": runtime_argv, "seed_file": seed_file,
+    }
     baseline_source, definitions = baseline_program(state, reference)
-    seed_file(
-        image,
-        volume,
-        f"repo/{BASELINE_SOURCE}",
-        baseline_source,
-        runtime=runtime,
+    library_source, entry_source = single_environment(
+        baseline_source, BASELINE_LIBRARY, modules
+    )
+    _install_auditor(
+        **auditor, library=BASELINE_LIBRARY, library_source=library_source,
+        entry_path=BASELINE_SOURCE, entry_source=entry_source,
     )
     observed = docker(
         *runtime_argv(
@@ -192,7 +238,6 @@ def prepare_auditor(
             "lake",
             "env",
             "lean",
-            "--run",
             BASELINE_SOURCE,
             workdir="/project/repo",
             runtime=runtime,
@@ -207,17 +252,26 @@ def prepare_auditor(
     )
     if not set(identities) <= replayed:
         raise contracts.ContractError("kernel declaration replay is incomplete")
-    seed_file(
-        image,
-        volume,
-        f"repo/{AUDIT_SOURCE}",
+    library_source, entry_source = single_environment(
         audit_program(
             expected,
             bindings=bindings,
-            project_modules=project_modules(state),
+            project_modules=modules,
             permitted_incomplete_accepted=permitted_incomplete_accepted,
+            candidate_root=CANDIDATE_ROOT,
+            # Model-authored P1 helper statements must be about their node.
+            subjects=sorted(
+                (declaration, node.removeprefix("probe:"))
+                for declaration, node in _contract_nodes(state, reference).items()
+                if node != f"probe:{declaration}"
+            ) if state.get("partial_target") is not None else None,
         ),
-        runtime=runtime,
+        AUDIT_LIBRARY,
+        [*modules, "AutoFVExpected"],
+    )
+    _install_auditor(
+        **auditor, library=AUDIT_LIBRARY, library_source=library_source,
+        entry_path=AUDIT_SOURCE, entry_source=entry_source,
     )
     return identities
 
@@ -239,9 +293,13 @@ def audit_artifacts(
     seed_file: Callable[..., None],
     permitted_incomplete_accepted: list[str] | None = None,
 ) -> list[dict[str, Any]]:
-    """Transfer only selected oleans, then query axioms on a read-only volume."""
+    """Transfer only selected oleans, then query axioms on a read-only volume.
+
+    Candidate oleans land outside the import search path, so the auditor's
+    frontend imports only the pristine baseline and reads candidates as data.
+    """
     _permitted_incomplete_accepted(expected, permitted_incomplete_accepted)
-    allowed = {f"repo/{path}" for path in artifacts}
+    allowed = {f"repo/{CANDIDATE_ROOT}{path}" for path in artifacts}
     for path in artifacts:
         completed = docker(
             *runtime_argv(
@@ -263,7 +321,7 @@ def audit_artifacts(
         seed_file(
             image,
             audit_volume,
-            f"repo/{path}",
+            f"repo/{CANDIDATE_ROOT}{path}",
             completed.stdout,
             runtime=runtime,
             allowed_paths=allowed,
@@ -275,7 +333,6 @@ def audit_artifacts(
             "lake",
             "env",
             "lean",
-            "--run",
             AUDIT_SOURCE,
             workdir="/project/repo",
             runtime=runtime,

@@ -6,11 +6,15 @@ import copy
 import hashlib
 import io
 import re
+import os
 import secrets
 import shlex
+import signal
 import stat
 import subprocess
 import tarfile
+import threading
+import time
 from pathlib import Path, PurePosixPath
 from typing import Any
 
@@ -70,18 +74,81 @@ def _command_detail(completed: subprocess.CompletedProcess[bytes]) -> str:
     )[-4000:]
 
 
+# ponytail: fixed per-command ceilings; derive them from the run's absolute
+# deadline once the smoke/full wall envelope for verification is decided.
+COMMAND_TIMEOUT_SECONDS = 1200
+MAX_COMMAND_OUTPUT_BYTES = 64 * 1024 * 1024
+
+
+def _bounded_run(
+    argv: tuple[str, ...], input_bytes: bytes | None, timeout: float
+) -> subprocess.CompletedProcess[bytes]:
+    """Run with a wall deadline and per-stream cap, killing the process group."""
+    process = subprocess.Popen(
+        argv,
+        stdin=subprocess.PIPE if input_bytes is not None else subprocess.DEVNULL,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        start_new_session=True,
+    )
+    captured: dict[str, bytes] = {}
+    overflow = threading.Event()
+
+    def drain(name: str, stream: Any) -> None:
+        data = bytearray()
+        while chunk := stream.read(1 << 16):
+            if len(data) + len(chunk) > MAX_COMMAND_OUTPUT_BYTES:
+                overflow.set()
+                break
+            data += chunk
+        captured[name] = bytes(data)
+
+    readers = [
+        threading.Thread(target=drain, args=(name, stream), daemon=True)
+        for name, stream in (("stdout", process.stdout), ("stderr", process.stderr))
+    ]
+    for reader in readers:
+        reader.start()
+    deadline = time.monotonic() + timeout
+    try:
+        if input_bytes is not None:
+            try:
+                process.stdin.write(input_bytes)
+                process.stdin.close()
+            except BrokenPipeError:
+                pass
+        while process.poll() is None:
+            if overflow.is_set() or time.monotonic() >= deadline:
+                raise VerifierInfrastructureError(
+                    "clean verifier command output exceeded its bound"
+                    if overflow.is_set()
+                    else "clean verifier command timed out"
+                )
+            time.sleep(0.05)
+    except BaseException:
+        try:
+            os.killpg(process.pid, signal.SIGKILL)
+        except ProcessLookupError:
+            pass
+        process.wait()
+        raise
+    for reader in readers:
+        reader.join()
+    if overflow.is_set():
+        raise VerifierInfrastructureError("clean verifier command output exceeded its bound")
+    return subprocess.CompletedProcess(
+        argv, process.returncode, captured.get("stdout", b""), captured.get("stderr", b"")
+    )
+
+
 def _shell(
     *argv: str, input_bytes: bytes | None = None, timeout: int | None = None
 ) -> subprocess.CompletedProcess[bytes]:
-    try:
-        completed = subprocess.run(
-            ("limactl", "shell", VERIFIER_VM, "--", *argv),
-            input=input_bytes,
-            capture_output=True,
-            timeout=timeout,
-        )
-    except subprocess.TimeoutExpired as exc:
-        raise VerifierInfrastructureError("clean verifier command timed out") from exc
+    completed = _bounded_run(
+        ("limactl", "shell", VERIFIER_VM, "--", *argv),
+        input_bytes,
+        timeout or COMMAND_TIMEOUT_SECONDS,
+    )
     if completed.returncode:
         detail = _command_detail(completed)
         raise VerifierInfrastructureError(
@@ -93,7 +160,21 @@ def _shell(
 def _docker(
     *argv: str, input_bytes: bytes | None = None, timeout: int | None = None
 ) -> subprocess.CompletedProcess[bytes]:
-    return _shell("sudo", "docker", *argv, input_bytes=input_bytes, timeout=timeout)
+    """Name every container so a killed host client cannot orphan it in the VM."""
+    if argv[:1] != ("run",) or "--name" in argv:
+        return _shell("sudo", "docker", *argv, input_bytes=input_bytes, timeout=timeout)
+    name = f"autofv-verify-cmd-{secrets.token_hex(8)}"
+    try:
+        return _shell(
+            "sudo", "docker", "run", "--name", name, *argv[1:],
+            input_bytes=input_bytes, timeout=timeout,
+        )
+    except BaseException:
+        try:
+            _shell("sudo", "docker", "rm", "-f", name, timeout=60)
+        except VerifierInfrastructureError:
+            pass
+        raise
 
 
 def _check_quiet_verifier_vm() -> None:
@@ -389,15 +470,23 @@ def _seed_verified_dependency_cache(
     extract = _runtime_argv(
         image, volume, "tar", "-xf", "-", "-C", "/project"
     )
-    command = "zstd -dc | " + shlex.join(("sudo", "docker", *extract[:2], "-i", *extract[2:]))
+    name = f"autofv-verify-cmd-{secrets.token_hex(8)}"
+    command = "zstd -dc | " + shlex.join(
+        ("sudo", "docker", *extract[:2], "-i", "--name", name, *extract[2:])
+    )
     try:
         with archive.open("rb") as stream:
             completed = subprocess.run(
                 ("limactl", "shell", VERIFIER_VM, "--", "sh", "-eu", "-c", command),
                 stdin=stream,
                 capture_output=True,
+                timeout=COMMAND_TIMEOUT_SECONDS,
             )
-    except OSError as exc:
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        try:
+            _shell("sudo", "docker", "rm", "-f", name, timeout=60)
+        except VerifierInfrastructureError:
+            pass
         raise VerifierInfrastructureError(
             "clean verifier dependency cache seed failed"
         ) from exc
@@ -507,6 +596,8 @@ def _seed_file(
         f"repo/{axiom_audit.EXPECTED_SOURCE}",
         f"repo/{axiom_audit.BASELINE_SOURCE}",
         f"repo/{axiom_audit.AUDIT_SOURCE}",
+        f"repo/{axiom_audit.AUDIT_LIBRARY}.lean",
+        f"repo/{axiom_audit.BASELINE_LIBRARY}.lean",
         "repo/AutoFVCounterexample.lean",
         "repo/AutoFVCounterexampleAudit.lean",
         f"repo/{counterexample.OLEAN_PATH}",

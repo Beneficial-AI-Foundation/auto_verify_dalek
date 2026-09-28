@@ -48,7 +48,8 @@ class KernelAxiomAuditTests(unittest.TestCase):
             (counterexample, b"import AutoFVCounterexample"),
         ):
             self.assertNotIn(forbidden_import, program)
-            self.assertIn(b"(plugins := #[]) (loadExts := false)", program)
+            self.assertIn(b"readModuleData path", program)
+            self.assertNotIn(b"importModules autofvAuditCandidate", program)
             self.assertIn(b"def main", program)
 
     def test_unchanged_baseline_helper_reaching_stub_is_fresh_replayed(self):
@@ -99,7 +100,6 @@ class KernelAxiomAuditTests(unittest.TestCase):
             audit = root / axiom_audit.AUDIT_SOURCE
             audit.write_text(
                 axiom_audit._audit_prelude(
-                    ["Demo"],
                     ["Demo"],
                     ["Demo"],
                     forced_replay=["Demo.stub", "Demo.result"],
@@ -159,7 +159,6 @@ class KernelAxiomAuditTests(unittest.TestCase):
             audit = root / axiom_audit.AUDIT_SOURCE
             audit.write_text(
                 axiom_audit._audit_prelude(
-                    ["Demo"],
                     [],
                     ["Demo"],
                     forced_replay=["Demo.unfinished"],
@@ -418,7 +417,7 @@ class KernelAxiomAuditTests(unittest.TestCase):
         lean = shutil.which("lean")
         if lean is None:
             self.skipTest("Lean is not installed")
-        program = axiom_audit._audit_prelude([], [], []) + (
+        program = axiom_audit._audit_prelude([], []) + (
             "run_cmd do\n"
             "  let invalid : DefinitionVal := {\n"
             "    name := `AutoFV.invalidSerializedBody\n"

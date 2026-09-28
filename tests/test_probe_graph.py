@@ -100,6 +100,29 @@ class ProgressiveSchedulerTests(unittest.TestCase):
         self.assertEqual(attempted, ["probe:leaf_a", "probe:leaf_b"])
         self.assertEqual(accepted, {"probe:leaf_a"})
 
+    def test_shared_helper_is_proved_once_before_both_consumers(self):
+        graph = {
+            "selected_nodes": ["probe:root", "probe:left", "probe:right", "probe:shared"],
+            "term_dependencies": [["probe:root", "probe:left"], ["probe:root", "probe:right"],
+                                  ["probe:left", "probe:shared"], ["probe:right", "probe:shared"]],
+        }
+        attempted = []
+        accepted = graph_scheduler._schedule_progressive(
+            graph, lambda node: attempted.append(node) or node, lambda _node, _job: True,
+        )
+        self.assertEqual(attempted, ["probe:shared", "probe:left", "probe:right", "probe:root"])
+        self.assertEqual(accepted, set(graph["selected_nodes"]))
+
+    def test_failed_leaf_blocks_only_its_consumer_while_sibling_continues(self):
+        attempted = []
+        accepted = graph_scheduler._schedule_progressive(
+            self.graph,
+            lambda node: attempted.append(node) or node,
+            lambda node, _job: node != "probe:leaf_a",
+        )
+        self.assertEqual(attempted, ["probe:leaf_a", "probe:leaf_b"])
+        self.assertEqual(accepted, {"probe:leaf_b"})
+
     def test_restart_never_retries_previously_accepted_smoke_leaf(self):
         attempted = []
         with self.assertRaisesRegex(graph_scheduler.ContractError, "not dependency-ready"):

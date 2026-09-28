@@ -206,6 +206,7 @@ def _finish_attempt(
 
     try:
         results.persist_verifier_report(run, state.get("verifier_report"))
+        results.persist_partial_reports(run, state)
         results.persist_l0_sources(run, state)
         _checkpoint_if_enabled(state, "result:before-export")
     except (Exception, KeyboardInterrupt) as exc:

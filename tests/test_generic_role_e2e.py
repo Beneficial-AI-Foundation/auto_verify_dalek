@@ -87,13 +87,16 @@ class GenericRoleE2ETests(unittest.TestCase):
     def test_prepared_smoke_resumes_accepted_leaf_without_a_second_model_call(self):
         self._run(crash=True, proof_only=True, prepared=True)
 
+    def test_prepared_smoke_resumed_after_scoped_pass_marks_leaf_accepted(self):
+        self._run(crash=False, proof_only=True, prepared=True, partial_crash=True)
+
     def test_prepared_full_releases_root_only_after_verified_leaf(self):
         self._run(crash=False, prepared=True)
 
     def test_prepared_full_resumes_accepted_leaf_before_root(self):
         self._run(crash=True, prepared=True)
 
-    def _run(self, *, crash, snapshot_attack=None, initialization_crash=None, replay_crash=None, proof_only=False, prepared=False):
+    def _run(self, *, crash, snapshot_attack=None, initialization_crash=None, replay_crash=None, proof_only=False, prepared=False, partial_crash=False):
         key = Ed25519PrivateKey.from_private_bytes(bytes(range(1, 33)))
         lock = _role_test_lock(key)
         with tempfile.TemporaryDirectory() as tmp:
@@ -210,12 +213,17 @@ class GenericRoleE2ETests(unittest.TestCase):
                         replay_interrupted = True
                         raise KeyboardInterrupt('second interruption during contract replay')
             def partial_receipt(_state, node, **_kwargs):
+                nonlocal interrupted
                 self.assertEqual(node, LEAF)
                 self.assertEqual(_state['accepted_nodes'], [LEAF])
+                self.assertEqual(_state['target_states'][LEAF]['status'], 'unverified')
+                if partial_crash and not interrupted:
+                    interrupted = True
+                    raise KeyboardInterrupt('after durable scoped pass, before local status')
                 return {'verdict': 'SCOPED_PASS', 'partial_target': node, 'root_status': 'unverified'}
             with mock.patch.object(contracts, 'load_toolchain_lock', return_value=lock), mock.patch.object(agent_lane, 'run_role_conversation', side_effect=role), mock.patch.object(worker_runtime, '_git', side_effect=lambda _run, *args: git(*args)), mock.patch.object(worker_runtime, '_docker', side_effect=compiler_boundary), mock.patch.object(diamond, '_checkpoint_if_enabled', side_effect=checkpoint), mock.patch.object(run_state, '_checkpoint_if_enabled', side_effect=checkpoint), mock.patch.object(agent_lane, '_checkpoint_if_enabled', side_effect=checkpoint), mock.patch.object(worker, 'save_lane_snapshot', side_effect=save_snapshot), mock.patch.object(terminal_run, 'clean_verify_partial', side_effect=partial_receipt) as partial:
 
-                if crash or initialization_crash:
+                if crash or initialization_crash or partial_crash:
                     with self.assertRaises(KeyboardInterrupt):
                         diamond._agent_loop(state)
                     saved = run_state._load_checkpoint(root, {})
@@ -260,11 +268,19 @@ class GenericRoleE2ETests(unittest.TestCase):
                         self.assertEqual(len(calls), calls_before)
                 state.update(diamond._agent_loop(state))
             if prepared:
-                partial.assert_called_once()
+                self.assertEqual(partial.call_count, 2 if partial_crash else 1)
+                self.assertEqual(state['target_states'][LEAF]['status'], 'accepted')
                 self.assertEqual(set(state['accepted_nodes']), {LEAF} if proof_only else {LEAF, ROOT})
                 self.assertEqual(state['target_states'][ROOT]['status'], 'pending' if proof_only else 'accepted')
                 roles = [job_by_request[call['request_id'].split('-')[1]]['role'] for call in calls]
                 self.assertLess(roles.index('spec_reviewer'), roles.index('prover'))
+                contexts = {job['role']: job['role_context'] for job in job_by_request.values()
+                            if job['role'] in {'specifier', 'spec_reviewer'}}
+                consumer = [{'consumer': ROOT, 'fingerprint': state['contracts']['node_fingerprints'][ROOT],
+                             'source_path': 'Pipeline/Finish.lean'}]
+                self.assertEqual(contexts['specifier']['immediate_consumer_requirements'], consumer)
+                self.assertEqual(contexts['specifier']['supplied_target_contract']['declaration'], SPEC)
+                self.assertEqual(contexts['spec_reviewer']['immediate_consumers'], consumer)
                 if not proof_only:
                     self.assertEqual(roles.count('prover'), 3)
                     self.assertEqual((project / 'Pipeline/Finish.lean').read_text(), patched['Pipeline/Finish.lean'])

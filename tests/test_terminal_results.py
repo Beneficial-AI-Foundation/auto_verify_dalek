@@ -344,3 +344,60 @@ class TerminalResultTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class HelperSmokeAuditTests(unittest.TestCase):
+    """Leaf-first smoke evidence stays separate from root status and claims."""
+
+    def _case(self):
+        body = {
+            "schema": "autofv-verifier-partial-report/v1", "run_id": "run",
+            "agent_worker_id": "agent", "verifier_worker_id": "verifier",
+            "partial_target": "probe:leaf", "accepted_commit": "a" * 40,
+            "accepted_tree_sha256": "b" * 64, "invocation_id": "partial-1",
+            "verdict": "SCOPED_PASS", "evidence_level": "P1",
+            "root_status": "unverified", "failures": [],
+            "axiom_inventory_sha256": "c" * 64,
+        }
+        report = {**body, "report_sha256": hashlib.sha256(
+            result_audit.canonical_json_bytes(body)).hexdigest()}
+        result = {
+            "run_id": "run", "outcome": "unverified",
+            "termination_reason": "proof_search_incomplete",
+            "terminal_status": "unverified", "accepted_commit": "a" * 40,
+            "frozen_targets": ["probe:root"],
+            "target_states": {"probe:leaf": {"status": "accepted"},
+                              "probe:root": {"status": "pending"}},
+            "helper_verification": results.result_summary.helper_verification(
+                {"partial_verifier_reports": {"probe:leaf@" + "a" * 40: report}}
+            ),
+        }
+        return result, report
+
+    def _audit(self, result, reports):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / results.result_summary.PARTIAL_VERIFIER_PATH
+            path.parent.mkdir(parents=True)
+            path.write_bytes(result_audit._file_bytes(reports))
+            return result_audit._helper_smoke(result, Path(tmp))
+
+    def test_one_scoped_helper_pass_satisfies_smoke_without_root_claim(self):
+        result, report = self._case()
+        self.assertTrue(self._audit(result, [report]))
+        self.assertFalse(self._audit({**result, "outcome": "budget_exhausted"}, [report]))
+
+    def test_tampered_or_root_or_stale_helper_evidence_fails_closed(self):
+        result, report = self._case()
+        hostile = {
+            "tampered": (result, [{**report, "verdict": "PASS"}]),
+            "root_upgrade": (result, [{**report, "root_status": "verified"}]),
+            "root_target": ({**result, "frozen_targets": ["probe:leaf"]}, [report]),
+            "stale_commit": ({**result, "accepted_commit": "d" * 40}, [report]),
+            "not_accepted": ({**result, "target_states": {"probe:leaf": {"status": "unverified"}}}, [report]),
+            "extra_report": (result, [report, report]),
+        }
+        for name, (case, reports) in hostile.items():
+            with self.subTest(name), self.assertRaisesRegex(
+                result_audit.AuditError, "helper verification mismatch"
+            ):
+                self._audit(case, reports)

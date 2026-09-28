@@ -583,6 +583,7 @@ def render_attempt(
         "verifier_bundle_sha256": (
             report.get("bundle_sha256") if isinstance(report, dict) else None
         ),
+        "helper_verification": result_summary.helper_verification(state),
         "contract_semantic_review_sha256": (
             review.get("review_sha256") if review_valid and isinstance(review, dict) else None
         ),
@@ -928,6 +929,15 @@ def persist_verifier_report(run: dict[str, Any], report: Any) -> Path | None:
         return None
     path = Path(run["run_root"]) / "evidence" / "verifier.json"
     _atomic_write_once(path, _json_file_bytes(report))
+    return path
+
+
+def persist_partial_reports(run: dict[str, Any], state: dict[str, Any]) -> Path | None:
+    reports = result_summary.partial_reports(state)
+    if not reports:
+        return None
+    path = Path(run["run_root"]) / result_summary.PARTIAL_VERIFIER_PATH
+    _atomic_write_once(path, _json_file_bytes(reports))
     return path
 
 

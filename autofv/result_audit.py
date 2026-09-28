@@ -67,8 +67,6 @@ def _terminal_and_groups(result: dict[str, Any], *, smoke: bool) -> None:
         or result["outcome"] == result["termination_reason"]
     ):
         raise AuditError("retained terminal classification mismatch")
-    if smoke and result["outcome"] != "success":
-        raise AuditError("smoke attempt was not successful")
     groups = {
         "target_states": dict,
         "verified_counts": dict,
@@ -80,6 +78,53 @@ def _terminal_and_groups(result: dict[str, Any], *, smoke: bool) -> None:
     }
     if any(not isinstance(result.get(name), kind) for name, kind in groups.items()):
         raise AuditError("retained result audit fields mismatch")
+
+
+def _helper_smoke(result: dict[str, Any], run_root: Path) -> bool:
+    """Leaf-first smoke passes on one clean-verifier helper; the root stays unverified."""
+    records = result.get("helper_verification")
+    if (
+        result.get("outcome"),
+        result.get("termination_reason"),
+        result.get("terminal_status"),
+    ) != ("unverified", "proof_search_incomplete", "unverified") or not records:
+        return False
+    reports, _ = _read(
+        run_root / result_summary.PARTIAL_VERIFIER_PATH, "partial verifier reports"
+    )
+    states = result.get("target_states")
+    frozen = result.get("frozen_targets")
+    if (
+        not isinstance(records, list)
+        or not isinstance(reports, list)
+        or len(records) != 1
+        or len(reports) != 1
+        or not isinstance(reports[0], dict)
+        or not isinstance(states, dict)
+        or not isinstance(frozen, list)
+    ):
+        raise AuditError("retained helper verification mismatch")
+    report, record = reports[0], records[0]
+    node = report.get("partial_target")
+    body = {key: value for key, value in report.items() if key != "report_sha256"}
+    if (
+        report.get("report_sha256") != _sha(canonical_json_bytes(body))
+        or record != {field: report.get(field) for field in result_summary.HELPER_FIELDS}
+        or report.get("schema") != "autofv-verifier-partial-report/v1"
+        or report.get("verdict") != "SCOPED_PASS"
+        or report.get("evidence_level") != "P1"
+        or report.get("root_status") != "unverified"
+        or report.get("failures") != []
+        or report.get("run_id") != result.get("run_id")
+        or report.get("accepted_commit") != result.get("accepted_commit")
+        or not report.get("verifier_worker_id")
+        or report.get("verifier_worker_id") == report.get("agent_worker_id")
+        or node in frozen
+        or not isinstance(states.get(node), dict)
+        or states[node].get("status") != "accepted"
+    ):
+        raise AuditError("retained helper verification mismatch")
+    return True
 
 
 def _validate_counts(
@@ -403,8 +448,11 @@ def _validate_retained(
     run_root = Path(result.get("run_root", ""))
     if not run_root.is_absolute() or run_root.is_symlink() or not run_root.is_dir():
         raise AuditError("retained run root mismatch")
+    helper_smoke = smoke and _helper_smoke(result, run_root)
+    if smoke and result["outcome"] != "success" and not helper_smoke:
+        raise AuditError("smoke attempt was not successful")
     sources = _validate_l0_links(result, run_root, validate_l0)
-    _validate_counts(result, sources.get("probe"), smoke=smoke)
+    _validate_counts(result, sources.get("probe"), smoke=smoke and not helper_smoke)
     _validate_accounting(result, sources.get("model_receipt"), run_root)
     run_result, run_raw = _read(run_root / "result.json", "run result")
     if run_result != result or run_raw != retained_raw:

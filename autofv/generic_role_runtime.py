@@ -219,13 +219,20 @@ def _run_prepared_progressive(
     state.setdefault("proof_patch_sha256", {})
     state.setdefault("partial_verifier_reports", {})
 
+    def confirm_helper(node: str) -> None:
+        state["target_states"][node]["status"] = "unverified"
+        report = terminal_run.clean_verify_partial(
+            state, node, checkpoint=_checkpoint_if_enabled, charge_wall=_charge_wall
+        )
+        if report["verdict"] != "SCOPED_PASS":
+            raise ContractError("helper lacks independent scoped verification")
+        state["target_states"][node]["status"] = "accepted"
+
     # An interrupted local acceptance is not a verified helper. Replay its
     # clean check (or fail closed if the earlier invocation is unresolved).
     for node in sorted(state["accepted_nodes"]):
         if node != root:
-            terminal_run.clean_verify_partial(
-                state, node, checkpoint=_checkpoint_if_enabled, charge_wall=_charge_wall
-            )
+            confirm_helper(node)
 
     def run_bundle(node: str) -> dict[str, Any]:
         lane = lanes_by_node[node]
@@ -367,13 +374,7 @@ def _run_prepared_progressive(
             _block_dependents(state, node, "proof_repair_exhausted:" + str(transition.get("reason")))
             return False
         if node != root:
-            state["target_states"][node]["status"] = "unverified"
-            report = terminal_run.clean_verify_partial(
-                state, node, checkpoint=_checkpoint_if_enabled, charge_wall=_charge_wall
-            )
-            if report["verdict"] != "SCOPED_PASS":
-                raise ContractError("helper lacks independent scoped verification")
-            state["target_states"][node]["status"] = "accepted"
+            confirm_helper(node)
         return True
 
     preferred = "probe:curve25519_dalek.backend.serial.u64.scalar.m"

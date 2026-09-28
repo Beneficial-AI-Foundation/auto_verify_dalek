@@ -18,6 +18,31 @@ def _sha(value: Any) -> str:
     return hashlib.sha256(canonical_json_bytes(value)).hexdigest()
 
 
+PARTIAL_VERIFIER_PATH = "evidence/partial-verifier.json"
+HELPER_FIELDS = (
+    "partial_target", "accepted_commit", "accepted_tree_sha256", "invocation_id",
+    "verdict", "evidence_level", "root_status", "axiom_inventory_sha256",
+    "report_sha256",
+)
+
+
+def partial_reports(state: dict[str, Any]) -> list[dict[str, Any]]:
+    """Return clean-verifier scoped helper reports in receipt-key order."""
+    reports = state.get("partial_verifier_reports")
+    if not isinstance(reports, dict):
+        return []
+    return [copy.deepcopy(reports[key]) for key in sorted(reports)]
+
+
+def helper_verification(state: dict[str, Any]) -> list[dict[str, Any]]:
+    """Summarize helper evidence separately from root status and claims."""
+    return [
+        {field: report.get(field) for field in HELPER_FIELDS}
+        for report in partial_reports(state)
+        if isinstance(report, dict)
+    ]
+
+
 def receipt_cost(receipts: Any) -> Decimal:
     total = Decimal("0.000000")
     if not isinstance(receipts, list):

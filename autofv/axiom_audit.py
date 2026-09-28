@@ -8,6 +8,7 @@ from . import contracts
 from .audit_volume import audit_artifacts, checkout_volume, olean_paths, prepare_auditor
 from .axiom_inventory import (
     COMPILER_AXIOMS,
+    STANDARD_AXIOMS,
     _RECORD_FIELDS,
     _contract_dependency_nodes,
     _contract_nodes,
@@ -62,7 +63,7 @@ from .lean_kernel_audit import (
 
 __all__ = [
     "AUDIT_LIBRARY", "AUDIT_SOURCE", "BASELINE_LIBRARY", "BASELINE_SOURCE",
-    "CANDIDATE_ROOT", "COMPILER_AXIOMS",
+    "CANDIDATE_ROOT", "COMPILER_AXIOMS", "STANDARD_AXIOMS",
     "EXPECTED_OLEAN", "EXPECTED_SOURCE", "REFERENCE_OLEAN",
     "REFERENCE_SOURCE", "accepted_declaration_for_target",
     "audit_artifacts", "audit_program", "baseline_program",

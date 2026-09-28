@@ -14,7 +14,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from autofv import axiom_audit, contracts
+from autofv import axiom_audit, contracts, verifier
 
 LEAN = Path.home() / ".elan/toolchains/leanprover--lean4---v4.31.0/bin/lean"
 BASELINE = (
@@ -180,6 +180,15 @@ class PinnedLeanPartialAuditTests(unittest.TestCase):
                 self.assertEqual([record["declaration"] for record in inventory], ["Demo.value_spec"])
                 self.assertLessEqual(
                     set(inventory[0]["axioms"]), {"propext", "Quot.sound", "Classical.choice"})
+                lock = contracts.load_toolchain_lock()
+                axiom_audit.validate_report_inventory(
+                    inventory, lock=lock, compiler_assumptions=verifier.compiler_assumptions(lock),
+                    require_complete=False,
+                    expected_scope_sha256=axiom_audit.inventory_scope_sha256(inventory),
+                    expected_identity_sha256=axiom_audit.inventory_identity_sha256(inventory),
+                    accepted_native_decide_uses=[], hidden_native_decide_uses=[],
+                    required_native_uses=[],
+                )
 
     def test_hostile_helpers_fail_closed(self):
         cases = {

@@ -633,7 +633,7 @@ def validate_terminal_report(
             record.get("declaration")
             for record in inventory
             if isinstance(record, dict)
-            and set(record.get("axioms", [])) - axiom_audit.COMPILER_AXIOMS
+            and set(record.get("axioms", [])) - axiom_audit.COMPILER_AXIOMS - axiom_audit.STANDARD_AXIOMS
         } if isinstance(inventory, list) else set()
         if untrusted:
             permitted_untrusted_declarations = frozenset(

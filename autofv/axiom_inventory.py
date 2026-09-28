@@ -9,6 +9,8 @@ from . import contracts
 
 
 COMPILER_AXIOMS = frozenset({"Lean.ofReduceBool", "Lean.trustCompiler"})
+# Lean's own logical axioms, as in the frozen trust base.
+STANDARD_AXIOMS = frozenset({"propext", "Classical.choice", "Quot.sound"})
 _RECORD_FIELDS = frozenset(
     {
         "declaration",
@@ -361,7 +363,7 @@ def validate_inventory(
         axioms = set(actual["axioms"])
         uses = actual["native_decide_uses"]
         if (
-            axioms - COMPILER_AXIOMS
+            axioms - COMPILER_AXIOMS - STANDARD_AXIOMS
             and (
                 not allow_untrusted_axioms
                 or actual["origin"] != "accepted_spec"

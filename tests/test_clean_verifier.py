@@ -281,6 +281,37 @@ def _tar_entries(raw):
     return entries
 
 
+class SourceTrustTests(unittest.TestCase):
+    def test_only_trust_escapes_added_by_the_candidate_count(self):
+        graph = _state()["graph"]
+        paths = sorted(set(graph["source_paths"].values()))
+        frozen = {path: (TARGET / path).read_bytes() for path in paths}
+        frozen[paths[0]] += b"axiom frozen_external : True\n"
+
+        def archive(files):
+            raw = io.BytesIO()
+            with tarfile.open(fileobj=raw, mode="w") as tar:
+                for name, data in files.items():
+                    info = tarfile.TarInfo(name)
+                    info.size = len(data)
+                    tar.addfile(info, io.BytesIO(data))
+            return raw.getvalue()
+
+        _, baseline, _ = verifier._source_audit(archive(frozen), graph, [])
+        self.assertTrue(baseline)
+        for name, path, extra, passed in (
+            ("unchanged", paths[-1], b"", True),
+            ("new_axiom", paths[-1], b"axiom smuggled : False\n", False),
+            ("new_implemented_by", paths[-1], b"@[implemented_by f] def g := 0\n", False),
+            ("repeated_frozen_line", paths[0], b"axiom frozen_external : True\n", False),
+        ):
+            with self.subTest(name):
+                _, trust, _ = verifier._source_audit(
+                    archive({**frozen, path: frozen[path] + extra}), graph, []
+                )
+                self.assertEqual(not trust - baseline, passed)
+
+
 class PartialDeclarationTests(unittest.TestCase):
     def test_empty_reference_program_is_only_allowed_for_scoped_replay(self):
         with self.assertRaisesRegex(Exception, "verifier_reference_leaves_invalid"):

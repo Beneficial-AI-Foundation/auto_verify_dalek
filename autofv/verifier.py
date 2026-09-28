@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import copy
+from collections import Counter
 import hashlib
 import io
 import re
@@ -689,11 +690,12 @@ def _source_audit(
     archive: bytes,
     graph: dict[str, Any],
     claimed_uses: list[dict[str, Any]],
-) -> tuple[list[str], bool, list[dict[str, Any]]]:
+) -> tuple[list[str], Counter[tuple[str, str]], list[dict[str, Any]]]:
+    """Return holes, trust-escape lines and native uses; compare trust to the baseline."""
     paths = set(graph["source_paths"].values())
     sources = _archive_sources(archive, paths)
     holes: list[str] = []
-    trust_passed = True
+    trust: Counter[tuple[str, str]] = Counter()
     discovered: dict[tuple[str, str, str], tuple[str, str]] = {}
     for path, raw in sorted(sources.items()):
         text = raw.decode("utf-8", "strict")
@@ -703,7 +705,7 @@ def _source_audit(
             if re.search(r"\b(?:sorry|sorryAx|admit)\b", code):
                 holes.append(f"{path}:{line_number}")
             if re.search(r"^\s*axiom\b|@\[(?:extern|implemented_by)\b", code):
-                trust_passed = False
+                trust[(path, code.strip())] += 1
             if re.search(r"\bnative_decide\b", code):
                 expression_sha256 = _sha256(code.strip().encode())
                 discovered[(path, source_sha256, expression_sha256)] = (
@@ -720,7 +722,7 @@ def _source_audit(
         if isinstance(item, dict)
     }
     observed_uses = claimed_uses if claimed == set(discovered) else [{"mismatch": True}]
-    return holes, trust_passed, observed_uses
+    return holes, trust, observed_uses
 
 
 def _reference_program(raw: bytes) -> bytes:
@@ -983,8 +985,8 @@ def _clean_worker_checks(
         accepted_native_uses, hidden_native_uses, all_native_uses = (
             axiom_audit.native_use_provenance(axiom_inventory)
         )
-        baseline_holes, _, _ = _source_audit(base_archive, state["graph"], [])
-        holes, trust_passed, observed_uses = _source_audit(
+        baseline_holes, baseline_trust, _ = _source_audit(base_archive, state["graph"], [])
+        holes, trust, observed_uses = _source_audit(
             archive, state["graph"], state["native_decide_uses"]
         )
         nodes = state["graph"]["selected_nodes"]
@@ -1016,7 +1018,8 @@ def _clean_worker_checks(
             },
             "changed_paths": sorted(changed),
             "holes": holes,
-            "trust_passed": trust_passed,
+            # Frozen baseline files may carry whitelisted external axioms.
+            "trust_passed": not trust - baseline_trust,
             "native_decide_policy_sha256": invocation[
                 "native_decide_policy_sha256"
             ],

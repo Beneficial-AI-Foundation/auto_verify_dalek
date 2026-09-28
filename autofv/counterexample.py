@@ -376,25 +376,6 @@ def _checked(completed: Any, label: str) -> Any:
     return completed
 
 
-def _compiler_assumptions(lock: dict[str, Any]) -> list[dict[str, str]]:
-    evidence = {
-        "Lean.ofReduceBool": (
-            f"{lock['tools']['lean']['pin']} / {lock['tools']['lean']['observed_version']}"
-        ),
-        "Lean.trustCompiler": (
-            f"{lock['tools']['rustc']['pin']} / {lock['tools']['rustc']['observed_version']}"
-        ),
-    }
-    return [
-        {
-            "assumption": name,
-            "evidence": evidence[name],
-            "evidence_sha256": verifier_bundle._sha256(evidence[name].encode()),
-        }
-        for name in ("Lean.ofReduceBool", "Lean.trustCompiler")
-    ]
-
-
 def _native_decide_uses(
     certificate: dict[str, Any], obligation: dict[str, Any]
 ) -> list[dict[str, str]]:
@@ -442,6 +423,7 @@ def confirm(
     docker: Callable[..., Any],
     seed_file: Callable[..., None],
     native_decide_policy_sha256: str,
+    compiler_assumptions: list[dict[str, str]] | None = None,
 ) -> str:
     """Build offline, emit an olean, then kernel-audit the fixed theorem."""
     program = build_program(certificate, obligation)
@@ -449,7 +431,7 @@ def confirm(
     if lock.get("native_decide_policy_sha256") != native_decide_policy_sha256:
         raise verifier_bundle.VerifierError("counterexample_native_decide_policy_mismatch")
     discovered_uses = _native_decide_uses(certificate, obligation)
-    expected_assumptions = _compiler_assumptions(lock)
+    expected_assumptions = compiler_assumptions or contracts.compiler_assumptions(lock)
     if (
         certificate.get("native_decide_uses") != discovered_uses
         or certificate.get("compiler_assumptions") != expected_assumptions

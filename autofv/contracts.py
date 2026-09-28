@@ -285,6 +285,29 @@ def validate_native_decide_policy(lock: dict[str, Any]) -> dict[str, Any]:
     return policy
 
 
+def compiler_assumptions(
+    lock: dict[str, Any], run: dict[str, Any] | None = None
+) -> list[dict[str, str]]:
+    """Bind native_decide's two assumptions to the Lean toolchain that compiles the target.
+
+    Prepared targets build with the toolchain inside their pinned dependency cache;
+    other targets use the image's Lean.
+    """
+    digest = ((run or {}).get("prepared_graph_receipt") or {}).get("dependency_cache_sha256")
+    evidence = (
+        f"Lean toolchain in dependency cache sha256:{digest}" if digest else
+        f"{lock['tools']['lean']['pin']} / {lock['tools']['lean']['observed_version']}"
+    )
+    return [
+        {
+            "assumption": assumption,
+            "evidence": evidence,
+            "evidence_sha256": hashlib.sha256(evidence.encode()).hexdigest(),
+        }
+        for assumption in ("Lean.ofReduceBool", "Lean.trustCompiler")
+    ]
+
+
 def evaluate_native_decide_policy(
     lock: dict[str, Any],
     *,

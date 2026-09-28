@@ -300,6 +300,7 @@ def confirm_counterexample_certificate(
             native_decide_policy_sha256=invocation[
                 "native_decide_policy_sha256"
             ],
+            compiler_assumptions=contracts.compiler_assumptions(run["lock"], run),
         )
     finally:
         for isolated_volume in reversed(created):

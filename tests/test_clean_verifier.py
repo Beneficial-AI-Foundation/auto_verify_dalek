@@ -281,6 +281,23 @@ def _tar_entries(raw):
     return entries
 
 
+class CompilerAssumptionTests(unittest.TestCase):
+    def test_evidence_names_the_lean_that_compiles_the_target(self):
+        lock = experiment.load_toolchain_lock()
+        image = verifier.compiler_assumptions(lock)
+        prepared = verifier.compiler_assumptions(
+            lock, {"prepared_graph_receipt": {"dependency_cache_sha256": "a" * 64}}
+        )
+        self.assertEqual([item["assumption"] for item in prepared],
+                         ["Lean.ofReduceBool", "Lean.trustCompiler"])
+        self.assertEqual({item["evidence"] for item in prepared},
+                         {"Lean toolchain in dependency cache sha256:" + "a" * 64})
+        self.assertEqual({item["evidence"] for item in image},
+                         {f"{lock['tools']['lean']['pin']} / {lock['tools']['lean']['observed_version']}"})
+        for item in prepared + image:
+            self.assertEqual(item["evidence_sha256"], _sha256(item["evidence"].encode()))
+
+
 class SourceTrustTests(unittest.TestCase):
     def test_only_trust_escapes_added_by_the_candidate_count(self):
         graph = _state()["graph"]

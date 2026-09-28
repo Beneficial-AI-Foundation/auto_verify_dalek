@@ -759,7 +759,7 @@ def run_experiment(
             "pending_model_exchanges": {},
             "model_exchanges": {},
             "receipt_rejections": [],
-            "compiler_assumptions": verifier.compiler_assumptions(lock),
+            "compiler_assumptions": verifier.compiler_assumptions(lock, run),
             "wall_seconds_used": Decimal("0.000000"),
             "wall_started_epoch_ns": wall_started_epoch,
             "finalization_reserve_seconds": _finalization_reserve(config),
@@ -835,7 +835,7 @@ def run_experiment(
             )
     state["wall_started_monotonic_ns"] = wall_started
     state.setdefault("receipt_rejections", [])
-    state.setdefault("compiler_assumptions", verifier.compiler_assumptions(lock))
+    state.setdefault("compiler_assumptions", verifier.compiler_assumptions(lock, run))
     state.setdefault("wall_seconds_used", Decimal("0.000000"))
     state.setdefault("finalization_reserve_seconds", _finalization_reserve(config))
     state["checkpoint_enabled"] = bool(run.get("run_root"))

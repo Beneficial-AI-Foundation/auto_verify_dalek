@@ -31,7 +31,7 @@ def clean_verify(
         "accepted_nodes": sorted(state.get("accepted_nodes", [])),
         "frozen_contracts": state.get("contracts", {}).get("frozen", {}),
         "native_decide_uses": state.get("native_decide_uses", []),
-        "compiler_assumptions": verifier.compiler_assumptions(run["lock"]),
+        "compiler_assumptions": verifier.compiler_assumptions(run["lock"], run),
     }
     reference = verifier._trusted_reference(run)
     expected = {
@@ -149,7 +149,7 @@ def clean_verify_partial(
         "accepted_nodes": sorted(state["accepted_nodes"]),
         "frozen_contracts": state["contracts"]["frozen"],
         "native_decide_uses": state.get("native_decide_uses", []),
-        "compiler_assumptions": verifier.compiler_assumptions(run["lock"]),
+        "compiler_assumptions": verifier.compiler_assumptions(run["lock"], run),
         "partial_target": node,
     }
     reference = verifier._trusted_reference(run)

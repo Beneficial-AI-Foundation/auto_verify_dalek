@@ -239,24 +239,10 @@ def _runtime_argv(
     )
 
 
-def compiler_assumptions(lock: dict[str, Any]) -> list[dict[str, str]]:
-    """Bind the two allow_audited compiler assumptions to the pinned tools."""
-    evidence = {
-        "Lean.ofReduceBool": (
-            f"{lock['tools']['lean']['pin']} / {lock['tools']['lean']['observed_version']}"
-        ),
-        "Lean.trustCompiler": (
-            f"{lock['tools']['rustc']['pin']} / {lock['tools']['rustc']['observed_version']}"
-        ),
-    }
-    return [
-        {
-            "assumption": assumption,
-            "evidence": evidence[assumption],
-            "evidence_sha256": _sha256(evidence[assumption].encode()),
-        }
-        for assumption in ("Lean.ofReduceBool", "Lean.trustCompiler")
-    ]
+def compiler_assumptions(
+    lock: dict[str, Any], run: dict[str, Any] | None = None
+) -> list[dict[str, str]]:
+    return contracts.compiler_assumptions(lock, run)
 
 
 def _prepared_probe_evidence(run: dict[str, Any]) -> tuple[bytes, bytes]:
@@ -971,7 +957,7 @@ def _clean_worker_checks(
             "native_decide_uses": all_native_uses,
             "accepted_native_decide_uses": observed_uses,
             "hidden_native_decide_uses": hidden_native_uses,
-            "compiler_assumptions": compiler_assumptions(lock),
+            "compiler_assumptions": compiler_assumptions(lock, run),
             "axiom_inventory": axiom_inventory,
             "meaning": meaning,
             "sorry_count_before": len(baseline_holes),

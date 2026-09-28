@@ -10,7 +10,8 @@ from . import contracts
 
 def _lean_name(name: Any) -> str:
     if not isinstance(name, str) or re.fullmatch(
-        r"[A-Za-z_][A-Za-z0-9_']*(?:\.[A-Za-z_][A-Za-z0-9_']*)*", name
+        # Numeric components occur in private names (`_private.M.0.M.aux`).
+        r"[A-Za-z_][A-Za-z0-9_']*(?:\.(?:[A-Za-z_][A-Za-z0-9_']*|[0-9]+))*", name
     ) is None:
         raise contracts.ContractError("kernel audit declaration name is invalid")
     return name
@@ -283,7 +284,12 @@ def proof_generated_project_dependencies(
     state: dict[str, Any],
     replayed: set[str],
 ) -> set[str]:
-    """Classify replayed, proof-only native helpers by observed provenance."""
+    """Admit new project constants only as kernel-replayed proof machinery.
+
+    Equation lemmas, matchers and abstracted proofs are conservative extensions:
+    the replay kernel-checks them, the axiom inventory covers them, and they must
+    stay outside every semantic definition's closure.
+    """
     frozen = set(state.get("frozen_contracts", {}))
     generated = set(project_identities) - set(baseline_identities) - frozen
     if not generated:
@@ -300,24 +306,6 @@ def proof_generated_project_dependencies(
             "project_dependencies", []
         )
     }
-    native_roots = {
-        candidate
-        for use in state.get("native_decide_uses", [])
-        if isinstance(use, dict)
-        for candidate in (use.get("spec"), use.get("declaration"))
-        if candidate in frozen
-    }
-    native_closure = {
-        dependency
-        for root in native_roots
-        for dependency in observations.get(root, {}).get(
-            "project_dependencies", []
-        )
-    }
-    if (
-        not generated <= replayed
-        or bool(generated & semantic_closure)
-        or not generated <= native_closure
-    ):
+    if not generated <= replayed or generated & semantic_closure:
         raise contracts.ContractError("kernel declaration identity mismatch")
     return generated

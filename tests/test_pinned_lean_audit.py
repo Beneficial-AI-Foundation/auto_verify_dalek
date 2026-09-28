@@ -162,6 +162,25 @@ class PinnedLeanPartialAuditTests(unittest.TestCase):
             [("Demo.value_spec", [])],
         )
 
+    def test_tactic_generated_auxiliary_declarations_are_accepted(self):
+        for proof in (
+            "by simp [value]",
+            "by unfold value; omega",
+            "by rw [value.eq_def]; simp",
+            "match n with\n  | 0 => rfl\n  | _ + 1 => rfl",
+            "by\n  have _h : value 3 = 3 := by decide +kernel\n  simp [value]",
+            "private_aux n",
+        ):
+            with self.subTest(proof):
+                self.setUp()
+                helper = HELPER.replace("rfl", proof)
+                if proof == "private_aux n":
+                    helper = "private theorem private_aux (n : Nat) : value n = n := rfl\n" + helper
+                inventory = self._audit(BASELINE.replace("end Demo", helper + "end Demo"))
+                self.assertEqual([record["declaration"] for record in inventory], ["Demo.value_spec"])
+                self.assertLessEqual(
+                    set(inventory[0]["axioms"]), {"propext", "Quot.sound", "Classical.choice"})
+
     def test_hostile_helpers_fail_closed(self):
         cases = {
             "sorry": (HELPER.replace(":= rfl", ":= by sorry"), False,
@@ -171,6 +190,12 @@ class PinnedLeanPartialAuditTests(unittest.TestCase):
             # The changed body also taints the unrelated baseline hole's closure.
             "changed_definition": (HELPER, False, "retained untrusted dependency Demo.root_spec"),
             "forged_olean": (HELPER, True, r"\(kernel\) declaration type mismatch"),
+            "aux_sorry": ("theorem aux (n : Nat) : value n = n := by sorry\n"
+                          + HELPER.replace("rfl", "aux n"), False,
+                          "retained untrusted dependency Demo.aux"),
+            "aux_axiom": ("axiom aux (n : Nat) : value n = n\n"
+                          + HELPER.replace("rfl", "aux n"), False,
+                          "unapproved transferred axiom Demo.aux"),
         }
         vacuous = {  # frozen exactly as written, so only the subject guard can reject
             "reflexive": ("(n : Nat) : value n = value n", "helper statement is vacuous"),

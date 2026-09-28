@@ -90,13 +90,16 @@ class GenericRoleE2ETests(unittest.TestCase):
     def test_prepared_smoke_resumed_after_scoped_pass_marks_leaf_accepted(self):
         self._run(crash=False, proof_only=True, prepared=True, partial_crash=True)
 
+    def test_prepared_smoke_fails_closed_when_frozen_contract_changes_on_restart(self):
+        self._run(crash=False, proof_only=True, prepared=True, revision_tamper=True)
+
     def test_prepared_full_releases_root_only_after_verified_leaf(self):
         self._run(crash=False, prepared=True)
 
     def test_prepared_full_resumes_accepted_leaf_before_root(self):
         self._run(crash=True, prepared=True)
 
-    def _run(self, *, crash, snapshot_attack=None, initialization_crash=None, replay_crash=None, proof_only=False, prepared=False, partial_crash=False):
+    def _run(self, *, crash, snapshot_attack=None, initialization_crash=None, replay_crash=None, proof_only=False, prepared=False, partial_crash=False, revision_tamper=False):
         key = Ed25519PrivateKey.from_private_bytes(bytes(range(1, 33)))
         lock = _role_test_lock(key)
         with tempfile.TemporaryDirectory() as tmp:
@@ -204,6 +207,9 @@ class GenericRoleE2ETests(unittest.TestCase):
                 if crash and not interrupted and transition == 'candidate:proof-increment-001:accepted':
                     interrupted = True
                     raise KeyboardInterrupt('after accepted dependency checkpoint')
+                if revision_tamper and not interrupted and transition == f'contracts:progressive:{LEAF}:frozen':
+                    interrupted = True
+                    raise KeyboardInterrupt('after the leaf contract was frozen')
                 if initialization_crash == 'after_prepare' and not interrupted and transition == 'lanes:prepare-role-lanes:after':
                     interrupted = True
                     raise KeyboardInterrupt('after initial lane creation checkpoint')
@@ -221,9 +227,9 @@ class GenericRoleE2ETests(unittest.TestCase):
                     interrupted = True
                     raise KeyboardInterrupt('after durable scoped pass, before local status')
                 return {'verdict': 'SCOPED_PASS', 'partial_target': node, 'root_status': 'unverified'}
-            with mock.patch.object(contracts, 'load_toolchain_lock', return_value=lock), mock.patch.object(agent_lane, 'run_role_conversation', side_effect=role), mock.patch.object(worker_runtime, '_git', side_effect=lambda _run, *args: git(*args)), mock.patch.object(worker_runtime, '_docker', side_effect=compiler_boundary), mock.patch.object(diamond, '_checkpoint_if_enabled', side_effect=checkpoint), mock.patch.object(run_state, '_checkpoint_if_enabled', side_effect=checkpoint), mock.patch.object(agent_lane, '_checkpoint_if_enabled', side_effect=checkpoint), mock.patch.object(worker, 'save_lane_snapshot', side_effect=save_snapshot), mock.patch.object(terminal_run, 'clean_verify_partial', side_effect=partial_receipt) as partial:
+            with mock.patch.object(contracts, 'load_toolchain_lock', return_value=lock), mock.patch.object(agent_lane, 'run_role_conversation', side_effect=role), mock.patch.object(worker_runtime, '_git', side_effect=lambda _run, *args: git(*args)), mock.patch.object(worker_runtime, '_docker', side_effect=compiler_boundary), mock.patch.object(diamond, '_checkpoint_if_enabled', side_effect=checkpoint), mock.patch.object(run_state, '_checkpoint_if_enabled', side_effect=checkpoint), mock.patch.object(generic_role_runtime, '_checkpoint_if_enabled', side_effect=checkpoint), mock.patch.object(agent_lane, '_checkpoint_if_enabled', side_effect=checkpoint), mock.patch.object(worker, 'save_lane_snapshot', side_effect=save_snapshot), mock.patch.object(terminal_run, 'clean_verify_partial', side_effect=partial_receipt) as partial:
 
-                if crash or initialization_crash or partial_crash:
+                if crash or initialization_crash or partial_crash or revision_tamper:
                     with self.assertRaises(KeyboardInterrupt):
                         diamond._agent_loop(state)
                     saved = run_state._load_checkpoint(root, {})
@@ -240,6 +246,15 @@ class GenericRoleE2ETests(unittest.TestCase):
                         self.assertFalse((root / 'lanes').exists())
                         state['run']['agent_worker_id'] = 'simulated-recreated-worker'
                     run_state._recover_checkpoint_state(state, state['run'], state['manifest'])
+                    if revision_tamper:
+                        canon = 'theorem Arithmetic.increment_spec (n : Nat) : n ≤ Arithmetic.increment n'
+                        frozen = state['contracts']['frozen']['Arithmetic.increment_spec']
+                        frozen.update(canon=canon, model_fingerprint=hashlib.sha256(canon.encode()).hexdigest())
+                        before_calls = len(calls)
+                        with self.assertRaisesRegex(contracts.ContractError, 'contract.*changed'):
+                            diamond._agent_loop(state)
+                        self.assertEqual(len(calls), before_calls)
+                        return
                     if snapshot_attack:
                         snapshot = root / 'lane-snapshots' / 'proof-increment-001.json'
                         self.assertTrue(snapshot.is_file())

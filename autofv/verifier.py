@@ -7,15 +7,11 @@ from collections import Counter
 import hashlib
 import io
 import re
-import os
 import secrets
 import shlex
-import signal
 import stat
 import subprocess
 import tarfile
-import threading
-import time
 from pathlib import Path, PurePosixPath
 from typing import Any
 
@@ -85,60 +81,9 @@ def _bounded_run(
     argv: tuple[str, ...], input_bytes: bytes | None, timeout: float
 ) -> subprocess.CompletedProcess[bytes]:
     """Run with a wall deadline and per-stream cap, killing the process group."""
-    process = subprocess.Popen(
-        argv,
-        stdin=subprocess.PIPE if input_bytes is not None else subprocess.DEVNULL,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
-        start_new_session=True,
-    )
-    captured: dict[str, bytes] = {}
-    overflow = threading.Event()
-
-    def drain(name: str, stream: Any) -> None:
-        data = bytearray()
-        while chunk := stream.read(1 << 16):
-            if len(data) + len(chunk) > MAX_COMMAND_OUTPUT_BYTES:
-                overflow.set()
-                break
-            data += chunk
-        captured[name] = bytes(data)
-
-    readers = [
-        threading.Thread(target=drain, args=(name, stream), daemon=True)
-        for name, stream in (("stdout", process.stdout), ("stderr", process.stderr))
-    ]
-    for reader in readers:
-        reader.start()
-    deadline = time.monotonic() + timeout
-    try:
-        if input_bytes is not None:
-            try:
-                process.stdin.write(input_bytes)
-                process.stdin.close()
-            except BrokenPipeError:
-                pass
-        while process.poll() is None:
-            if overflow.is_set() or time.monotonic() >= deadline:
-                raise VerifierInfrastructureError(
-                    "clean verifier command output exceeded its bound"
-                    if overflow.is_set()
-                    else "clean verifier command timed out"
-                )
-            time.sleep(0.05)
-    except BaseException:
-        try:
-            os.killpg(process.pid, signal.SIGKILL)
-        except ProcessLookupError:
-            pass
-        process.wait()
-        raise
-    for reader in readers:
-        reader.join()
-    if overflow.is_set():
-        raise VerifierInfrastructureError("clean verifier command output exceeded its bound")
-    return subprocess.CompletedProcess(
-        argv, process.returncode, captured.get("stdout", b""), captured.get("stderr", b"")
+    return worker_runtime.bounded_run(
+        argv, input_bytes, timeout, error=VerifierInfrastructureError,
+        what="clean verifier", limit=MAX_COMMAND_OUTPUT_BYTES,
     )
 
 

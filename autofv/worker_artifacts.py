@@ -8,6 +8,7 @@ import json
 import os
 import re
 import secrets
+import shutil
 import stat
 import subprocess
 import tarfile
@@ -627,6 +628,9 @@ def export_run(run: dict[str, Any], *, interrupted: bool = False) -> dict[str, A
             raise WorkerError("working state changed after export")
         return verified
     artifacts = _export_artifacts(run)
+    # Twice the payload (atomic temp plus final) and 1 GiB headroom for scan state.
+    if shutil.disk_usage(run["run_root"]).free < 2 * sum(map(len, artifacts.values())) + (1 << 30):
+        raise WorkerError("export needs more free disk than is available")
     markers = tuple(run.get("artifact_scan_markers", ()))
     scan = scan_retained_state(run, artifacts, markers)
     export_root = Path(run["run_root"]) / "export"

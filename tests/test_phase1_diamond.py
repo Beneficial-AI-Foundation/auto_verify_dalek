@@ -534,7 +534,7 @@ class WorkerBridgeTests(unittest.TestCase):
             stdout=b"useful compiler diagnostic\n",
             stderr=b"error: build failed\n",
         )
-        with mock.patch.object(subprocess, "run", return_value=completed):
+        with mock.patch.object(worker_runtime, "bounded_run", return_value=completed):
             with self.assertRaisesRegex(
                 worker.WorkerError, "(?s)useful compiler diagnostic.*build failed"
             ):

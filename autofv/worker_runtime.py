@@ -11,12 +11,15 @@ import re
 import secrets
 import shlex
 import shutil
+import signal
 import socket
 import stat
 import subprocess
 import sys
 import tarfile
 import tempfile
+import threading
+import time
 import urllib.parse
 from pathlib import Path, PurePosixPath
 from typing import Any, Iterable
@@ -601,21 +604,92 @@ def _seed_archive(
     return stream.getvalue(), manifest, _tree_hash(project_files)
 
 
+COMMAND_TIMEOUT_SECONDS = 1200
+MAX_COMMAND_OUTPUT_BYTES = 64 * 1024 * 1024
+
+
+def bounded_run(
+    argv: tuple[str, ...],
+    input_bytes: bytes | None,
+    timeout: float,
+    *,
+    error: type[Exception],
+    what: str,
+    limit: int,
+    stdin: Any = None,
+) -> subprocess.CompletedProcess[bytes]:
+    """Run with a wall deadline and per-stream cap, killing the process group."""
+    process = subprocess.Popen(
+        argv,
+        stdin=stdin if stdin is not None else subprocess.PIPE if input_bytes is not None else subprocess.DEVNULL,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        start_new_session=True,
+    )
+    captured: dict[str, bytes] = {}
+    overflow = threading.Event()
+
+    def drain(name: str, stream: Any) -> None:
+        data = bytearray()
+        while chunk := stream.read(1 << 16):
+            if len(data) + len(chunk) > limit:
+                overflow.set()
+                break
+            data += chunk
+        captured[name] = bytes(data)
+
+    readers = [
+        threading.Thread(target=drain, args=(name, stream), daemon=True)
+        for name, stream in (("stdout", process.stdout), ("stderr", process.stderr))
+    ]
+    for reader in readers:
+        reader.start()
+    deadline = time.monotonic() + timeout
+    try:
+        if input_bytes is not None:
+            try:
+                process.stdin.write(input_bytes)
+                process.stdin.close()
+            except BrokenPipeError:
+                pass
+        while process.poll() is None:
+            if overflow.is_set() or time.monotonic() >= deadline:
+                raise error(
+                    f"{what} command output exceeded its bound"
+                    if overflow.is_set()
+                    else f"{what} command timed out"
+                )
+            time.sleep(0.05)
+    except BaseException:
+        try:
+            os.killpg(process.pid, signal.SIGKILL)
+        except ProcessLookupError:
+            pass
+        process.wait()
+        raise
+    for reader in readers:
+        reader.join()
+    if overflow.is_set():
+        raise error(f"{what} command output exceeded its bound")
+    return subprocess.CompletedProcess(
+        argv, process.returncode, captured.get("stdout", b""), captured.get("stderr", b"")
+    )
+
+
 def _lima(
     *argv: str,
     input_bytes: bytes | None = None,
     check: bool = True,
     timeout: int | None = None,
+    stdin: Any = None,
+    failure: str = "agent worker command failed",
 ) -> subprocess.CompletedProcess[bytes]:
     try:
-        completed = subprocess.run(
-            ("limactl", "shell", AGENT_VM, "--", *argv),
-            input=input_bytes,
-            capture_output=True,
-            timeout=timeout,
+        completed = bounded_run(
+            ("limactl", "shell", AGENT_VM, "--", *argv), input_bytes,
+            timeout or COMMAND_TIMEOUT_SECONDS, error=WorkerError,
+            what="agent worker", limit=MAX_COMMAND_OUTPUT_BYTES, stdin=stdin,
         )
-    except subprocess.TimeoutExpired as exc:
-        raise WorkerError("agent worker command timed out") from exc
     except OSError as exc:
         raise WorkerError(f"agent worker launcher failed: {exc}") from exc
     if check and completed.returncode:
@@ -627,7 +701,7 @@ def _lima(
             )
             if part
         )[-4000:]
-        raise WorkerError(f"agent worker command failed: {detail or argv[0]}")
+        raise WorkerError(f"{failure}: {detail or argv[0]}")
     return completed
 
 
@@ -637,30 +711,29 @@ def _docker(
     check: bool = True,
     timeout: int | None = None,
 ) -> subprocess.CompletedProcess[bytes]:
-    return _lima("sudo", "docker", *argv, input_bytes=input_bytes, check=check, timeout=timeout)
+    """Name every run so a killed host client cannot orphan its container in the VM."""
+    if argv[:1] != ("run",) or "--name" in argv:
+        return _lima("sudo", "docker", *argv, input_bytes=input_bytes, check=check, timeout=timeout)
+    name = f"autofv-worker-cmd-{secrets.token_hex(8)}"
+    try:
+        return _lima(
+            "sudo", "docker", "run", "--name", name, *argv[1:],
+            input_bytes=input_bytes, check=check, timeout=timeout,
+        )
+    except BaseException:
+        try:
+            _lima("sudo", "docker", "rm", "-f", name, check=False, timeout=60)
+        except WorkerError:
+            pass
+        raise
 
 
 def _lima_stream_file(path: Path, *argv: str) -> subprocess.CompletedProcess[bytes]:
     try:
         with path.open("rb") as stream:
-            completed = subprocess.run(
-                ("limactl", "shell", AGENT_VM, "--", *argv),
-                stdin=stream,
-                capture_output=True,
-            )
+            return _lima(*argv, stdin=stream, failure="agent worker cache seed failed")
     except OSError as exc:
         raise WorkerError(f"agent worker launcher failed: {exc}") from exc
-    if completed.returncode:
-        detail = "\n".join(
-            part
-            for part in (
-                completed.stdout.decode("utf-8", "replace").strip(),
-                completed.stderr.decode("utf-8", "replace").strip(),
-            )
-            if part
-        )[-4000:]
-        raise WorkerError(f"agent worker cache seed failed: {detail}")
-    return completed
 
 
 def _runtime_argv(

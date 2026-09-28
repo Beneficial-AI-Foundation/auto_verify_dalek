@@ -1,4 +1,4 @@
-"""Host checks for hostile worker archives and accepted-commit materialization."""
+"""Host checks for worker boundaries: archives, bounded commands and exports."""
 
 import io
 import os
@@ -7,8 +7,9 @@ import tarfile
 import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 
-from autofv import results, worker_artifacts
+from autofv import results, worker_artifacts, worker_runtime
 
 
 def _tar(*members: tuple[str, bytes, bytes]) -> bytes:
@@ -108,6 +109,72 @@ class MaterializeAcceptedTests(unittest.TestCase):
         with self.assertRaisesRegex(results.ResultError, "export is incomplete"):
             results.materialize_accepted(self._run(self.commit))
         self.assertTrue((self.run_root / "accepted/input.txt").is_file())
+
+
+class WorkerCommandBoundTests(unittest.TestCase):
+    def test_worker_commands_get_a_default_deadline_and_output_bound(self):
+        seen = {}
+
+        def bounded(argv, input_bytes, timeout, **options):
+            seen.update(timeout=timeout, **options)
+            return subprocess.CompletedProcess(argv, 0, b"ok", b"")
+
+        with mock.patch.object(worker_runtime, "bounded_run", side_effect=bounded):
+            self.assertEqual(worker_runtime._lima("true").stdout, b"ok")
+        self.assertEqual(seen["timeout"], worker_runtime.COMMAND_TIMEOUT_SECONDS)
+        self.assertIs(seen["error"], worker_runtime.WorkerError)
+
+    def test_timed_out_worker_command_kills_its_process_group(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            marker = Path(tmp) / "survived"
+            with self.assertRaisesRegex(worker_runtime.WorkerError, "agent worker command timed out"):
+                worker_runtime.bounded_run(
+                    ("sh", "-c", f"(sleep 2; touch {marker}) & sleep 30"), None, 0.5,
+                    error=worker_runtime.WorkerError, what="agent worker",
+                    limit=worker_runtime.MAX_COMMAND_OUTPUT_BYTES,
+                )
+            subprocess.run(("sleep", "2.5"))
+            self.assertFalse(marker.exists())
+
+    def test_failed_container_run_is_removed_inside_the_vm(self):
+        calls = []
+
+        def lima(*argv, **_kwargs):
+            calls.append(argv)
+            if "run" in argv:
+                raise worker_runtime.WorkerError("agent worker command timed out")
+            return subprocess.CompletedProcess(argv, 0, b"", b"")
+
+        with mock.patch.object(worker_runtime, "_lima", side_effect=lima):
+            with self.assertRaisesRegex(worker_runtime.WorkerError, "timed out"):
+                worker_runtime._docker("run", "--rm", "-i", "image", "lake", "build")
+        name = calls[0][calls[0].index("--name") + 1]
+        self.assertTrue(name.startswith("autofv-worker-cmd-"))
+        self.assertEqual(calls[1], ("sudo", "docker", "rm", "-f", name))
+
+    def test_cache_stream_is_bounded(self):
+        with tempfile.NamedTemporaryFile() as source, mock.patch.object(
+            worker_runtime, "bounded_run",
+            return_value=subprocess.CompletedProcess((), 0, b"", b""),
+        ) as bounded:
+            worker_runtime._lima_stream_file(Path(source.name), "cat")
+        self.assertEqual(bounded.call_args.args[2], worker_runtime.COMMAND_TIMEOUT_SECONDS)
+        self.assertIsNotNone(bounded.call_args.kwargs["stdin"])
+
+
+class ExportDiskTests(unittest.TestCase):
+    def test_export_refuses_to_start_without_free_disk(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            run = {"run_root": tmp}
+            with mock.patch.object(
+                worker_artifacts, "_export_artifacts", return_value={"accepted/tree.tar": b"x" * 10}
+            ), mock.patch.object(
+                worker_artifacts.shutil, "disk_usage", return_value=mock.Mock(free=5)
+            ), mock.patch.object(worker_artifacts, "scan_retained_state") as scan:
+                with self.assertRaisesRegex(worker_artifacts.WorkerError, "free disk"):
+                    worker_artifacts.export_run(run)
+            scan.assert_not_called()
+            self.assertFalse((Path(tmp) / "export").exists())
 
 
 if __name__ == "__main__":

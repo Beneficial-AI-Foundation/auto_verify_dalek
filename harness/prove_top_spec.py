@@ -887,6 +887,7 @@ def main():
         for r in rounds:
             (r.get("detail") or {}).pop("g1_after", None)
 
+        partial_manifest = None
         if outcome == "accepted":
             before_counts = detail.get("counts_after", before_counts)
             driver.slot_commit(work, spath, f"step {i}: {s['mode']} {short_name(s['fn'])}")
@@ -910,6 +911,8 @@ def main():
                 driver.sh(["git", "add", *to_add])
                 driver.sh(["git", "commit", "-q", "-m", msg])
         else:
+            partial_manifest = save_partial_snapshot(
+                run_dir, i, [spath], work, {spath: [short_name(s["fn"])]})
             mod, new = driver.changed_files(work)
             driver.rollback(mod, new, work)
 
@@ -924,6 +927,7 @@ def main():
             "isolation": isolation, "slot": os.path.relpath(work, REPO),
             "baseline_build_seconds": base_s,
             "prompt_sha256": hashlib.sha256(prompt.encode()).hexdigest(),
+            "partial_manifest": partial_manifest,
         }
         with open(LEDGER, "a") as fh:
             fh.write(json.dumps(record, ensure_ascii=False) + "\n")

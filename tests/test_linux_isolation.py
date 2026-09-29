@@ -355,6 +355,9 @@ class LinuxIsolationTests(unittest.TestCase):
                 "config": {},
                 "receipts": [],
                 "checkpoint_enabled": False,
+                # Every sealed run records its wall start before it can finish.
+                "wall_started_monotonic_ns": time.monotonic_ns(),
+                "wall_started_epoch_ns": time.time_ns(),
             }
             with (
                 mock.patch.object(worker, "dispose_run") as dispose,

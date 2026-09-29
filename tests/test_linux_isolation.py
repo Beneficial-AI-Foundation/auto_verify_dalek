@@ -634,6 +634,8 @@ class ProxyAccountingTests(unittest.TestCase):
                         "pending_model_exchanges": {},
                         "model_exchanges": {},
                         "checkpoint_enabled": False,
+                        "wall_started_monotonic_ns": time.monotonic_ns(),
+                        "wall_started_epoch_ns": time.time_ns(),
                     }
                     for entry in MODEL_FIXTURE["entries"]:
                         response, receipt = worker.proxy_round(run, entry["request"])

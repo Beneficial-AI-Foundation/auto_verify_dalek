@@ -1,5 +1,6 @@
 """Host checks for worker boundaries: archives, bounded commands and exports."""
 
+import hashlib
 import io
 import os
 import subprocess
@@ -175,6 +176,64 @@ class ExportDiskTests(unittest.TestCase):
                     worker_artifacts.export_run(run)
             scan.assert_not_called()
             self.assertFalse((Path(tmp) / "export").exists())
+
+
+class RestoreExportTests(unittest.TestCase):
+    """A disposed run's volume must regain every mount its containers need."""
+
+    def _restore(self, run, seeded=None):
+        commands = []
+
+        def docker(*argv, **_kwargs):
+            commands.append(argv)
+            return subprocess.CompletedProcess(argv, 1 if argv[:2] == ("volume", "inspect") else 0, b"", b"")
+
+        def git(_run, *argv, **_kwargs):
+            return {"rev-parse": b"c" * 40 + b"\n", "archive": b"tree"}.get(argv[0], b"")
+
+        artifacts = {name: b"" for name in (
+            "accepted/tree.tar", "accepted/repository.bundle",
+            "working/changes.patch", "working/untracked.tar")}
+        seams = {
+            "_load_verified_export": mock.Mock(return_value=({"sequence": 1}, artifacts)),
+            "_control_manifest": mock.Mock(return_value=({"bundle_sha256": "b"}, [])),
+            "_owned_worker": mock.Mock(return_value=None),
+            "_create_worker": mock.Mock(), "_destroy_worker": mock.Mock(),
+            "inspect_worker": mock.Mock(return_value={"inventory_sha256": "i", "machine_id": "m"}),
+            "claim_worker": mock.Mock(), "_atomic_write": mock.Mock(),
+            "inspect_scored_container": mock.Mock(return_value={}),
+            "seed_dependency_cache": mock.Mock(return_value=seeded),
+            "_docker": docker, "_git": git,
+        }
+        with mock.patch.multiple(worker_artifacts, **seams):
+            worker_artifacts._restore_export(run)
+        return commands, seams["seed_dependency_cache"]
+
+    def _run(self, **extra):
+        return {"evidence_dir": tempfile.mkdtemp(), "lock": {}, "control_bundle_sha256": "b",
+                "run_id": "r", "volume": "v", "image_digest": "sha256:" + "0" * 64,
+                "accepted": {"accepted_commit": "c" * 40,
+                             "accepted_tree_sha256": hashlib.sha256(b"tree").hexdigest()},
+                "events": [], **extra}
+
+    def test_restored_volume_recreates_the_dependencies_mount(self):
+        commands, seed = self._restore(self._run())
+        script = next(argv[-1] for argv in commands if argv[:1] == ("run",))
+        self.assertIn("/volume/dependencies", script.split(" && ")[0])
+        self.assertIn("/volume/dependencies", script.split(" && ")[-1])
+        seed.assert_not_called()
+
+    def test_prepared_run_reseeds_its_pinned_cache_or_fails_closed(self):
+        receipt = {"schema": "autofv-dependency-cache-binding/v1", "sha256": "d" * 64}
+        prepared = dict(
+            dependency_cache_receipt=receipt,
+            prepared_probe_sources={"dependency-cache": "/cache.tar.zst"},
+            prepared_graph_receipt={"dependency_cache_sha256": "d" * 64},
+        )
+        _, seed = self._restore(self._run(**prepared), seeded=receipt)
+        seed.assert_called_once_with(mock.ANY, "/cache.tar.zst", "d" * 64)
+        with self.assertRaisesRegex(worker_artifacts.WorkerError, "dependency cache identity"):
+            self._restore(self._run(**prepared), seeded={**receipt, "sha256": "e" * 64})
 
 
 if __name__ == "__main__":

@@ -253,7 +253,7 @@ class LinuxIsolationTests(unittest.TestCase):
                 if interrupted:
                     try:
                         observed = worker.inspect_resume_state(run, self.manifest)
-                        self.assertTrue(observed["valid"])
+                        self.assertTrue(observed["valid"], observed)
                         self.assertEqual(
                             observed["accepted_commit"], run["accepted"]["accepted_commit"]
                         )

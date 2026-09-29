@@ -44,6 +44,7 @@ from .worker_runtime import (
     claim_worker,
     inspect_lima_instance,
     inspect_scored_container,
+    seed_dependency_cache,
     inspect_worker,
 )
 
@@ -930,7 +931,8 @@ def _restore_export(run: dict[str, Any]) -> None:
             )
         command = (
             "mkdir -p /volume/recovery /volume/work/project /volume/evidence "
-            "/volume/accepted /volume/logs /volume/lanes /volume/autofv-control && "
+            "/volume/accepted /volume/logs /volume/lanes /volume/dependencies "
+            "/volume/autofv-control && "
             "tar -xf - -C /volume/recovery && "
             "cp -a /volume/recovery/control/. /volume/autofv-control/ && "
             "chmod -R a-w /volume/autofv-control && chmod 0555 /volume/autofv-control && "
@@ -943,7 +945,7 @@ def _restore_export(run: dict[str, Any]) -> None:
             "git -C /volume/work/project apply --binary /volume/recovery/changes.patch; fi && "
             "tar -xf /volume/recovery/untracked.tar -C /volume/work/project && "
             "chown -R 65532:65532 /volume/work /volume/evidence /volume/accepted "
-            "/volume/logs /volume/lanes"
+            "/volume/logs /volume/lanes /volume/dependencies"
         )
         _docker(
             "run",
@@ -972,6 +974,13 @@ def _restore_export(run: dict[str, Any]) -> None:
             or _sha256(restored_tree) != run["accepted"]["accepted_tree_sha256"]
         ):
             raise WorkerError("restored accepted state mismatch")
+        if isinstance(run.get("dependency_cache_receipt"), dict):
+            # A prepared run builds against its pinned cache; restore it exactly.
+            if seed_dependency_cache(
+                run, run["prepared_probe_sources"]["dependency-cache"],
+                run["prepared_graph_receipt"]["dependency_cache_sha256"],
+            ) != run["dependency_cache_receipt"]:
+                raise WorkerError("restored dependency cache identity mismatch")
         run["scored_container_receipt"] = inspect_scored_container(run)
     except BaseException:
         if worker_created:

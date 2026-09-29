@@ -1566,6 +1566,9 @@ class ResultEvidenceTests(unittest.TestCase):
             base = Path(tmp)
             ledger = base / "attempts.jsonl"
             with (
+                mock.patch.object(
+                    results, "DEFAULT_ATTEMPT_LEDGER", base / "fallback.jsonl"
+                ),
                 mock.patch.dict(
                     os.environ, {"AUTOFV_ATTEMPT_LEDGER": str(ledger)}
                 ),
@@ -1585,7 +1588,40 @@ class ResultEvidenceTests(unittest.TestCase):
             self.assertIsNone(result["accepted_commit"])
             self.assertEqual(result["native_decide_uses"], [])
             self.assertFalse(result["scored"])
-            self.assertEqual(len(ledger.read_text().splitlines()), 1)
+            self.assertFalse(ledger.exists())
+
+    def test_bad_path_arguments_are_rejected_before_an_attempt_is_used(self):
+        cases = {
+            "relative target": (("diamond", TARGET / "run.json"), {}, "target_invalid"),
+            "missing config": ((TARGET, TARGET / "missing.json"), {}, "run_config_invalid"),
+            "relative reference": (
+                (TARGET, TARGET / "run.json"),
+                {"verifier_reference": "reference.json"},
+                "verifier_reference_invalid",
+            ),
+            "missing env file": (
+                (TARGET, TARGET / "run.json"),
+                {"env_file": "/missing/providers.env", "provider_selection": TARGET / "run.json"},
+                "provider_inputs_invalid",
+            ),
+        }
+        for name, (arguments, options, reason) in cases.items():
+            with self.subTest(name), tempfile.TemporaryDirectory() as tmp:
+                base = Path(tmp)
+                ledger = base / "attempts.jsonl"
+                fallback = base / "fallback.jsonl"
+                with (
+                    mock.patch.object(results, "DEFAULT_ATTEMPT_LEDGER", fallback),
+                    mock.patch.dict(os.environ, {"AUTOFV_ATTEMPT_LEDGER": str(ledger)}),
+                    mock.patch.object(worker, "prepare_run") as prepare,
+                ):
+                    result = experiment.run_experiment(
+                        *arguments, output_root=base / "runs", **options
+                    )
+                prepare.assert_not_called()
+                self.assertEqual(result["termination_reason"], reason)
+                self.assertFalse(ledger.exists())
+                self.assertEqual(len(fallback.read_text().splitlines()), 1)
 
     def test_terminal_checkpoint_failure_still_persists_a_typed_result(self):
         with tempfile.TemporaryDirectory() as tmp:

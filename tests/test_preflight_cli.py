@@ -103,6 +103,8 @@ class PreflightCliTests(unittest.TestCase):
             run["execution_tier"] = "simulation"
             env = root / "provider.env"
             selection = root / "selection.json"
+            env.touch()
+            selection.touch()
             events = []
 
             def prepare(*_args, before_worker=None, **_kwargs):

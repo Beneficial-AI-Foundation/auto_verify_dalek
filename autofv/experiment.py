@@ -492,6 +492,42 @@ def run_experiment(
     wall_started = time.monotonic_ns()
     wall_started_epoch = time.time_ns()
     results.validate_output_root(target, output_root)
+    # A malformed path argument never starts a run, so it must not use an attempt.
+    path_arguments = (
+        (target, "target", True, "invalid_target", "target_invalid"),
+        (run_config, "run config", False, "invalid_config", "run_config_invalid"),
+        (resume_from, "resume root", True, "infrastructure_failed", "resume_failed"),
+        (verifier_reference, "verifier reference", False, "invalid_config",
+         "verifier_reference_invalid"),
+        (preparation_manifest, "preparation manifest", False, "invalid_config",
+         "prepared_inputs_invalid"),
+        (probe_rust_evidence, "probe-rust evidence", False, "invalid_config",
+         "prepared_inputs_invalid"),
+        (probe_aeneas_evidence, "probe-aeneas evidence", False, "invalid_config",
+         "prepared_inputs_invalid"),
+        (dependency_cache, "dependency cache", False, "invalid_config",
+         "prepared_inputs_invalid"),
+        (None if env_file is None else Path(env_file).expanduser(),
+         "provider env file", False, "invalid_config", "provider_inputs_invalid"),
+        (provider_selection, "provider selection", False, "invalid_config",
+         "provider_inputs_invalid"),
+    )
+    for value, label, directory, outcome, reason in path_arguments:
+        if value is None:
+            continue
+        try:
+            _absolute_path(value, label, directory=directory)
+        except ContractError as exc:
+            return _persist_unallocated_attempt(
+                results.default_attempt_identity(),
+                target,
+                run_config,
+                wall_started,
+                outcome=outcome,
+                reason=reason,
+                detail=exc,
+                output_root=output_root,
+            )
     try:
         identity = results.new_attempt_identity(target)
     except results.ResultError as exc:

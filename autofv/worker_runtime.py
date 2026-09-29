@@ -666,9 +666,15 @@ def bounded_run(
         except ProcessLookupError:
             pass
         process.wait()
+        for reader in readers:
+            reader.join(5)
+        process.stdout.close()
+        process.stderr.close()
         raise
     for reader in readers:
         reader.join()
+    process.stdout.close()
+    process.stderr.close()
     if overflow.is_set():
         raise error(f"{what} command output exceeded its bound")
     return subprocess.CompletedProcess(

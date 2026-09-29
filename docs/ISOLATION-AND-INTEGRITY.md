@@ -81,6 +81,18 @@ in every ledger record under `isolation`.
 | Model drift | The fresh config dir carries no `model` setting; the driver records the models actually billed per round | `rounds[].models_used`, `rounds[].cost_usd` |
 | Host filesystem: this repo's `.git` history, sibling checkouts under `~`, `~/.cache/mathlib`, `~/.ssh`, `~/.gitconfig`, other targets' transcripts in `ledger/`, gate code and frozen statements in `harness/` | `--sandbox bwrap` (default): the agent process runs in a bubblewrap mount namespace — `/usr`, `/etc` read-only; fresh `/proc`, `/dev`, `/tmp`; `$HOME` is an empty tmpfs with only `~/.elan` and the `claude` binary bound read-only; the repo is bound read-write at its real path with `.git`, `ledger/`, `harness/` replaced by empty tmpfs; the run's `CLAUDE_CONFIG_DIR` is bound back in. Before the first target the driver runs 10 probes inside the sandbox (no `git rev-parse`, `$HOME` contents exactly the allowed set, `ledger/` holds only the config dir, `harness/` empty, `lake`/`claude` run, repo and config dir writable) and aborts if any fails | `isolation.sandbox`, `isolation.sandbox_hidden`, `isolation.sandbox_selftest` |
 
+The opt-in `--fv-skills` mode for `prove_to_bytes_b.py` / `prove_top_spec.py`
+is an explicit exception to the baseline's no-skills policy. It loads only the
+vendored `fv-harness:lean-verify` headless adapter with `--plugin-dir`, adds
+named Skill permissions, disables account skill sync and bundled skills, and
+hides project `.claude` / `.agents` directories. The selected plugin and its
+effective settings are mounted read-only after the writable config mount.
+Agent/Task and web tools remain unavailable, MCP remains disabled, and proof
+gates are unchanged. A fresh session must successfully invoke the selected
+skill; other Skill invocations reject the round. Input hashes and invocation
+evidence are recorded. See [FVS adapter](../harness/fv_skill_bundle/README.md)
+for the pinned source, intentional workflow differences, and commands.
+
 `--no-isolation` disables the fresh config dir for debugging and marks the
 record `isolated: false`; `--sandbox none` keeps the config dir but drops the
 mount namespace and marks `sandbox: "none"`. Neither kind of record is

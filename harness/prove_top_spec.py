@@ -628,6 +628,8 @@ def main():
     ap.add_argument("--max-joint-files", type=int, default=0,
                     help="reject a bottom-up closure above N editable files (0 = unlimited)")
     ap.add_argument("--model", default="")
+    ap.add_argument("--fv-skills", action="store_true",
+                    help="load the pinned FVS headless lean-verify adapter")
     ap.add_argument("--max-turns", type=int, default=30)
     ap.add_argument("--timeout", type=int, default=900)
     ap.add_argument("--build-timeout", type=int, default=driver.BUILD_TIMEOUT)
@@ -646,6 +648,13 @@ def main():
     ap.add_argument("--dry-run", action="store_true")
     args = ap.parse_args()
     args.g2 = False  # driver.gate: no trust-base manifests in a bundle slot
+    if args.fv_skills:
+        import fv_skills
+        if args.no_isolation or args.sandbox != "bwrap":
+            ap.error("--fv-skills requires isolation and --sandbox bwrap")
+        if args.bottom_up:
+            ap.error("--fv-skills currently supports a single existing top spec")
+        fv_skills.manifest()
     if args.stepwise and not args.bottom_up:
         sys.exit("--stepwise requires --bottom-up")
     joint = args.bottom_up and not args.stepwise
@@ -704,7 +713,8 @@ def main():
     def step_prompt(i, s, done_now):
         if s["mode"] == "fill":
             avail = available_block(done_now, top_in_plan) if args.bottom_up else ""
-            return top_prompt + (avail and "\n" + avail) + PROOF_SKETCH
+            return (top_prompt + (avail and "\n" + avail) + PROOF_SKETCH
+                    + (fv_skills.prompt() if args.fv_skills else ""))
         kind_text, attr_rule = spec_kind(s)
         return PROMPT_SPEC.format(
             fn=short_name(s["fn"]), path=s["path"], funs_line=funs_line(data, s["fn"]),
@@ -755,9 +765,21 @@ def main():
             sys.exit(str(e))
         env = agentproc.isolated_env(env, cfg)
         isolation["credentials_seeded"] = seeded
+        skill_ro = []
+        hidden = agentproc.SANDBOX_HIDDEN
+        if args.fv_skills:
+            args.skill_plugin, settings_path, evidence = fv_skills.prepare(cfg, settings_path)
+            args.allowed_tools = (driver.ALLOWED_TOOLS +
+                                  f",Skill({fv_skills.SKILL}),Skill({fv_skills.SKILL} *)")
+            skill_ro = [args.skill_plugin, settings_path]
+            hidden = (*hidden, ".claude", ".agents")
+            isolation.update(fv_skills=evidence, disable_slash_commands=False,
+                             tools=agentproc.tool_names(args.allowed_tools),
+                             allowed_tools=args.allowed_tools)
         if args.sandbox == "bwrap":
             try:
-                prefix = agentproc.bwrap_prefix(work, cfg, extra_ro=[settings_path])
+                prefix = agentproc.bwrap_prefix(work, cfg, hidden=hidden,
+                                               extra_ro=[settings_path], sealed_ro=skill_ro)
             except RuntimeError as e:
                 sys.exit(f"--sandbox bwrap: {e} (use --sandbox none for debug)")
             checks = agentproc.sandbox_selftest(prefix, work, cfg, extra_ro=[settings_path])

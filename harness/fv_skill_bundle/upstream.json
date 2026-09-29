@@ -1,0 +1,10 @@
+{
+  "repository": "https://github.com/Beneficial-AI-Foundation/formal-verification-skills",
+  "revision": "0f6e139cc95866b153efcf20f5124a13af115131",
+  "adapter": "Local headless adaptation of commands/fvs/lean-verify.md; not the upstream interactive workflow",
+  "reference_sha256": {
+    "skills/lean-verify/references/tactic-usage.md": "a26636cd2e889513300a2cbd18245e34a041ea5dbf82cea93498cf65a4690721",
+    "skills/lean-verify/references/proof-strategies.md": "146477c78aaf4747ce44c274f97b144a28c7bdab719ebe67883279932a0b029a",
+    "skills/lean-verify/references/lean-spec-conventions.md": "30f0161471c9ccea95d454baa510c29ebab26692ec4758199078b476be5c2032"
+  }
+}

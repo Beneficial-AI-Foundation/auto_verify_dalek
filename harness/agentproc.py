@@ -220,7 +220,7 @@ def _claude_binary_paths():
     return sorted(paths)
 
 
-def bwrap_prefix(repo, config_dir, hidden=SANDBOX_HIDDEN, extra_ro=()):
+def bwrap_prefix(repo, config_dir, hidden=SANDBOX_HIDDEN, extra_ro=(), sealed_ro=()):
     """argv prefix that runs the rest of the command inside bwrap.
     extra_ro: files/dirs outside repo the agent process must read (e.g. the
     --settings file, which lives in the main checkout, not the slot)."""
@@ -248,6 +248,9 @@ def bwrap_prefix(repo, config_dir, hidden=SANDBOX_HIDDEN, extra_ro=()):
             argv += ["--tmpfs", full]
     # config dir lives under ledger/ (hidden) — bind it back in, writable
     argv += ["--bind", config_dir, config_dir]
+    # Bind after the writable config parent so skill inputs cannot be edited.
+    for p in sealed_ro:
+        argv += ["--ro-bind", p, p]
     argv += ["--setenv", "HOME", home, "--chdir", repo, "--"]
     return argv
 
@@ -312,22 +315,27 @@ def tool_names(allowed_tools):
 
 
 def build_command(prompt, session_id, resume, model, max_turns,
-                  allowed_tools, continue_message=None, settings_path=None):
+                  allowed_tools, continue_message=None, settings_path=None,
+                  skill_plugin=None):
     """One noninteractive claude invocation. Round 1 pins the session UUID
     with --session-id; later rounds resume exactly that UUID. Tool flags are
     per-invocation, so they are repeated on every round.
 
     --tools restricts the built-in toolset to the base names in
     allowed_tools (no Agent/Task subagents, no WebFetch/WebSearch, no
-    Skill); --disable-slash-commands drops every skill; --allowedTools then
-    auto-approves exactly the listed patterns within that set."""
+    Skill by default); --disable-slash-commands drops every skill unless an
+    explicit skill_plugin is supplied. --allowedTools auto-approves the listed
+    patterns within the toolset; it is not a tool availability boundary."""
     flags = ["--output-format", "stream-json", "--verbose",
              "--max-turns", str(max_turns),
              "--tools", tool_names(allowed_tools),
              "--allowedTools", allowed_tools,
-             "--disable-slash-commands",
              "--setting-sources", "user",
              "--strict-mcp-config"]
+    if skill_plugin:
+        flags += ["--plugin-dir", skill_plugin]
+    else:
+        flags.append("--disable-slash-commands")
     if settings_path:
         flags += ["--settings", settings_path]
     if model:
@@ -349,7 +357,7 @@ def _bounded_wait(wall_deadline):
 def run_round(prompt, transcript_path, *, cwd, session_id, resume,
               model="", max_turns=30, allowed_tools="",
               deadline_seconds=None, continue_message=None, env=None,
-              settings_path=None, sandbox_prefix=None):
+              settings_path=None, sandbox_prefix=None, skill_plugin=None):
     """Run one claude round; stream-json goes verbatim to transcript_path.
 
     Returns (status, returncode, wall_seconds, result_event, provenance)
@@ -358,7 +366,7 @@ def run_round(prompt, transcript_path, *, cwd, session_id, resume,
     background children claude left behind.
     """
     cmd = build_command(prompt, session_id, resume, model, max_turns,
-                        allowed_tools, continue_message, settings_path)
+                        allowed_tools, continue_message, settings_path, skill_plugin)
     if sandbox_prefix:
         cmd = list(sandbox_prefix) + cmd
     # nice -n 19 the whole agent subtree: claude itself is API-bound, but

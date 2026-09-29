@@ -25,6 +25,21 @@ class BExperimentTests(unittest.TestCase):
 
     def test_preview_never_starts_harness(self):
         self.invoke([], lambda: self.fail("preview launched harness"))
+        self.invoke(["--fv-skills"], lambda: self.fail("skill preview launched harness"))
+
+    def test_skill_mode_is_recorded_and_forwarded(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            run = Path(tmp) / "attempt"
+
+            def fake_prepare():
+                self.assertIn("--fv-skills", sys.argv)
+                self.assertIn("--dry-run", sys.argv)
+                self.assertIn("fv-harness:lean-verify", (run / "prompt.txt").read_text())
+                manifest = json.loads((run / "experiment.json").read_text())
+                self.assertEqual(manifest["fv_skills"]["skill"], "fv-harness:lean-verify")
+                self.assertTrue(manifest["fv_skills"]["files_sha256"])
+
+            self.invoke(["--prepare-only", "--fv-skills", "--run-dir", str(run)], fake_prepare)
 
     def test_failed_run_keeps_local_outputs_and_source_unchanged(self):
         source = experiment.ROOT / experiment.harness.BUNDLE / experiment.PATH

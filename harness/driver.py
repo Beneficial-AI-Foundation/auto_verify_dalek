@@ -700,7 +700,10 @@ def run_rounds(prompt, tid, path, before_counts, args, env, settings_path,
     resets = 0
     fresh = True
     continue_message = None
+    skill_loaded = False
     for rnd in range(1, args.rounds + 1):
+        if fresh:
+            skill_loaded = False
         if fresh and rounds:  # session reset: fresh context + history
             round_prompt = prompt + "\n\n" + _history_block(rounds)
         else:
@@ -710,19 +713,32 @@ def run_rounds(prompt, tid, path, before_counts, args, env, settings_path,
         status, rc, wall, result, prov = agentproc.run_round(
             round_prompt, tpath, cwd=work, session_id=session_id,
             resume=not fresh, model=args.model, max_turns=args.max_turns,
-            allowed_tools=ALLOWED_TOOLS,
+            allowed_tools=getattr(args, "allowed_tools", ALLOWED_TOOLS),
             deadline_seconds=args.timeout,
             continue_message=continue_message, env=env,
-            settings_path=settings_path, sandbox_prefix=sandbox_prefix)
+            settings_path=settings_path, sandbox_prefix=sandbox_prefix,
+            **({"skill_plugin": args.skill_plugin} if getattr(args, "skill_plugin", None) else {}))
         was_fresh, fresh = fresh, False
         result = result or {}
+        skill_error = None
+        if getattr(args, "skill_plugin", None):
+            import fv_skills
+            evidence = fv_skills.invocation_evidence(tpath)
+            prov["fv_skills"] = evidence
+            skill_loaded = skill_loaded or evidence["loaded"]
+            if not skill_loaded:
+                skill_error = "required FV skill was not successfully invoked"
+            if any(name != fv_skills.SKILL for name in evidence["requested"]):
+                skill_error = "an unselected skill was invoked"
 
         cut_off = None
         if status == "deadline":
             cut_off = "deadline_exhausted"
         elif rc != 0 and result.get("subtype") == "error_max_turns":
             cut_off = "max_turns_exhausted"
-        if status not in ("ok", "deadline"):
+        if skill_error:
+            outcome, detail = "agent_error", {"error": skill_error}
+        elif status not in ("ok", "deadline"):
             outcome, detail = "agent_error", {"error": status}
         elif cut_off:
             # Ran out of --max-turns or of the --timeout wall clock mid-work

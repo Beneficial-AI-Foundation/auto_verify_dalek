@@ -1,0 +1,5 @@
+{
+  "name": "fv-harness",
+  "version": "0.1.0",
+  "description": "Pinned FVS proof references with a single-session headless adapter"
+}

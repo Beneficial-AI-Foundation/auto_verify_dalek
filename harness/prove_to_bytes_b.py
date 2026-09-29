@@ -9,6 +9,7 @@ import sys
 import time
 
 import prove_top_spec as harness
+import fv_skills
 
 ROOT = Path(harness.REPO)
 TARGET = "curve25519_dalek.backend.serial.u64.field.FieldElement51.to_bytes_spec"
@@ -39,6 +40,8 @@ def main():
     parser.add_argument("--run", action="store_true", help="invoke the model; default only prints the prompt")
     parser.add_argument("--prepare-only", action="store_true", help="prepare an isolated experiment and validate target selection without calling the model")
     parser.add_argument("--model")
+    parser.add_argument("--fv-skills", action="store_true",
+                        help="use the pinned FVS headless lean-verify skill")
     parser.add_argument("--run-dir", help="new directory for this independent attempt")
     parser.add_argument("--timeout", type=int, default=3600)
     parser.add_argument("--max-turns", type=int, default=300)
@@ -55,6 +58,9 @@ def main():
     prompt = harness.driver.PROMPT.format(
         decl="to_bytes_spec", path=PATH, line=line,
         module=harness.driver.path_to_module(PATH)) + harness.PROOF_SKETCH
+    skills_manifest = fv_skills.manifest() if args.fv_skills else None
+    if args.fv_skills:
+        prompt += fv_skills.prompt()
     if args.run and args.prepare_only:
         parser.error("choose either --run or --prepare-only")
     if not args.run and not args.prepare_only:
@@ -95,6 +101,7 @@ def main():
         "max_turns": args.max_turns, "source_sha256": hashes,
         "build_timeout": args.build_timeout,
         "prompt_sha256": hashlib.sha256(prompt.encode()).hexdigest(),
+        "fv_skills": skills_manifest,
     }, indent=2) + "\n")
     # Keep repeated attempts' transcripts separate: driver otherwise names
     # them by target and round, which collide across independent runs.
@@ -108,6 +115,8 @@ def main():
                 "--build-timeout", str(args.build_timeout)]
     if args.prepare_only:
         sys.argv.append("--dry-run")
+    if args.fv_skills:
+        sys.argv.append("--fv-skills")
     start = time.monotonic()
     status = {"status": "prepared" if args.prepare_only else "finished", "exit_code": 0}
     try:

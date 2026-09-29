@@ -1,0 +1,50 @@
+% Freeze the ends, squeeze the middle (METHOD.md).
+% Build: pdflatex freeze_ends.tex
+%        pdftoppm -png -r 300 -singlefile freeze_ends.pdf freeze_ends
+\documentclass[tikz,border=8pt]{standalone}
+\usepackage[T1]{fontenc}
+\usepackage{lmodern}
+\renewcommand{\familydefault}{\sfdefault}
+\usetikzlibrary{positioning,arrows.meta,calc,decorations.pathreplacing}
+
+\definecolor{frozen}{RGB}{210,225,250}
+\definecolor{frozenline}{RGB}{50,90,170}
+\definecolor{agent}{RGB}{214,240,214}
+\definecolor{agentline}{RGB}{60,140,60}
+
+\tikzset{
+  layer/.style={draw, rounded corners=3pt, line width=0.9pt, minimum height=1.15cm,
+                text width=9.6cm, align=left, inner sep=7pt},
+  fz/.style={layer, fill=frozen, draw=frozenline},
+  mu/.style={layer, fill=agent, draw=agentline},
+  tag/.style={font=\bfseries, anchor=east},
+  gate/.style={font=\small, anchor=west, text width=5.2cm, align=left},
+}
+
+\begin{document}
+\begin{tikzpicture}
+  \node[fz] (top) at (0,0) {\textbf{top-level specs} \quad
+    \small\texttt{Specs/**/*\_spec}};
+  \node[mu, below=0.25cm of top] (int) {\textbf{internal specs} \quad
+    \small \texttt{FieldElement51}, \texttt{Scalar52}, \dots};
+  \node[mu, below=0.25cm of int] (prf) {\textbf{proofs}};
+  \node[fz, below=0.25cm of prf] (code) {\textbf{code} \quad
+    \small \texttt{Funs.lean}, \texttt{Types.lean}, \texttt{Math/}};
+
+  \node[tag, text=frozenline] at ($(top.west)+(-0.3cm,0)$)  {frozen};
+  \node[tag, text=agentline]  at ($(int.west)+(-0.3cm,0)$)  {agent writes};
+  \node[tag, text=agentline]  at ($(prf.west)+(-0.3cm,0)$)  {agent writes};
+  \node[tag, text=frozenline] at ($(code.west)+(-0.3cm,0)$) {frozen};
+
+  % what the gate checks at each end
+  \node[gate] at ($(top.east)+(0.4cm,0)$)  {gate: statement fingerprint (G1)};
+  \node[gate] at ($(code.east)+(0.4cm,0)$) {gate: file hashes};
+  \draw[decorate, decoration={brace, amplitude=6pt}, line width=0.9pt, agentline]
+    ($(int.north east)+(0.25cm,0)$) -- ($(prf.south east)+(0.25cm,0)$)
+    node[midway, gate, xshift=0.25cm, text=black] {squeezed: too weak $\to$ top fails\\
+                                                     false $\to$ cannot be proved};
+
+  \node[font=\small, below=0.35cm of code] {everywhere: no new axioms,
+    no \texttt{sorry}, fresh replay};
+\end{tikzpicture}
+\end{document}

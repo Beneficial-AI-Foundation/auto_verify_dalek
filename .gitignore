@@ -32,6 +32,11 @@ __pycache__/
 verification_progress.png
 verification_progress.svg
 
+# PDFs and LaTeX build metadata
+*.pdf
+*.fdb_latexmk
+*.fls
+
 # Generated dependency analysis
 deps.json
 

@@ -470,6 +470,9 @@ def abort_configuration(run: dict[str, Any]) -> None:
         "proxy_base",
     ):
         run.pop(name, None)
+    # An empty journal means no request was ever sent, so no provider evidence can exist.
+    if run.get("provider_journal") == {}:
+        run.pop("provider_journal")
 
 
 def validate_public_binding(value: Any) -> dict[str, Any]:

@@ -10,6 +10,7 @@ from decimal import Decimal
 from pathlib import Path
 from unittest import mock
 
+from autofv.contracts import ContractError
 from autofv import (
     axiom_audit,
     evidence,
@@ -1749,6 +1750,98 @@ class ResultEvidenceTests(unittest.TestCase):
             self.assertEqual(result["termination_reason"], "finalization_failed")
             self.assertEqual(Path(result["run_root"]), allocated_roots[0])
             self.assertTrue((allocated_roots[0] / "result.json").is_file())
+
+    def test_failed_provider_authorization_keeps_its_result_and_detail(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            base = Path(tmp)
+            ledger = base / "attempts.jsonl"
+            staging = base / "staging"
+            (staging / "evidence").mkdir(parents=True)
+            (base / "provider.env").touch()
+            (base / "selection.json").touch()
+            prepared = {
+                "run_id": "aborted-provider-run",
+                "run_root": str(staging),
+                "evidence_dir": str(staging / "evidence"),
+                "execution_tier": "simulation",
+                "cost_classification": "synthetic_fixture",
+                "events": ["validated"],
+            }
+
+            def prepare(*_args, before_worker=None, **_kwargs):
+                before_worker(prepared)
+                return prepared
+
+            def configure(run, *_args, **_kwargs):
+                run["provider_binding_sha256"] = "0" * 64
+                run.setdefault("provider_journal", {})
+
+            def authorize(run, *_args, **_kwargs):
+                provider_config.abort_configuration(run)
+                raise ContractError("sealed preflight runner failed")
+
+            with (
+                mock.patch.dict(os.environ, {"AUTOFV_ATTEMPT_LEDGER": str(ledger)}),
+                mock.patch.object(worker, "prepare_run", side_effect=prepare),
+                mock.patch.object(
+                    experiment.preflight_runner, "configure_prepared_provider",
+                    side_effect=configure,
+                ),
+                mock.patch.object(experiment.provider_service, "start"),
+                mock.patch.object(
+                    experiment.preflight_runner, "authorize_prepared_run",
+                    side_effect=authorize,
+                ),
+            ):
+                result = experiment.run_experiment(
+                    TARGET, TARGET / "run.json", output_root=base / "attempts",
+                    env_file=base / "provider.env",
+                    provider_selection=base / "selection.json",
+                )
+
+            self.assertEqual(result["termination_reason"], "contract_invalid")
+            self.assertIn("sealed preflight runner failed", str(result["termination_detail"]))
+            self.assertEqual(len(ledger.read_text().splitlines()), 1)
+
+    def test_abort_drops_only_an_empty_provider_journal(self):
+        unused, used = {"provider_journal": {}}, {"provider_journal": {"r": "a" * 64}}
+        provider_config.abort_configuration(unused)
+        provider_config.abort_configuration(used)
+        self.assertNotIn("provider_journal", unused)
+        self.assertEqual(used["provider_journal"], {"r": "a" * 64})
+
+    def test_emergency_result_keeps_the_original_failure_detail(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            base = Path(tmp)
+            staging = base / "staging"
+            (staging / "evidence").mkdir(parents=True)
+            prepared = {
+                "run_id": "emergency-detail-run",
+                "run_root": str(staging),
+                "evidence_dir": str(staging / "evidence"),
+                "execution_tier": "simulation",
+                "cost_classification": "synthetic_fixture",
+                "events": ["validated"],
+            }
+
+            def fail_finalization(_run, state, **_kwargs):
+                state["termination_detail"] = "original worker failure"
+                raise results.ResultError("renderer failed")
+
+            with (
+                mock.patch.dict(
+                    os.environ, {"AUTOFV_ATTEMPT_LEDGER": str(base / "attempts.jsonl")}
+                ),
+                mock.patch.object(worker, "prepare_run", return_value=prepared),
+                mock.patch.object(experiment._EXPERIMENT_GRAPH, "stream", return_value=[]),
+                mock.patch.object(experiment, "_finish_attempt", side_effect=fail_finalization),
+            ):
+                result = experiment.run_experiment(
+                    TARGET, TARGET / "run.json", output_root=base / "attempts"
+                )
+
+            self.assertEqual(result["termination_reason"], "finalization_failed")
+            self.assertIn("original worker failure", result["termination_detail"])
 
     def test_durable_binding_failure_force_destroys_the_prepared_worker(self):
         with tempfile.TemporaryDirectory() as tmp:

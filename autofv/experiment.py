@@ -971,15 +971,21 @@ def run_experiment(
         return _finish_attempt(run, state, outcome=outcome, reason=reason)
     except (Exception, KeyboardInterrupt) as exc:
         detail = RuntimeError(
-            f"final result persistence failed for {run.get('run_id')}: {exc}"
+            f"final result persistence failed for {run.get('run_id')}: {exc}; "
+            f"prior detail: {state.get('termination_detail')}"
         )
-        return persist_unallocated(
-            "infrastructure_failed",
-            "finalization_failed",
-            detail,
-            existing_run=durable_run,
-            existing_state=state if durable_run is not None else None,
-        )
+        try:
+            return persist_unallocated(
+                "infrastructure_failed",
+                "finalization_failed",
+                detail,
+                existing_run=durable_run,
+                existing_state=state if durable_run is not None else None,
+            )
+        except (Exception, KeyboardInterrupt) as emergency:
+            raise results.ResultError(
+                f"emergency result persistence failed: {emergency}; {detail}"[:2000]
+            ) from emergency
 
 
 def _inspect_paths(

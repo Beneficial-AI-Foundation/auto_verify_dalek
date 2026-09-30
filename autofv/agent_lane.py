@@ -320,8 +320,13 @@ def build_lane_tools(
         return _bounded_output(search_files(query), "search tool")
 
     def edit_only_assigned(arguments: dict[str, Any]) -> str:
-        worker.validate_assigned_patch(trusted_job["assigned_path"], arguments["patch"])
-        return _bounded_output(edit_assigned(arguments["patch"]), "edit tool")
+        try:
+            worker.validate_assigned_patch(trusted_job["assigned_path"], arguments["patch"])
+            result = edit_assigned(arguments["patch"])
+        except worker.PatchRejected as exc:
+            # Refused before any write: the model sees why and may try again.
+            return _bounded_output(f"patch_rejected: {exc}", "edit tool")
+        return _bounded_output(result, "edit tool")
 
     def fixed_lean_check(arguments: dict[str, Any]) -> str:
         return _bounded_output(check_lean(), "Lean diagnostic tool")

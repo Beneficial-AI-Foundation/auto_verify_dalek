@@ -49,6 +49,10 @@ class WorkerError(RuntimeError):
         self.run = run
 
 
+class PatchRejected(WorkerError):
+    """A model's own patch was refused before anything was written."""
+
+
 def _limactl(
     *argv: str,
     input_bytes: bytes | None = None,

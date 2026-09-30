@@ -238,6 +238,44 @@ class CandidateRuntimeBoundaryTests(unittest.TestCase):
         self.assertNotIn("/volume/work/project", argv)
         self.assertNotIn("/volume/evidence", argv)
 
+    def test_sealed_edit_refuses_only_a_patch_git_rejects(self) -> None:
+        run = {"execution_tier": "sealed_runsc", "lock": _LOCK, "volume": "run-volume"}
+        lane = {
+            "lane_id": _LANE_ID,
+            "assigned_path": _ASSIGNED_PATH,
+            "worktree_path": f"/volume/lanes/{_LANE_ID}/work",
+        }
+        patch = (
+            f"diff --git a/{_ASSIGNED_PATH} b/{_ASSIGNED_PATH}\n"
+            f"--- a/{_ASSIGNED_PATH}\n+++ b/{_ASSIGNED_PATH}\n@@ -1 +1 @@\n-x\n+y\n"
+        )
+        guard_failure = b"Traceback (most recent call last):\nRuntimeError: lane path is not a regular file\n"
+        cases = (
+            (1, b"error: patch failed: Proof/Left.lean:1\n", worker.PatchRejected),
+            (128, b"error: corrupt patch at line 6\n", worker.PatchRejected),
+            (1, guard_failure, worker.WorkerError),
+            (137, b"", worker.WorkerError),
+        )
+        for returncode, stderr, expected in cases:
+            calls = []
+
+            def docker(*argv, input_bytes=None, check=True):
+                calls.append(argv)
+                failing = "--check" in argv
+                return subprocess.CompletedProcess(
+                    argv, returncode if failing else 0, b"", stderr if failing else b""
+                )
+
+            with self.subTest(returncode=returncode, stderr=stderr), mock.patch.object(
+                worker._runtime, "_docker", side_effect=docker
+            ):
+                with self.assertRaises(expected) as raised:
+                    worker.edit_lane_file(run, lane, patch)
+                if expected is worker.WorkerError:
+                    self.assertNotIsInstance(raised.exception, worker.PatchRejected)
+                self.assertEqual(calls[0][-1], "true")  # the guard runs alone first
+                self.assertFalse(any(argv[-2:] == ("apply", "-") for argv in calls))
+
     def test_sealed_check_uses_nonfollowing_lane_guard_before_verify(self) -> None:
         run = {
             "execution_tier": "sealed_runsc",

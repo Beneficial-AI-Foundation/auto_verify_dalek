@@ -37,6 +37,30 @@ def _job() -> dict:
 
 
 class AgentLaneBoundaryTests(unittest.TestCase):
+    def test_refused_patch_returns_to_the_model_without_editing(self):
+        edit = mock.Mock(side_effect=worker.PatchRejected("patch does not apply: corrupt patch"))
+        tools = agent_lane.build_lane_tools(
+            _job(),
+            read_file=mock.Mock(),
+            search_files=mock.Mock(),
+            edit_assigned=edit,
+            check_lean=mock.Mock(),
+        )
+        other = "diff --git a/Diamond/Top.lean b/Diamond/Top.lean\n"
+        self.assertEqual(
+            agent_lane.invoke_lane_tool(tools, "edit_assigned", {"patch": other}),
+            "patch_rejected: candidate must modify exactly its assigned file",
+        )
+        edit.assert_not_called()
+        valid = "diff --git a/Diamond/Left.lean b/Diamond/Left.lean\n"
+        self.assertEqual(
+            agent_lane.invoke_lane_tool(tools, "edit_assigned", {"patch": valid}),
+            "patch_rejected: patch does not apply: corrupt patch",
+        )
+        edit.side_effect = worker.WorkerError("agent worker command failed")
+        with self.assertRaisesRegex(worker.WorkerError, "agent worker command failed"):
+            agent_lane.invoke_lane_tool(tools, "edit_assigned", {"patch": valid})
+
     def test_worker_owned_lane_operations_apply_real_patch_and_reject_symlink(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp) / "lane"

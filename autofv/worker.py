@@ -43,6 +43,7 @@ AGENT_VM = _runtime.AGENT_VM
 SKIP_NAMES = _runtime.SKIP_NAMES
 SKIP_PARTS = _runtime.SKIP_PARTS
 WorkerError = _runtime.WorkerError
+PatchRejected = _runtime.PatchRejected
 claim_worker = _runtime.claim_worker
 hash_tree = _runtime.hash_tree
 inspect_lima_instance = _runtime.inspect_lima_instance
@@ -504,33 +505,36 @@ def edit_lane_file(
                 command, cwd=root, input=raw, capture_output=True
             )
             if completed.returncode:
-                raise WorkerError(
-                    "private lane patch failed: "
-                    + (completed.stdout + completed.stderr).decode("utf-8", "replace")[-2000:]
+                output = (completed.stdout + completed.stderr).decode("utf-8", "replace")
+                raise (PatchRejected if check else WorkerError)(
+                    "private lane patch failed: " + output[-2000:]
                 )
         _local_lane_file(run, lane, lane["assigned_path"])
     else:
         root = _sealed_lane_root(lane)
-        for check in (True, False):
-            argv = ["git", "apply"]
-            if check:
-                argv.append("--check")
-            argv.append("-")
-            _runtime._docker(
+
+        def sealed(*argv: str, check: bool = True) -> subprocess.CompletedProcess[bytes]:
+            return _runtime._docker(
                 *_runtime._runtime_argv(
                     run["lock"],
                     run["volume"],
                     *_sealed_lane_exec(root, lane["assigned_path"], *argv),
                 ),
                 input_bytes=raw,
+                check=check,
             )
-        _runtime._docker(
-            *_runtime._runtime_argv(
-                run["lock"],
-                run["volume"],
-                *_sealed_lane_exec(root, lane["assigned_path"], "true"),
-            )
-        )
+
+        # The guard runs alone first, so a failed check below is git's verdict:
+        # git exits 1 or 128, a guard violation raises with a traceback.
+        sealed("true")
+        checked = sealed("git", "apply", "--check", "-", check=False)
+        output = (checked.stdout + checked.stderr).decode("utf-8", "replace")
+        if checked.returncode in {1, 128} and "Traceback (most recent call last)" not in output:
+            raise PatchRejected("patch does not apply: " + output[-2000:])
+        if checked.returncode:
+            raise WorkerError("private lane patch check failed: " + output[-2000:])
+        sealed("git", "apply", "-")
+        sealed("true")
     return f"applied:{_runtime._sha256(raw)}"
 
 
@@ -752,7 +756,7 @@ def validate_assigned_patch(assigned_path: str, patch: str) -> None:
         raise WorkerError("candidate scope is invalid")
     header = f"diff --git a/{assigned_path} b/{assigned_path}\n"
     if not patch.startswith(header) or patch.count("diff --git ") != 1:
-        raise WorkerError("candidate must modify exactly its assigned file")
+        raise PatchRejected("candidate must modify exactly its assigned file")
     lines = patch.splitlines()
     if any(
         line.startswith("--- ") and line != f"--- a/{assigned_path}"
@@ -760,7 +764,7 @@ def validate_assigned_patch(assigned_path: str, patch: str) -> None:
         or line.startswith(("rename from ", "rename to ", "copy from ", "copy to "))
         for line in lines
     ):
-        raise WorkerError("candidate must modify exactly its assigned file")
+        raise PatchRejected("candidate must modify exactly its assigned file")
 
 
 def accept_candidate(

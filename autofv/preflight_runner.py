@@ -211,21 +211,38 @@ def _tool_schema_equality() -> None:
     assert len(normalized) == len(schemas) and len({item["function"]["name"] for item in normalized}) == len(schemas)
 
 
+PROJECT_ROOT = Path("/volume/work/project")
+DEPENDENCY_PACKAGES = "/volume/dependencies/packages"
+
+
+def _source_walk():
+    """Walk sealed source; the top-level `.lake` is trusted build and dependency state."""
+    for root, directories, files in os.walk(PROJECT_ROOT):
+        if Path(root) == PROJECT_ROOT and ".lake" in directories:
+            directories.remove(".lake")
+        yield root, directories, files
+
+
 def _tree_has_no_symlinks() -> None:
-    for root, directories, files in os.walk("/volume/work/project"):
+    lake = PROJECT_ROOT / ".lake"
+    packages = lake / "packages"
+    if lake.is_symlink() or (
+        os.path.lexists(packages)
+        and (not packages.is_symlink() or os.readlink(packages) != DEPENDENCY_PACKAGES)
+    ):
+        raise AssertionError("sealed build state has an unexpected link")
+    for root, directories, files in _source_walk():
         for name in (*directories, *files):
             if stat.S_ISLNK(os.lstat(Path(root) / name).st_mode):
                 raise AssertionError("sealed source contains a symlink")
 
 
-def _source_files() -> list[bytes]:
-    values = []
-    for root, _directories, files in os.walk("/volume/work/project"):
+def _source_files():
+    for root, _directories, files in _source_walk():
         for name in files:
             path = Path(root) / name
             if path.is_file() and not path.is_symlink():
-                values.append(path.read_bytes())
-    return values
+                yield path.read_bytes()
 
 
 def _secret_scan() -> None:
@@ -457,53 +474,61 @@ def run_preflight(
         if provider_config.provider_binding(run) is None:
             configure_prepared_provider(run, target, env_file=env_file)
         markers = provider_config.secret_markers(run)
-        worker_runtime._docker(
-            "run",
-            "--rm",
-            "--pull",
-            "never",
-            "--runtime",
-            lock["tools"]["runsc"]["runtime_name"],
-            "--read-only",
-            "--network",
-            "none",
-            "--user",
-            "0:0",
-            "--security-opt",
-            "no-new-privileges",
-            "--mount",
-            f"type=volume,src={run['volume']},dst=/volume,volume-nocopy",
-            lock["image"]["image_digest"],
-            "chmod",
-            "-R",
-            "a-w",
-            "/volume/work/project",
-        )
-        completed = worker_runtime._docker(
-            *worker_runtime._runtime_argv(
-                lock,
-                run["volume"],
-                "python",
-                "-I",
-                "/volume/autofv-control/autofv/preflight_runner.py",
-                "--output",
-                "/volume/evidence/preflight-checks.json",
-                network="none",
-            ),
-            check=False,
-        )
-        _scan_secrets(markers, completed.stdout, completed.stderr)
-        collected = worker_runtime._docker(
-            *worker_runtime._runtime_argv(
-                lock,
-                run["volume"],
-                "cat",
-                "/volume/evidence/preflight-checks.json",
-                network="none",
-            ),
-            check=False,
-        )
-        _scan_secrets(markers, collected.stdout, collected.stderr)
+
+        def chmod_project(mode: str) -> None:
+            worker_runtime._docker(
+                "run",
+                "--rm",
+                "--pull",
+                "never",
+                "--runtime",
+                lock["tools"]["runsc"]["runtime_name"],
+                "--read-only",
+                "--network",
+                "none",
+                "--user",
+                "0:0",
+                "--security-opt",
+                "no-new-privileges",
+                "--mount",
+                f"type=volume,src={run['volume']},dst=/volume,volume-nocopy",
+                lock["image"]["image_digest"],
+                "chmod",
+                "-R",
+                mode,
+                "/volume/work/project",
+            )
+
+        chmod_project("a-w")
+        try:
+            completed = worker_runtime._docker(
+                *worker_runtime._runtime_argv(
+                    lock,
+                    run["volume"],
+                    "python",
+                    "-I",
+                    "/volume/autofv-control/autofv/preflight_runner.py",
+                    "--output",
+                    "/volume/evidence/preflight-checks.json",
+                    network="none",
+                ),
+                check=False,
+            )
+            _scan_secrets(markers, completed.stdout, completed.stderr)
+            collected = worker_runtime._docker(
+                *worker_runtime._runtime_argv(
+                    lock,
+                    run["volume"],
+                    "cat",
+                    "/volume/evidence/preflight-checks.json",
+                    network="none",
+                ),
+                check=False,
+            )
+            _scan_secrets(markers, collected.stdout, collected.stderr)
+        finally:
+            # Lanes add git worktrees and commits under the project after preflight.
+            chmod_project("u+w")
         if collected.returncode:
             raise ContractError("sealed preflight result collection failed")
         validate_runner_result(collected.stdout)

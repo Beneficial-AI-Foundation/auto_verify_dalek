@@ -5,6 +5,7 @@ import copy
 import hashlib
 import json
 import subprocess
+import sys
 import tempfile
 import unittest
 from concurrent.futures import ThreadPoolExecutor
@@ -294,6 +295,22 @@ class PreflightCliTests(unittest.TestCase):
                 {"agent_worker_id": f"lima:autofv-agent-template:{machine_id}"}
             )
 
+    def test_failed_collection_still_lifts_the_source_freeze(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            ok = subprocess.CompletedProcess((), 0, b"", b"")
+            missing = subprocess.CompletedProcess((), 1, b"", b"")
+            with (
+                mock.patch.dict("os.environ", {"AUTOFV_RUN_TOKEN": "preflight-run-token"}),
+                mock.patch("autofv.worker.prepare_run", return_value=_run(root)),
+                mock.patch("autofv.preflight_runner._probe_distinct_verifier", return_value="lima:autofv-verifier:fixture"),
+                mock.patch("autofv.worker.force_destroy_worker"),
+                mock.patch("autofv.worker_runtime._docker", side_effect=[ok, missing, missing, ok]) as docker,
+                self.assertRaisesRegex(experiment.ContractError, "result collection failed"),
+            ):
+                preflight_runner.run_preflight(TARGET, CONFIG, root / "bundle", env_file=_environment(root))
+            self.assertEqual(docker.call_args_list[-1].args[-3:], ("-R", "u+w", "/volume/work/project"))
+
     def test_preflight_uses_one_sealed_runner_and_produces_valid_bundle(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
@@ -307,7 +324,7 @@ class PreflightCliTests(unittest.TestCase):
                 mock.patch("autofv.worker.prepare_run", return_value=run),
                 mock.patch("autofv.preflight_runner._probe_distinct_verifier", return_value="lima:autofv-verifier:fixture"),
                 mock.patch("autofv.worker.force_destroy_worker") as destroy,
-                mock.patch("autofv.worker_runtime._docker", side_effect=[completed, completed, collected]) as docker,
+                mock.patch("autofv.worker_runtime._docker", side_effect=[completed, completed, collected, completed]) as docker,
                 mock.patch(
                     "autofv.provider_transport._open_upstream",
                     side_effect=AssertionError("provider dispatch forbidden"),
@@ -322,7 +339,9 @@ class PreflightCliTests(unittest.TestCase):
             preflight_runner.validate_preflight_bundle(
                 output / "preflight-result.json", expected_source_head="1" * 40
             )
-            self.assertEqual(docker.call_count, 3)
+            self.assertEqual(docker.call_count, 4)
+            self.assertEqual(docker.call_args_list[0].args[-3:], ("-R", "a-w", "/volume/work/project"))
+            self.assertEqual(docker.call_args_list[3].args[-3:], ("-R", "u+w", "/volume/work/project"))
             runner_argv = docker.call_args_list[1].args
             self.assertEqual(
                 runner_argv[runner_argv.index("--runtime") + 1],
@@ -377,7 +396,7 @@ class PreflightCliTests(unittest.TestCase):
                     mock.patch("autofv.worker.force_destroy_worker") as destroy,
                     mock.patch(
                         "autofv.worker_runtime._docker",
-                        side_effect=[completed, completed, collected],
+                        side_effect=[completed, completed, collected, completed],
                     ),
                 ):
                     result = preflight_runner.authorize_prepared_run(
@@ -412,6 +431,7 @@ class PreflightCliTests(unittest.TestCase):
                         subprocess.CompletedProcess((), 0, b"", b""),
                         subprocess.CompletedProcess((), 0, b"", b""),
                         subprocess.CompletedProcess((), 0, _runner_raw(), b""),
+                        subprocess.CompletedProcess((), 0, b"", b""),
                     ],
                 ),
             ):
@@ -483,6 +503,7 @@ class PreflightCliTests(unittest.TestCase):
                         subprocess.CompletedProcess((), 0, b"", b""),
                         subprocess.CompletedProcess((), 0, b"", b""),
                         subprocess.CompletedProcess((), 0, _runner_raw(), b""),
+                        subprocess.CompletedProcess((), 0, b"", b""),
                     ],
                 ),
             ):
@@ -491,6 +512,53 @@ class PreflightCliTests(unittest.TestCase):
             suite.write_bytes(suite.read_bytes() + b" ")
             with self.assertRaises(experiment.ContractError):
                 preflight_runner.validate_preflight_bundle(output / "preflight-result.json")
+
+
+class SealedRunnerSurfaceTests(unittest.TestCase):
+    """The in-container runner sees only the control bundle and a prepared volume."""
+
+    def test_runner_imports_from_the_control_bundle_alone(self) -> None:
+        members = worker_runtime._control_manifest(preflight_runner.load_toolchain_lock())[1]
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            for relative, raw, _mode in members:
+                (root / relative).parent.mkdir(parents=True, exist_ok=True)
+                (root / relative).write_bytes(raw)
+            completed = subprocess.run(
+                (sys.executable, "-I", str(root / "autofv/preflight_runner.py"), "--help"),
+                capture_output=True, text=True, cwd=temporary,
+            )
+        self.assertEqual(completed.returncode, 0, completed.stderr[-500:])
+
+    def _project(self, root: Path) -> Path:
+        project = root / "project"
+        (project / "Src").mkdir(parents=True)
+        (project / "Src/A.lean").write_text("theorem a : True := trivial\n")
+        (project / ".lake/build").mkdir(parents=True)
+        (project / ".lake/build/A.olean").write_bytes(b"token = abcdefgh12345678")
+        (project / ".lake/packages").symlink_to("/volume/dependencies/packages")
+        return project
+
+    def test_prepared_project_passes_the_source_scans(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            project = self._project(Path(temporary))
+            with mock.patch.object(preflight_runner, "PROJECT_ROOT", project):
+                preflight_runner._tree_has_no_symlinks()
+                preflight_runner._secret_scan()
+                preflight_runner._spoiler_scan()
+
+    def test_source_symlinks_and_a_foreign_dependency_link_are_rejected(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            project = self._project(Path(temporary))
+            with mock.patch.object(preflight_runner, "PROJECT_ROOT", project):
+                (project / "Src/B.lean").symlink_to("/etc/passwd")
+                with self.assertRaises(AssertionError):
+                    preflight_runner._tree_has_no_symlinks()
+                (project / "Src/B.lean").unlink()
+                (project / ".lake/packages").unlink()
+                (project / ".lake/packages").symlink_to("/elsewhere")
+                with self.assertRaises(AssertionError):
+                    preflight_runner._tree_has_no_symlinks()
 
 
 if __name__ == "__main__":

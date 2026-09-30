@@ -8,6 +8,9 @@ import subprocess
 from pathlib import Path, PurePosixPath
 from typing import Any
 
+# Defined beside the scheduler so the sealed control bundle stays import-closed.
+from .graph_scheduler import proof_source_path  # noqa: F401
+
 
 MAX_PROBE_BYTES = 16 * 1024 * 1024
 MAX_NODES = 10_000
@@ -720,13 +723,6 @@ def parse_probe_bytes(
             aeneas_sha256,
         ),
     }
-
-
-def proof_source_path(graph: dict[str, Any], node: str) -> str | None:
-    """Return the supplied theorem file for a fixed target, else its source."""
-    supplied = graph.get("supplied_specs", {}).get(node)
-    paths = graph.get("source_paths", {})
-    return paths.get(supplied) if supplied is not None else paths.get(node)
 
 
 def render_target_report(graph: dict[str, Any]) -> bytes:

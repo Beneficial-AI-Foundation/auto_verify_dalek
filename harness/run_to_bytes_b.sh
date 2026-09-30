@@ -13,7 +13,8 @@ if (( $# )); then
 fi
 
 # Change these settings here when starting a new experiment series.
-MODEL=claude-sonnet-5
+# MODEL=claude-sonnet-5
+MODEL=claude-opus-5-5
 TIMEOUT_SECONDS=3600
 MAX_TURNS=300
 

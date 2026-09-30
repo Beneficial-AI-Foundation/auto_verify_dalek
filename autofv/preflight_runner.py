@@ -169,8 +169,13 @@ def _candidate_trust_scope_rejected() -> None:
         _lock(), "preflight-volume", "lane-001", "true"
     )
     mounts = [argv[index + 1] for index, item in enumerate(argv[:-1]) if item == "--mount"]
-    assert len(mounts) == 1 and "dst=/candidate" in mounts[0]
-    assert all("/volume/work/project" not in item for item in mounts)
+    # Only its private worktree and the read-only dependency cache.
+    assert mounts == [
+        "type=volume,src=preflight-volume,dst=/candidate,"
+        "volume-subpath=lanes/lane-001/work,volume-nocopy",
+        "type=volume,src=preflight-volume,dst=/dependencies,"
+        "volume-subpath=dependencies,volume-nocopy,readonly",
+    ]
 
 
 def _budget_receipt_reconciliation() -> None:
@@ -361,15 +366,18 @@ def validate_runner_result(raw: bytes) -> dict[str, Any]:
     checks = value["checks"]
     if not isinstance(checks, list) or len(checks) != len(_ALL_CHECKS):
         raise ContractError("sealed preflight runner result is incomplete")
-    observed = []
+    observed, failed = [], []
     for check in checks:
         if not isinstance(check, dict) or set(check) != {"name", "status", "detail"}:
             raise ContractError("sealed preflight check fields mismatch")
         observed.append(check["name"])
         if check["status"] != "passed" or check["detail"] != "production_path_exercised":
-            raise ContractError(f"sealed preflight check failed: {check.get('name')}")
+            failed.append(f"{check['name']}:{check['detail']}")
     if tuple(observed) != _ALL_CHECKS:
         raise ContractError("sealed preflight check set mismatch")
+    if failed:
+        # Name every failure: an attempt must not hide the checks after the first.
+        raise ContractError("sealed preflight check failed: " + ",".join(failed))
     return value
 
 

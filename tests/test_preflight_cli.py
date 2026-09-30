@@ -547,6 +547,43 @@ class SealedRunnerSurfaceTests(unittest.TestCase):
                 preflight_runner._secret_scan()
                 preflight_runner._spoiler_scan()
 
+    def test_every_check_passes_on_the_host_but_those_needing_the_worker(self) -> None:
+        # Only these read worker-volume paths the host cannot supply.
+        worker_only = {"tool_schema_equality", "candidate_scope"}
+        failed = []
+        with tempfile.TemporaryDirectory() as temporary:
+            project = self._project(Path(temporary))
+            with mock.patch.object(
+                preflight_runner, "_lock", preflight_runner.load_toolchain_lock
+            ), mock.patch.object(preflight_runner, "PROJECT_ROOT", project):
+                for name, check in preflight_runner._CHECKS.items():
+                    if name in worker_only:
+                        continue
+                    try:
+                        check()
+                    except BaseException as exc:
+                        failed.append(f"{name}: {exc!r}")
+        self.assertEqual(failed, [])
+
+    def test_a_result_names_every_failed_check(self) -> None:
+        failing = {"candidate_trust_scope_rejected": "AssertionError", "candidate_scope": "OSError"}
+        checks = [
+            {"name": name, "status": "failed", "detail": failing[name]}
+            if name in failing
+            else {"name": name, "status": "passed", "detail": "production_path_exercised"}
+            for name in preflight_runner._ALL_CHECKS
+        ]
+        body = {"schema": preflight_runner.RUNNER_SCHEMA, "checks": checks}
+        value = {**body, "runner_sha256": hashlib.sha256(
+            preflight_runner.canonical_json_bytes(body)).hexdigest()}
+        with self.assertRaisesRegex(
+            preflight_runner.ContractError,
+            "failed: candidate_trust_scope_rejected:AssertionError,candidate_scope:OSError$",
+        ):
+            preflight_runner.validate_runner_result(
+                preflight_runner.canonical_json_bytes(value) + b"\n"
+            )
+
     def test_source_symlinks_and_a_foreign_dependency_link_are_rejected(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             project = self._project(Path(temporary))

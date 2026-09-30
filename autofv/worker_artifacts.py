@@ -165,11 +165,24 @@ _VOLUME_ROOTS = (
 )
 
 
+# Prepared projects and lanes resolve Lake packages through the dependency cache.
+_DEPENDENCY_LINKS = frozenset({"/dependencies/packages", "/volume/dependencies/packages"})
+
+
+def _dependency_link(member: tarfile.TarInfo) -> bool:
+    return (
+        member.issym()
+        and PurePosixPath(member.name).parts[-2:] == (".lake", "packages")
+        and member.linkname in _DEPENDENCY_LINKS
+    )
+
+
 def _safe_tar(
     raw: bytes,
     label: str,
     *,
     forbidden: tuple[bytes, ...] = (),
+    dependency_links: bool = False,
 ) -> None:
     try:
         with tarfile.open(fileobj=io.BytesIO(raw), mode="r:*") as archive:
@@ -184,7 +197,11 @@ def _safe_tar(
                     member.name in seen
                     or path.is_absolute()
                     or any(part in {"", ".", ".."} for part in path.parts)
-                    or not (member.isfile() or member.isdir())
+                    or not (
+                        member.isfile()
+                        or member.isdir()
+                        or (dependency_links and _dependency_link(member))
+                    )
                 ):
                     raise WorkerError(f"{label} contains an unsafe member")
                 seen.add(member.name)
@@ -356,6 +373,7 @@ def _trusted_worker_volume_scan(
         archive_raw,
         "trusted worker-volume scan",
         forbidden=forbidden,
+        dependency_links=True,
     )
     expected = {
         item["root"].removeprefix("/volume/"): item
@@ -383,6 +401,12 @@ def _trusted_worker_volume_scan(
                         json.dumps(
                             [relative, "directory"], ensure_ascii=True
                         ).encode()
+                    )
+                    continue
+                if _dependency_link(member):
+                    # The in-worker scan records a link without following it.
+                    entries.append(
+                        json.dumps([relative, "non-regular"], ensure_ascii=True).encode()
                     )
                     continue
                 if not member.isfile():

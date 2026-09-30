@@ -2,8 +2,10 @@
 
 import hashlib
 import io
+import json
 import os
 import subprocess
+import sys
 import tarfile
 import tempfile
 import unittest
@@ -58,6 +60,48 @@ class SafeTarTests(unittest.TestCase):
                 _tar(("x/diamond-reference/a", tarfile.REGTYPE, b"x")), "tree",
                 forbidden=(b"diamond-reference",),
             )
+
+
+class TrustedVolumeScanTests(unittest.TestCase):
+    ROOTS = ("work", "accepted", "autofv-control", "logs", "evidence", "lanes")
+
+    def scan(self, volume: Path) -> dict:
+        program = worker_artifacts._VOLUME_SCAN_PROGRAM.replace('"/volume/', f'"{volume}/')
+        worker_scan = json.loads(subprocess.run(
+            (sys.executable, "-c", program), input=b'{"markers": []}',
+            capture_output=True, check=True,
+        ).stdout)
+        for item in worker_scan["roots"]:
+            item["root"] = item["root"].replace(str(volume), "/volume")
+        raw = io.BytesIO()
+        with tarfile.open(fileobj=raw, mode="w", format=tarfile.GNU_FORMAT) as archive:
+            for root in self.ROOTS:
+                archive.add(volume / root, arcname=root)
+        completed = subprocess.CompletedProcess((), 0, raw.getvalue(), b"")
+        with mock.patch.object(worker_artifacts, "_runtime_argv", return_value=()), \
+                mock.patch.object(worker_artifacts, "_docker", return_value=completed):
+            return worker_artifacts._trusted_worker_volume_scan(
+                {"lock": {}, "volume": "run-volume"}, (), worker_scan
+            )
+
+    def test_prepared_dependency_links_match_the_in_vm_scan_and_others_fail(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            volume = Path(tmp).resolve() / "volume"
+            for root in self.ROOTS:
+                (volume / root).mkdir(parents=True)
+            project = volume / "work/project"
+            lane = volume / "lanes/lane-1/work"
+            for tree, target in ((project, "/volume/dependencies/packages"),
+                                 (lane, "/dependencies/packages")):
+                (tree / ".lake").mkdir(parents=True)
+                (tree / "Main.lean").write_text("def x := 1\n")
+                (tree / ".lake/packages").symlink_to(target)
+
+            self.assertTrue(self.scan(volume)["clean"])
+
+            (lane / "escape").symlink_to("/etc")
+            with self.assertRaisesRegex(worker_artifacts.WorkerError, "unsafe member"):
+                self.scan(volume)
 
 
 class MaterializeAcceptedTests(unittest.TestCase):

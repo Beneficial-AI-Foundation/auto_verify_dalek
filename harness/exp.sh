@@ -17,7 +17,7 @@ DRIVER_ARGS=(
                                   # Use the generic proof workflow for the selected dependency closure.
   --bottom-up                     # joint: all missing internal spec files + top file, one session, one gate
   # --stepwise                    # A/B control: one session per internal callee, published step by step
-  --model claude-sonnet-5
+  --model claude-opus-5-5
   --rounds 5
   --timeout 3600                  # wall clock per round; a deadline kill ends the whole run (driver.run_rounds),
                                   # so this is the real bound — rounds only add budget after a graceful round end

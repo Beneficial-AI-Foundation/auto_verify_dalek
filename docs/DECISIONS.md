@@ -45,43 +45,43 @@ Test Rust-to-Lean later as a separate experiment.
 
 ### DEC-04 — How do we choose the top-level set `T`?
 
-**Status:** ACCEPTED for now (2026-09-11, Zhang-Liao; revised from the
-api-top rule of 2026-09-01; hardening deferred)
+**Status:** ACCEPTED (revised 2026-09-30, Zhang-Liao)
 
-**Question:** Which graph rule and which API/trait targets should define `T`?
+**Question:** Which functions are top-level in the extracted Lean dependency graph?
 
-**Decision:** `T` is a fixed checked-in list, pinned by the DEC-12 tree hash —
-no re-derivation at run time. `T` is the **lean-top** list in the graph sense
-(`harness/lean_top.py` → `.verilib/top_level_funs.json`): every extracted
-function (one `Funs.lean` def per Rust function, from `functions.json`) that
-no *other* extracted function depends on. Edge rules: trait-instance records
-are transparent (whoever uses the record uses each method it bundles,
-transitively through supertraits), `P_loop` bodies fold into `P`, self edges
-are ignored; records and loop bodies are not candidates. Result (2026-09-11):
-134 of 338 candidates. Independently recomputed from the `Funs.lean` text
-(not from the `functions.json` edges) with an identical result; hand-written
-Lean (`FunsExternal.lean`, `Aux.lean`) references none of the 134
-(`external_lean_refs` is empty for every row), so no caller hides outside the
-graph.
+**Decision:** Determine `T` **solely from the artifacts produced by `probe-lean`**.
+The probe's extracted function declarations and dependency edges are the source
+of truth. Do not use Rust visibility, public-API catalogues, module exports, or
+Rust/Lean source-text searches to include or exclude a function.
 
-The list carries Rust visibility per row (`inherent_pub` 25 — 3 of them
-backend functions in non-exported modules — `inherent_pub_crate` 6,
-`inherent_private` 1, `trait_impl` 65, `operator_forwarder` 37) as a label
-only; it is **not** an API judgement. The claim may therefore say "every
-extracted function that nothing else in the extraction calls". It may **not**
-say "all public APIs": public functions with an internal caller
-(`CompressedEdwardsY::decompress`, `EdwardsPoint::mul_base`,
-`EdwardsPoint::to_montgomery`, …) are outside `T`, and public functions cut
-by the extraction features (`hash_to_curve`, `random`, `from_hash`,
-`vartime_double_scalar_mul_basepoint`, …) are outside the extraction
-altogether. The api-top list (`harness/api_top.py`,
-`.verilib/api_top_specs.json`, CryptoProver cross-check, 2026-08-24 audit in
-`debug_top_api.md`) is kept as a companion catalogue of the public-API face,
-not as the definition of `T`.
+An edge `f -> g` means that function `f` depends on function `g`. After graph
+normalization, `T` contains every extracted function on which no *other*
+extracted function depends (zero incoming edges from other functions).
+Trait-instance records are transparent: a dependency on a record expands to
+its bundled methods, transitively through supertraits. A split `P_loop` body
+is folded into its parent `P`; records and loop bodies are not independent
+candidates, and self edges are ignored. These relationships must come from the
+`probe-lean` artifacts; missing graph information must be reported rather than
+filled in from API visibility or source-text heuristics.
 
-**Deferred hardening** (see `top_func.md`): closure-coverage check over the
-spec call graph, independent edge recomputation via `probe-lean`, golden
-negative tests so a future re-run of the classifier cannot drift silently.
+Whether a function is `pub`, `pub(crate)`, private, or a trait method has **no
+bearing** on membership in `T`. A public function with an incoming dependency
+is not top-level; a private function without one is top-level. Visibility may
+be recorded as optional descriptive metadata, but must not affect selection.
+The resulting claim is about roots of the extracted function dependency graph,
+not coverage of all public APIs.
+
+Derive the checked-in target list from a pinned `probe-lean` artifact before
+an experiment, and pin both the artifact and the derived list under the DEC-12
+seal. Do not re-derive or change `T` during a scored run. Earlier api-top and
+`functions.json`/source-text-derived catalogues, including the historical count
+of 134 out of 338 candidates, do not establish `T` under this revised rule;
+they must be regenerated from the probe artifacts before being used as its
+implementation.
+
+**Deferred hardening:** Validate probe graph completeness, add graph-normalization
+and negative tests, and check that the derived target list is reproducible from
+the pinned artifacts. These checks must not introduce a public-API filter.
 
 ### DEC-05 — How do we choose the supplied seed `S`?
 

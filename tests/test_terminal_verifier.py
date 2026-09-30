@@ -68,23 +68,18 @@ def _prepared_report(*, incomplete=False):
 
 
 class TerminalReportAuthorityTests(unittest.TestCase):
-    def test_real_preparation_shape_maps_rust_roots_and_retained_support(self):
+    def test_real_preparation_shape_keeps_retained_support(self):
         state = _terminal_state()
         graph = copy.deepcopy(state["graph"])
-        rust_root = "probe:crate/1.0/root()"
-        graph["target_report"] = {
-            "declarations": {
-                rust_root: {"declaration": graph["frozen_targets"][0]}
-            }
-        }
+        root = graph["frozen_targets"][0]
         files = [
             {"path": "Dir/File.lean", "sha256": "1" * 64, "size": 1},
             {"path": "Root.lean", "sha256": "2" * 64, "size": 1},
         ]
         manifest = _preparation_manifest(state)
         manifest.update(
-            roots=[rust_root],
-            closures={rust_root: graph["selected_nodes"]},
+            roots=[root],
+            closures={root: graph["selected_nodes"]},
             retained_declarations=sorted(
                 set(graph["selected_nodes"])
                 | set(graph["supplied_specs"].values())

@@ -140,16 +140,6 @@ def _preparation_identity(
         and manifest.get("tree_sha256") == _sha(files)
         and snapshot_sha256 == _sha(sorted(files, key=lambda entry: entry["path"]))
     )
-    reported_declarations = graph.get("target_report", {}).get("declarations", {})
-    mapped_roots = (
-        [
-            reported_declarations.get(root, {}).get("declaration")
-            for root in roots
-        ]
-        if isinstance(roots, list) and isinstance(reported_declarations, dict)
-        else []
-    )
-    roots_match = roots == frozen or mapped_roots == frozen
     if (
         not _is_sha256(manifest.get("target_report_sha256"))
         or not _is_sha256(manifest.get("probe_identities_sha256"))
@@ -159,7 +149,7 @@ def _preparation_identity(
         or not isinstance(roots, list)
         or not roots
         or roots != sorted(set(roots))
-        or not roots_match
+        or roots != frozen
         or not isinstance(closures, dict)
         or set(closures) != set(roots)
         or not isinstance(selected, list)

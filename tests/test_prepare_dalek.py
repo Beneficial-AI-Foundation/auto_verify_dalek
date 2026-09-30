@@ -144,7 +144,7 @@ end Solution
         self.report.write_text(
             json.dumps(
                 {
-                    "schema": "target-report/v1",
+                    "schema": "target-report/v2",
                     "inputs": {
                         "probe_aeneas_sha256": "1" * 64,
                         "probe_rust_sha256": "2" * 64,
@@ -161,18 +161,18 @@ end Solution
                             "command": "extract",
                         },
                     },
-                    "graph_tops": [OTHER_ROOT, SCALAR_ROOT],
+                    "graph_tops": [OTHER, SCALAR],
                     "declarations": {
-                        SCALAR_ROOT: {
+                        SCALAR: {
+                            "rust_function": SCALAR_ROOT,
                             "public_api": True,
-                            "declaration": SCALAR,
                             "primary_spec": SCALAR_SPEC,
                             "directed_closure": [HELPER, SCALAR],
                             "source": {"path": "src/scalar.rs", "lines": [1, 8]},
                         },
-                        OTHER_ROOT: {
-                            "public_api": True,
-                            "declaration": OTHER,
+                        OTHER: {
+                            "rust_function": None,
+                            "public_api": None,
                             "primary_spec": OTHER_SPEC,
                             "directed_closure": [OTHER],
                             "source": {"path": "src/edwards.rs", "lines": [1, 3]},
@@ -309,6 +309,13 @@ end Solution
         readme = full_files["README.md"].decode()
         self.assertIn("- Shape: `full`", readme)
         self.assertIn("- Targets: 2", readme)
+        self.assertEqual(
+            json.loads(full_files["autofv.json"])["targets"],
+            [
+                {"function": OTHER, "spec": OTHER_SPEC.removeprefix("probe:")},
+                {"function": SCALAR_ROOT, "spec": SCALAR_SPEC.removeprefix("probe:")},
+            ],
+        )
         self.assertIn(f"- Source revision: `{'a' * 40}`", readme)
         self.assertNotIn("secretLemma", readme)
 

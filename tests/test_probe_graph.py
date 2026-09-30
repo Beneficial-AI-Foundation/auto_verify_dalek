@@ -287,8 +287,8 @@ class ProbeGraphTests(unittest.TestCase):
             set(report),
             {"schema", "inputs", "tools", "graph_tops", "declarations", "diagnostics"},
         )
-        self.assertEqual(report["schema"], "target-report/v1")
-        self.assertEqual(report["graph_tops"], [TARGET_RUST])
+        self.assertEqual(report["schema"], "target-report/v2")
+        self.assertEqual(report["graph_tops"], [TOP])
         self.assertEqual(
             report["inputs"],
             {
@@ -303,13 +303,13 @@ class ProbeGraphTests(unittest.TestCase):
                 "probe_rust": self.rust["tool"],
             },
         )
-        top = report["declarations"][TARGET_RUST]
+        top = report["declarations"][TOP]
+        self.assertEqual(top["rust_function"], TARGET_RUST)
         self.assertIs(top["public_api"], True)
-        self.assertEqual(top["declaration"], TOP)
         self.assertEqual(top["primary_spec"], TOP_SPEC)
         self.assertEqual(top["directed_closure"], [LEFT, RIGHT, TOP])
         self.assertEqual(
-            top["source"], {"path": "src/lib.rs", "lines": [9, 11]}
+            top["source"], {"path": "Diamond/Top.lean", "lines": [6, 7]}
         )
         self.assertEqual(report["diagnostics"], [])
 
@@ -334,7 +334,7 @@ class ProbeGraphTests(unittest.TestCase):
         rust = copy.deepcopy(self.rust)
         del rust["data"][TARGET_RUST]["is-public-api"]
         report = json.loads(probes.render_target_report(self.parse(rust=rust)))
-        self.assertIsNone(report["declarations"][TARGET_RUST]["public_api"])
+        self.assertIsNone(report["declarations"][TOP]["public_api"])
 
     def test_each_top_gets_its_directed_closure_not_shared_consumers(self):
         rust = copy.deepcopy(self.rust)
@@ -401,16 +401,14 @@ class ProbeGraphTests(unittest.TestCase):
         report = json.loads(
             probes.render_target_report(self.parse(rust=rust, aeneas=aeneas))
         )
+        self.assertEqual(report["graph_tops"], sorted([SIBLING, TOP]))
+        self.assertIs(report["declarations"][SIBLING]["public_api"], False)
         self.assertEqual(
-            report["graph_tops"], sorted([SIBLING_RUST, TARGET_RUST])
-        )
-        self.assertIs(report["declarations"][SIBLING_RUST]["public_api"], False)
-        self.assertEqual(
-            report["declarations"][SIBLING_RUST]["directed_closure"],
+            report["declarations"][SIBLING]["directed_closure"],
             [LEFT, SIBLING],
         )
         self.assertEqual(
-            report["declarations"][TARGET_RUST]["directed_closure"],
+            report["declarations"][TOP]["directed_closure"],
             [LEFT, RIGHT, TOP],
         )
 
@@ -601,39 +599,6 @@ class ProbeGraphTests(unittest.TestCase):
                 "probe:autofv-diamond/0.1.0/left()", atom
             )
 
-    def test_same_package_dependency_requires_an_explicit_source_less_stub(self):
-        rust = copy.deepcopy(self.rust)
-        dependency = "probe:autofv-diamond/0.1.0/generated()"
-        rust["data"][TARGET_RUST]["dependencies"].append(dependency)
-        rust["data"][TARGET_RUST]["dependencies-with-locations"].append(
-            {"code-name": dependency, "line": 10, "location": "inner"}
-        )
-        rust["data"][dependency] = {
-            "display-name": "generated",
-            "code-module": "generated",
-            "code-path": "",
-            "code-text": {"lines-start": 0, "lines-end": 0},
-            "dependencies": [],
-            "kind": "exec",
-            "language": "rust",
-            "untracked": False,
-        }
-
-        self.parse(rust=rust)
-
-        rust["data"][dependency]["dependencies"] = [TARGET_RUST]
-        with self.assertRaisesRegex(
-            probes.ProbeError, "project_rust_dependency_missing"
-        ):
-            self.parse(rust=rust)
-
-        rust["data"][dependency]["dependencies"] = []
-        rust["data"][dependency]["unexpected"] = True
-        with self.assertRaisesRegex(
-            probes.ProbeError, "project_rust_dependency_missing"
-        ):
-            self.parse(rust=rust)
-
     def test_graph_tops_are_bounded_to_the_aeneas_translation_graph(self):
         rust = copy.deepcopy(self.rust)
         aeneas = copy.deepcopy(self.aeneas)
@@ -658,8 +623,7 @@ class ProbeGraphTests(unittest.TestCase):
 
         report = json.loads(probes.render_target_report(self.parse(rust=rust, aeneas=aeneas)))
 
-        self.assertEqual(report["graph_tops"], [TARGET_RUST])
-        self.assertNotIn(consumer, report["declarations"])
+        self.assertEqual(report["graph_tops"], [TOP])
 
     def test_graph_top_without_a_primary_spec_is_reported_not_prepared(self):
         rust = copy.deepcopy(self.rust)
@@ -697,17 +661,122 @@ class ProbeGraphTests(unittest.TestCase):
             probes.render_target_report(self.parse(rust=rust, aeneas=aeneas))
         )
 
-        self.assertEqual(report["graph_tops"], [TARGET_RUST])
+        self.assertEqual(report["graph_tops"], [TOP])
         self.assertEqual(
             report["diagnostics"],
             [
                 {
                     "kind": "graph_top_primary_spec_missing",
-                    "rust_function": unspecced_rust,
                     "declaration": unspecced_lean,
                 }
             ],
         )
+
+    def lean_def(self, aeneas, name, dependencies, *, rust_source="src/lib.rs",
+                 artifact=False, kind="def", spec=None, hidden=False):
+        """Add an Aeneas-shaped Lean def, and its primary spec when named."""
+        atom = copy.deepcopy(aeneas["data"][LEFT])
+        atom.update(
+            {
+                "display-name": name.rsplit(".", 1)[-1],
+                "dependencies": dependencies,
+                "term-dependencies": dependencies,
+                "rust-source": rust_source,
+                "is-extraction-artifact": artifact,
+                "is-hidden": hidden,
+                "kind": kind,
+            }
+        )
+        if spec is not None:
+            atom.update({"primary-spec": spec, "specs": [spec]})
+            theorem = copy.deepcopy(aeneas["data"][TOP_SPEC])
+            theorem.update(
+                {
+                    "display-name": spec.rsplit(".", 1)[-1],
+                    "dependencies": [name],
+                    "term-dependencies": [name],
+                    "type-dependencies": [name],
+                    "is-hidden": hidden,
+                }
+            )
+            aeneas["data"][spec] = theorem
+        aeneas["data"][name] = atom
+
+    def test_lean_def_without_a_rust_link_is_the_top_over_its_callee(self):
+        # AffinePoint's `Default::default` calls `identity`, but probe-aeneas
+        # links no Rust function to the Lean `default` and hides it.
+        aeneas = copy.deepcopy(self.aeneas)
+        default = "probe:Diamond.Point.Insts.CoreDefaultDefault.default"
+        record = "probe:Diamond.Point.Insts.CoreDefaultDefault"
+        self.lean_def(aeneas, default, [TOP], spec=f"{default}_spec", hidden=True)
+        self.lean_def(aeneas, record, [default], artifact=True)
+
+        report = json.loads(probes.render_target_report(self.parse(aeneas=aeneas)))
+
+        self.assertEqual(report["graph_tops"], [default])
+        self.assertEqual(
+            report["declarations"][default],
+            {
+                "rust_function": None,
+                "public_api": None,
+                "primary_spec": f"{default}_spec",
+                "directed_closure": [default, LEFT, RIGHT, TOP],
+                "source": {"path": "Diamond/Left.lean", "lines": [3, 4]},
+            },
+        )
+
+    def test_operator_forwarder_is_the_top_not_the_method_it_forwards(self):
+        aeneas = copy.deepcopy(self.aeneas)
+        forwarder = "probe:Diamond.SharedAPoint.Insts.CoreOpsArithAddPoint.add"
+        self.lean_def(aeneas, forwarder, [TOP], rust_source="src/macros.rs",
+                      spec=f"{forwarder}_spec", hidden=True)
+        self.lean_def(aeneas, "probe:Diamond.SharedAPoint.Insts.CoreOpsArithAddPoint",
+                      [forwarder], artifact=True)
+
+        report = json.loads(probes.render_target_report(self.parse(aeneas=aeneas)))
+        self.assertEqual(report["graph_tops"], [forwarder])
+
+        # The hidden forwarder is a target, but a hidden callee is never a job.
+        aeneas["data"][TOP]["is-hidden"] = True
+        report = json.loads(probes.render_target_report(self.parse(aeneas=aeneas)))
+        self.assertEqual(report["declarations"][forwarder]["directed_closure"], [forwarder])
+
+    def test_trait_records_and_loop_bodies_are_transparent(self):
+        aeneas = copy.deepcopy(self.aeneas)
+        method = "probe:Diamond.Point.Insts.CoreOpsArithMul.mul"
+        record = "probe:Diamond.Point.Insts.CoreOpsArithMul"
+        user = "probe:Diamond.sum"
+        loop = "probe:Diamond.sum_loop"
+        helper = "probe:Diamond.step"
+        self.lean_def(aeneas, method, [], spec=f"{method}_spec")
+        self.lean_def(aeneas, record, [method], artifact=True)
+        self.lean_def(aeneas, helper, [])
+        self.lean_def(aeneas, loop, [loop, helper, f"{loop}.mutual"], artifact=True)
+        self.lean_def(aeneas, user, [record, loop], spec=f"{user}_spec")
+
+        report = json.loads(probes.render_target_report(self.parse(aeneas=aeneas)))
+
+        # Using the record calls its methods; the loop's calls are its parent's.
+        self.assertEqual(report["graph_tops"], [user, TOP])
+        self.assertEqual(report["diagnostics"], [])
+
+    def test_foreign_impls_and_theorems_do_not_hide_a_top(self):
+        aeneas = copy.deepcopy(self.aeneas)
+        self.lean_def(aeneas, "probe:Diamond.Bool.Insts.CoreCloneClone.clone", [TOP],
+                      rust_source="/rustc/library/core/src/clone.rs")
+        self.lean_def(aeneas, "probe:Diamond.top_lemma", [TOP], kind="theorem")
+
+        report = json.loads(probes.render_target_report(self.parse(aeneas=aeneas)))
+
+        self.assertEqual(report["graph_tops"], [TOP])
+
+    def test_manifest_target_may_name_the_lean_declaration(self):
+        manifest = {**self.manifest, "targets": [{"function": TOP, "spec": "Diamond.top_spec"}]}
+
+        graph = probes.parse_probe_bytes(manifest, self.rust_raw, self.aeneas_raw)
+
+        self.assertEqual(graph["frozen_targets"], [TOP])
+        self.assertEqual(graph["graph_sha256"], self.parse()["graph_sha256"])
 
     def test_generated_and_nonscheduled_dependencies_do_not_create_jobs(self):
         aeneas = copy.deepcopy(self.aeneas)

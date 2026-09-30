@@ -15,7 +15,7 @@ from typing import Any
 
 
 SMALL_DECLARATION = "probe:curve25519_dalek.scalar.Scalar.from_canonical_bytes"
-REPORT_SCHEMA = "target-report/v1"
+REPORT_SCHEMA = "target-report/v2"
 IDENTITIES_SCHEMA = "autofv-dalek-probe-identities/v1"
 MANIFEST_SCHEMA = "preparation-manifest/v1"
 PUBLICATION_SCHEMA = "autofv-publication-receipt/v1"
@@ -157,20 +157,14 @@ def _validate_inputs(
     for diagnostic in diagnostics:
         if (
             not isinstance(diagnostic, dict)
-            or set(diagnostic)
-            != {"kind", "rust_function", "declaration"}
+            or set(diagnostic) != {"kind", "declaration"}
             or diagnostic.get("kind") != "graph_top_primary_spec_missing"
-            or not isinstance(diagnostic.get("rust_function"), str)
-            or not diagnostic["rust_function"]
             or not isinstance(diagnostic.get("declaration"), str)
             or not diagnostic["declaration"]
-            or diagnostic["rust_function"] in targets
+            or diagnostic["declaration"] in targets
         ):
             raise PreparationError("target report diagnostic mismatch")
-    if diagnostics != sorted(
-        diagnostics,
-        key=lambda item: (item["rust_function"], item["declaration"]),
-    ):
+    if diagnostics != sorted(diagnostics, key=lambda item: item["declaration"]):
         raise PreparationError("target report diagnostic order mismatch")
     inputs = report.get("inputs")
     tools = report.get("tools")
@@ -185,12 +179,15 @@ def _validate_inputs(
     for name in tops:
         target = targets[name]
         if not isinstance(target, dict) or set(target) != {
+            "rust_function",
             "public_api",
-            "declaration",
             "primary_spec",
             "directed_closure",
             "source",
-        }:
+        } or not (
+            target["rust_function"] is None
+            or (isinstance(target["rust_function"], str) and target["rust_function"])
+        ):
             raise PreparationError(f"target metadata mismatch: {name}")
 
     if set(identities) != {
@@ -250,12 +247,7 @@ def _selected_roots(
 ) -> list[str]:
     if mode == "full":
         return tops
-    matches = [
-        name
-        for name in tops
-        if isinstance(targets.get(name), dict)
-        and targets[name].get("declaration") == SMALL_DECLARATION
-    ]
+    matches = [name for name in tops if name == SMALL_DECLARATION]
     if len(matches) != 1:
         raise PreparationError("small-mode Scalar.from_canonical_bytes root mismatch")
     return matches
@@ -792,7 +784,8 @@ def prepare_dalek(
             )
     targets_manifest = [
         {
-            "function": root,
+            # Keep the Rust identity where Aeneas linked one.
+            "function": targets[root]["rust_function"] or root,
             "spec": targets[root]["primary_spec"].removeprefix("probe:"),
         }
         for root in roots

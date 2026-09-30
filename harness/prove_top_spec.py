@@ -352,39 +352,30 @@ def statement_text(bundle, path, decl_line, sorry_line):
 
 
 PROOF_SKETCH = """
-How a `@[progress]` proof goes here (Aeneas + this project):
-- Statement: `f args ⦃ r => P r ⦄` is sugar for `spec (f args) (fun r => P r)`.
-  P is a value equation (`Field51_as_Nat r = ...` or `... ≡ ... [MOD p]`) ∧ the
-  bounds callers need (`∀ i < 5, r[i]!.val < 2^52`). Tag it `@[progress]`.
-- Skeleton: `unfold f` then `progress*` (or one step at a time,
-  `progress as ⟨x, hx⟩`, `⟨x, hx, hx_bv⟩` when the lemma also yields a bitvector
-  fact). Each `progress` consumes one `let x ← g ...` with the `@[progress]`
-  lemma of `g`: Aeneas already registers `+ - * >>> <<< &&& |||`, casts,
-  `Array.index_usize` / `update`; your own specs count once tagged. When
-  `progress` fails, the missing side condition is usually an overflow or
-  index bound: prove it just before with `have : ... := by scalar_tac` /
-  `omega` from the postconditions already in context.
-- Finish: `unfold Field51_as_Nat U8x32_as_Nat` +
-  `simp only [Finset.sum_range_succ, Finset.range_zero, Finset.sum_empty]` to
-  expand `∑`; `simp [hx, ...]` / `simp_lists` for indexing after `update`;
-  `omega` / `scalar_tac` for linear facts; `Nat.ModEq` lemmas or `zmodify` for
-  `≡ [MOD p]`; `decide` / `native_decide` for closed numerals.
-- Big functions: prove per-limb helper lemmas (pure `U64` / `Nat` facts) as
-  separate theorems in the same file, then combine.
-- `omega` / `scalar_tac` / `simp` read every hypothesis in context: after a
-  long `progress` chain they time out. `clear * - h1 h2 ...` first, or move
-  the step into its own lemma.
-- `maxHeartbeats` is per declaration, not per tactic. Do not raise it; split
-  the proof.
-- A `lake build` of your file that runs past ~5 minutes means the lemma you
-  just wrote is too heavy (an `omega` over ~15+ atoms, say). Do not wait for
-  it; split the lemma.
-- Where things are: Aeneas lemmas in
-  `.lake/packages/aeneas/backends/lean/Aeneas/Std/` (`Scalar/`, `Array/`,
-  `WP.lean`); project helpers in `Curve25519Dalek/Aux.lean` and
-  `Curve25519Dalek/Math/Basic.lean` (`p`, `L`, `Field51_as_Nat`,
-  `U8x32_as_Nat`). Do not search the whole filesystem.
+General proof workflow (Aeneas + this project):
+- Inspect the supplied definitions, goals, dependency graph, and available
+  lemmas. Derive your plan from these inputs; do not consult previous runs
+  or external completed proofs.
+- For monadic functions, `f args ⦃ r => P r ⦄` expresses a postcondition.
+  Reuse available callee specs with `progress`; inspect intermediate goals
+  and establish the side conditions required by each step.
+- Decompose large proofs into independently checked lemmas with small,
+  explicit interfaces. Separate execution reasoning from mathematical facts
+  when useful. Choose boundaries from the current code and proof goals,
+  and verify that the pieces compose to prove the original statement.
+- Keep automation focused: supply relevant hypotheses and use targeted
+  rewrites. If a step becomes expensive, isolate and simplify the obligation
+  before retrying. Do not raise maxHeartbeats to mask an oversized proof.
+- Check the target module after each meaningful increment. Run builds
+  serially with a short timeout, and report the first useful diagnostic or
+  slow step promptly. Stop only your own stalled builds before retrying.
+- Temporary holes are only for intermediate checks. Prove all introduced
+  helpers within the editable allowlist, then run the required full build.
+- Look for library lemmas in `.lake/packages/aeneas/backends/lean/Aeneas/Std/`
+  and supplied project helpers. Keep searches scoped to the project and its
+  dependencies.
 """
+
 
 PROMPT_SPEC = """Write and prove a specification for `{fn}` in {path}.
 

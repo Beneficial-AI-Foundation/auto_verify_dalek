@@ -527,6 +527,30 @@ class ProviderTransportTests(unittest.TestCase):
             self.assertEqual(first, replay)
             self.assertEqual(opener.call_count, 1)
 
+    def test_provider_runs_only_the_first_of_batched_tool_calls(self) -> None:
+        reply = _provider_reply()
+        reply["choices"][0]["message"]["tool_calls"].append(
+            {
+                "id": "call-local-002",
+                "type": "function",
+                "function": {
+                    "name": "read_allowed",
+                    "arguments": '{"path":"Diamond/Right.lean"}',
+                },
+            }
+        )
+        with tempfile.TemporaryDirectory() as tmp:
+            run, request, messages = _configured_provider(Path(tmp), self.lock, self.base_commit)
+            worker_proxy.stage_provider_messages(run, request, messages)
+            with mock.patch(
+                "autofv.provider_transport._open_upstream",
+                return_value=_ProviderReply(reply),
+            ):
+                response, _ = provider_service.dispatch(run, request, run_token=RUN_TOKEN)
+        self.assertEqual(
+            response["payload"]["arguments"], {"path": "Diamond/Left.lean"}
+        )
+
     def test_provider_normalizes_bounded_chat_metadata_and_scans_encoded_secrets(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)

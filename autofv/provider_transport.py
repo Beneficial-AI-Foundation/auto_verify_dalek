@@ -335,7 +335,7 @@ def _provider_response(
         )
         or message["role"] != "assistant"
         or not isinstance(message["tool_calls"], list)
-        or len(message["tool_calls"]) != 1
+        or not message["tool_calls"]
         or any(
             name in message
             and message[name] is not None
@@ -351,7 +351,9 @@ def _provider_response(
             and not isinstance(message["reasoning_details"], list)
         )
     ):
-        raise ProviderError("provider response must contain exactly one tool call")
+        raise ProviderError("provider response must contain a tool call")
+    # Providers may batch calls and ignore parallel_tool_calls; only the first
+    # runs, and the rebuilt history shows only it.
     call = _shape(
         message["tool_calls"][0],
         {"id", "type", "function"},

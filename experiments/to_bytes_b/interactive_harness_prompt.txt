@@ -1,0 +1,98 @@
+Develop and debug a proof of FieldElement51.to_bytes_spec using the interactive
+B experiment's proof workflow. FVS skills are not enabled by this prompt alone.
+
+1. Prepared workspace
+
+The harness has already created an isolated workspace and initialized {path}
+with the B experiment's SKELETON. Work from this workspace root. Do not create
+or switch branches, reinitialize the target, or launch another harness or agent.
+The harness scripts and experiment logs are not needed or available here.
+The target placeholder is currently near line {line}.
+Run a baseline module build and confirm the target still has its placeholder;
+a successful baseline build does not mean the theorem has been proved.
+
+2. Fixed target and permitted changes
+
+Prove the complete theorem:
+curve25519_dalek.backend.serial.u64.field.FieldElement51.to_bytes_spec
+
+Its fixed statement is:
+
+@[progress]
+theorem to_bytes_spec (self : backend.serial.u64.field.FieldElement51) :
+    to_bytes self ⦃ result =>
+    U8x32_as_Nat result ≡ Field51_as_Nat self [MOD p] ∧
+    U8x32_as_Nat result < p ⦄ := by
+  sorry
+
+Edit only {path}. Do not create files, including scratch files. You may add and prove
+auxiliary lemmas in that file. Choose the mathematical decomposition yourself.
+
+Do not:
+- Change the target's name, parameters, preconditions, or conclusion.
+- Modify generated functions, other files, dependencies, the toolchain, or the
+  existing reduce proof.
+- Add axioms, @[implemented_by], @[extern], or unproved assumptions.
+- Hide unfinished helper proofs behind new sorry declarations. Temporary proof
+  holes during development must be reported and removed before claiming success.
+- Read proof drafts from other experiments, answers in Git history, or external
+  complete reference proofs.
+
+native_decide is permitted under the current harness rules. Keep the existing
+dependencies unchanged; do not expand this task into eliminating every sorry in
+the project.
+
+3. Proof development and immediate feedback
+
+Read the target function, relevant definitions, and existing reduce
+specifications. Give a short proof plan before editing. Do not start by writing
+one large monolithic proof.
+
+- Complete one small helper lemma or one small part of the main proof at a time,
+  then compile it.
+- Use tactics available in the project's pinned Aeneas version. Check whether
+  progress or step is appropriate instead of assuming compatibility.
+- Before calling omega or other arithmetic automation, simplify array indexing,
+  coercions, and other expressions that automation cannot interpret. Retain only
+  the hypotheses needed for the current goal, or extract a separate helper lemma.
+- On resource exhaustion, reduce the context or split the proof. Do not increase
+  maxHeartbeats or other resource limits.
+- Run builds sequentially. Do not leave competing background lake/lean builds.
+
+Run this command from the current workspace root for local validation:
+lake build {module}
+
+After each build, immediately report:
+1. What changed.
+2. Whether compilation succeeded or failed, and its elapsed time.
+3. On failure, the first relevant diagnostic and the corresponding proof goal.
+4. What you will test next.
+
+During sustained work, provide a brief progress update about every 30–60 seconds.
+If a local build has produced no result after 90 seconds, report that it is still
+running. After 120 seconds, safely terminate that build and its child processes,
+preserve the output already captured, and narrow the change or identify the
+expensive declaration before trying again. Do not terminate unrelated processes.
+Do not interpret an absence of output as success. These local time limits are
+interactive debugging choices, not the formal harness's acceptance budget.
+
+Continue autonomously after reporting each result; do not wait for a user reply
+or ask for permission to continue after every small step.
+
+4. Completion criteria
+
+Finally, run the full lake build from the current workspace root.
+Claim completion only if the full build succeeds and neither the target nor any
+new helper lemma contains a remaining sorry.
+
+Report the changes, the actual validation commands executed, and their results.
+An interactive build passing does not establish that the harness's statement
+identity, scope, or other gates have passed. Explicitly identify checks that were
+not run.
+
+If unfinished, report the exact remaining goal, latest diagnostic, and preserved
+partial progress. Do not automatically commit, merge, or push.
+
+End your final response with exactly one of these lines:
+END_REASON:COMPLETE
+END_REASON:LIMIT

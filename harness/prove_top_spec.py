@@ -630,6 +630,8 @@ def main():
     ap.add_argument("--model", default="")
     ap.add_argument("--fv-skills", action="store_true",
                     help="load the pinned FVS headless lean-verify adapter")
+    ap.add_argument("--quiet-turns", action="store_true",
+                    help="hide live per-turn summaries; preserve full transcripts")
     ap.add_argument("--max-turns", type=int, default=30)
     ap.add_argument("--timeout", type=int, default=900)
     ap.add_argument("--build-timeout", type=int, default=driver.BUILD_TIMEOUT)

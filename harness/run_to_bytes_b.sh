@@ -1,16 +1,13 @@
 #!/usr/bin/env bash
-# Run B baseline, or add --fv-skills for the pinned FVS headless adapter.
+# Run B baseline; optionally select the interactive prompt and/or FVS adapter.
 set -euo pipefail
-FV_ARGS=()
-case "${1:-}" in
-  "") ;;
-  --fv-skills) FV_ARGS=(--fv-skills); shift ;;
-  *) echo "Usage: bash harness/run_to_bytes_b.sh [--fv-skills]" >&2; exit 2 ;;
-esac
-if (( $# )); then
-  echo "Usage: bash harness/run_to_bytes_b.sh [--fv-skills]" >&2
-  exit 2
-fi
+EXTRA_ARGS=()
+for arg in "$@"; do
+  case "$arg" in
+    --fv-skills|--interactive-prompt|--quiet-turns) EXTRA_ARGS+=("$arg") ;;
+    *) echo "Usage: bash harness/run_to_bytes_b.sh [--interactive-prompt] [--fv-skills] [--quiet-turns]" >&2; exit 2 ;;
+  esac
+done
 
 # Change these settings here when starting a new experiment series.
 MODEL=claude-sonnet-5
@@ -32,5 +29,5 @@ python3 -u harness/prove_to_bytes_b.py \
   --timeout "$TIMEOUT_SECONDS" \
   --max-turns "$MAX_TURNS" \
   --run-dir "$RUN_DIR" \
-  "${FV_ARGS[@]}" \
+  "${EXTRA_ARGS[@]}" \
   2>&1 | tee "$EXPERIMENT_ROOT/run.log"

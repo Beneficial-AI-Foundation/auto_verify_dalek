@@ -1,0 +1,119 @@
+Interactively develop and debug a proof of FieldElement51.to_bytes_spec in this
+repository. Match the to_bytes B experiment's target, initial source file, and
+proof constraints. This is an interactive version of the B baseline; it does not
+automatically enable FVS skills.
+
+1. Preparation
+
+Inspect the Git status. Create and switch to a unique branch named
+exp/to-bytes-debug-<timestamp> before editing. Do not modify files on main.
+Preserve the user's existing changes. Do not reset, clean, automatically stash,
+or overwrite existing work. If the target file has uncommitted changes, report
+the conflict before proceeding.
+
+Read these files to confirm the current experiment contract:
+- harness/prove_to_bytes_b.py
+- experiments/to_bytes_b/prompt.md
+- The proof prompt in harness/driver.py
+
+Do not launch the harness's model invocation or another proof agent.
+
+The target file, relative to the repository root, is:
+dalek-top-spec-only/Curve25519Dalek/Specs/Backend/Serial/U64/Field/FieldElement51/ToBytes.lean
+
+Before starting this proof attempt, initialize the target file with the exact
+SKELETON string from harness/prove_to_bytes_b.py. This matches the B experiment's
+preparation: do not carry over bytes_match_limbs or old proof drafts. Do not edit
+the Python script. Perform this initialization only once, not when resuming an
+existing debugging session.
+
+Run a baseline build from dalek-top-spec-only. Confirm that the initialized file
+compiles and that the target still contains its proof placeholder. A successful
+baseline build does not mean the theorem has been proved.
+
+2. Fixed target and permitted changes
+
+Prove the complete theorem:
+curve25519_dalek.backend.serial.u64.field.FieldElement51.to_bytes_spec
+
+Its fixed statement is:
+
+@[progress]
+theorem to_bytes_spec (self : backend.serial.u64.field.FieldElement51) :
+    to_bytes self ⦃ result =>
+    U8x32_as_Nat result ≡ Field51_as_Nat self [MOD p] ∧
+    U8x32_as_Nat result < p ⦄ := by
+  sorry
+
+After preparation, edit only the target ToBytes.lean file. You may add and prove
+auxiliary lemmas in that file. Choose the mathematical decomposition yourself.
+
+Do not:
+- Change the target's name, parameters, preconditions, or conclusion.
+- Modify generated functions, other files, dependencies, the toolchain, or the
+  existing reduce proof.
+- Add axioms, @[implemented_by], @[extern], or unproved assumptions.
+- Hide unfinished helper proofs behind new sorry declarations. Temporary proof
+  holes during development must be reported and removed before claiming success.
+- Create scratch source files.
+- Read proof drafts from other experiments, answers in Git history, or external
+  complete reference proofs.
+
+native_decide is permitted under the current harness rules. Keep the existing
+dependencies unchanged; do not expand this task into eliminating every sorry in
+the project.
+
+3. Proof development and immediate feedback
+
+Read the target function, relevant definitions, and existing reduce
+specifications. Give a short proof plan before editing. Do not start by writing
+one large monolithic proof.
+
+- Complete one small helper lemma or one small part of the main proof at a time,
+  then compile it.
+- Use tactics available in the project's pinned Aeneas version. Check whether
+  progress or step is appropriate instead of assuming compatibility.
+- Before calling omega or other arithmetic automation, simplify array indexing,
+  coercions, and other expressions that automation cannot interpret. Retain only
+  the hypotheses needed for the current goal, or extract a separate helper lemma.
+- On resource exhaustion, reduce the context or split the proof. Do not increase
+  maxHeartbeats or other resource limits.
+- Run builds sequentially. Do not leave competing background lake/lean builds.
+
+Run this command from dalek-top-spec-only for local validation:
+lake build Curve25519Dalek.Specs.Backend.Serial.U64.Field.FieldElement51.ToBytes
+
+After each build, immediately report:
+1. What changed.
+2. Whether compilation succeeded or failed, and its elapsed time.
+3. On failure, the first relevant diagnostic and the corresponding proof goal.
+4. What you will test next.
+
+During sustained work, provide a brief progress update about every 30–60 seconds.
+If a local build has produced no result after 90 seconds, report that it is still
+running. After 120 seconds, safely terminate that build and its child processes,
+preserve the output already captured, and narrow the change or identify the
+expensive declaration before trying again. Do not terminate unrelated processes.
+Do not interpret an absence of output as success. These local time limits are
+interactive debugging choices, not the formal harness's acceptance budget.
+
+If the user asks a question during the work, explain the current state before
+continuing. Do not ask for permission to continue after every small step.
+
+4. Completion criteria
+
+Finally, run the full lake build from dalek-top-spec-only.
+Claim completion only if the full build succeeds and neither the target nor any
+new helper lemma contains a remaining sorry.
+
+Report the changes, the actual validation commands executed, and their results.
+An interactive build passing does not establish that the harness's statement
+identity, scope, or other gates have passed. Explicitly identify checks that were
+not run.
+
+If unfinished, report the exact remaining goal, latest diagnostic, and preserved
+partial progress. Do not automatically commit, merge, or push.
+
+End your final response with exactly one of these lines:
+END_REASON:COMPLETE
+END_REASON:LIMIT

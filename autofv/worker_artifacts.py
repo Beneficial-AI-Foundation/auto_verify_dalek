@@ -642,6 +642,14 @@ def _export_artifacts(run: dict[str, Any]) -> dict[str, bytes]:
     }
 
 
+# Lake builds are derived and the verifier rebuilds from the retained sources;
+# every lane and acceptance snapshot would otherwise overflow the scan stream.
+_DROP_BUILD_OUTPUTS = (
+    "find", "/volume/work", "/volume/lanes", "-path", "*/.lake/build",
+    "-prune", "-exec", "rm", "-rf", "{}", "+",
+)
+
+
 def export_run(run: dict[str, Any], *, interrupted: bool = False) -> dict[str, Any]:
     """Export the exact accepted repository and bounded working delta."""
     existing = run.get("export_receipt")
@@ -657,6 +665,7 @@ def export_run(run: dict[str, Any], *, interrupted: bool = False) -> dict[str, A
     if shutil.disk_usage(run["run_root"]).free < 2 * sum(map(len, artifacts.values())) + (1 << 30):
         raise WorkerError("export needs more free disk than is available")
     markers = tuple(run.get("artifact_scan_markers", ()))
+    _docker(*_runtime_argv(run["lock"], run["volume"], *_DROP_BUILD_OUTPUTS))
     scan = scan_retained_state(run, artifacts, markers)
     export_root = Path(run["run_root"]) / "export"
     for name, raw in artifacts.items():

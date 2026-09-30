@@ -222,6 +222,44 @@ class ExportDiskTests(unittest.TestCase):
             self.assertFalse((Path(tmp) / "export").exists())
 
 
+class ExportBuildOutputTests(unittest.TestCase):
+    def test_export_drops_derived_builds_before_scanning(self):
+        events = []
+        with tempfile.TemporaryDirectory() as tmp:
+            run = {"run_root": tmp, "lock": {}, "volume": "run-volume"}
+            with mock.patch.object(
+                worker_artifacts, "_export_artifacts", return_value={}
+            ), mock.patch.object(
+                worker_artifacts, "_runtime_argv", side_effect=lambda _l, _v, *argv: argv
+            ), mock.patch.object(
+                worker_artifacts, "_docker", side_effect=lambda *argv: events.append(argv)
+            ), mock.patch.object(
+                worker_artifacts, "scan_retained_state",
+                side_effect=lambda *_a, **_k: events.append("scan") or 1 / 0,
+            ), self.assertRaises(ZeroDivisionError):
+                worker_artifacts.export_run(run)
+        self.assertEqual(events, [worker_artifacts._DROP_BUILD_OUTPUTS, "scan"])
+
+    def test_drop_command_removes_every_build_but_never_follows_links(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            volume = Path(tmp).resolve()
+            cache = volume / "cache/build"
+            cache.mkdir(parents=True)
+            for tree in ("work/project", "lanes/lane-1/work", "lanes/accept-1/work"):
+                (volume / tree / ".lake/build/lib").mkdir(parents=True)
+                (volume / tree / "Main.lean").write_text("def x := 1\n")
+                (volume / tree / ".lake/packages").symlink_to(volume / "cache")
+            argv = [value.replace("/volume/", f"{volume}/")
+                    for value in worker_artifacts._DROP_BUILD_OUTPUTS]
+            subprocess.run(argv, check=True)
+            builds = [os.path.relpath(os.path.join(root, name), volume)
+                      for root, names, _files in os.walk(volume) for name in names
+                      if name == "build"]
+            self.assertEqual(builds, ["cache/build"])
+            self.assertTrue(cache.is_dir())
+            self.assertTrue((volume / "lanes/accept-1/work/Main.lean").is_file())
+
+
 class RestoreExportTests(unittest.TestCase):
     """A disposed run's volume must regain every mount its containers need."""
 

@@ -928,7 +928,7 @@ class ProviderReceiptTests(unittest.TestCase):
                 worker_artifacts, "_export_artifacts", return_value=artifacts
             ), mock.patch.object(
                 worker_artifacts, "scan_retained_state", return_value=scan
-            ):
+            ), mock.patch.object(worker_artifacts, "_docker"):
                 receipt = worker_artifacts.export_run(run)
 
             self.assertIn("provider_scan_receipt_sha256", receipt)

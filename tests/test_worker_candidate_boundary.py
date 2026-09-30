@@ -366,6 +366,34 @@ class CandidateRuntimeBoundaryTests(unittest.TestCase):
 
 
 class SealedAcceptanceBoundaryTests(unittest.TestCase):
+    def test_prepared_acceptance_snapshot_links_the_dependency_packages(self) -> None:
+        extractions = []
+
+        def docker(*argv, input_bytes=None, check=True):
+            if input_bytes == b"canonical-tree-archive":
+                extractions.append(" ".join(argv))
+            stdout = b"e" * 40 + b"\n" if "AUTOFV_EXPECTED_TREE" in " ".join(argv) else b""
+            return subprocess.CompletedProcess(argv, 0, stdout, b"")
+
+        for prepared in (False, True):
+            run = {"volume": "run-volume", "lock": _LOCK}
+            if prepared:
+                run["dependency_cache_receipt"] = {"sha256": "0" * 64}
+            with mock.patch.object(
+                worker._runtime, "_git", return_value=b"canonical-tree-archive"
+            ), mock.patch.object(
+                worker._runtime, "_docker", side_effect=docker
+            ), mock.patch.object(
+                candidate_lane, "_sealed_source_digest", return_value="d" * 64
+            ), mock.patch.object(
+                candidate_lane, "_sealed_source_file", return_value=b""
+            ):
+                candidate_lane._prepare_acceptance_snapshot(run, _ASSIGNED_PATH, b"patch")
+
+        link = 'ln -s /dependencies/packages "$1/.lake/packages"'
+        self.assertNotIn(link, extractions[0])
+        self.assertIn(link, extractions[1])
+
     def test_acceptance_verifies_private_snapshot_before_exact_canonical_import(
         self,
     ) -> None:

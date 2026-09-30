@@ -373,16 +373,13 @@ def _prepare_acceptance_snapshot(
     lane_id = f"accept-{_runtime._sha256(raw_patch)[:16]}-{secrets.token_hex(8)}"
     root = f"/volume/lanes/{lane_id}/work"
     baseline = _runtime._git(run, "archive", "--format=tar", "HEAD")
+    extract = 'test ! -e "$1"; mkdir -p "${1%/*}"; mkdir "$1"; tar -xf - -C "$1"'
+    if isinstance(run.get("dependency_cache_receipt"), dict):
+        # Like a lane, a prepared snapshot builds against the read-only packages.
+        extract += '; mkdir "$1/.lake"; ln -s /dependencies/packages "$1/.lake/packages"'
     _runtime._docker(
         *_runtime._runtime_argv(
-            run["lock"],
-            run["volume"],
-            "sh",
-            "-eu",
-            "-c",
-            'test ! -e "$1"; mkdir -p "${1%/*}"; mkdir "$1"; tar -xf - -C "$1"',
-            "sh",
-            root,
+            run["lock"], run["volume"], "sh", "-eu", "-c", extract, "sh", root
         ),
         input_bytes=baseline,
     )

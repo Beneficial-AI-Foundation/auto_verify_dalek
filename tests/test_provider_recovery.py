@@ -1132,6 +1132,47 @@ class ProviderRecoveryTests(unittest.TestCase):
             self.assertEqual(opener.call_count, 1)
             runner.assert_not_called()
 
+    def test_rejected_reply_is_an_unresolved_liability_not_a_recovery_error(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            state, _environment = _provider_state(Path(temporary))
+            messages = _messages()
+            request = model._model_envelope(
+                state,
+                request_id="provider-recovery-request-001",
+                role="scout",
+                input_hashes=[worker_proxy.provider_messages_sha256(messages)],
+            )
+            state["pending_model_exchanges"] = {
+                request["request_id"]: {
+                    "request": request,
+                    "call_kind": "explicit",
+                    "reservation_usd": "0.032880",
+                    "dispatch_state": "dispatched",
+                }
+            }
+            worker_proxy.stage_provider_messages(state["run"], request, messages)
+            refused = _reply('{"path":"Diamond/Left.lean"}')
+            refused["choices"][0]["message"]["tool_calls"] = []
+            with mock.patch(
+                "autofv.provider_transport._open_upstream",
+                return_value=_Reply(refused),
+            ), self.assertRaisesRegex(provider_transport.ProviderError, "tool call"):
+                provider_service.dispatch(state["run"], request, run_token=RUN_TOKEN)
+
+            reduced = provider_receipts.reduce_incomplete_accounting(
+                state["run"],
+                state,
+                binding=provider_config.provider_binding(state["run"]),
+            )
+
+            self.assertEqual(
+                [
+                    (item["request_id"], item["status"], item["reservation_usd"])
+                    for item in reduced["unresolved_requests"]
+                ],
+                [(request["request_id"], "dispatched", "0.032880")],
+            )
+
     def test_recovery_reconstructs_first_preflight_after_signed_completion_crash(self):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)

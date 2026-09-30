@@ -27,7 +27,7 @@ from . import (
 
 
 JOURNAL_SCHEMA = "autofv-provider-dispatch/v1"
-REJECTED_RESPONSE_SCHEMA = "autofv-provider-rejected-response/v1"
+REJECTED_RESPONSE_SCHEMA = provider_receipts.REJECTED_RESPONSE_SCHEMA
 _JOURNAL_FIELDS = frozenset({
     "schema", "status", "run_id", "request_id", "sequence", "request_sha256",
     "messages_sha256", "binding_sha256", "response", "receipt", "auth",
@@ -171,31 +171,7 @@ def _normalize_rejected_response(value: Any) -> Any:
     return value
 
 
-def _validate_rejected_response(value: Any) -> None:
-    if (
-        not isinstance(value, dict)
-        or set(value)
-        != {
-            "schema", "classification", "message", "provider_response",
-            "provider_response_sha256",
-        }
-        or value.get("schema") != REJECTED_RESPONSE_SCHEMA
-        or not isinstance(value.get("classification"), str)
-        or not value["classification"]
-        or len(value["classification"]) > 128
-        or not isinstance(value.get("message"), str)
-        or not value["message"]
-        or len(value["message"]) > 512
-        or not isinstance(value.get("provider_response_sha256"), str)
-    ):
-        raise provider_transport.ProviderError(
-            "provider rejected response fields mismatch"
-        )
-    provider_messages.bounded_wire(value["provider_response"])
-    if _sha(value["provider_response"]) != value["provider_response_sha256"]:
-        raise provider_transport.ProviderError(
-            "provider rejected response identity mismatch"
-        )
+_validate_rejected_response = provider_receipts.validate_rejected_response
 
 
 def _validate_record(

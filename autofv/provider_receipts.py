@@ -27,6 +27,7 @@ PROVIDER_RECEIPT_SCHEMA = "autofv-provider-proxy-receipt/v1"
 PROVIDER_PREFLIGHT_SCHEMA = "autofv-provider-preflight/v1"
 SCAN_RECEIPT_SCHEMA = "autofv-provider-scan-receipt/v1"
 PROVIDER_JOURNAL_SCHEMA = "autofv-provider-dispatch/v1"
+REJECTED_RESPONSE_SCHEMA = "autofv-provider-rejected-response/v1"
 _JOURNAL_FIELDS = {
     "schema", "status", "run_id", "request_id", "sequence", "request_sha256",
     "messages_sha256", "binding_sha256", "response", "receipt", "auth",
@@ -780,6 +781,30 @@ def _read_canonical(path: Path, label: str) -> dict[str, Any]:
     return value
 
 
+def validate_rejected_response(value: Any) -> None:
+    if (
+        not isinstance(value, dict)
+        or set(value)
+        != {
+            "schema", "classification", "message", "provider_response",
+            "provider_response_sha256",
+        }
+        or value.get("schema") != REJECTED_RESPONSE_SCHEMA
+        or not isinstance(value.get("classification"), str)
+        or not value["classification"]
+        or len(value["classification"]) > 128
+        or not isinstance(value.get("message"), str)
+        or not value["message"]
+        or len(value["message"]) > 512
+        or not isinstance(value.get("provider_response_sha256"), str)
+    ):
+        raise ProviderError("provider rejected response fields mismatch")
+    provider_messages.bounded_wire(value["provider_response"])
+    digest = provider_config.canonical_sha256(value["provider_response"])
+    if digest != value["provider_response_sha256"]:
+        raise ProviderError("provider rejected response identity mismatch")
+
+
 def _prior_journal_digest(
     binding: provider_config.ProviderBinding,
     request: dict[str, Any],
@@ -863,7 +888,8 @@ def validate_recovery_artifacts(
             value.get("schema") != PROVIDER_JOURNAL_SCHEMA
             or value.get("run_id") != run.get("run_id")
             or value.get("binding_sha256") != public["binding_sha256"]
-            or value.get("status") not in {"reserved", "dispatched", "completed"}
+            or value.get("status")
+            not in {"reserved", "dispatched", "rejected", "completed"}
             or not isinstance(request_id, str)
             or request_id in records
             or path.name != f"{expected_name}.json"
@@ -882,7 +908,13 @@ def validate_recovery_artifacts(
         ):
             raise ProviderError("provider journal request mismatch")
         complete = value["status"] == "completed"
-        if complete != (
+        if value["status"] == "rejected":
+            # The service keeps a refused reply, unpaid by any receipt; its
+            # reservation stays an unresolved liability.
+            if value.get("receipt") is not None:
+                raise ProviderError("provider journal rejection mismatch")
+            validate_rejected_response(value.get("response"))
+        elif complete != (
             isinstance(value.get("response"), dict)
             and isinstance(value.get("receipt"), dict)
         ) or (not complete and (value.get("response") is not None or value.get("receipt") is not None)):
@@ -940,9 +972,9 @@ def validate_recovery_artifacts(
             else None
         )
         allowed_statuses = {
-            "reserved": {"reserved", "dispatched", "completed"},
-            "dispatched": {"dispatched", "completed"},
-            "ambiguous": {"dispatched", "completed"},
+            "reserved": {"reserved", "dispatched", "rejected", "completed"},
+            "dispatched": {"dispatched", "rejected", "completed"},
+            "ambiguous": {"dispatched", "rejected", "completed"},
             "completed": {"completed"},
         }.get(checkpoint_status, set())
         if record["status"] not in allowed_statuses:

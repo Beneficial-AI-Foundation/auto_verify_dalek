@@ -863,10 +863,11 @@ def _candidate_runtime_argv(
         "256",
         "--cpus",
         "2",
+        # A cold Dalek build maps ~3 GiB of Mathlib oleans; runsc built it at 4 GiB.
         "--memory",
-        "2g",
+        "4g",
         "--memory-swap",
-        "2g",
+        "4g",
         "--tmpfs",
         "/tmp:rw,noexec,nosuid,nodev,size=64m,mode=1777",
         "--tmpfs",

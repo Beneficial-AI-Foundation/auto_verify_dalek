@@ -6,6 +6,7 @@ import json
 from pathlib import Path
 import sys
 import tempfile
+import subprocess
 import unittest
 from unittest import mock
 
@@ -17,12 +18,38 @@ class BExperimentTests(unittest.TestCase):
     def invoke(self, arguments, callback):
         with mock.patch.object(sys, "argv", ["prove_to_bytes_b.py", *arguments]), \
              mock.patch.object(experiment.harness, "main", side_effect=callback), \
+             mock.patch.object(experiment, "start_attempt_branch", return_value="exp/to-bytes-test") as start_branch, \
              mock.patch.object(experiment.harness, "PROOF_SKETCH"), \
              mock.patch.object(experiment.harness, "LEDGER"), \
              mock.patch.object(experiment.harness.driver, "TRANSCRIPTS"), \
              mock.patch.object(experiment.harness.driver, "PROMPT", experiment.harness.driver.PROMPT), \
              contextlib.redirect_stdout(io.StringIO()):
-            experiment.main()
+            try:
+                experiment.main()
+            finally:
+                if "--run" in arguments and "--prepare-only" not in arguments:
+                    start_branch.assert_called_once_with()
+                else:
+                    start_branch.assert_not_called()
+
+    def test_each_attempt_creates_a_unique_branch_and_preserves_edits(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            def git(*args):
+                return subprocess.check_output(["git", *args], cwd=tmp, text=True).strip()
+            git("init", "-q")
+            source = Path(tmp) / "keep.txt"
+            source.write_text("original")
+            git("add", "keep.txt")
+            git("-c", "user.name=test", "-c", "user.email=test@example.com",
+                "commit", "-qm", "baseline")
+            source.write_text("user edits")
+            with mock.patch.object(experiment, "ROOT", Path(tmp)), contextlib.redirect_stdout(io.StringIO()):
+                first = experiment.start_attempt_branch()
+                second = experiment.start_attempt_branch()
+            self.assertNotEqual(first, second)
+            self.assertTrue(first.startswith("exp/to-bytes-"))
+            self.assertEqual(git("branch", "--show-current"), second)
+            self.assertEqual(source.read_text(), "user edits")
 
     def test_preview_never_starts_harness(self):
         self.invoke([], lambda: self.fail("preview launched harness"))
@@ -119,6 +146,14 @@ class BExperimentTests(unittest.TestCase):
             self.assertEqual(json.loads((run / "status.json").read_text())["exit_code"], 1)
             self.assertTrue((run / "prompt.txt").is_file())
             self.assertEqual(source.read_bytes() if source.exists() else None, before)
+
+    def test_quiet_turns_is_recorded_and_forwarded(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            run = Path(tmp) / "attempt"
+            def check_quiet():
+                self.assertIn("--quiet-turns", sys.argv)
+                self.assertTrue(json.loads((run / "experiment.json").read_text())["quiet_turns"])
+            self.invoke(["--prepare-only", "--quiet-turns", "--run-dir", str(run)], check_quiet)
 
     def test_existing_directory_is_not_overwritten(self):
         with tempfile.TemporaryDirectory() as tmp, contextlib.redirect_stderr(io.StringIO()):

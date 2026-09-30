@@ -57,7 +57,7 @@ python3 harness/prove_to_bytes_b.py --run --model MODEL_ID \
 原 B 提示词和默认行为保持不变。添加 `--interactive-prompt`，使用
 `interactive_harness_prompt.txt`：它改编自 `interactive_debug_prompt.txt`，
 保留小步编译、逐次诊断反馈、资源耗尽时拆分证明和清理上下文等要求，
-不提供成功日志中的具体拆分或证明答案。独立工作目录和骨架准备由 harness 完成。
+不提供成功日志中的具体拆分或证明答案。分支和骨架准备由 harness 完成。
 
 ```bash
 # 预览，不调用模型
@@ -78,3 +78,27 @@ python3 harness/prove_to_bytes_b.py --interactive-prompt --run \
 交互提示词要求本地构建 90 秒时报告、120 秒时终止并调整证明；这是给模型的
 操作指令，不是新增的进程监控器。harness 验收构建仍由 `--build-timeout`
 控制（默认 1200 秒），会话仍默认 3600 秒、300 turns，原验收检查保持不变。
+
+## 实时进度
+
+运行时默认在 round 内实时显示每个模型 turn 的简短文字、工具操作、返回耗时，
+以及 Bash/构建输出的最多三条关键诊断（无错误时显示末尾三行）。长文本会截断，
+不显示内部思考、完整文件内容或大段补丁；完整 stream-json 仍保存在 transcripts。
+多个槽位/轮次的输出带 slot 和 round 前缀。工具执行期间先显示操作，结果在工具
+返回后显示，不是逐字或逐行转播正在执行的 shell 输出。
+
+`--quiet-turns` 可关闭摘要，Python 入口及 Bash 包装脚本均支持，例如：
+
+```bash
+bash harness/run_to_bytes_b.sh --interactive-prompt --quiet-turns
+```
+
+该开关只控制终端显示，不修改证明提示词、模型权限、资源预算或验收流程。
+
+## 每次正式尝试使用新分支
+
+`--run` 在模型启动前自动创建并切换到唯一的 `exp/to-bytes-<UTC时间>-<随机后缀>`
+分支，从当前 HEAD 开始，终端打印 `Branch:`，并在 `experiment.json` 记录分支名。
+不自动提交、清理、暂存或切回原分支，已有用户改动会保留。
+预览和 `--prepare-only` 不创建分支。证明仍在该次 run 的隔离 bundle/slot 中进行，
+成功结果仍写入该 run 的 bundle；创建分支不代表自动提交或发布证明。

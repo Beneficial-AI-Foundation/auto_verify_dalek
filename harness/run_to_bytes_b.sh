@@ -4,13 +4,12 @@ set -euo pipefail
 EXTRA_ARGS=()
 for arg in "$@"; do
   case "$arg" in
-    --fv-skills|--interactive-prompt) EXTRA_ARGS+=("$arg") ;;
-    *) echo "Usage: bash harness/run_to_bytes_b.sh [--interactive-prompt] [--fv-skills]" >&2; exit 2 ;;
+    --fv-skills|--interactive-prompt|--quiet-turns) EXTRA_ARGS+=("$arg") ;;
+    *) echo "Usage: bash harness/run_to_bytes_b.sh [--interactive-prompt] [--fv-skills] [--quiet-turns]" >&2; exit 2 ;;
   esac
 done
 
 # Change these settings here when starting a new experiment series.
-# MODEL=claude-sonnet-5
 MODEL=claude-opus-5-5
 TIMEOUT_SECONDS=3600
 MAX_TURNS=300

@@ -39,6 +39,8 @@ import sys
 import time
 import uuid
 
+from live_progress import LiveTranscript
+
 HERE = os.path.dirname(os.path.abspath(__file__))
 
 # Module-level handle to the live claude subprocess so a signal to the driver
@@ -357,7 +359,8 @@ def _bounded_wait(wall_deadline):
 def run_round(prompt, transcript_path, *, cwd, session_id, resume,
               model="", max_turns=30, allowed_tools="",
               deadline_seconds=None, continue_message=None, env=None,
-              settings_path=None, sandbox_prefix=None, skill_plugin=None):
+              settings_path=None, sandbox_prefix=None, skill_plugin=None,
+              progress_log=None):
     """Run one claude round; stream-json goes verbatim to transcript_path.
 
     Returns (status, returncode, wall_seconds, result_event, provenance)
@@ -382,6 +385,9 @@ def run_round(prompt, transcript_path, *, cwd, session_id, resume,
             start_new_session=True)
         with _LIVE_LOCK:
             _LIVE_PROCS.add(proc)
+        display = LiveTranscript(transcript_path, progress_log) if progress_log else None
+        if display:
+            display.start()
         wall_deadline = (time.time() + deadline_seconds) \
             if deadline_seconds else None
         while True:
@@ -417,6 +423,8 @@ def run_round(prompt, transcript_path, *, cwd, session_id, resume,
             pass
         with _LIVE_LOCK:
             _LIVE_PROCS.discard(proc)
+        if display:
+            display.close()
 
     wall = time.time() - t0
     result_event, provenance = last_result_event(transcript_path)

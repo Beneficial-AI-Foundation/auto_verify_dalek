@@ -7,6 +7,7 @@ from pathlib import Path
 import subprocess
 import sys
 import time
+import uuid
 
 import prove_top_spec as harness
 import fv_skills
@@ -35,6 +36,16 @@ end curve25519_dalek.backend.serial.u64.field.FieldElement51
 """
 
 
+
+def start_attempt_branch():
+    """Give each actual run a unique branch without committing existing work."""
+    stamp = time.strftime("%Y%m%dT%H%M%SZ", time.gmtime())
+    branch = f"exp/to-bytes-{stamp}-{uuid.uuid4().hex[:8]}"
+    subprocess.run(["git", "switch", "-c", branch], cwd=ROOT, check=True)
+    print(f"Branch: {branch}", flush=True)
+    return branch
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--run", action="store_true", help="invoke the model; default only prints the prompt")
@@ -46,6 +57,8 @@ def main():
                         help="use the pinned FVS headless lean-verify skill")
     parser.add_argument("--run-dir", help="new directory for this independent attempt")
     parser.add_argument("--timeout", type=int, default=3600)
+    parser.add_argument("--quiet-turns", action="store_true",
+                        help="hide live per-turn summaries; preserve full transcripts")
     parser.add_argument("--max-turns", type=int, default=300)
     parser.add_argument("--build-timeout", type=int, default=harness.driver.BUILD_TIMEOUT)
     args = parser.parse_args()
@@ -98,6 +111,7 @@ def main():
     manifest["kept_theorems"] = {PATH: [TARGET]}
     manifest_path.write_text(json.dumps(manifest, indent=2) + "\n")
     (run_dir / "prompt.txt").write_text(prompt)
+    branch = start_attempt_branch() if args.run else None
     revision = subprocess.run(["git", "rev-parse", "HEAD"], cwd=ROOT,
                               check=True, capture_output=True, text=True).stdout.strip()
     hashes = {str(p.relative_to(bundle)): hashlib.sha256(p.read_bytes()).hexdigest()
@@ -106,10 +120,11 @@ def main():
         "variant": "B-interactive" if args.interactive_prompt else "B",
         "prompt_mode": "interactive" if args.interactive_prompt else "baseline",
         "prompt_source": prompt_source,
-        "target": TARGET, "revision": revision,
+        "target": TARGET, "revision": revision, "branch": branch,
         "model": args.model, "rounds": 1, "timeout": args.timeout,
         "max_turns": args.max_turns, "source_sha256": hashes,
         "build_timeout": args.build_timeout,
+        "quiet_turns": args.quiet_turns,
         "prompt_sha256": hashlib.sha256(prompt.encode()).hexdigest(),
         "fv_skills": skills_manifest,
     }, indent=2) + "\n")
@@ -123,6 +138,8 @@ def main():
                 "--rounds", "1", "--timeout", str(args.timeout),
                 "--max-turns", str(args.max_turns),
                 "--build-timeout", str(args.build_timeout)]
+    if args.quiet_turns:
+        sys.argv.append("--quiet-turns")
     if args.prepare_only:
         sys.argv.append("--dry-run")
     if args.fv_skills:

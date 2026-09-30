@@ -710,12 +710,16 @@ def run_rounds(prompt, tid, path, before_counts, args, env, settings_path,
             round_prompt = prompt
         sha_before = {p: _file_sha(p, work) for p in editable_paths}
         tpath = os.path.join(TRANSCRIPTS, f"{tid}.r{rnd}.jsonl")
+        if not getattr(args, "quiet_turns", False):
+            log(f"[r{rnd}] proving; live turn summaries below (full log: {tpath})")
         status, rc, wall, result, prov = agentproc.run_round(
             round_prompt, tpath, cwd=work, session_id=session_id,
             resume=not fresh, model=args.model, max_turns=args.max_turns,
             allowed_tools=getattr(args, "allowed_tools", ALLOWED_TOOLS),
             deadline_seconds=args.timeout,
             continue_message=continue_message, env=env,
+            progress_log=(None if getattr(args, "quiet_turns", False) else
+                          lambda message: log(f"[r{rnd}] {message}")),
             settings_path=settings_path, sandbox_prefix=sandbox_prefix,
             **({"skill_plugin": args.skill_plugin} if getattr(args, "skill_plugin", None) else {}))
         was_fresh, fresh = fresh, False
@@ -1102,6 +1106,8 @@ def main():
     ap.add_argument("--run-id", default="",
                     help="tag written into every ledger record (default: "
                          "UTC timestamp)")
+    ap.add_argument("--quiet-turns", action="store_true",
+                    help="hide live per-turn summaries; preserve full transcripts")
     ap.add_argument("--max-turns", type=int, default=30, help="per round")
     ap.add_argument("--timeout", type=int, default=900,
                     help="wall-clock seconds per round (process-group kill)")

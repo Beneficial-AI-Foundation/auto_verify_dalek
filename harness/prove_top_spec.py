@@ -367,8 +367,9 @@ General proof workflow (Aeneas + this project):
   rewrites. If a step becomes expensive, isolate and simplify the obligation
   before retrying. Do not raise maxHeartbeats to mask an oversized proof.
 - Check the target module after each meaningful increment. Run builds
-  serially with a short timeout, and report the first useful diagnostic or
-  slow step promptly. Stop only your own stalled builds before retrying.
+  through the harness-provided local Lean check tool (command supplied at
+  agent startup), with a short timeout. Report its status and first useful
+  diagnostic promptly; the tool manages logs and stalled-build cleanup.
 - Temporary holes are only for intermediate checks. Prove all introduced
   helpers within the editable allowlist, then run the required full build.
 - Look for library lemmas in `.lake/packages/aeneas/backends/lean/Aeneas/Std/`

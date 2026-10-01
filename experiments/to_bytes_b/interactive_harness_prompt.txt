@@ -59,8 +59,9 @@ one large monolithic proof.
   maxHeartbeats or other resource limits.
 - Run builds sequentially. Do not leave competing background lake/lean builds.
 
-Run this command from the current workspace root for local validation:
-lake build {module}
+Use the harness-provided local Lean check tool from the workspace root for
+module {module}, with --timeout 120. Its exact command is appended by the
+harness when the agent starts. It runs lake build and manages logs and cleanup.
 
 After each build, immediately report:
 1. What changed.
@@ -70,9 +71,10 @@ After each build, immediately report:
 
 During sustained work, provide a brief progress update about every 30–60 seconds.
 If a local build has produced no result after 90 seconds, report that it is still
-running. After 120 seconds, safely terminate that build and its child processes,
-preserve the output already captured, and narrow the change or identify the
-expensive declaration before trying again. Do not terminate unrelated processes.
+running. After 120 seconds, the check tool terminates that build and its child
+processes and preserves its output. Read the returned diagnostics/log, then
+narrow the change or identify the expensive declaration before trying again.
+A busy result means another check is running; do not bypass it with a raw build.
 Do not interpret an absence of output as success. These local time limits are
 interactive debugging choices, not the formal harness's acceptance budget.
 
@@ -81,7 +83,8 @@ or ask for permission to continue after every small step.
 
 4. Completion criteria
 
-Finally, run the full lake build from the current workspace root.
+Finally, use the check tool's --full mode to run the full lake build from the
+current workspace root, with the longer final-build timeout.
 Claim completion only if the full build succeeds and neither the target nor any
 new helper lemma contains a remaining sorry.
 

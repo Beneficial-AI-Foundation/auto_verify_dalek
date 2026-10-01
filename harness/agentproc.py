@@ -33,6 +33,7 @@ import hashlib
 import json
 import os
 import shutil
+import shlex
 import signal
 import subprocess
 import sys
@@ -231,6 +232,7 @@ def bwrap_prefix(repo, config_dir, hidden=SANDBOX_HIDDEN, extra_ro=(), sealed_ro
     home = os.path.expanduser("~")
     repo = os.path.abspath(repo)
     config_dir = os.path.abspath(config_dir)
+    check_tool = prepare_check_tool(config_dir)
     argv = ["bwrap", "--unshare-all", "--share-net", "--die-with-parent",
             "--ro-bind", "/usr", "/usr", "--ro-bind", "/etc", "/etc",
             "--symlink", "usr/lib", "/lib", "--symlink", "usr/lib64", "/lib64",
@@ -251,7 +253,7 @@ def bwrap_prefix(repo, config_dir, hidden=SANDBOX_HIDDEN, extra_ro=(), sealed_ro
     # config dir lives under ledger/ (hidden) — bind it back in, writable
     argv += ["--bind", config_dir, config_dir]
     # Bind after the writable config parent so skill inputs cannot be edited.
-    for p in sealed_ro:
+    for p in [os.path.dirname(check_tool), *sealed_ro]:
         argv += ["--ro-bind", p, p]
     argv += ["--setenv", "HOME", home, "--chdir", repo, "--"]
     return argv
@@ -280,6 +282,10 @@ def sandbox_selftest(prefix, repo, config_dir, extra_ro=()):
         **{f"readable:{os.path.basename(p)}": f"[ -r {p} ]" for p in extra_ro},
         "lake_runs": "lake --version >/dev/null",
         "claude_runs": "claude --version >/dev/null",
+        "lean_check_runs": "/usr/bin/python3 " + shlex.quote(
+            os.path.join(config_dir, "local_check_tool", "lean_check.py")) + " --help >/dev/null",
+        "lean_check_readonly": "! test -w " + shlex.quote(
+            os.path.join(config_dir, "local_check_tool", "lean_check.py")),
     }
     out = {}
     # $HOME holds only the repo, ~/.elan and the claude install dir
@@ -298,6 +304,23 @@ def sandbox_selftest(prefix, repo, config_dir, extra_ro=()):
 def sha256_file(path):
     with open(path, "rb") as fh:
         return hashlib.sha256(fh.read()).hexdigest()
+
+
+def prepare_check_tool(directory):
+    """Expose only the standalone checker, never the hidden harness/gates."""
+    tool_dir = os.path.join(directory, "local_check_tool")
+    os.makedirs(tool_dir, exist_ok=True)
+    source = os.path.join(HERE, "lean_check.py")
+    target = os.path.join(tool_dir, "lean_check.py")
+    if not os.path.exists(target) or sha256_file(source) != sha256_file(target):
+        temporary = target + "." + uuid.uuid4().hex
+        try:
+            shutil.copyfile(source, temporary)
+            os.replace(temporary, target)
+        finally:
+            if os.path.exists(temporary):
+                os.unlink(temporary)
+    return target
 
 
 # ── command construction ─────────────────────────────────────────────────
@@ -368,6 +391,40 @@ def run_round(prompt, transcript_path, *, cwd, session_id, resume,
     always SIGKILLed at the end — even on clean exit — to reap any
     background children claude left behind.
     """
+    # A single integration point covers generic, bottom-up and to_bytes runs,
+    # including resumed/reset sessions. Logs live outside the source allowlist.
+    runtime = (env["CLAUDE_CONFIG_DIR"] if sandbox_prefix else
+               os.path.dirname(os.path.abspath(transcript_path)))
+    check_tool = prepare_check_tool(runtime)
+    check_logs = os.path.join(runtime, "local_checks")
+    os.makedirs(check_logs, exist_ok=True)
+    check_command = "/usr/bin/python3 " + shlex.quote(check_tool)
+    check_instructions = (
+        "\n\nLocal Lean check tool (provided by the harness):\n"
+        f"From the workspace root run: {check_command} MODULE --timeout 120\n"
+        "Use the actual dotted module name in place of MODULE. Use this tool "
+        "for incremental compilation instead of managing lake/timeout/background "
+        "processes yourself. It runs lake build and returns JSON with status, "
+        "exit_code, elapsed_seconds, first_error, goal_text when printed by Lean, "
+        "last_output, and durable log_path/result_path. Read those logs as needed. "
+        "Checks in one workspace are serialized: busy means no check ran. "
+        "timeout/interrupted/error are not success, even with empty diagnostics. "
+        "The tool creates harness-managed logs/build artifacts; this does not "
+        "authorize editing additional proof sources. Do not edit the tool. "
+        "Keep reporting changes, results, and next steps. Compilation can succeed "
+        "with sorry: success is local compilation only, never proof acceptance.\n"
+        f"For the final full build use: {check_command} --full --timeout 1200\n"
+        "The harness independently runs its acceptance gates afterward.\n")
+    prompt += check_instructions
+    if resume:
+        continue_message = (continue_message or "continue") + check_instructions
+    allowed_tools += f",Bash({check_command} *)"
+    env = dict(env if env is not None else os.environ)
+    env["LEAN_CHECK_LOG_DIR"] = check_logs
+    effective_message = continue_message if resume else prompt
+    message_path = transcript_path + ".prompt.txt"
+    with open(message_path, "w") as fh:
+        fh.write(effective_message)
     cmd = build_command(prompt, session_id, resume, model, max_turns,
                         allowed_tools, continue_message, settings_path, skill_plugin)
     if sandbox_prefix:
@@ -428,6 +485,13 @@ def run_round(prompt, transcript_path, *, cwd, session_id, resume,
 
     wall = time.time() - t0
     result_event, provenance = last_result_event(transcript_path)
+    provenance["local_check"] = {
+        "tool_sha256": sha256_file(check_tool), "tool_path": check_tool,
+        "log_dir": check_logs, "effective_message_path": message_path,
+        "allowed_tools": allowed_tools,
+        "instructions_sha256": hashlib.sha256(check_instructions.encode()).hexdigest(),
+        "effective_message_sha256": hashlib.sha256(
+            effective_message.encode()).hexdigest()}
     if RECEIVED_SIGNAL is not None:
         status = "signal"
     elif killed_deadline:

@@ -264,6 +264,9 @@ def validate_candidate(candidate: Any, job: Any) -> dict[str, Any]:
 def _bounded_output(value: Any, label: str) -> str:
     if not isinstance(value, str):
         raise worker.WorkerError(f"{label} did not return text")
+    # Provider messages refuse empty or NUL-bearing tool content (a search with
+    # no match returns "").
+    value = value.replace("\x00", "\ufffd") or "(no output)"
     raw = value.encode("utf-8")
     if len(raw) <= _MAX_TOOL_OUTPUT_BYTES:
         return value

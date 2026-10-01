@@ -7,7 +7,7 @@ import unittest
 from pathlib import Path
 from unittest import mock
 
-from autofv import agent_lane, model, worker
+from autofv import agent_lane, model, provider_messages, worker
 
 
 HASHES = {
@@ -594,6 +594,43 @@ class RoleConversationTests(unittest.TestCase):
         )
         self.assertEqual([call.args for call in sleep.call_args_list], [(2,), (8,)])
         self.assertEqual(next(iter(state["role_progress"].values()))["last_turn"], 1)
+
+    def test_empty_search_result_still_makes_valid_provider_messages(self):
+        search = (
+            {
+                "kind": "tool_call",
+                "payload": {"name": "search_allowed", "arguments": {"query": "absent"}},
+            },
+            {"receipt_sha256": "8" * 64},
+        )
+        submit = (
+            {
+                "kind": "tool_call",
+                "payload": {
+                    "name": "submit_candidate",
+                    "arguments": {
+                        "patch": "diff --git a/Diamond/Left.lean b/Diamond/Left.lean\n",
+                        "claimed_status": "candidate",
+                        "evidence": ["fixed Lean diagnostic passed"],
+                    },
+                },
+            },
+            {"receipt_sha256": "9" * 64},
+        )
+        tools = agent_lane.build_lane_tools(
+            _job(),
+            lane_root=Path("/unused"),
+            read_file=lambda path: path,
+            search_files=lambda query: "",
+            edit_assigned=lambda patch: patch,
+            check_lean=lambda: "ok",
+        )
+        with mock.patch.object(
+            model, "_model_request", side_effect=[search, submit]
+        ) as request:
+            asyncio.run(agent_lane.run_role_conversation({}, _job(), tools))
+
+        provider_messages.validate_messages(request.call_args_list[1].kwargs["messages"])
 
     def test_provider_hiccups_fail_the_lane_past_the_turn_or_role_cap(self):
         hiccup = worker.TransientProviderError("fixed proxy timeout")

@@ -26,11 +26,11 @@ from . import (
 )
 
 
-JOURNAL_SCHEMA = "autofv-provider-dispatch/v1"
+JOURNAL_SCHEMA = provider_receipts.PROVIDER_JOURNAL_SCHEMA
 REJECTED_RESPONSE_SCHEMA = provider_receipts.REJECTED_RESPONSE_SCHEMA
 _JOURNAL_FIELDS = frozenset({
     "schema", "status", "run_id", "request_id", "sequence", "request_sha256",
-    "messages_sha256", "binding_sha256", "response", "receipt", "auth",
+    "messages_sha256", "binding_sha256", "reservation_usd", "response", "receipt", "auth",
     "record_sha256",
 })
 
@@ -135,6 +135,7 @@ def _record(
     binding: provider_config.ProviderBinding,
     request: dict[str, Any],
     messages_sha256: str,
+    reservation_usd: str,
     status: str,
     *,
     response: dict[str, Any] | None = None,
@@ -149,6 +150,7 @@ def _record(
         "request_sha256": _sha(request),
         "messages_sha256": messages_sha256,
         "binding_sha256": binding.public["binding_sha256"],
+        "reservation_usd": reservation_usd,
         "response": copy.deepcopy(response),
         "receipt": copy.deepcopy(receipt),
     }
@@ -197,6 +199,7 @@ def _validate_record(
         not in {"reserved", "dispatched", "rejected", "completed"}
         or not isinstance(value.get("messages_sha256"), str)
         or value.get("record_sha256") != _sha(signed)
+        or not provider_receipts.is_reservation(value.get("reservation_usd"))
     ):
         raise provider_transport.ProviderError("provider journal identity mismatch")
     provider_receipts.verify_signature(
@@ -305,11 +308,15 @@ def _check_remembered(
     messages_sha256 = existing["messages_sha256"]
     if existing["status"] in {"dispatched", "rejected", "completed"}:
         allowed.add(
-            _record(binding, request, messages_sha256, "reserved")["record_sha256"]
+            _record(
+                binding, request, messages_sha256, existing["reservation_usd"], "reserved"
+            )["record_sha256"]
         )
     if existing["status"] in {"rejected", "completed"}:
         allowed.add(
-            _record(binding, request, messages_sha256, "dispatched")["record_sha256"]
+            _record(
+                binding, request, messages_sha256, existing["reservation_usd"], "dispatched"
+            )["record_sha256"]
         )
     if digest not in allowed:
         raise provider_transport.ProviderError("provider journal memory changed")
@@ -661,7 +668,13 @@ def dispatch(
             )
         messages_sha256 = provider_messages.staged_messages_sha256(binding, request)
         if existing is None:
-            existing = _record(binding, request, messages_sha256, "reserved")
+            # The controller reserved this same amount from the same messages.
+            reservation_usd = provider_transport.reservation_usd(
+                run, request, provider_messages.staged_messages(binding, request)
+            )
+            existing = _record(
+                binding, request, messages_sha256, f"{reservation_usd:.6f}", "reserved"
+            )
             _write(path, existing)
         elif existing["messages_sha256"] != messages_sha256:
             raise provider_transport.ProviderError("provider journal message identity mismatch")
@@ -671,7 +684,10 @@ def dispatch(
             raise provider_transport.ProviderError(
                 "provider preflight authorization failed"
             ) from exc
-        dispatched = _record(binding, request, messages_sha256, "dispatched")
+        reservation_usd = existing["reservation_usd"]
+        dispatched = _record(
+            binding, request, messages_sha256, reservation_usd, "dispatched"
+        )
         _write(path, dispatched)
         _remember(run, dispatched)
 
@@ -693,6 +709,7 @@ def dispatch(
                 binding,
                 request,
                 messages_sha256,
+                reservation_usd,
                 "rejected",
                 response=rejected_response,
             )
@@ -701,7 +718,13 @@ def dispatch(
                 _remember(run, rejected)
         raise
     completed = _record(
-        binding, request, messages_sha256, "completed", response=response, receipt=receipt
+        binding,
+        request,
+        messages_sha256,
+        reservation_usd,
+        "completed",
+        response=response,
+        receipt=receipt,
     )
     provider_messages.scan_response(completed, binding)
     with binding.lock:

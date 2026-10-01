@@ -78,9 +78,10 @@ def _reduce_accounting(
         run, allow_missing_preflight=incomplete
     )
     if provider_evidence is not None:
+        # A retried provider failure leaves a signed, bounded liability pending.
         reducer = (
             provider_receipts.reduce_incomplete_accounting
-            if incomplete
+            if incomplete or state.get("pending_model_exchanges")
             else provider_receipts.reduce_accounting
         )
         accounting_binding = provider_evidence["provider_binding"]
@@ -483,7 +484,10 @@ def render_attempt(
             review_valid = True
         except result_audit.AuditError:
             review_valid = False
-    if reduced_accounting.get("accounting_complete") is False:
+    if reduced_accounting.get("accounting_complete") is False and (
+        outcome == "infrastructure_failed"
+        or not reduced_accounting.get("accounting_bounded")
+    ):
         assessment = {
             "level": None,
             "scored": False,
@@ -530,6 +534,7 @@ def render_attempt(
             else None
         ),
         "accounting_complete": reduced_accounting.get("accounting_complete", True),
+        "accounting_bounded": reduced_accounting.get("accounting_bounded", False),
         "unresolved_provider_requests": copy.deepcopy(
             reduced_accounting.get("unresolved_requests", [])
         ),

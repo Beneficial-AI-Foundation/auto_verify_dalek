@@ -57,6 +57,12 @@ def _provider_state(root: Path) -> tuple[dict, Path]:
     return state, environment
 
 
+def _reservation(state: dict, request: dict) -> str:
+    """The controller's own reservation, which the service signs into the journal."""
+    amount = worker_proxy.provider_reservation_usd(state["run"], request, _messages())
+    return f"{amount:.6f}"
+
+
 def _provider_exchange(state: dict, *, dispatch: bool = True):
     messages = _messages()
     request = model._model_envelope(
@@ -405,7 +411,7 @@ class ProviderRecoveryTests(unittest.TestCase):
                     "response": response,
                     "receipt": receipt,
                     "call_kind": "explicit",
-                    "reservation_usd": receipt["cost"]["amount"],
+                    "reservation_usd": _reservation(state, request),
                     "dispatch_state": "completed",
                 }
             }
@@ -481,7 +487,7 @@ class ProviderRecoveryTests(unittest.TestCase):
                         "response": response,
                         "receipt": receipt,
                         "call_kind": "explicit",
-                        "reservation_usd": receipt["cost"]["amount"],
+                        "reservation_usd": _reservation(state, request),
                         "dispatch_state": "completed",
                     }
                 }
@@ -502,6 +508,7 @@ class ProviderRecoveryTests(unittest.TestCase):
                             binding,
                             request,
                             completed["messages_sha256"],
+                            completed["reservation_usd"],
                             "dispatched",
                         ),
                     )
@@ -519,6 +526,7 @@ class ProviderRecoveryTests(unittest.TestCase):
                             binding,
                             unrelated,
                             completed["messages_sha256"],
+                            completed["reservation_usd"],
                             "reserved",
                         ),
                     )
@@ -1006,7 +1014,7 @@ class ProviderRecoveryTests(unittest.TestCase):
                     "response": response,
                     "receipt": receipt,
                     "call_kind": "explicit",
-                    "reservation_usd": receipt["cost"]["amount"],
+                    "reservation_usd": _reservation(state, request),
                     "dispatch_state": "completed",
                 }
             }
@@ -1063,7 +1071,7 @@ class ProviderRecoveryTests(unittest.TestCase):
                 request["request_id"]: {
                     "request": request,
                     "call_kind": "explicit",
-                    "reservation_usd": "0.032880",
+                    "reservation_usd": _reservation(state, request),
                     "dispatch_state": "dispatched",
                 }
             }
@@ -1146,7 +1154,7 @@ class ProviderRecoveryTests(unittest.TestCase):
                 request["request_id"]: {
                     "request": request,
                     "call_kind": "explicit",
-                    "reservation_usd": "0.032880",
+                    "reservation_usd": _reservation(state, request),
                     "dispatch_state": "dispatched",
                 }
             }
@@ -1170,8 +1178,35 @@ class ProviderRecoveryTests(unittest.TestCase):
                     (item["request_id"], item["status"], item["reservation_usd"])
                     for item in reduced["unresolved_requests"]
                 ],
-                [(request["request_id"], "dispatched", "0.032880")],
+                [(request["request_id"], "dispatched", _reservation(state, request))],
             )
+
+    def test_unjournaled_pending_request_was_never_sent_and_owes_nothing(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            state, _environment = _provider_state(Path(temporary))
+            request = model._model_envelope(
+                state,
+                request_id="provider-recovery-request-001",
+                role="scout",
+                input_hashes=[worker_proxy.provider_messages_sha256(_messages())],
+            )
+            state["pending_model_exchanges"] = {
+                request["request_id"]: {
+                    "request": request,
+                    "call_kind": "explicit",
+                    "reservation_usd": _reservation(state, request),
+                    "dispatch_state": "dispatched",
+                }
+            }
+
+            reduced = provider_receipts.reduce_incomplete_accounting(
+                state["run"],
+                state,
+                binding=provider_config.provider_binding(state["run"]),
+            )
+
+            self.assertEqual(reduced["unresolved_requests"], [])
+            self.assertEqual(reduced["cost"], 0)
 
     def test_recovery_reconstructs_first_preflight_after_signed_completion_crash(self):
         with tempfile.TemporaryDirectory() as temporary:
@@ -1188,7 +1223,7 @@ class ProviderRecoveryTests(unittest.TestCase):
                 request["request_id"]: {
                     "request": request,
                     "call_kind": "explicit",
-                    "reservation_usd": "0.032880",
+                    "reservation_usd": _reservation(state, request),
                     "dispatch_state": "dispatched",
                 }
             }
@@ -1306,7 +1341,7 @@ class ProviderRecoveryTests(unittest.TestCase):
                 request["request_id"]: {
                     "request": request,
                     "call_kind": "explicit",
-                    "reservation_usd": "0.032880",
+                    "reservation_usd": _reservation(state, request),
                     "dispatch_state": "ambiguous",
                 }
             }

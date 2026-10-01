@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import base64
 import binascii
+import copy
 import hashlib
 import hmac
 import json
@@ -26,12 +27,12 @@ ProviderError = provider_config.ProviderConfigError
 PROVIDER_RECEIPT_SCHEMA = "autofv-provider-proxy-receipt/v1"
 PROVIDER_PREFLIGHT_SCHEMA = "autofv-provider-preflight/v1"
 SCAN_RECEIPT_SCHEMA = "autofv-provider-scan-receipt/v1"
-PROVIDER_JOURNAL_SCHEMA = "autofv-provider-dispatch/v1"
+PROVIDER_JOURNAL_SCHEMA = "autofv-provider-dispatch/v2"
 REJECTED_RESPONSE_SCHEMA = "autofv-provider-rejected-response/v1"
 _JOURNAL_FIELDS = {
     "schema", "status", "run_id", "request_id", "sequence", "request_sha256",
-    "messages_sha256", "binding_sha256", "response", "receipt", "auth",
-    "record_sha256",
+    "messages_sha256", "binding_sha256", "reservation_usd", "response", "receipt",
+    "auth", "record_sha256",
 }
 _MONEY = re.compile(r"(?:0|[1-9][0-9]{0,15})\.[0-9]{6}")
 _EXACT_PROVIDER_MONEY = re.compile(
@@ -571,19 +572,20 @@ def reduce_incomplete_accounting(
                         if isinstance(exchange, dict)
                         else record["status"]
                     ),
-                    "reservation_usd": (
-                        exchange.get("reservation_usd")
+                    "call_kind": (
+                        exchange.get("call_kind", "explicit")
                         if isinstance(exchange, dict)
-                        else None
+                        else "explicit"
                     ),
+                    "reservation_usd": record["reservation_usd"],
+                    "request": copy.deepcopy(request),
                     "request_sha256": record["request_sha256"],
                     "record_sha256": record["record_sha256"],
                 }
             )
-    for request_id, exchange in sorted(pending.items()):
-        if request_id in journal:
-            continue
-        raise ProviderError("provider unresolved request is not authenticated")
+    # A pending request the service never journaled was never sent upstream: the
+    # service signs "reserved" before any dispatch, and recovery has already
+    # refused a journal that lost a remembered record.
     partial_state = {
         "config": state.get("config", {}),
         "receipts": [
@@ -598,9 +600,15 @@ def reduce_incomplete_accounting(
     reduced = _reduce_exchange_accounting(
         run, partial_state, binding=public, allow_empty=True
     )
+    liability = sum(
+        (Decimal(item["reservation_usd"]) for item in unresolved), Decimal("0.000000")
+    )
     return {
         **reduced,
+        # Each unresolved request costs its signed reservation: a bound, never less.
+        "cost": reduced["cost"] + liability,
         "accounting_complete": False,
+        "accounting_bounded": True,
         "unresolved_requests": unresolved,
         "unknown_provider_spend": bool(unresolved),
     }
@@ -805,6 +813,15 @@ def validate_rejected_response(value: Any) -> None:
         raise ProviderError("provider rejected response identity mismatch")
 
 
+def is_reservation(value: Any) -> bool:
+    """A positive USD amount with exactly six decimals."""
+    return (
+        isinstance(value, str)
+        and _MONEY.fullmatch(value) is not None
+        and Decimal(value) > 0
+    )
+
+
 def _prior_journal_digest(
     binding: provider_config.ProviderBinding,
     request: dict[str, Any],
@@ -820,6 +837,7 @@ def _prior_journal_digest(
         "request_sha256": provider_config.canonical_sha256(request),
         "messages_sha256": record["messages_sha256"],
         "binding_sha256": binding.public["binding_sha256"],
+        "reservation_usd": record["reservation_usd"],
         "response": None,
         "receipt": None,
     }
@@ -896,6 +914,7 @@ def validate_recovery_artifacts(
             or value.get("record_sha256") != provider_config.canonical_sha256(signed)
             or not isinstance(value.get("request_sha256"), str)
             or not isinstance(value.get("messages_sha256"), str)
+            or not is_reservation(value.get("reservation_usd"))
         ):
             raise ProviderError("provider journal identity mismatch")
         verify_signature(
@@ -959,6 +978,12 @@ def validate_recovery_artifacts(
         raise ProviderError("provider journal memory changed")
     for request_id, record in records.items():
         checkpoint_exchange = completed.get(request_id) or pending.get(request_id)
+        if (
+            isinstance(checkpoint_exchange, dict)
+            and "reservation_usd" in checkpoint_exchange
+            and checkpoint_exchange["reservation_usd"] != record["reservation_usd"]
+        ):
+            raise ProviderError("provider journal reservation mismatch")
         checkpoint_status = (
             "completed"
             if request_id in completed

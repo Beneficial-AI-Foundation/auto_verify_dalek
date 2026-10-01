@@ -214,11 +214,22 @@ def _validate_accounting(
         ),
         "worker_inventory_sha256": result.get("worker_inventory_sha256"),
     }
+    unresolved = result.get("unresolved_provider_requests")
+    unresolved = unresolved if isinstance(unresolved, list) else []
     state = {
         "config": {"model": result.get("model_id")},
         "receipts": receipts,
         "model_exchanges": exchanges,
-        "pending_model_exchanges": {},
+        "pending_model_exchanges": {
+            item.get("request_id"): {
+                "request": item.get("request"),
+                "call_kind": item.get("call_kind"),
+                "reservation_usd": item.get("reservation_usd"),
+                "dispatch_state": item.get("status"),
+            }
+            for item in unresolved
+            if isinstance(item, dict)
+        },
         "estimated_accounting": result["accounting"].get("estimated"),
     }
     try:
@@ -230,7 +241,12 @@ def _validate_accounting(
                 != provider_evidence["provider_journal_sha256"]
             ):
                 raise AuditError("retained provider evidence summary mismatch")
-            reduced = provider_receipts.reduce_accounting(
+            reducer = (
+                provider_receipts.reduce_incomplete_accounting
+                if result.get("accounting_complete") is False
+                else provider_receipts.reduce_accounting
+            )
+            reduced = reducer(
                 run, state, binding=provider_evidence["provider_binding"]
             )
         else:
@@ -265,12 +281,14 @@ def _validate_accounting(
     observed_unknown = result.get(
         "unknown_provider_spend", False if legacy_synthetic else None
     )
+    observed_bounded = result.get("accounting_bounded", False)
     if (
         result.get("cost_classification") != reduced["classification"]
         or result["accounting"] != reduced["accounting"]
         or observed_complete != reduced.get("accounting_complete", True)
         or observed_unresolved != reduced.get("unresolved_requests", [])
         or observed_unknown != reduced.get("unknown_provider_spend", False)
+        or observed_bounded != reduced.get("accounting_bounded", False)
         or result.get("tokens") != reduced["tokens"]
         or result.get("cost_usd") != f"{reduced['cost']:.6f}"
         or result.get("proxy_requests") != reduced["requests"]

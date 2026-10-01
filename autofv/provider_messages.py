@@ -370,6 +370,14 @@ def staged_messages_sha256(binding: ProviderBinding, request: dict[str, Any]) ->
     return staged["messages_sha256"]
 
 
+def staged_messages(
+    binding: ProviderBinding, request: dict[str, Any]
+) -> list[dict[str, Any]]:
+    """Return staged messages without taking them; the caller holds the lock."""
+    staged_messages_sha256(binding, request)
+    return binding.pending_messages[request["request_id"]]["messages"]
+
+
 def take_messages(
     binding: ProviderBinding, request: dict[str, Any]
 ) -> tuple[list[dict[str, Any]], int]:

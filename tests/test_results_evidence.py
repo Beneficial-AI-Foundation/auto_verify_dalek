@@ -497,6 +497,12 @@ def _generic_attempt(root: Path, *, attempt_id: str = "attempt-generic"):
     return run, state
 
 
+def _reservation(run: dict, request: dict) -> str:
+    """The controller's own reservation, which the service signs into the journal."""
+    amount = worker_proxy.provider_reservation_usd(run, request, _messages())
+    return f"{amount:.6f}"
+
+
 def _provider_attempt(
     root: Path, *, provider_reports_cost: bool = False, dispatch: bool = True
 ):
@@ -1029,6 +1035,58 @@ class ResultEvidenceTests(unittest.TestCase):
                     reason="all_targets_verified",
                 )
 
+    def test_scored_result_with_a_bounded_liability_audits_offline(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp) / "run"
+            run, state = _provider_attempt(root)
+            messages = _messages()
+            request = model._model_envelope(
+                state,
+                request_id="provider-result-request-002",
+                role="scout",
+                input_hashes=[worker_proxy.provider_messages_sha256(messages)],
+            )
+            reservation = _reservation(run, request)
+            worker_proxy.stage_provider_messages(run, request, messages)
+            refused = _reply('{"path":"Diamond/Left.lean"}')
+            refused["choices"][0]["finish_reason"] = "error"
+            with mock.patch(
+                "autofv.provider_transport._open_upstream",
+                return_value=_Reply(refused),
+            ), self.assertRaisesRegex(provider_transport.ProviderError, "error finish"):
+                provider_service.dispatch(run, request, run_token=RUN_TOKEN)
+            state["pending_model_exchanges"] = {
+                request["request_id"]: {
+                    "request": request,
+                    "call_kind": "explicit",
+                    "reservation_usd": reservation,
+                    "dispatch_state": "dispatched",
+                }
+            }
+            result, receipt = results.render_attempt(
+                run, state, outcome="success", reason="all_targets_verified"
+            )
+            review_path = root / "contract-semantic-review.json"
+            review_path.write_bytes(
+                experiment.canonical_json_bytes(state["contract_semantic_review"])
+                + b"\n"
+            )
+            results.persist_attempt(run, result, receipt)
+            provider_config.release_provider(run)
+
+            audited = results.validate_full_audit(root / "result.json", review_path)
+
+        self.assertTrue(audited["scored"])
+        self.assertTrue(audited["accounting_bounded"])
+        self.assertEqual(
+            [item["request_id"] for item in audited["unresolved_provider_requests"]],
+            [request["request_id"]],
+        )
+        self.assertEqual(
+            Decimal(audited["cost_usd"]),
+            Decimal(state["cost"]) + Decimal(reservation),
+        )
+
     def test_ambiguous_provider_call_persists_unscored_partial_accounting(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp) / "run"
@@ -1050,15 +1108,22 @@ class ResultEvidenceTests(unittest.TestCase):
                 request["request_id"]: {
                     "request": request,
                     "call_kind": "explicit",
-                    "reservation_usd": "0.032880",
+                    "reservation_usd": _reservation(run, request),
                     "dispatch_state": "ambiguous",
                 }
             }
 
-            with self.assertRaises(results.ResultError):
-                results.render_attempt(
-                    run, state, outcome="success", reason="all_targets_verified"
-                )
+            # A success may carry a signed, bounded liability and still be scored.
+            passed, _ = results.render_attempt(
+                run, state, outcome="success", reason="all_targets_verified"
+            )
+            self.assertTrue(passed["scored"])
+            self.assertFalse(passed["accounting_complete"])
+            self.assertTrue(passed["accounting_bounded"])
+            self.assertEqual(
+                Decimal(passed["cost_usd"]),
+                Decimal(state["cost"]) + Decimal(_reservation(run, request)),
+            )
             result, receipt = results.render_attempt(
                 run,
                 state,
@@ -1086,7 +1151,9 @@ class ResultEvidenceTests(unittest.TestCase):
                         "request_id": request["request_id"],
                         "sequence": request["sequence"],
                         "status": "ambiguous",
-                        "reservation_usd": "0.032880",
+                        "call_kind": "explicit",
+                        "reservation_usd": _reservation(run, request),
+                        "request": request,
                         "request_sha256": provider_config.canonical_sha256(request),
                         "record_sha256": run["provider_journal"][request["request_id"]],
                     }
@@ -1153,7 +1220,7 @@ class ResultEvidenceTests(unittest.TestCase):
                 request["request_id"]: {
                     "request": request,
                     "call_kind": "explicit",
-                    "reservation_usd": "0.032880",
+                    "reservation_usd": _reservation(run, request),
                     "dispatch_state": "ambiguous",
                 }
             }
@@ -1198,7 +1265,7 @@ class ResultEvidenceTests(unittest.TestCase):
             state["pending_model_exchanges"] = {
                 request_id: {
                     **exchange,
-                    "reservation_usd": exchange["receipt"]["cost"]["amount"],
+                    "reservation_usd": _reservation(run, exchange["request"]),
                     "dispatch_state": "completed",
                 }
             }

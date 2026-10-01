@@ -19,6 +19,8 @@ import sys
 import time
 import uuid
 
+import proof_state
+
 EXIT_CODES = {"success": 0, "failure": 1, "timeout": 124,
               "busy": 75, "interrupted": 130, "error": 2}
 ANSI = re.compile(r"\x1b\[[0-?]*[ -/]*[@-~]")
@@ -77,7 +79,7 @@ def _kill_group(proc):
         proc.wait()
 
 
-def check(work, module, timeout, log_dir, cancel_fd=None):
+def check(work, module, timeout, log_dir, cancel_fd=None, snapshot_paths=()):
     """One serialized check. Only helper-managed builds share this lock.
 
     cancel_fd becomes readable/EOF when the caller disappears. Artifacts live
@@ -95,7 +97,8 @@ def check(work, module, timeout, log_dir, cancel_fd=None):
               "exit_code": None, "elapsed_seconds": 0, "command": command,
               "workspace": str(work), "module": module, "timeout_seconds": timeout,
               "log_path": str(log_path), "result_path": str(result_path),
-              "acceptance_checked": False}
+              "acceptance_checked": False, "task_id": os.environ.get("LEAN_CHECK_TASK_ID"),
+              "started_at_ns": time.time_ns(), "checkpoint_path": None}
     proc = None
     # Lake already writes here; no new source-file exception is required.
     lock_dir = work / ".lake"
@@ -107,6 +110,10 @@ def check(work, module, timeout, log_dir, cancel_fd=None):
             except BlockingIOError:
                 result.update(status="busy", message="Another local check owns this workspace; retry after it ends.")
             else:
+                before = proof_state.context(work)
+                sources = proof_state.capture(work, snapshot_paths)
+                result["context_before"] = {k: before[k] for k in ("sha256", "scope")}
+                result["source_hashes"] = proof_state.hashes(sources)
                 proc = subprocess.Popen(command, cwd=work, stdout=log,
                                         stderr=subprocess.STDOUT,
                                         stdin=subprocess.DEVNULL, start_new_session=True)
@@ -131,6 +138,18 @@ def check(work, module, timeout, log_dir, cancel_fd=None):
             _kill_group(proc)
             if proc is not None:
                 result["exit_code"] = proc.returncode
+        if "context_before" in result:
+            after = proof_state.context(work)
+            result["context_after"] = {k: after[k] for k in ("sha256", "scope")}
+            result["sources_unchanged"] = (
+                before["sha256"] == after["sha256"] and
+                all(before["files"].get(p) == sha == after["files"].get(p)
+                    for p, sha in result["source_hashes"].items()))
+            if result["status"] == "success" and result["sources_unchanged"] and sources:
+                result["checkpoint_path"] = proof_state.snapshot(
+                    log_dir / (stem + ".checkpoint"), sources, "checked_module",
+                    module=module, context_sha256=after["sha256"], check_result=str(result_path),
+                    dependency_closure_checked=False)
     result["elapsed_seconds"] = round(time.monotonic() - started, 3)
     result.update(summarize(log_path))
     result_path.write_text(json.dumps(result, ensure_ascii=False, indent=2) + "\n")
@@ -152,6 +171,8 @@ def main():
     parser.add_argument("--work", default=".")
     parser.add_argument("--timeout", type=_positive_seconds, default=120)
     parser.add_argument("--log-dir", help="default: <workspace>/.lake/harness-checks")
+    parser.add_argument("--snapshot-path", action="append", default=[],
+                        help="relative editable Lean source to preserve after a stable successful build")
     args = parser.parse_args()
     if args.module and (not re.fullmatch(r"[^\W\d][\w']*(?:\.[^\W\d][\w']*)*", args.module)):
         parser.error("expected a module name, not a filename, option, or Lake target expression")
@@ -159,6 +180,14 @@ def main():
     if not ((work / "lakefile.toml").is_file() or (work / "lakefile.lean").is_file()):
         parser.error("--work must be a Lake project root")
     log_dir = args.log_dir or os.environ.get("LEAN_CHECK_LOG_DIR") or work / ".lake" / "harness-checks"
+    try:
+        paths = args.snapshot_path or json.loads(os.environ.get("LEAN_CHECK_EDITABLE_PATHS", "[]"))
+        if not isinstance(paths, list) or not all(isinstance(p, str) for p in paths):
+            raise ValueError("snapshot paths must be a list of relative Lean paths")
+        for path in paths:
+            proof_state.source_path(work, path)
+    except ValueError as exc:
+        parser.error(str(exc))
     read_fd, write_fd = os.pipe()
     pid = os.fork()
     if pid == 0:
@@ -170,7 +199,7 @@ def main():
             signal.signal(sig, interrupted)
         try:
             try:
-                result = check(work, args.module, args.timeout, log_dir, read_fd)
+                result = check(work, args.module, args.timeout, log_dir, read_fd, paths)
             except (OSError, KeyboardInterrupt) as exc:
                 # Even failure to create/write the log directory must not look
                 # like an empty successful check. No durable log is promised.

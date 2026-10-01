@@ -56,6 +56,7 @@ def main():
     parser.add_argument("--fv-skills", action="store_true",
                         help="use the pinned FVS headless lean-verify skill")
     parser.add_argument("--run-dir", help="new directory for this independent attempt")
+    parser.add_argument("--resume-proof-state", help="prior proof-state JSON; recover notes, still start from the fixed skeleton")
     parser.add_argument("--timeout", type=int, default=3600)
     parser.add_argument("--quiet-turns", action="store_true",
                         help="hide live per-turn summaries; preserve full transcripts")
@@ -125,6 +126,7 @@ def main():
         "max_turns": args.max_turns, "source_sha256": hashes,
         "build_timeout": args.build_timeout,
         "quiet_turns": args.quiet_turns,
+        "resume_proof_state": args.resume_proof_state,
         "prompt_sha256": hashlib.sha256(prompt.encode()).hexdigest(),
         "fv_skills": skills_manifest,
     }, indent=2) + "\n")
@@ -140,6 +142,8 @@ def main():
                 "--build-timeout", str(args.build_timeout)]
     if args.quiet_turns:
         sys.argv.append("--quiet-turns")
+    if args.resume_proof_state:
+        sys.argv += ["--resume-proof-state", str(Path(args.resume_proof_state).resolve())]
     if args.prepare_only:
         sys.argv.append("--dry-run")
     if args.fv_skills:

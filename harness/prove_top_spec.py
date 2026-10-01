@@ -523,7 +523,7 @@ def _read_bytes(path):
 
 
 def save_partial_snapshot(run_dir, attempt, editable_paths, work,
-                          functions_by_path=None):
+                          functions_by_path=None, rounds=None):
     """Save a non-overwriting, content-addressed record of failed joint work."""
     root = os.path.join(run_dir, "partials", f"attempt-{attempt}")
     os.makedirs(root, exist_ok=False)
@@ -549,6 +549,27 @@ def save_partial_snapshot(run_dir, attempt, editable_paths, work,
     with open(manifest_path, "w") as fh:
         json.dump(manifest, fh, indent=1, sort_keys=True)
         fh.write("\n")
+    # Reuse the existing seed inventory/notes format, while keeping the
+    # source-hash-bound proof handoff separate from parser-derived inventory.
+    import seed
+    states = []
+    for record in records:
+        text = _read_bytes(os.path.join(root, "files", record["path"])).decode("utf-8", errors="replace")
+        states.append({**seed.file_state(record["path"], text, rounds),
+                       "sha256": record["sha256"], "verification": "draft; inventory is not proof validation"})
+    handoff = (rounds or [{}])[-1].get("proof_state")
+    recovery = None
+    if handoff and os.path.isfile(handoff):
+        with open(handoff) as fh:
+            recovery = json.load(fh)
+        with open(os.path.join(root, "proof-state.json"), "w") as fh:
+            json.dump(recovery, fh, ensure_ascii=False, indent=2)
+    with open(os.path.join(root, "state.json"), "w") as fh:
+        json.dump({"files": states, "kind": "draft", "proof_state": "proof-state.json" if recovery else None}, fh, indent=2)
+    with open(os.path.join(root, "notes.md"), "w") as fh:
+        fh.write(seed.notes_text(rounds, REPO))
+        if recovery:
+            fh.write(driver.proof_state.handoff(recovery, work))
     return os.path.relpath(manifest_path, REPO)
 
 
@@ -640,6 +661,7 @@ def main():
     ap.add_argument("--run-dir", default="")
     ap.add_argument("--commit", action="store_true", help="commit each accepted step here")
     ap.add_argument("--dry-run", action="store_true")
+    ap.add_argument("--resume-proof-state", help="prior proof-state state.json; import handoff without restoring code")
     args = ap.parse_args()
     args.g2 = False  # driver.gate: no trust-base manifests in a bundle slot
     if args.fv_skills:
@@ -694,6 +716,8 @@ def main():
         steps = [{"mode": "fill", "fn": "probe:" + name, "path": path}]
         skeletons = []
     skel_paths = {p for p, _ in skeletons}
+    if args.resume_proof_state and not joint and len(steps) != 1:
+        ap.error("--resume-proof-state supports one step or one joint task, not a multi-step plan")
     top_stmt = statement_text(args.bundle, path, decl_line, line)
     if args.bottom_up:
         what = ("joint batch" if joint else "stepwise plan")
@@ -848,7 +872,7 @@ def main():
                 by_path.setdefault(s["path"], []).append(short_name(s["fn"]))
             by_path.setdefault(path, []).append(name)
             partial_manifest = save_partial_snapshot(
-                run_dir, 1, editable, work, by_path)
+                run_dir, 1, editable, work, by_path, rounds=rounds)
             mod, new = driver.changed_files(work)
             driver.rollback(mod, new, work)
 
@@ -928,7 +952,7 @@ def main():
                 driver.sh(["git", "commit", "-q", "-m", msg])
         else:
             partial_manifest = save_partial_snapshot(
-                run_dir, i, [spath], work, {spath: [short_name(s["fn"])]})
+                run_dir, i, [spath], work, {spath: [short_name(s["fn"])]}, rounds=rounds)
             mod, new = driver.changed_files(work)
             driver.rollback(mod, new, work)
 

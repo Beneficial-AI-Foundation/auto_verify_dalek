@@ -123,6 +123,7 @@ class StateTests(unittest.TestCase):
     def test_compiles_from_verdicts(self):
         mod = driver.path_to_module(self.P)
         cases = [
+            ([{"outcome": "rejected_build", "detail": {"broken_files": ["Other.lean"]}}], (None, None)),
             ([{"outcome": "rejected_sorry_remains",
                "detail": {"counts_after": {self.P: 2}}}], (True, 2)),
             ([{"outcome": "rejected_build",

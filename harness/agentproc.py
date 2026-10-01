@@ -307,20 +307,21 @@ def sha256_file(path):
 
 
 def prepare_check_tool(directory):
-    """Expose only the standalone checker, never the hidden harness/gates."""
+    """Expose checker + state helpers, never the hidden harness/gates."""
     tool_dir = os.path.join(directory, "local_check_tool")
     os.makedirs(tool_dir, exist_ok=True)
-    source = os.path.join(HERE, "lean_check.py")
-    target = os.path.join(tool_dir, "lean_check.py")
-    if not os.path.exists(target) or sha256_file(source) != sha256_file(target):
-        temporary = target + "." + uuid.uuid4().hex
-        try:
-            shutil.copyfile(source, temporary)
-            os.replace(temporary, target)
-        finally:
-            if os.path.exists(temporary):
-                os.unlink(temporary)
-    return target
+    for name in ("lean_check.py", "proof_state.py"):
+        source = os.path.join(HERE, name)
+        target = os.path.join(tool_dir, name)
+        if not os.path.exists(target) or sha256_file(source) != sha256_file(target):
+            temporary = target + "." + uuid.uuid4().hex
+            try:
+                shutil.copyfile(source, temporary)
+                os.replace(temporary, target)
+            finally:
+                if os.path.exists(temporary):
+                    os.unlink(temporary)
+    return os.path.join(tool_dir, "lean_check.py")
 
 
 # ── command construction ─────────────────────────────────────────────────
@@ -487,6 +488,7 @@ def run_round(prompt, transcript_path, *, cwd, session_id, resume,
     result_event, provenance = last_result_event(transcript_path)
     provenance["local_check"] = {
         "tool_sha256": sha256_file(check_tool), "tool_path": check_tool,
+        "state_helper_sha256": sha256_file(os.path.join(os.path.dirname(check_tool), "proof_state.py")),
         "log_dir": check_logs, "effective_message_path": message_path,
         "allowed_tools": allowed_tools,
         "instructions_sha256": hashlib.sha256(check_instructions.encode()).hexdigest(),

@@ -68,6 +68,7 @@ python3 harness/lean_check.py --full --timeout 1200
 - bwrap 沙箱只暴露检查器的独立副本，目录只读；原有 `harness/` 和 gate 代码仍隐藏。
 - agent 的检查日志保存在本轮运行的 `local_checks/`，不会写入可编辑证明源码；手动调用默认保存到 `<workspace>/.lake/harness-checks/`。可通过 `--log-dir` 指定位置。
 - 每轮保存实际发送的 prompt（`*.jsonl.prompt.txt`），并在 provenance 中记录工具哈希、有效 prompt 哈希、权限和日志位置。实验的原始 `prompt.txt` 是模板渲染结果，实际调用时还会追加工具说明。
+- harness 会传入任务标识和可编辑文件列表。检查记录现在关联源码／配置哈希，稳定的成功编译会保存源码 checkpoint；用于[证明状态恢复](PROOF-STATE.md)，不表示证明已验收。
 - 工具使用 `<workspace>/.lake/harness-check.lock` 串行化检查。`busy` 应等待已有检查结束；不能通过直接运行 Lake 绕开。
 
 工具通过独立监督进程监控调用者的存活；即使 agent/命令被 `SIGKILL`，监督进程仍会清理它启动的构建进程组并保存结果。超时和正常完成后也会清理遗留后台子进程。不终止其他工作区的构建。这里依赖 Linux/POSIX 的 `fork`、进程组和文件锁，与现有 bwrap harness 的平台一致。
@@ -84,4 +85,4 @@ python3 -m unittest discover -s harness/tests -v
 
 2026-10-01 实现验证还使用项目固定版本 `leanprover/lean4:v4.28.0-rc1` 在临时 Lake 项目中检查了正确证明、未解决 goal 和 `sorry` 三种情况，并实际验证 bwrap 内的调用和工具只读挂载。没有启动新的模型证明实验。
 
-全套测试存在两个已在修改前 HEAD 代码上复现的 seed 相关失败：`test_snapshot_writes_state_and_notes`（接口缺少 `rounds` 参数）和 `test_seeded_sorry_left_in_planned_file_is_rejected`（现有 gate 接受了测试期望拒绝的情形）。本次未修改这些接口或验收规则。
+最初实现时全套测试存在两个已有的 seed 相关失败。随后在实现证明状态恢复时，接通 `save_partial_snapshot(..., rounds=...)`，修复了 `test_snapshot_writes_state_and_notes`；`test_seeded_sorry_left_in_planned_file_is_rejected` 所对应的已有 gate 行为仍未修改。

@@ -97,6 +97,7 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from buckets import classify, load_events  # noqa: E402
 import agentproc  # noqa: E402  (harness/agentproc.py — subprocess layer)
 import strip_comments  # noqa: E402  (anti-leak comment strip + merge-back)
+import proof_state
 
 LEDGER_DIR = os.path.join(REPO, "ledger")
 TRANSCRIPTS = os.path.join(LEDGER_DIR, "transcripts")
@@ -691,6 +692,13 @@ def run_rounds(prompt, tid, path, before_counts, args, env, settings_path,
     if path not in editable_paths:
         raise ValueError("path must be included in editable_paths")
     session_id = agentproc.new_session_id()
+    recovery = proof_state.Recorder(
+        os.path.join(TRANSCRIPTS, ".proof-state-" + tid + "-" + session_id), work, editable_paths,
+        {"id": tid, "path": path}, g1_base, prompt,
+        resume=getattr(args, "resume_proof_state", None))
+    env = dict(env if env is not None else os.environ)
+    env["LEAN_CHECK_TASK_ID"] = recovery.task_id
+    env["LEAN_CHECK_EDITABLE_PATHS"] = json.dumps(list(editable_paths))
     session_ids = [session_id]
     rounds = []
     outcome, detail = "agent_error", {"error": "no rounds ran"}
@@ -708,6 +716,10 @@ def run_rounds(prompt, tid, path, before_counts, args, env, settings_path,
             round_prompt = prompt + "\n\n" + _history_block(rounds)
         else:
             round_prompt = prompt
+        recovery_prompt = proof_state.INSTRUCTIONS + proof_state.handoff(recovery.state, work)
+        round_prompt += recovery_prompt
+        if not fresh:
+            continue_message = (continue_message or "continue") + recovery_prompt
         sha_before = {p: _file_sha(p, work) for p in editable_paths}
         tpath = os.path.join(TRANSCRIPTS, f"{tid}.r{rnd}.jsonl")
         if not getattr(args, "quiet_turns", False):
@@ -810,6 +822,8 @@ def run_rounds(prompt, tid, path, before_counts, args, env, settings_path,
                if "error" not in analysis
                else {"analysis_error": analysis["error"]}),
         })
+        rounds[-1]["proof_state"] = recovery.record(
+            tpath, rounds[-1], (prov.get("local_check") or {}).get("log_dir"))
 
         # ── stop rules ──
         if outcome == "accepted" or outcome not in FEEDBACK \
@@ -1173,6 +1187,7 @@ def main():
     ap.add_argument("--commit", action="store_true",
                     help="git commit each accepted fill in the main checkout")
     ap.add_argument("--dry-run", action="store_true")
+    ap.add_argument("--resume-proof-state", help="prior state.json; recover notes only, recheck code/evidence")
     args = ap.parse_args()
     if args.run_config:
         cfg = json.load(open(args.run_config))
@@ -1235,6 +1250,8 @@ def main():
                    or t.split(":")[0].startswith(want + "/")]
     if args.limit:
         targets = targets[:args.limit]
+    if args.resume_proof_state and len(targets) != 1:
+        ap.error("--resume-proof-state requires exactly one selected target")
     print(f"{len(targets)} target(s), zones={args.zones}, jobs={args.jobs}")
 
     if args.dry_run:

@@ -212,7 +212,7 @@ class LeanCheckTests(unittest.TestCase):
         tool_dir = str(cfg / "local_check_tool")
         index = prefix.index(tool_dir)
         self.assertEqual(prefix[index - 1:index + 2], ["--ro-bind", tool_dir, tool_dir])
-        self.assertEqual([p.name for p in Path(tool_dir).iterdir()], ["lean_check.py"])
+        self.assertEqual({p.name for p in Path(tool_dir).iterdir()}, {"lean_check.py", "proof_state.py"})
 
 
 if __name__ == "__main__":

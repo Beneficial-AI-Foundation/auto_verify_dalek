@@ -201,7 +201,8 @@ def file_state(path, text, rounds):
         compiles = True
         sorry_count = detail["counts_after"].get(path, 0)
     elif outcome == "rejected_build" and "broken_files" in detail:
-        compiles = path not in detail["broken_files"]
+        # Absence of an error is not evidence Lake finished this module.
+        compiles = False if path in detail["broken_files"] else None
     elif outcome == "rejected_kernel_budget" and "unfinished" in detail:
         compiles = False if module in detail["unfinished"] else None
     # anything else (scope / deadline / old records without diagnostics):

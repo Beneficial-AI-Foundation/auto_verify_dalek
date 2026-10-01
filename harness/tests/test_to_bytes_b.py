@@ -155,6 +155,19 @@ class BExperimentTests(unittest.TestCase):
                 self.assertTrue(json.loads((run / "experiment.json").read_text())["quiet_turns"])
             self.invoke(["--prepare-only", "--quiet-turns", "--run-dir", str(run)], check_quiet)
 
+    def test_proof_state_recovery_is_recorded_and_forwarded(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            run = Path(tmp) / "attempt"
+            state = Path(tmp) / "state.json"
+            state.write_text('{}')
+            def check_recovery():
+                index = sys.argv.index("--resume-proof-state")
+                self.assertEqual(sys.argv[index + 1], str(state))
+                metadata = json.loads((run / "experiment.json").read_text())
+                self.assertEqual(metadata["resume_proof_state"], str(state))
+            self.invoke(["--prepare-only", "--resume-proof-state", str(state),
+                         "--run-dir", str(run)], check_recovery)
+
     def test_existing_directory_is_not_overwritten(self):
         with tempfile.TemporaryDirectory() as tmp, contextlib.redirect_stderr(io.StringIO()):
             marker = Path(tmp) / "keep"

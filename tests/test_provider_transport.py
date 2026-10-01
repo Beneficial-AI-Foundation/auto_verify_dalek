@@ -551,6 +551,43 @@ class ProviderTransportTests(unittest.TestCase):
             response["payload"]["arguments"], {"path": "Diamond/Left.lean"}
         )
 
+    def test_provider_error_finish_is_a_retryable_upstream_error(self) -> None:
+        reply = {
+            "id": "gen-error-001",
+            "model": MODEL_ID,
+            "provider": "Novita",
+            "choices": [
+                {
+                    "finish_reason": "error",
+                    "index": 0,
+                    "message": {"role": "assistant", "content": None},
+                }
+            ],
+        }
+        with tempfile.TemporaryDirectory() as tmp:
+            run, request, messages = _configured_provider(Path(tmp), self.lock, self.base_commit)
+            worker_proxy.stage_provider_messages(run, request, messages)
+            opener = mock.Mock(return_value=_ProviderReply(reply))
+            with mock.patch("autofv.provider_transport._open_upstream", opener):
+                with self.assertRaisesRegex(
+                    provider_transport.ProviderError, "error finish"
+                ) as error:
+                    provider_service.dispatch(run, request, run_token=RUN_TOKEN)
+                # A resumed lane replays the same id: same class, nothing re-paid.
+                worker_proxy.stage_provider_messages(run, request, messages)
+                with self.assertRaisesRegex(
+                    provider_transport.ProviderError, "previous provider response was rejected"
+                ) as replay:
+                    provider_service.dispatch(run, request, run_token=RUN_TOKEN)
+            journal = _strict_json(
+                provider_service._journal_path(run, request["request_id"]).read_bytes()
+            )
+        self.assertEqual(error.exception.classification, "upstream_error")
+        self.assertEqual(replay.exception.classification, "upstream_error")
+        opener.assert_called_once()
+        self.assertEqual(journal["status"], "rejected")
+        self.assertEqual(journal["response"]["classification"], "upstream_error")
+
     def test_provider_normalizes_bounded_chat_metadata_and_scans_encoded_secrets(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)

@@ -555,6 +555,78 @@ class RoleConversationTests(unittest.TestCase):
             ["explicit", "schema_correction", "schema_correction"],
         )
 
+    def test_provider_hiccup_retries_under_a_new_id_without_using_a_turn(self):
+        hiccup = worker.TransientProviderError("fixed proxy upstream_error")
+        submit = (
+            {
+                "kind": "tool_call",
+                "payload": {
+                    "name": "submit_candidate",
+                    "arguments": {
+                        "patch": "diff --git a/Diamond/Left.lean b/Diamond/Left.lean\n",
+                        "claimed_status": "candidate",
+                        "evidence": ["fixed Lean diagnostic passed"],
+                    },
+                },
+            },
+            {"receipt_sha256": "6" * 64},
+        )
+        tools = agent_lane.build_lane_tools(
+            _job(),
+            lane_root=Path("/unused"),
+            read_file=lambda path: path,
+            search_files=lambda query: query,
+            edit_assigned=lambda patch: patch,
+            check_lean=lambda: "ok",
+        )
+        state = {}
+        with mock.patch.object(
+            model, "_model_request", side_effect=[hiccup, hiccup, submit]
+        ) as request, mock.patch("autofv.deepagents_lane.time.sleep") as sleep:
+            candidate = asyncio.run(agent_lane.run_role_conversation(state, _job(), tools))
+
+        self.assertEqual(candidate["claimed_status"], "candidate")
+        ids = [call.kwargs["request_id"] for call in request.call_args_list]
+        self.assertEqual([ids[0] + "-r1", ids[0] + "-r2"], ids[1:])
+        self.assertEqual(
+            [call.kwargs["call_kind"] for call in request.call_args_list],
+            ["explicit", "retry", "retry"],
+        )
+        self.assertEqual([call.args for call in sleep.call_args_list], [(2,), (8,)])
+        self.assertEqual(next(iter(state["role_progress"].values()))["last_turn"], 1)
+
+    def test_provider_hiccups_fail_the_lane_past_the_turn_or_role_cap(self):
+        hiccup = worker.TransientProviderError("fixed proxy timeout")
+        read = (
+            {
+                "kind": "tool_call",
+                "payload": {
+                    "name": "read_allowed",
+                    "arguments": {"path": "Diamond/Left.lean"},
+                },
+            },
+            {"receipt_sha256": "7" * 64},
+        )
+        tools = agent_lane.build_lane_tools(
+            _job(),
+            lane_root=Path("/unused"),
+            read_file=lambda path: path,
+            search_files=lambda query: query,
+            edit_assigned=lambda patch: patch,
+            check_lean=lambda: "ok",
+        )
+        for name, replies, calls in (
+            ("turn", [hiccup] * 3, 3),
+            ("role", [hiccup, hiccup, read] * 3 + [hiccup], 10),
+        ):
+            with self.subTest(cap=name), mock.patch.object(
+                model, "_model_request", side_effect=replies
+            ) as request, mock.patch(
+                "autofv.deepagents_lane.time.sleep"
+            ), self.assertRaises(worker.TransientProviderError):
+                asyncio.run(agent_lane.run_role_conversation({}, _job(), tools))
+            self.assertEqual(request.call_count, calls)
+
     def test_managed_lane_tools_perform_read_edit_check_and_submit_without_host_path_access(self):
         job = _job()
         patch = (

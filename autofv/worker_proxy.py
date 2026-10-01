@@ -16,6 +16,7 @@ from .worker_runtime import (
     FORWARD_CHAIN,
     NETWORK_ENFORCER,
     OUTPUT_CHAIN,
+    TransientProviderError,
     WorkerError,
     _atomic_write,
     _canonical_bytes,
@@ -555,6 +556,19 @@ def _ensure_proxy_relay(run: dict[str, Any]) -> tuple[str, str]:
     return network, address
 
 
+# A fresh request may succeed after these; the journal never re-pays the old one.
+_TRANSIENT_CLASSIFICATIONS = frozenset({"upstream_error", "timeout", "rate_limited"})
+
+
+def _proxy_failure(classification: str, run: dict[str, Any]) -> WorkerError:
+    kind = (
+        TransientProviderError
+        if classification in _TRANSIENT_CLASSIFICATIONS
+        else WorkerError
+    )
+    return kind(f"fixed proxy {classification}", run=run)
+
+
 def proxy_round(
     run: dict[str, Any], request: dict[str, Any]
 ) -> tuple[dict[str, Any], dict[str, Any]]:
@@ -576,7 +590,7 @@ def proxy_round(
         _record_proxy_error(
             run, request, request_sha256, "upstream_error", None, str(exc)
         )
-        raise WorkerError("fixed proxy upstream_error", run=run) from exc
+        raise _proxy_failure("upstream_error", run) from exc
     completed = _docker(
         *_runtime_argv(
             run["lock"],
@@ -599,7 +613,7 @@ def proxy_round(
             None,
             completed.stdout + completed.stderr,
         )
-        raise WorkerError("fixed proxy upstream_error", run=run)
+        raise _proxy_failure("upstream_error", run)
     try:
         body = _json_output(completed, "fixed proxy response")
     except WorkerError as exc:
@@ -632,7 +646,7 @@ def proxy_round(
             status_code,
             completed.stdout + completed.stderr,
         )
-        raise WorkerError(f"fixed proxy {classification}", run=run)
+        raise _proxy_failure(classification, run)
     if not isinstance(body, dict) or set(body) != {"response", "receipt"}:
         _record_proxy_error(
             run,

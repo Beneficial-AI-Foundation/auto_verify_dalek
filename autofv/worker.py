@@ -44,6 +44,7 @@ SKIP_NAMES = _runtime.SKIP_NAMES
 SKIP_PARTS = _runtime.SKIP_PARTS
 WorkerError = _runtime.WorkerError
 PatchRejected = _runtime.PatchRejected
+TransientProviderError = _runtime.TransientProviderError
 claim_worker = _runtime.claim_worker
 hash_tree = _runtime.hash_tree
 inspect_lima_instance = _runtime.inspect_lima_instance

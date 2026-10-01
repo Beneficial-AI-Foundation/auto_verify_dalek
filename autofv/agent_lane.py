@@ -22,6 +22,9 @@ _MAX_PATCH_BYTES = 1_000_000
 _MAX_EVIDENCE_CHARS = 4096
 _MAX_TOOL_OUTPUT_BYTES = 16_384
 _MAX_ROLE_TURNS = 16
+# Provider hiccups get their own budget so they never cost a role its turns.
+_RETRY_BACKOFF_SECONDS = (2, 8)
+_MAX_ROLE_RETRIES = 6
 _MAX_ROLE_CONTEXT_BYTES = 65_536
 
 _ROLES = frozenset(

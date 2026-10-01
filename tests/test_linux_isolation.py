@@ -512,9 +512,13 @@ class ProxyAccountingTests(unittest.TestCase):
                     mock.patch.object(
                         worker_proxy, "_docker", return_value=completed
                     ),
-                    self.assertRaisesRegex(worker.WorkerError, classification),
+                    self.assertRaisesRegex(worker.WorkerError, classification) as raised,
                 ):
                     worker.proxy_round(run, FIRST_REQUEST)
+                self.assertEqual(
+                    isinstance(raised.exception, worker.TransientProviderError),
+                    classification in {"rate_limited", "timeout", "upstream_error"},
+                )
 
                 records = list(
                     (Path(tmp) / "evidence" / "proxy-errors").glob("*.json")

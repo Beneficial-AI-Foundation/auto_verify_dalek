@@ -281,6 +281,17 @@ def reservation_usd(
 def _provider_response(
     binding: ProviderBinding, request: dict[str, Any], value: Any, base_commit: str
 ) -> tuple[dict[str, Any], dict[str, Any]]:
+    choices = value.get("choices") if isinstance(value, dict) else None
+    if (
+        isinstance(choices, list)
+        and len(choices) == 1
+        and isinstance(choices[0], dict)
+        and choices[0].get("finish_reason") == "error"
+    ):
+        # OpenRouter reports a provider failing mid-generation as a 200 reply.
+        raise ProviderError(
+            "provider reported an error finish", classification="upstream_error"
+        )
     value = _shape(
         value,
         {"id", "model", "choices", "usage"},

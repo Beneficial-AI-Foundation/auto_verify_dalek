@@ -53,6 +53,10 @@ class PatchRejected(WorkerError):
     """A model's own patch was refused before anything was written."""
 
 
+class TransientProviderError(WorkerError):
+    """The fixed proxy failed in a way a fresh request may not repeat."""
+
+
 def _limactl(
     *argv: str,
     input_bytes: bytes | None = None,

@@ -7,6 +7,7 @@ import copy
 import hashlib
 import importlib.metadata
 import json
+import time
 from types import SimpleNamespace
 from typing import Any
 
@@ -140,6 +141,7 @@ class _RoutedRoleModel(BaseChatModel):
     _context_hashes: list[str] = PrivateAttr()
     _progress: dict[str, Any] = PrivateAttr()
     _turn: int = PrivateAttr(default=0)
+    _retries: int = PrivateAttr(default=0)
     _seen_internal: set[str] = PrivateAttr(default_factory=set)
     _bound_once: bool = PrivateAttr(default=False)
     _last_request_id: str | None = PrivateAttr(default=None)
@@ -225,26 +227,44 @@ class _RoutedRoleModel(BaseChatModel):
         call_kind = self._call_kind(normalized, run_manager)
         corrections = 0
         expected = {entry["name"]: entry for entry in self._schemas}
+        retries = 0
         while True:
-            self._turn += 1
-            if self._turn > lane._MAX_ROLE_TURNS:
-                raise worker.WorkerError("invalid_agent_output: role turn limit exhausted")
+            if not retries:
+                self._turn += 1
+                if self._turn > lane._MAX_ROLE_TURNS:
+                    raise worker.WorkerError(
+                        "invalid_agent_output: role turn limit exhausted"
+                    )
             request_id = (
                 f"lane-{self._spec['conversation_id'][:16]}-{self._turn:03d}"
+                + (f"-r{retries}" if retries else "")
             )
             self._last_request_id = request_id
             with _state_lock(self._state):
                 self._progress.update(
                     {"last_turn": self._turn, "last_request_id": request_id}
                 )
-            response, _receipt = model._model_request(
-                self._state,
-                request_id=request_id,
-                role=self._job["role"],
-                input_hashes=self._context_hashes,
-                call_kind=call_kind,
-                messages=copy.deepcopy(normalized),
-            )
+            try:
+                response, _receipt = model._model_request(
+                    self._state,
+                    request_id=request_id,
+                    role=self._job["role"],
+                    input_hashes=self._context_hashes,
+                    call_kind=call_kind,
+                    messages=copy.deepcopy(normalized),
+                )
+            except worker.TransientProviderError:
+                if (
+                    retries == len(lane._RETRY_BACKOFF_SECONDS)
+                    or self._retries == lane._MAX_ROLE_RETRIES
+                ):
+                    raise
+                time.sleep(lane._RETRY_BACKOFF_SECONDS[retries])
+                retries += 1
+                self._retries += 1
+                call_kind = "retry"
+                continue
+            retries = 0
             if response.get("kind") != "tool_call":
                 return ChatResult(
                     generations=[

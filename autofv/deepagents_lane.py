@@ -225,6 +225,9 @@ class _RoutedRoleModel(BaseChatModel):
     def _invoke(self, messages: Any, run_manager: Any) -> ChatResult:
         normalized = _normalize_messages(messages)
         call_kind = self._call_kind(normalized, run_manager)
+        fvs = self._job.get("methodology") == lane._FVS_METHODOLOGY
+        if fvs and call_kind != "explicit":
+            raise worker.WorkerError("FVS complete source context cannot be compacted/retried by the framework")
         corrections = 0
         expected = {entry["name"]: entry for entry in self._schemas}
         retries = 0
@@ -254,6 +257,8 @@ class _RoutedRoleModel(BaseChatModel):
                     messages=copy.deepcopy(normalized),
                 )
             except worker.TransientProviderError:
+                if fvs:
+                    raise  # Dispatched failure keeps its signed liability; no automatic paid retry.
                 if (
                     retries == len(lane._RETRY_BACKOFF_SECONDS)
                     or self._retries == lane._MAX_ROLE_RETRIES

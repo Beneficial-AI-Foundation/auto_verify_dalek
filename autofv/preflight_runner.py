@@ -440,6 +440,7 @@ def run_preflight(
     *,
     env_file: str | Path | None = None,
     max_age_seconds: int = MAX_AGE_SECONDS,
+    public_rust_root: str | Path | None = None,
     _prepared_run: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Run the fixed suite once in the sealed runsc worker and retain authorization."""
@@ -453,7 +454,17 @@ def run_preflight(
 
     target, manifest = validate_target(repo)
     prepare_dalek._scan_prepared(target)
-    validate_run_config(run_config)
+    _, config = validate_run_config(run_config)
+    if config["schema"] == "autofv-run/v2":
+        if _prepared_run is None or not isinstance(_prepared_run.get("preparation_manifest"), dict):
+            raise ContractError("FVS preflight requires a provenance-bound prepared run")
+        from . import fvs_packet
+        fvs_packet.bind_original(config["source_packet"], prepared_root=target,
+            preparation=_prepared_run["preparation_manifest"],
+            source_paths=[s["path"] for s in config["source_packet"]["sources"] if s["surface"] != "rust"],
+            rust_root=Path(public_rust_root) if public_rust_root is not None else None)
+        _prepared_run["role_profile"] = config["role_profile"]
+        _prepared_run["source_packet_sha256"] = config["source_packet"]["packet_sha256"]
     lock = load_toolchain_lock()
     validate_native_decide_policy(lock)
     destination = Path(output).absolute()
@@ -675,6 +686,7 @@ def authorize_prepared_run(
     *,
     env_file: str | Path,
     max_age_seconds: int,
+    public_rust_root: str | Path | None = None,
 ) -> dict[str, Any]:
     """Authorize provider calls on an already allocated sealed worker."""
     return run_preflight(
@@ -683,6 +695,7 @@ def authorize_prepared_run(
         output,
         env_file=env_file,
         max_age_seconds=max_age_seconds,
+        public_rust_root=public_rust_root,
         _prepared_run=run,
     )
 

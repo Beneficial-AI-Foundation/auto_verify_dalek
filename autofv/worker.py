@@ -263,6 +263,14 @@ def probe_bridge(rust_raw: bytes, manifest: dict[str, Any]) -> bytes:
     )
 
 
+def committed_source(run: dict[str, Any], *arguments: str) -> bytes:
+    """Read canonical Git objects through the existing trusted execution boundary."""
+    if run.get("execution_tier") == "simulation":
+        return subprocess.run(("git", *arguments), cwd=run["project_dir"],
+                              capture_output=True, check=True).stdout
+    return _runtime._git(run, *arguments)
+
+
 def prepare_lanes(run: dict[str, Any], lanes: list[dict[str, Any]]) -> None:
     """Create private worktrees and mutable paths serially from one base."""
     if not lanes:
@@ -293,7 +301,8 @@ def prepare_lanes(run: dict[str, Any], lanes: list[dict[str, Any]]) -> None:
     local = project.is_dir()
     local_root = Path(run["run_root"]) / "lanes" if local else None
     for lane in lanes:
-        if set(lane) != keys or lane["schema"] != "autofv-proof-lane/v1":
+        expected_keys = keys | {"generation_sha256"} if lane.get("schema") == "autofv-proof-lane/v2" else keys
+        if set(lane) != expected_keys or lane["schema"] not in {"autofv-proof-lane/v1", "autofv-proof-lane/v2"}:
             raise WorkerError("proof lane descriptor is invalid")
         _snapshots._lane_descriptor(
             {**run, "execution_tier": "simulation" if local else "sealed_runsc"}, lane
@@ -778,7 +787,15 @@ def accept_candidate(
     if candidate["assigned_path"] != path:
         raise WorkerError("candidate scope is invalid")
     validate_assigned_patch(path, patch)
-    if payload["base_commit"] != run["base_commit"]:
+    if "generation_sha256" in candidate:
+        generation = run.get("fvs_lane_generations", {}).get(candidate.get("generation_node"))
+        if (not isinstance(generation, dict) or generation.get("phase") != "ready"
+            or generation["binding"]["generation_sha256"] != candidate["generation_sha256"]
+            or generation["lane"]["request_id"] != candidate["request_id"]
+            or generation["lane"]["assigned_path"] != path
+            or generation["lane"]["base_commit"] != payload["base_commit"]):
+            raise WorkerError("candidate dependency generation mismatch")
+    elif payload["base_commit"] != run["base_commit"]:
         raise WorkerError("candidate base commit mismatch")
     if _runtime._sha256(patch.encode("utf-8")) != payload["patch_sha256"]:
         raise WorkerError("candidate patch hash mismatch")

@@ -39,14 +39,19 @@ _MAX_SNAPSHOT_RECORD_BYTES = 4 * 1024 * 1024
 
 def _lane_descriptor(run: dict[str, Any], lane: dict[str, Any]) -> dict[str, Any]:
     """Validate and copy the complete immutable lane identity."""
-    if set(lane) - {"status", "requeueable"} != _LANE_FIELDS:
+    fields = _LANE_FIELDS
+    if lane.get("schema") == "autofv-proof-lane/v2":
+        fields = fields | {"generation_sha256"}
+        if not isinstance(lane.get("generation_sha256"), str) or re.fullmatch(r"[0-9a-f]{64}", lane["generation_sha256"]) is None:
+            raise WorkerError("lane generation identity is invalid")
+    if set(lane) - {"status", "requeueable"} != fields:
         raise WorkerError("lane snapshot descriptor is invalid")
-    body = {field: lane[field] for field in sorted(_LANE_FIELDS)}
+    body = {field: lane[field] for field in sorted(fields)}
     lane_id = body["lane_id"]
     assigned = body["assigned_path"]
     pure = PurePosixPath(assigned) if isinstance(assigned, str) else None
     if (
-        body["schema"] != "autofv-proof-lane/v1"
+        body["schema"] not in {"autofv-proof-lane/v1", "autofv-proof-lane/v2"}
         or not isinstance(lane_id, str)
         or re.fullmatch(r"[a-z0-9][a-z0-9._-]{0,127}", lane_id) is None
         or not isinstance(body["base_commit"], str)
@@ -701,4 +706,18 @@ def restore_lane_snapshot(
             )
         )
     _restore_lane_source(run, lane, archive)
+    # Dependency generations must preserve their immutable Git baseline.
+    if lane["schema"] != "autofv-proof-lane/v2":
+        return receipt
+    if run.get("execution_tier") == "simulation":
+        import subprocess
+        head = subprocess.run(("git", "rev-parse", "HEAD"), cwd=root,
+                              capture_output=True, check=True).stdout.decode().strip()
+    else:
+        head = _runtime._docker(*_runtime._runtime_argv(
+            run["lock"], run["volume"],
+            *_sealed_lane_exec(_sealed_lane_root(lane), lane["assigned_path"], "git", "rev-parse", "HEAD"),
+        )).stdout.decode().strip()
+    if head != lane["base_commit"]:
+        raise WorkerError("restored lane differs from its immutable Git base")
     return receipt

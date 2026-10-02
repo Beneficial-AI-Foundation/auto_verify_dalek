@@ -993,6 +993,7 @@ class ProbeGraphTests(unittest.TestCase):
             calls = []
             with (
                 mock.patch.object(worker, "prepare_run", side_effect=failure),
+                mock.patch.object(worker, "force_destroy_worker") as cleanup,
                 mock.patch.object(
                     results,
                     "persist_attempt",
@@ -1012,6 +1013,7 @@ class ProbeGraphTests(unittest.TestCase):
                 result["termination_reason"], "worker_preparation_failed"
             )
             self.assertIn("limactl is unavailable", result["termination_detail"])
+            cleanup.assert_called_once()
             self.assertEqual(calls, [])
             self.assertEqual(len(persisted), 1)
             self.assertEqual(

@@ -260,6 +260,12 @@ def _validate_proxy_request(run: dict[str, Any], request: Any) -> str:
         if not isinstance(request[field], str) or not request[field]:
             raise WorkerError(f"fixed proxy request {field} is invalid")
     model_id = run.get("proxy_model_id")
+    if (run.get("provider_binding") or {}).get("schema") == "autofv-provider-binding/v2":
+        from . import fvs_profile
+        model_id = fvs_profile.binding_model(run["provider_binding"], request["role"])
+        if (run["provider_binding"]["role_profile_sha256"] not in request.get("input_hashes", [])
+            or run["provider_binding"]["source_packet_sha256"] not in request.get("input_hashes", [])):
+            raise WorkerError("FVS request lacks frozen profile/source packet bindings")
     if model_id is not None and model_id != request["model_id"]:
         raise WorkerError("fixed proxy request model identity mismatch")
     expected_prompt = _sha256(

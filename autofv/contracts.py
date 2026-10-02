@@ -119,13 +119,23 @@ def _read_json(path: Path, label: str) -> Any:
 
 def validate_run_config(path: str | Path) -> tuple[Path, dict[str, Any]]:
     config_path = _absolute_path(path, "run config", directory=False)
+    value = _read_json(config_path, "run config")
+    fvs = isinstance(value, dict) and value.get("schema") == "autofv-run/v2"
     config = _exact_dict(
-        _read_json(config_path, "run config"),
-        {"schema", "model", "max_wall_seconds", "max_cost_usd"},
+        value,
+        {"schema", "model", "max_wall_seconds", "max_cost_usd"} |
+        ({"role_profile", "source_packet"} if fvs else set()),
         "run config",
     )
-    if config["schema"] != "autofv-run/v1":
-        raise ContractError("run config schema must be autofv-run/v1")
+    if fvs:
+        from . import fvs_packet, fvs_profile
+        if config["role_profile"] != fvs_profile.PROFILE_ID or config["model"] != fvs_profile.AUTHOR:
+            raise ContractError("FVS run role/model profile mismatch")
+        fvs_packet.validate_packet(config["source_packet"])
+        if config_path.read_bytes() != canonical_json_bytes(value) + b"\n":
+            raise ContractError("FVS run config must be canonical JSON")
+    elif config["schema"] != "autofv-run/v1":
+        raise ContractError("run config schema must be autofv-run/v1 or opt-in autofv-run/v2")
     _text(config["model"], "model")
     if type(config["max_wall_seconds"]) is not int or config["max_wall_seconds"] <= 0:
         raise ContractError("max_wall_seconds must be a positive integer")

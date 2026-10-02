@@ -12,7 +12,7 @@ from decimal import Decimal, ROUND_CEILING
 from typing import Any
 
 from .contracts import canonical_json_bytes
-from . import provider_deadline, provider_messages, provider_receipts
+from . import fvs_profile, provider_deadline, provider_messages, provider_receipts
 from .provider_config import (
     ProviderBinding,
     ProviderConfigError,
@@ -214,7 +214,7 @@ def validate_dispatch_request(binding: ProviderBinding, request: Any) -> dict[st
     if (
         request.get("schema") != "autofv-model-request/v1"
         or request.get("run_id") != binding.public["run_id"]
-        or request.get("model_id") != binding.model_id
+        or request.get("model_id") != fvs_profile.binding_model(binding.public, request.get("role"))
         or type(request.get("sequence")) is not int
         or request["sequence"] <= 0
         or not _bounded_text(request.get("request_id"), 512)
@@ -233,6 +233,11 @@ def validate_dispatch_request(binding: ProviderBinding, request: Any) -> dict[st
         or _SHA256.fullmatch(request["prompt_sha256"]) is None
     ):
         raise ProviderError("provider dispatch identity mismatch")
+    if binding.public["schema"] == "autofv-provider-binding/v2" and (
+        binding.public["role_profile_sha256"] not in request["input_hashes"]
+        or binding.public["source_packet_sha256"] not in request["input_hashes"]
+    ):
+        raise ProviderError("FVS dispatch lacks profile/source packet hashes")
     return request
 
 
@@ -241,6 +246,16 @@ def _upstream_request(
     request: dict[str, Any],
     messages: list[dict[str, Any]],
 ) -> dict[str, Any]:
+    if binding.public["schema"] == "autofv-provider-binding/v2":
+        policy = fvs_profile.model_policy(binding.public, request["model_id"])
+        return {
+            "model": request["model_id"], "messages": messages,
+            "tools": binding.tools, "tool_choice": "required",
+            "max_tokens": policy["max_output_tokens"], "stream": False,
+            "parallel_tool_calls": False,
+            "reasoning": {"effort": "xhigh", "exclude": True},
+            "provider": fvs_profile.requested_routing(request["model_id"]),
+        }
     max_tokens = 4096 if request["role"] in _REVIEW_ROLES else 8192
     return {
         "model": binding.model_id,
@@ -266,6 +281,10 @@ def reservation_usd(
         raise ProviderError("provider messages are not bound to the request")
     upstream = _upstream_request(binding, request, validated)
     input_tokens = len(canonical_json_bytes(upstream)) + 4096
+    if binding.public["schema"] == "autofv-provider-binding/v2":
+        return fvs_profile.reservation(request["model_id"], input_tokens).quantize(
+            Decimal("0.000001"), rounding=ROUND_CEILING
+        )
     input_rate = max(
         Decimal(binding.pricing["input_usd_per_million"]),
         Decimal(binding.pricing["cached_input_usd_per_million"]),
@@ -281,7 +300,12 @@ def reservation_usd(
 def _provider_response(
     binding: ProviderBinding, request: dict[str, Any], value: Any, base_commit: str
 ) -> tuple[dict[str, Any], dict[str, Any]]:
+    fvs = binding.public["schema"] == "autofv-provider-binding/v2"
+    if request.get("model_id") != fvs_profile.binding_model(binding.public, request.get("role")):
+        raise ProviderError("provider response request role/model mismatch")
     choices = value.get("choices") if isinstance(value, dict) else None
+    if fvs and isinstance(choices, list) and len(choices) == 1 and isinstance(choices[0], dict) and choices[0].get("finish_reason") == "length":
+        raise ProviderError("FVS total output exhausted (xhigh reasoning included)", classification="output_exhausted")
     if (
         isinstance(choices, list)
         and len(choices) == 1
@@ -301,7 +325,7 @@ def _provider_response(
     if (
         not isinstance(value["id"], str)
         or not value["id"]
-        or value["model"] != binding.model_id
+        or value["model"] != request["model_id"]
         or not isinstance(value["choices"], list)
         or len(value["choices"]) != 1
         or ("object" in value and not isinstance(value["object"], str))
@@ -319,6 +343,11 @@ def _provider_response(
         or ("provider" in value and not isinstance(value["provider"], str))
     ):
         raise ProviderError("provider response identity drift")
+    if fvs:
+        policy = fvs_profile.model_policy(binding.public, request["model_id"])
+        if (value.get("provider") != policy["observed_provider"]
+            or value.get("service_tier") not in (None, "default")):
+            raise ProviderError("FVS returned provider/endpoint variant mismatch")
     choice = _shape(
         value["choices"][0],
         {"finish_reason", "message"},
@@ -363,6 +392,8 @@ def _provider_response(
         )
     ):
         raise ProviderError("provider response must contain a tool call")
+    if fvs and (message.get("reasoning") or message.get("reasoning_details")):
+        raise ProviderError("FVS reasoning.exclude was not honored")
     # Providers may batch calls and ignore parallel_tool_calls; only the first
     # runs, and the rebuilt history shows only it.
     call = _shape(
@@ -484,6 +515,28 @@ def _provider_response(
         "pricing": binding.pricing,
         "pricing_sha256": binding.public["pricing_sha256"],
     }
+    if fvs:
+        completion = usage.get("completion_tokens_details", {})
+        if (set(completion) - {"reasoning_tokens", "accepted_prediction_tokens", "rejected_prediction_tokens"}
+            or any(completion.get(k, 0) for k in ("accepted_prediction_tokens", "rejected_prediction_tokens"))
+            or details.get("audio_tokens", 0) or details.get("video_tokens", 0)
+            or usage.get("is_byok", False)
+            or set(usage.get("cost_details", {})) - {"upstream_inference_cost", "upstream_inference_prompt_cost", "upstream_inference_completions_cost"}):
+            raise ProviderError("FVS unsupported usage/charge category")
+        if usage["completion_tokens"] > policy["max_output_tokens"]:
+            raise ProviderError("FVS output cap exceeded (reasoning included)")
+        provider.update({
+            "schema": "autofv-provider-accounting/v2", "role": request["role"],
+            "role_profile_sha256": binding.public["role_profile_sha256"],
+            "source_packet_sha256": binding.public["source_packet_sha256"],
+            "requested_routing": fvs_profile.requested_routing(request["model_id"]),
+            "observed_provider": value["provider"],
+            "parameter_observation": "routing-required; effort not independently reported",
+            "cache_write_ttl": "unknown", "pricing": policy["tiers"],
+            "pricing_sha256": _sha(policy["tiers"]),
+        })
+        provider["usage"].update(cache_write_tokens=details.get("cache_write_tokens", 0),
+                                 reasoning_tokens=completion.get("reasoning_tokens", 0))
     provider_receipts.bind_billing(provider, usage)
     return response, provider
 
@@ -519,8 +572,8 @@ def provider_round(
     binding = _binding(run)
     if binding is None:
         raise ProviderError("provider binding is not configured")
-    if request.get("model_id") != binding.model_id:
-        raise ProviderError("provider request model identity mismatch")
+    if request.get("model_id") != fvs_profile.binding_model(binding.public, request.get("role")):
+        raise ProviderError("provider request role/model identity mismatch")
     sequence, request_id = request.get("sequence"), request.get("request_id")
     validate_dispatch_request(binding, request)
     messages, deadline_monotonic_ns = _take_messages(binding, request)
@@ -623,6 +676,14 @@ def provider_round(
         receipt = _sign_receipt(binding, run, request, response, provider)
         scan_response_secrets(receipt, binding)
     except ProviderError as exc:
+        if binding.public["schema"] == "autofv-provider-binding/v2":
+            def without_reasoning(item):
+                if isinstance(item, dict):
+                    return {k: without_reasoning(v) for k, v in item.items() if k not in {"reasoning", "reasoning_details"}}
+                if isinstance(item, list):
+                    return [without_reasoning(v) for v in item]
+                return item
+            value = without_reasoning(value)
         exc.provider_response = value
         raise
     return response, receipt

@@ -19,6 +19,9 @@ from typing import Any
 from langgraph.graph import END, START, StateGraph
 
 from . import (
+    fvs_packet,
+    fvs_profile,
+    provider_receipts,
     preflight_runner,
     probes,
     provider_service,
@@ -207,6 +210,9 @@ def _finish_attempt(
     try:
         results.persist_verifier_report(run, state.get("verifier_report"))
         results.persist_partial_reports(run, state)
+        if state.get("fvs_evidence"):
+            results._atomic_write_once(Path(run["evidence_dir"]) / "fvs-stages.json",
+                canonical_json_bytes(state["fvs_evidence"]) + b"\n")
         results.persist_l0_sources(run, state)
         _checkpoint_if_enabled(state, "result:before-export")
     except (Exception, KeyboardInterrupt) as exc:
@@ -407,7 +413,7 @@ def _bind_provider_selection(
     if raw != canonical_json_bytes(selection) + b"\n":
         raise ContractError("provider selection must be canonical JSON")
     if (
-        selection["schema"] != "autofv-retained-model-selection/v1"
+        selection["schema"] not in {"autofv-retained-model-selection/v1", "autofv-retained-model-selection/v2"}
         or selection["status"] != "selected"
         or selection["decision"] != "select-model"
     ):
@@ -431,9 +437,11 @@ def _bind_provider_selection(
         "model_substitution_allowed": False,
     }:
         raise ContractError("provider selection scope mismatch")
+    fvs = selection["schema"] == "autofv-retained-model-selection/v2"
+    extra = {"role_profile", "role_profile_sha256", "source_packet_sha256"} if fvs else set()
     model = _exact_dict(
         selection["model"],
-        {
+        extra | {
             "model_id", "endpoint", "endpoint_sha256", "parameters", "pricing",
             "pricing_sha256", "tool_schema_sha256", "capability_sha256",
             "fixed_proxy_sha256", "proxy_id", "route_id",
@@ -447,9 +455,41 @@ def _bind_provider_selection(
         "proxy_id", "route_id",
     )
     if not isinstance(binding, dict) or any(
-        binding.get(name) != model[name] for name in stable_fields
-    ):
-        raise ContractError("provider binding does not match selected model")
+        binding.get(name) != model[name] for name in (*stable_fields, *sorted(extra))
+    ) or fvs != (binding.get("schema") == "autofv-provider-binding/v2"):
+        raise ContractError("provider binding does not match selected model/profile")
+    if fvs:
+        fvs_profile.validate_profile(model["role_profile"])
+        evidence = _exact_dict(selection["accessibility_evidence"],
+                               {fvs_profile.AUTHOR, fvs_profile.REVIEWER}, "FVS pair accessibility")
+        for model_id, item in evidence.items():
+            item = _exact_dict(item, {"provider_preflight", "supported_parameters", "supported_efforts", "catalog_sha256", "endpoint_inventory"},
+                               "FVS model accessibility")
+            _sha256(item["catalog_sha256"], "FVS public catalog hash")
+            if (not isinstance(item["supported_parameters"], list)
+                or not {"reasoning", "tools", "tool_choice"} <= set(item["supported_parameters"])
+                or not isinstance(item["supported_efforts"], list) or "xhigh" not in item["supported_efforts"]):
+                raise ContractError("FVS model lacks advertised required parameters/xhigh")
+            inventory = _exact_dict(item["endpoint_inventory"], {"routing_slug", "matching_endpoint_slugs", "pricing_tiers"},
+                                    "FVS provider endpoint inventory")
+            policy = fvs_profile.profile()["models"][model_id]
+            if (inventory["routing_slug"] != policy["provider"]
+                or inventory["matching_endpoint_slugs"] != [policy["provider"]]
+                or canonical_json_bytes(inventory["pricing_tiers"]) != canonical_json_bytes(policy["tiers"])):
+                raise ContractError("FVS routing has ambiguous endpoint variants or advertised price drift")
+            record = provider_receipts.validate_preflight_record(item["provider_preflight"])
+            old = record["provider_binding"]
+            if (old.get("schema") != "autofv-provider-binding/v2"
+                or record["request"]["model_id"] != model_id
+                or record["request"]["model_id"] != fvs_profile.binding_model(old, record["request"]["role"])
+                or old["receipt_authentication"] != binding["receipt_authentication"]
+                or any(old[name] != binding[name] for name in (*stable_fields, *sorted(extra)))):
+                raise ContractError("FVS pair accessibility is stale or wrong-model/profile")
+        digest = fvs_profile.digest(selection)
+        if run.get("provider_selection") not in (None, selection) or run.get("provider_selection_sha256") not in (None, digest):
+            raise ContractError("FVS frozen provider selection changed during replay")
+        run["provider_selection"] = selection
+        run["provider_selection_sha256"] = digest
     if "provider_selected" not in run.setdefault("events", []):
         run["events"].append("provider_selected")
 
@@ -469,6 +509,7 @@ def run_experiment(
     execution_mode: str | None = None,
     env_file: str | Path | None = None,
     provider_selection: str | Path | None = None,
+    public_rust_root: str | Path | None = None,
 ) -> dict[str, Any]:
     """Run the bounded sealed tracer and persist every attempted run."""
     if (env_file is None) != (provider_selection is None):
@@ -506,6 +547,8 @@ def run_experiment(
         (probe_aeneas_evidence, "probe-aeneas evidence", False, "invalid_config",
          "prepared_inputs_invalid"),
         (dependency_cache, "dependency cache", False, "invalid_config",
+         "prepared_inputs_invalid"),
+        (public_rust_root, "public Rust root", True, "invalid_config",
          "prepared_inputs_invalid"),
         (None if env_file is None else Path(env_file).expanduser(),
          "provider env file", False, "invalid_config", "provider_inputs_invalid"),
@@ -623,11 +666,24 @@ def run_experiment(
                 ContractError("prepared run requires an external verifier reference"),
             )
 
+    if fvs_profile.enabled(config):
+        try:
+            if prepared_inputs is None:
+                raise ContractError("FVS run/v2 requires the prepared progressive path")
+            fvs_packet.bind_original(config["source_packet"], prepared_root=target_path,
+                preparation=prepared_inputs[0], source_paths=list(prepared_inputs[1]["source_paths"].values()),
+                rust_root=Path(public_rust_root) if public_rust_root is not None else None)
+        except (ContractError, OSError) as exc:
+            return persist_unallocated("invalid_config", "prepared_inputs_invalid", exc)
+
     preparation_failure = None
 
     def prepare_provider(prepared: dict[str, Any]) -> None:
         nonlocal durable_run
         durable_run = prepared
+        if fvs_profile.enabled(config):
+            prepared["role_profile"] = config["role_profile"]
+            prepared["source_packet_sha256"] = config["source_packet"]["packet_sha256"]
         try:
             preflight_runner.configure_prepared_provider(
                 prepared, target_path, env_file=env_file
@@ -897,6 +953,7 @@ def run_experiment(
                 Path(run["evidence_dir"]) / "provider-prerequisite",
                 env_file=env_file,
                 max_age_seconds=config["max_wall_seconds"],
+                **({"public_rust_root": public_rust_root} if public_rust_root is not None else {}),
             )
             _bind_provider_selection(run, provider_selection)
             if run["provider_binding"]["model_id"] != config["model"]:
@@ -1045,6 +1102,7 @@ def _parser() -> argparse.ArgumentParser:
     run.add_argument("--preparation-manifest")
     run.add_argument("--preparation-evidence")
     run.add_argument("--preparation-cache")
+    run.add_argument("--public-rust-root", help="FVS only: pinned public curve25519-dalek/src checkout; host ingestion only")
     run.add_argument("--verifier-reference")
     run.add_argument("--execution-mode", choices=("full", "proof-only"))
     run.add_argument("--target", dest="target_alias")
@@ -1099,6 +1157,8 @@ def main() -> None:
                 "--env-file and --selection-record must be supplied together"
             )
         options = {"output_root": args.output_root}
+        if args.public_rust_root is not None:
+            options["public_rust_root"] = args.public_rust_root
         if args.env_file is not None:
             options.update(
                 env_file=args.env_file,

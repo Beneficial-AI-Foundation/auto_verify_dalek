@@ -104,6 +104,11 @@ def reconcile_lane_snapshots(state):
             if body.get("status") != "completed" or snapshot is None:
                 continue
             node, receipt = snapshot["node"], snapshot["receipt"]
+            generation = state.get("fvs_lane_generations", {}).get(node)
+            if generation is not None and receipt["lane"] != generation["lane"]:
+                if "generation_sha256" in receipt["lane"]:
+                    raise ContractError("role snapshot dependency generation changed")
+                continue  # Original planning-lane snapshots cannot replace an author generation.
             prior = snapshots.get(node)
             if prior is None or receipt["sequence"] > prior["sequence"]:
                 snapshots[node] = receipt

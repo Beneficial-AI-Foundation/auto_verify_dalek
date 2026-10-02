@@ -37,6 +37,33 @@ def _job() -> dict:
 
 
 class AgentLaneBoundaryTests(unittest.TestCase):
+    def test_read_only_roles_cannot_reach_the_edit_callback(self):
+        for role in (
+            "scout", "dependency_planner", "spec_reviewer", "proof_reviewer",
+            "verification_adviser",
+        ):
+            with self.subTest(role=role):
+                edit = mock.Mock(return_value="applied")
+                tools = agent_lane.build_lane_tools(
+                    {**_job(), "role": role},
+                    read_file=lambda path: "source",
+                    search_files=lambda query: "found",
+                    edit_assigned=edit,
+                    check_lean=lambda: "ok",
+                )
+                result = agent_lane.invoke_lane_tool(
+                    tools, "edit_assigned",
+                    {"patch": "diff --git a/Diamond/Left.lean b/Diamond/Left.lean\n"},
+                )
+                self.assertIn("read_only_role", result)
+                edit.assert_not_called()
+                self.assertEqual(
+                    agent_lane.invoke_lane_tool(
+                        tools, "read_allowed", {"path": "Diamond/Left.lean"}
+                    ),
+                    "source",
+                )
+
     def test_refused_patch_returns_to_the_model_without_editing(self):
         edit = mock.Mock(side_effect=worker.PatchRejected("patch does not apply: corrupt patch"))
         tools = agent_lane.build_lane_tools(
@@ -107,6 +134,70 @@ class AgentLaneBoundaryTests(unittest.TestCase):
             source.symlink_to(outside)
             with self.assertRaisesRegex(worker.WorkerError, "symlink"):
                 worker.read_lane_file(run, lane, allowed[0], allowed)
+
+    def test_fvs_context_keeps_complete_sources_without_raising_legacy_bound(self):
+        context = {"source_evidence": "public source\n" * 10_000}
+        legacy = {**_job(), "role_context": context}
+        with self.assertRaisesRegex(worker.WorkerError, "context exceeds its bound"):
+            agent_lane.validate_role_job(legacy)
+        fvs_job = {
+            **legacy, "schema": "autofv-role-job/v2", "methodology": "fvs-fc/v1"
+        }
+        messages = agent_lane.initial_role_messages(
+            agent_lane.role_conversation_spec(fvs_job)
+        )
+        self.assertEqual(
+            json.loads(messages[1]["content"])["context"]["role_context"], context
+        )
+        for malformed in (None, [], {"methodology": "unknown"}):
+            with self.assertRaises(worker.WorkerError):
+                agent_lane.initial_role_messages(
+                    {**agent_lane.role_conversation_spec(fvs_job), "context": malformed}
+                )
+        self.assertEqual(
+            agent_lane.role_conversation_spec(fvs_job)["max_output_tokens"], 16384
+        )
+        for role in ("spec_reviewer", "proof_reviewer"):
+            self.assertEqual(
+                agent_lane.role_conversation_spec({**fvs_job, "role": role})[
+                    "max_output_tokens"
+                ],
+                8192,
+            )
+        with self.assertRaises(worker.WorkerError):
+            agent_lane.validate_role_job({**fvs_job, "methodology": "unknown"})
+        with self.assertRaisesRegex(worker.WorkerError, "context exceeds its bound"):
+            agent_lane.validate_role_job(
+                {**fvs_job, "role_context": {"source_evidence": "x" * 262144}}
+            )
+
+    def test_fvs_candidate_cannot_replay_as_a_legacy_context(self):
+        legacy = _job()
+        fvs_job = {
+            **legacy, "schema": "autofv-role-job/v2", "methodology": "fvs-fc/v1"
+        }
+        tools = agent_lane.build_lane_tools(
+            fvs_job,
+            read_file=lambda path: "source",
+            search_files=lambda query: "found",
+            edit_assigned=lambda patch: "applied",
+            check_lean=lambda: "ok",
+        )
+        candidate = agent_lane.invoke_lane_tool(
+            tools, "submit_candidate",
+            {
+                "patch": "diff --git a/Diamond/Left.lean b/Diamond/Left.lean\n",
+                "claimed_status": "candidate", "evidence": [],
+            },
+        )
+        self.assertEqual(agent_lane.validate_candidate(candidate, fvs_job), candidate)
+        with self.assertRaisesRegex(worker.WorkerError, "role context mismatch"):
+            agent_lane.validate_candidate(candidate, legacy)
+        candidate["role_context_sha256"] = agent_lane.role_context_sha256(
+            legacy["role_context"]
+        )
+        with self.assertRaisesRegex(worker.WorkerError, "role context mismatch"):
+            agent_lane.validate_candidate(candidate, fvs_job)
 
     def test_role_job_has_exact_hash_bound_identity(self):
         job = _job()

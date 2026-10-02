@@ -13,7 +13,7 @@ from decimal import Decimal
 from types import SimpleNamespace
 from typing import Any
 
-from . import preflight, worker, worker_proxy
+from . import fvs_profile, preflight, worker, worker_proxy
 from .contracts import (
     BudgetExhausted,
     ContractError,
@@ -83,8 +83,11 @@ def _model_envelope(
         "batch_id": batch_id,
         "request_id": request_id,
         "role": role,
-        "model_id": config["model"],
-        "input_hashes": sorted(set(input_hashes)),
+        "model_id": fvs_profile.model_for(config, role),
+        "input_hashes": sorted(set(input_hashes) | (
+            {fvs_profile.digest(fvs_profile.profile()), config["source_packet"]["packet_sha256"]}
+            if fvs_profile.enabled(config) else set()
+        )),
         "prompt_sha256": _prompt_sha256(run["run_id"], request_id, role),
     }
 
@@ -129,7 +132,7 @@ def _validate_model_exchange(
         "run_id": run["run_id"],
         "sequence": request["sequence"],
         "request_id": request["request_id"],
-        "model_id": config["model"],
+        "model_id": fvs_profile.model_for(config, request["role"]),
         "request_sha256": _canonical_sha256(request),
         "response_sha256": _canonical_sha256(response),
         "seen_receipt_sha256": {

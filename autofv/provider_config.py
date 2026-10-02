@@ -21,6 +21,7 @@ from cryptography.hazmat.primitives import serialization
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
 
 from .contracts import canonical_json_bytes
+from . import fvs_profile
 from .worker_runtime import WorkerError
 
 
@@ -327,7 +328,18 @@ def configure_provider(
         serialization.Encoding.PEM, serialization.PublicFormat.SubjectPublicKeyInfo
     ).decode("ascii")
     key_digest = hashlib.sha256(public_der).hexdigest()
-    parameters = dict(_PARAMETERS)
+    fvs = run.get("role_profile") == fvs_profile.PROFILE_ID
+    if run.get("role_profile") is not None and not fvs:
+        raise ProviderConfigError("unknown FVS role profile")
+    if fvs and (model_id != fvs_profile.AUTHOR or pricing != {
+        "input_usd_per_million": "2.000000",
+        "cached_input_usd_per_million": "0.100000",
+        "output_usd_per_million": "10.000000", "currency": "USD",
+    }):
+        raise ProviderConfigError("legacy environment does not match FVS author base pricing/model")
+    if fvs and endpoint != "https://openrouter.ai/api/v1/chat/completions":
+        raise ProviderConfigError("FVS requires the pinned OpenRouter endpoint")
+    parameters = fvs_profile.profile()["parameters"] if fvs else dict(_PARAMETERS)
     endpoint_sha256 = hashlib.sha256(endpoint.encode()).hexdigest()
     pricing_sha256 = canonical_sha256(pricing)
     tool_schema_sha256 = canonical_sha256(tools)
@@ -342,8 +354,13 @@ def configure_provider(
         "pricing_sha256": pricing_sha256,
         "tool_schema_sha256": tool_schema_sha256,
     }
+    profile_fields = ({"role_profile": fvs_profile.profile(),
+                       "role_profile_sha256": fvs_profile.digest(fvs_profile.profile()),
+                       "source_packet_sha256": run["source_packet_sha256"]} if fvs else {})
+    capability.update(profile_fields)
     body = {
-        "schema": "autofv-provider-binding/v1",
+        "schema": "autofv-provider-binding/v2" if fvs else "autofv-provider-binding/v1",
+        **profile_fields,
         "run_id": run["run_id"],
         "proxy_id": route["proxy_id"],
         "route_id": route["route_id"],
@@ -476,9 +493,11 @@ def abort_configuration(run: dict[str, Any]) -> None:
 
 
 def validate_public_binding(value: Any) -> dict[str, Any]:
+    fvs = isinstance(value, dict) and value.get("schema") == "autofv-provider-binding/v2"
+    extra = {"role_profile", "role_profile_sha256", "source_packet_sha256"} if fvs else set()
     binding = exact_dict(
         value,
-        {
+        extra | {
             "schema",
             "run_id",
             "proxy_id",
@@ -499,7 +518,7 @@ def validate_public_binding(value: Any) -> dict[str, Any]:
         },
         "provider binding",
     )
-    if binding["schema"] != "autofv-provider-binding/v1":
+    if binding["schema"] not in {"autofv-provider-binding/v1", "autofv-provider-binding/v2"}:
         raise ProviderConfigError("provider binding schema mismatch")
     if (
         not isinstance(binding["run_id"], str)
@@ -532,10 +551,11 @@ def validate_public_binding(value: Any) -> dict[str, Any]:
         binding["endpoint"].encode()
     ).hexdigest():
         raise ProviderConfigError("provider endpoint hash mismatch")
+    expected_parameters = fvs_profile.profile()["parameters"] if fvs else _PARAMETERS
     parameters = exact_dict(
-        binding["parameters"], set(_PARAMETERS), "provider parameters"
+        binding["parameters"], set(expected_parameters), "provider parameters"
     )
-    if parameters != _PARAMETERS:
+    if canonical_json_bytes(parameters) != canonical_json_bytes(expected_parameters):
         raise ProviderConfigError("provider parameters mismatch")
     pricing = exact_dict(
         binding["pricing"],
@@ -591,6 +611,17 @@ def validate_public_binding(value: Any) -> dict[str, Any]:
         "pricing_sha256": binding["pricing_sha256"],
         "tool_schema_sha256": binding["tool_schema_sha256"],
     }
+    if fvs:
+        fvs_profile.validate_profile(binding["role_profile"])
+        if (binding["role_profile_sha256"] != fvs_profile.digest(binding["role_profile"])
+            or binding["pricing"] != {"input_usd_per_million": "2.000000", "cached_input_usd_per_million": "0.100000",
+                                      "output_usd_per_million": "10.000000", "currency": "USD"}
+            or binding["model_id"] != fvs_profile.AUTHOR
+            or binding["endpoint"] != "https://openrouter.ai/api/v1/chat/completions"
+            or not isinstance(binding["source_packet_sha256"], str)
+            or _SHA256.fullmatch(binding["source_packet_sha256"]) is None):
+            raise ProviderConfigError("FVS provider profile binding mismatch")
+        capability.update({key: binding[key] for key in extra})
     if binding["capability_sha256"] != canonical_sha256(capability):
         raise ProviderConfigError("provider capability hash mismatch")
     return binding

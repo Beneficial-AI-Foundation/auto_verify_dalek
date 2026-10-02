@@ -501,6 +501,14 @@ def render_attempt(
     l0_raw = _json_file_bytes(receipt)
     result = {
         "schema": "autofv-result/v1",
+        **({"pricing_verification": reduced_accounting.get("pricing_verification", "bounded"),
+            "reported_spend_known": not reduced_accounting.get("unknown_provider_spend", False),
+            "price_reconstruction_exact": False,
+            "fvs_adapter": "autofv-bounded-fc/v1",
+            "fvs_stage_evidence_sha256": provider_config.canonical_sha256(state.get("fvs_evidence", {})),
+            "fvs_role_profile_sha256": run["provider_binding"]["role_profile_sha256"],
+            "fvs_source_packet_sha256": run["provider_binding"]["source_packet_sha256"]}
+           if (run.get("provider_binding") or {}).get("schema") == "autofv-provider-binding/v2" else {}),
         "attempt_id": run["attempt_id"],
         "run_id": run["run_id"],
         "run_root": run["run_root"],

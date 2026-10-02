@@ -7,7 +7,7 @@ import hashlib
 from copy import deepcopy
 from typing import Any
 
-from . import agent_lane, role_journal, terminal_run, worker
+from . import agent_lane, fvs_packet, fvs_profile, role_journal, terminal_run, worker
 from .contracts import ContractError, ContractInconclusive
 from .diamond import (
     _candidate_record,
@@ -48,13 +48,20 @@ def _role_job(
     input_hashes: list[str],
     role_context: dict[str, Any],
 ) -> dict[str, Any]:
+    fvs = fvs_profile.enabled(state.get("config", {}))
+    if fvs and "source_packet" not in role_context:
+        generation = state.get("fvs_lane_generations", {}).get(lane["node"])
+        packet = generation["packet"] if "generation_sha256" in lane else state["config"]["source_packet"]
+        role_context = {**role_context, "source_packet": packet}
     return {
-        "schema": "autofv-role-job/v1",
+        "schema": "autofv-role-job/v2" if fvs else "autofv-role-job/v1",
+        **({"methodology": agent_lane._FVS_METHODOLOGY} if fvs else {}),
         "run_id": state["run"]["run_id"],
         "declaration": lane["node"],
         "role": role,
         "assigned_path": lane["assigned_path"],
-        "allowed_read_paths": sorted(set(graph["source_paths"].values())),
+        "allowed_read_paths": sorted({s["path"] for s in state["config"]["source_packet"]["sources"]})
+        if fvs else sorted(set(graph["source_paths"].values())),
         "graph_sha256": graph["graph_sha256"],
         "statement_sha256": statement_sha256,
         "contract_fingerprint": contract_fingerprint,
@@ -134,6 +141,8 @@ def _lane_candidate_response(
     response = {
         "schema": "autofv-controller-candidate-adapter/v1",
         "request_id": lane["request_id"],
+        **({"generation_sha256": lane["generation_sha256"], "generation_node": lane["node"]}
+           if "generation_sha256" in lane else {}),
         "role": candidate["role"],
         "lane_candidate_sha256": _canonical_sha256(candidate),
         "kind": "patch",
@@ -145,7 +154,7 @@ def _lane_candidate_response(
     return response
 
 
-def _contract_text(candidate: dict[str, Any], declaration: str) -> str:
+def _contract_text(candidate: dict[str, Any], declaration: str, *, supplied_statement: str | None = None) -> str:
     evidence = candidate.get("evidence")
     if (
         candidate.get("claimed_status") != "candidate"
@@ -155,7 +164,10 @@ def _contract_text(candidate: dict[str, Any], declaration: str) -> str:
     ):
         raise ContractError("specifier candidate has no canonical theorem statement")
     statement = evidence[0].removeprefix("statement:")
-    if not statement.startswith(f"theorem {declaration} "):
+    if supplied_statement is not None:
+        if statement != supplied_statement:
+            raise ContractError("specifier changed immutable supplied statement")
+    elif not statement.startswith(f"theorem {declaration} "):
         raise ContractError("specifier candidate declaration mismatch")
     return statement
 
@@ -165,8 +177,9 @@ def _contract_record(
     declaration: str,
     policy_sha256: str,
     consumer_fingerprints: list[str],
+    *, supplied_statement: str | None = None,
 ) -> dict[str, Any]:
-    text = _contract_text(candidate, declaration)
+    text = _contract_text(candidate, declaration, supplied_statement=supplied_statement)
     return {
         "declaration": declaration,
         "kind": "theorem",
@@ -179,6 +192,121 @@ def _contract_record(
         "native_decide_policy_sha256": policy_sha256,
         "status": "provisional",
     }
+
+
+def _dependency_ready_lane(state: _RunState, lane: dict[str, Any]) -> dict[str, Any]:
+    """Freeze a fresh lane from the exact independently verified canonical tree.
+
+    Planning lanes remain on the original base. No active author lane is rebased;
+    interrupted generation is ambiguous and requires explicit reconciliation.
+    """
+    run, graph, node = state["run"], state["graph"], lane["node"]
+    generations = state.setdefault("fvs_lane_generations", {})
+    run["fvs_lane_generations"] = generations
+    dependencies = sorted(required for consumer, required in graph["term_dependencies"] if consumer == node)
+    prior = generations.get(node)
+    if prior is not None and prior.get("phase") != "ready":
+        raise ContractError("ambiguous dependency lane generation requires reconciliation")
+    if prior is None:
+        if not set(dependencies) <= set(state.get("accepted_nodes", [])):
+            raise ContractError("FVS dependency is not canonically accepted")
+        if not state.get("accepted_nodes"):
+            return lane
+        if any(key.startswith(node + ":") for key in state.get("fvs_evidence", {})):
+            raise ContractError("FVS cannot change an already journaled author baseline")
+        accepted = deepcopy(state["accepted"])
+        accepted_nodes = sorted(state["accepted_nodes"])
+        frozen = deepcopy(state["contracts"]["frozen"])
+    else:
+        accepted = {"accepted_commit": prior["binding"]["accepted_commit"],
+                    "accepted_tree_sha256": prior["binding"]["accepted_tree_sha256"]}
+        accepted_nodes = prior["binding"]["accepted_nodes"]
+        frozen = prior["frozen_contracts"]
+        if not set(accepted_nodes) <= set(state.get("accepted_nodes", [])):
+            raise ContractError("FVS generation accepted dependency state changed")
+        if any(state["contracts"]["frozen"].get(name) != value for name, value in frozen.items()):
+            raise ContractError("FVS generation frozen dependency contract changed")
+    commit = accepted["accepted_commit"]
+    if worker.committed_source(run, "rev-parse", commit).decode().strip() != commit:
+        raise ContractError("FVS generation accepted commit drift")
+    archive = worker.committed_source(run, "archive", "--format=tar", commit)
+    if hashlib.sha256(archive).hexdigest() != accepted["accepted_tree_sha256"]:
+        raise ContractError("FVS generation accepted tree drift")
+    if prior is None and (
+        worker.committed_source(run, "rev-parse", "HEAD").decode().strip() != commit
+        or worker.committed_source(run, "status", "--porcelain", "--untracked-files=all").strip()
+    ):
+        raise ContractError("FVS generation canonical acceptance drift")
+    if not set(dependencies) <= set(accepted_nodes) or set(accepted_nodes) & set(graph["frozen_targets"]):
+        raise ContractError("FVS generation dependency scope changed")
+    state.setdefault("partial_verifier_reports", {})
+    verification_state = state if prior is None else {
+        **state, "accepted": accepted, "accepted_nodes": accepted_nodes,
+        "contracts": {"frozen": frozen}}
+    report_hashes = {}
+    for helper in accepted_nodes:
+        if state["target_states"][helper]["status"] != "accepted":
+            raise ContractError("FVS generation contains a local-only helper")
+        key = f"{helper}@{commit}"
+        if prior is not None and key not in state.get("partial_verifier_reports", {}):
+            raise ContractError("FVS generation dependency verifier receipt missing")
+        report = terminal_run.clean_verify_partial(verification_state, helper,
+            checkpoint=_checkpoint_if_enabled, charge_wall=_charge_wall)
+        if report["verdict"] != "SCOPED_PASS":
+            raise ContractError("FVS dependency lacks independent verification")
+        report_hashes[helper] = _canonical_sha256(report)
+    original = fvs_packet.validate_packet(state["config"]["source_packet"])
+    sources = fvs_packet.validate_view(original)
+    permitted = {graph["source_paths"][helper] for helper in accepted_nodes}
+    changed = worker.committed_source(run, "diff", "--name-only", "-z", run["base_commit"], commit).decode().split("\0")
+    if not set(filter(None, changed)) <= permitted or not permitted <= set(sources):
+        raise ContractError("FVS accepted tree changed unowned/missing packet source")
+    overlays = []
+    hashes = {}
+    for path, item in sorted(sources.items()):
+        if item["surface"] == "rust":
+            continue
+        content = worker.committed_source(run, "show", f"{commit}:{path}").decode("utf-8")
+        updated = fvs_packet.source(path, item["surface"], content)
+        hashes[path] = updated["sha256"]
+        if updated != item:
+            if path not in permitted:
+                raise ContractError("FVS generation source lineage drift")
+            overlays.append(updated)
+    body = {"schema": "autofv-fvs-lane-generation/v1", "run_id": run["run_id"],
+            "node": node, "graph_sha256": graph["graph_sha256"], "original_base_commit": run["base_commit"],
+            "original_packet_sha256": original["packet_sha256"], "dependencies": dependencies,
+            "accepted_nodes": accepted_nodes, "accepted_commit": commit,
+            "accepted_tree_sha256": accepted["accepted_tree_sha256"],
+            "frozen_contracts_sha256": _canonical_sha256(frozen),
+            "dependency_report_hashes": report_hashes, "source_hashes": hashes}
+    binding = {**body, "generation_sha256": _canonical_sha256(body)}
+    packet = fvs_packet.dependency_snapshot(original, binding, overlays)
+    generated = deepcopy(lane)
+    suffix = "-g-" + binding["generation_sha256"][:24]
+    generated["lane_id"] = generated["request_id"] = lane["lane_id"] + suffix
+    for field in ("worktree_path", "cache_path", "result_path"):
+        generated[field] = lane[field].replace("/" + lane["lane_id"] + "/", "/" + generated["lane_id"] + "/")
+    generated.update(schema="autofv-proof-lane/v2", base_commit=commit,
+                     generation_sha256=binding["generation_sha256"])
+    entry = {"phase": "preparing", "binding": binding, "packet": packet,
+             "lane": _worker_lane(generated), "frozen_contracts": frozen}
+    if prior is not None:
+        if {k: v for k, v in prior.items() if k != "phase"} != {k: v for k, v in entry.items() if k != "phase"}:
+            raise ContractError("FVS dependency generation/replay identity drift")
+        receipt = state.get("lane_snapshots", {}).get(node)
+        if receipt is None or receipt["lane"] != entry["lane"]:
+            raise ContractError("FVS dependency generation snapshot mismatch")
+        worker.restore_lane_snapshot(run, entry["lane"], expected_receipt=receipt)
+        return generated
+    generations[node] = entry
+    _checkpoint_if_enabled(state, f"fvs-generation:{node}:before")
+    worker.prepare_lanes(run, [entry["lane"]])
+    receipt = worker.save_lane_snapshot(run, entry["lane"], initial=True)
+    state.setdefault("lane_snapshots", {})[node] = receipt
+    entry["phase"] = "ready"
+    _checkpoint_if_enabled(state, f"fvs-generation:{node}:ready")
+    return generated
 
 
 def _run_prepared_progressive(
@@ -227,18 +355,67 @@ def _run_prepared_progressive(
         if report["verdict"] != "SCOPED_PASS":
             raise ContractError("helper lacks independent scoped verification")
         state["target_states"][node]["status"] = "accepted"
+        if fvs_profile.enabled(state["config"]):
+            from .fvs_adapter import Stages
+            generation = state.get("fvs_lane_generations", {}).get(node)
+            helper_lane = generation["lane"] if generation is not None else lanes_by_node[node]
+            stages = Stages(state, graph, helper_lane, _run_role_lane, _checkpoint_if_enabled)
+            key = "distinct-helper-verifier"
+            previous_report = state.get("fvs_evidence", {}).get(node + ":" + key, {}).get("report")
+            if previous_report is not None and previous_report != report:
+                key += ":" + report["accepted_commit"]
+            stages.record(key, {"report": report, "root_status": "unverified"})
 
     # An interrupted local acceptance is not a verified helper. Replay its
     # clean check (or fail closed if the earlier invocation is unresolved).
     for node in sorted(state["accepted_nodes"]):
-        if node != root:
+        if node != root and root not in state["accepted_nodes"]:
             confirm_helper(node)
 
     def run_bundle(node: str) -> dict[str, Any]:
         lane = lanes_by_node[node]
+        if fvs_profile.enabled(state["config"]):
+            lane = _dependency_ready_lane(state, lane)
         dependencies = sorted(
             required for consumer, required in graph["term_dependencies"] if consumer == node
         )
+        fvs = fvs_profile.enabled(state["config"])
+        if fvs:
+            from .fvs_adapter import Stages, statement
+            stages = Stages(state, graph, lane, _run_role_lane, _checkpoint_if_enabled)
+            requirements = [{"consumer": consumer, "fingerprint": contracts["node_fingerprints"].get(consumer),
+                             "source_path": graph["source_paths"][consumer]}
+                            for consumer in _immediate_consumers(graph, node)]
+            contracts["immediate_consumer_requirements"][node] = requirements
+            candidate = stages.specification(top, {
+                "node": node, "dependency_plan": dependency,
+                "immediate_consumer_requirements": requirements,
+                "accepted_dependency_contracts": [contracts["frozen"][f"{item.removeprefix('probe:')}_spec"] for item in dependencies],
+            })
+            if node == root and statement(candidate) != supplied["canon"]:
+                raise ContractError("FVS author changed immutable supplied root statement")
+            declaration = supplied_spec.removeprefix("probe:") if node == root else f"{node.removeprefix('probe:')}_spec"
+            normalized = {**candidate, "evidence": ["statement:" + statement(candidate)]}
+            record = _contract_record(normalized, declaration, policy, [],
+                                      supplied_statement=supplied["canon"] if node == root else None)
+            prior = contracts["frozen"].get(declaration)
+            if prior is not None and prior != {**record, "status": "frozen"}:
+                raise ContractError("FVS frozen statement replay drift")
+            if prior is None:
+                contracts["attempts"].append(record)
+            contracts["frozen"][declaration] = {**record, "status": "frozen"}
+            contracts["node_fingerprints"][node] = record["model_fingerprint"]
+            contracts["frozen_fingerprints"] = sorted(set(contracts["node_fingerprints"].values()))
+            state["target_states"][node].update(phase="proof", contract_fingerprint=record["model_fingerprint"])
+            selected = stages.proof(candidate, record["model_fingerprint"], {
+                "dependency_contracts": [contracts["frozen"][f"{item.removeprefix('probe:')}_spec"] for item in dependencies],
+            })
+            from .fvs_packet import review_snapshot
+            expected = review_snapshot(stages.baseline, path=lane["assigned_path"], patch=selected["patch"])["overlay"]["content"]
+            if worker.read_lane_file(run, lane, lane["assigned_path"], [lane["assigned_path"]]) != expected:
+                raise ContractError("FVS source drift after immutable proof review")
+            fingerprints = sorted({record["model_fingerprint"], *(contracts["node_fingerprints"][item] for item in dependencies)})
+            return {"node": node, "lane": lane, "fingerprints": fingerprints, "reviewed": selected}
         if node != root:
             declaration = f"{node.removeprefix('probe:')}_spec"
             consumers = _immediate_consumers(graph, node)
@@ -344,7 +521,7 @@ def _run_prepared_progressive(
             _block_dependents(state, node, "proof_repair_exhausted:" + selected["claimed_status"])
             return False
         lane = job["lane"]
-        for attempt in range(2):
+        for attempt in range(1 if fvs_profile.enabled(state["config"]) else 2):
             response = _lane_candidate_response(selected, lane, job["fingerprints"])
             candidate = _candidate_record(response, lane, policy)
             _external_call(
@@ -354,9 +531,13 @@ def _run_prepared_progressive(
                 ),
             )
             transition = _checkpoint_candidate(state, candidate, manifest)
+            if fvs_profile.enabled(state["config"]):
+                from .fvs_adapter import Stages
+                Stages(state, graph, lane, _run_role_lane, _checkpoint_if_enabled).record(
+                    "serial-acceptance", {"transition": transition, "candidate_sha256": _canonical_sha256(selected)})
             if transition["status"].startswith("accepted"):
                 break
-            if attempt:
+            if attempt or fvs_profile.enabled(state["config"]):
                 break
             selected = _run_role_lane(
                 state, graph, lane, "repair", statement_sha256=top,
@@ -467,6 +648,8 @@ def run_generic_role_path(state: _RunState) -> dict[str, Any]:
     elif previous_lanes:
         role_journal.reconcile_lane_snapshots(state)
         for lane in lanes:
+            if lane["node"] in state.get("fvs_lane_generations", {}):
+                continue  # Author generations are authenticated/restored at their own replay seam.
             receipt = state.get("lane_snapshots", {}).get(lane["node"])
             if receipt is None:
                 raise worker.WorkerError("lane snapshot checkpoint is missing")

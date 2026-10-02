@@ -165,7 +165,8 @@ def _lane_descriptors(
 
 def _worker_lane(lane: dict[str, Any]) -> dict[str, Any]:
     return {
-        key: lane[key]
+        **({"generation_sha256": lane["generation_sha256"]} if "generation_sha256" in lane else {}),
+        **{key: lane[key]
         for key in (
             "schema",
             "lane_id",
@@ -176,7 +177,7 @@ def _worker_lane(lane: dict[str, Any]) -> dict[str, Any]:
             "worktree_path",
             "cache_path",
             "result_path",
-        )
+        )},
     }
 
 

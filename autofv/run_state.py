@@ -55,6 +55,12 @@ CHECKPOINT_RUN_FIELDS = (
     "proxy_policy_receipt",
     "provider_binding",
     "provider_binding_sha256",
+    "role_profile",
+    "source_packet_sha256",
+    "fvs_lane_generations",
+    "provider_selection",
+    "provider_selection_sha256",
+    "provider_model_preflights",
     "provider_preflight_sha256",
     "deterministic_preflight",
     "deterministic_preflight_sha256",
@@ -110,6 +116,9 @@ CHECKPOINT_STATE_FIELDS = (
     "model_exchanges",
     "role_progress",
     "role_tool_outcomes",
+    "fvs_evidence",
+    "fvs_lane_sources",
+    "fvs_lane_generations",
     "lane_snapshots",
     "lane_initialization",
     "inflight_transition",
@@ -162,6 +171,9 @@ class _RunState(TypedDict, total=False):
     model_exchanges: dict[str, dict[str, Any]]
     role_progress: dict[str, dict[str, Any]]
     role_tool_outcomes: dict[str, dict[str, Any]]
+    fvs_evidence: dict[str, Any]
+    fvs_lane_sources: dict[str, str]
+    fvs_lane_generations: dict[str, dict[str, Any]]
     lane_snapshots: dict[str, dict[str, Any]]
     lane_initialization: dict[str, Any]
     inflight_transition: dict[str, Any]
@@ -223,6 +235,9 @@ def _node_update(state: _RunState, **values: Any) -> dict[str, Any]:
         "model_exchanges",
         "role_progress",
         "role_tool_outcomes",
+        "fvs_evidence",
+        "fvs_lane_sources",
+        "fvs_lane_generations",
         "lane_snapshots",
         "lane_initialization",
         "frozen_contract_baseline",

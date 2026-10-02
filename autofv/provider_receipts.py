@@ -11,7 +11,7 @@ import json
 import os
 import re
 import stat
-from decimal import Decimal, DecimalException, ROUND_HALF_UP, localcontext
+from decimal import Decimal, DecimalException, ROUND_CEILING, ROUND_HALF_UP, localcontext
 from typing import Any
 from pathlib import Path
 
@@ -20,7 +20,7 @@ from cryptography.hazmat.primitives import serialization
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PublicKey
 
 from .contracts import canonical_json_bytes
-from . import provider_config, provider_messages
+from . import fvs_profile, provider_config, provider_messages
 
 
 ProviderError = provider_config.ProviderConfigError
@@ -42,6 +42,8 @@ _EXACT_PROVIDER_MONEY = re.compile(
 
 def _exact_calculated_cost(provider: dict[str, Any]) -> Decimal:
     usage, pricing = provider["usage"], provider["pricing"]
+    if provider.get("schema") == "autofv-provider-accounting/v2":
+        return fvs_profile.pricing_bounds(provider["model_id"], usage)[1]
     cached = usage["cached_input_tokens"]
     uncached = usage["input_tokens"] - cached
     try:
@@ -60,7 +62,7 @@ def _exact_calculated_cost(provider: dict[str, Any]) -> Decimal:
 def calculated_cost(provider: dict[str, Any]) -> Decimal:
     try:
         return _exact_calculated_cost(provider).quantize(
-            Decimal("0.000001"), rounding=ROUND_HALF_UP
+            Decimal("0.000001"), rounding=ROUND_CEILING if provider.get("schema") == "autofv-provider-accounting/v2" else ROUND_HALF_UP
         )
     except DecimalException as exc:
         raise ProviderError("provider calculated cost is invalid") from exc
@@ -81,7 +83,29 @@ def bind_billing(provider: dict[str, Any], usage: dict[str, Any]) -> None:
         exponent = reported_amount.as_tuple().exponent
         if exponent < -8:
             raise ProviderError("provider billed cost exceeds supported precision")
-        if reported_amount != exact:
+        if provider.get("schema") == "autofv-provider-accounting/v2":
+            lower, upper = fvs_profile.pricing_bounds(provider["model_id"], provider["usage"])
+            if not lower <= reported_amount <= upper:
+                raise ProviderError("FVS billed cost is outside frozen inference bounds")
+            charges = usage.get("cost_details", {})
+            if not isinstance(charges, dict) or set(charges) - {
+                "upstream_inference_cost", "upstream_inference_prompt_cost", "upstream_inference_completions_cost"
+            }:
+                raise ProviderError("FVS unsupported charge category")
+            try:
+                for value in charges.values():
+                    if isinstance(value, bool) or provider_messages.bounded_decimal(Decimal(value)) < 0:
+                        raise ProviderError("FVS inference charge must be nonnegative")
+            except (DecimalException, TypeError, ValueError) as exc:
+                raise ProviderError("FVS inference charge is invalid") from exc
+            if ("upstream_inference_cost" in charges
+                and Decimal(charges["upstream_inference_cost"]) != reported_amount):
+                raise ProviderError("FVS reported total includes unsupported fees")
+            components = {"upstream_inference_prompt_cost", "upstream_inference_completions_cost"}
+            if components & set(charges) and (not components <= set(charges) or
+                sum((Decimal(charges[k]) for k in components), Decimal(0)) != reported_amount):
+                raise ProviderError("FVS inference charge components mismatch")
+        elif reported_amount != exact:
             raise ProviderError("provider billed cost does not match pinned pricing")
         reported = {
             "amount": format(reported_amount, "f"),
@@ -89,11 +113,17 @@ def bind_billing(provider: dict[str, Any], usage: dict[str, Any]) -> None:
             "amount_contract": "exact-decimal-usd-max-8",
             "details": _normalize_details(usage.get("cost_details", {})),
         }
+    if provider.get("schema") == "autofv-provider-accounting/v2" and reported is None:
+        raise ProviderError("FVS requires reported inference cost")
     provider["billing"] = {
         "basis": "provider_billed" if reported is not None else "calculated_from_pinned_pricing",
         "provider_reported": reported,
         "calculated_estimate": estimate,
     }
+    if provider.get("schema") == "autofv-provider-accounting/v2":
+        lower, upper = fvs_profile.pricing_bounds(provider["model_id"], provider["usage"])
+        provider["billing"].update(pricing_verification="bounded",
+                                   bounds_usd={"lower": format(lower, "f"), "upper": format(upper, "f")})
 
 
 def _normalize_details(value: Any) -> Any:
@@ -266,9 +296,12 @@ def validate_receipt(
         usage["total_tokens"] != usage["input_tokens"] + usage["output_tokens"]
     ):
         raise ProviderError("provider receipt usage is invalid")
+    fvs = binding["schema"] == "autofv-provider-binding/v2"
+    provider_extra = {"role", "role_profile_sha256", "source_packet_sha256", "requested_routing",
+                      "observed_provider", "parameter_observation", "cache_write_ttl"} if fvs else set()
     provider = provider_config.exact_dict(
         receipt["provider"],
-        {
+        provider_extra | {
             "schema", "response_id", "model_id", "endpoint_sha256",
             "tool_schema_sha256", "capability_sha256", "usage", "pricing",
             "pricing_sha256", "billing",
@@ -277,19 +310,35 @@ def validate_receipt(
     )
     provider_usage = provider_config.exact_dict(
         provider["usage"],
+        ({"cache_write_tokens", "reasoning_tokens"} if fvs else set()) |
         {"input_tokens", "cached_input_tokens", "output_tokens", "total_tokens"},
         "provider accounting usage",
     )
+    expected_model = (fvs_profile.binding_model(binding, provider["role"]) if fvs else binding["model_id"])
+    policy = fvs_profile.model_policy(binding, expected_model) if fvs else None
+    expected_pricing = policy["tiers"] if fvs else binding["pricing"]
+    if fvs:
+        if (provider["role_profile_sha256"] != binding["role_profile_sha256"]
+            or provider["source_packet_sha256"] != binding["source_packet_sha256"]
+            or provider["observed_provider"] != policy["observed_provider"]
+            or provider["requested_routing"] != fvs_profile.requested_routing(expected_model)
+            or provider["parameter_observation"] != "routing-required; effort not independently reported"
+            or provider["cache_write_ttl"] != "unknown"
+            or usage["output_tokens"] > policy["max_output_tokens"]
+            or any(type(v) is not int or v < 0 for v in provider_usage.values())):
+            raise ProviderError("FVS provider evidence mismatch")
+        fvs_profile.pricing_bounds(expected_model, provider_usage)
     if (
-        provider["schema"] != "autofv-provider-accounting/v1"
+        provider["schema"] != ("autofv-provider-accounting/v2" if fvs else "autofv-provider-accounting/v1")
         or not isinstance(provider["response_id"], str)
         or not provider["response_id"]
-        or provider["model_id"] != binding["model_id"]
+        or provider["model_id"] != expected_model
+        or provider["model_id"] != model_id
         or provider["endpoint_sha256"] != binding["endpoint_sha256"]
         or provider["tool_schema_sha256"] != binding["tool_schema_sha256"]
         or provider["capability_sha256"] != binding["capability_sha256"]
-        or provider["pricing"] != binding["pricing"]
-        or provider["pricing_sha256"] != binding["pricing_sha256"]
+        or provider["pricing"] != expected_pricing
+        or provider["pricing_sha256"] != provider_config.canonical_sha256(expected_pricing)
         or provider_usage["input_tokens"] != usage["input_tokens"]
         or provider_usage["output_tokens"] != usage["output_tokens"]
         or provider_usage["total_tokens"] != usage["total_tokens"]
@@ -301,6 +350,7 @@ def validate_receipt(
     calculated = calculated_cost(provider)
     billing = provider_config.exact_dict(
         provider["billing"],
+        ({"pricing_verification", "bounds_usd"} if fvs else set()) |
         {"basis", "provider_reported", "calculated_estimate"},
         "provider billing",
     )
@@ -323,9 +373,22 @@ def validate_receipt(
         if (
             reported["currency"] != "USD"
             or reported["amount_contract"] != "exact-decimal-usd-max-8"
-            or reported_amount != exact
+            or (not fvs and reported_amount != exact)
         ):
             raise ProviderError("provider billed cost mismatch")
+    if fvs:
+        if reported is None:
+            raise ProviderError("FVS requires reported inference cost")
+        # Recompute the complete billing artifact; a signature does not excuse
+        # unsupported charges or falsely labeled exact price reconstruction.
+        rebuilt = {key: copy.deepcopy(item) for key, item in provider.items() if key != "billing"}
+        details = reported["details"]
+        allowed = {"upstream_inference_cost", "upstream_inference_prompt_cost", "upstream_inference_completions_cost"}
+        if not isinstance(details, dict) or set(details) - allowed:
+            raise ProviderError("FVS unsupported charge category")
+        bind_billing(rebuilt, {"cost": reported_amount, "cost_details": details})
+        if rebuilt["billing"] != billing:
+            raise ProviderError("FVS bounded billing artifact mismatch")
     basis = "provider_billed" if reported is not None else "calculated_from_pinned_pricing"
     if billing["basis"] != basis:
         raise ProviderError("provider cost basis mismatch")
@@ -405,7 +468,7 @@ def _reduce_exchange_accounting(
             "run_id": run.get("run_id"),
             "sequence": sequence,
             "request_id": request_id,
-            "model_id": public["model_id"],
+            "model_id": fvs_profile.binding_model(public, request.get("role")) if isinstance(request, dict) else None,
         }
         if (
             not isinstance(request, dict)
@@ -415,6 +478,11 @@ def _reduce_exchange_accounting(
             or sequence in seen_sequences
             or any(request.get(name) != value for name, value in identity.items())
             or any(response.get(name) != value for name, value in identity.items())
+            or response.get("role") != request.get("role")
+            or (public["schema"] == "autofv-provider-binding/v2" and (
+                public["role_profile_sha256"] not in request.get("input_hashes", [])
+                or public["source_packet_sha256"] not in request.get("input_hashes", [])
+                or receipt.get("provider", {}).get("role") != request.get("role")))
         ):
             raise ProviderError("provider receipt exchange identity mismatch")
         charged_cost += validate_receipt(
@@ -423,7 +491,7 @@ def _reduce_exchange_accounting(
             run_id=run["run_id"],
             sequence=sequence,
             request_id=request_id,
-            model_id=public["model_id"],
+            model_id=request["model_id"],
             request_sha256=provider_config.canonical_sha256(request),
             response_sha256=provider_config.canonical_sha256(response),
             seen_receipt_sha256=seen_receipts,
@@ -482,6 +550,8 @@ def _reduce_exchange_accounting(
         },
     }
     return {
+        **({"pricing_verification": "bounded", "reported_spend_known": True,
+            "price_reconstruction_exact": False} if public["schema"] == "autofv-provider-binding/v2" else {}),
         "classification": "provider_authenticated",
         "requests": len(accepted),
         "tokens": authenticated_tokens,
@@ -611,6 +681,7 @@ def reduce_incomplete_accounting(
         "accounting_bounded": True,
         "unresolved_requests": unresolved,
         "unknown_provider_spend": bool(unresolved),
+        **({"reported_spend_known": not bool(unresolved)} if public["schema"] == "autofv-provider-binding/v2" else {}),
     }
 
 
@@ -665,7 +736,8 @@ def write_preflight(
     response: dict[str, Any],
     receipt: dict[str, Any],
 ) -> None:
-    if run.get("provider_preflight_sha256") is not None:
+    fvs = binding.public["schema"] == "autofv-provider-binding/v2"
+    if run.get("provider_preflight_sha256") is not None and not fvs:
         return
     body = {
         "schema": PROVIDER_PREFLIGHT_SCHEMA,
@@ -676,6 +748,24 @@ def write_preflight(
     }
     value = {**body, "preflight_sha256": provider_config.canonical_sha256(body)}
     provider_messages.scan_response(value, binding)
+    if fvs:
+        pair = run.setdefault("provider_model_preflights", {})
+        model_id = request["model_id"]
+        if model_id not in pair:
+            model_path = Path(run["evidence_dir"]) / ("provider-model-preflight-" + hashlib.sha256(model_id.encode()).hexdigest()[:16] + ".json")
+            model_path.parent.mkdir(parents=True, exist_ok=True)
+            raw = canonical_json_bytes(value) + b"\n"
+            try:
+                with model_path.open("xb") as output:
+                    output.write(raw)
+                    output.flush()
+                    os.fsync(output.fileno())
+            except FileExistsError as exc:
+                if model_path.is_symlink() or model_path.read_bytes() != raw:
+                    raise ProviderError("FVS model preflight replacement refused") from exc
+            pair[model_id] = value
+        if run.get("provider_preflight_sha256") is not None:
+            return
     path = Path(run["evidence_dir"]) / "provider-preflight.json"
     path.parent.mkdir(parents=True, exist_ok=True)
     raw = canonical_json_bytes(value) + b"\n"
@@ -721,6 +811,10 @@ def validate_preflight(
         raise ProviderError("provider preflight is not canonical") from exc
     if raw != canonical:
         raise ProviderError("provider preflight is not canonical")
+    return validate_preflight_record(value, expected_binding=expected_binding)
+
+
+def validate_preflight_record(value: Any, *, expected_binding: dict[str, Any] | None = None) -> dict[str, Any]:
     value = provider_config.exact_dict(
         value,
         {"schema", "provider_binding", "request", "response", "receipt", "preflight_sha256"},
@@ -743,6 +837,14 @@ def validate_preflight(
         for name in ("run_id", "sequence", "request_id", "model_id")
     ):
         raise ProviderError("provider preflight exchange is invalid")
+    if binding["schema"] == "autofv-provider-binding/v2" and (
+        request.get("model_id") != fvs_profile.binding_model(binding, request.get("role"))
+        or response.get("role") != request.get("role")
+        or value["receipt"].get("provider", {}).get("role") != request.get("role")
+        or binding["role_profile_sha256"] not in request.get("input_hashes", [])
+        or binding["source_packet_sha256"] not in request.get("input_hashes", [])
+    ):
+        raise ProviderError("FVS preflight role/profile/source identity mismatch")
     validate_receipt(
         value["receipt"],
         binding=binding,
@@ -943,7 +1045,7 @@ def validate_recovery_artifacts(
             if any(
                 response.get(name) != value.get(name)
                 for name in ("run_id", "sequence", "request_id")
-            ) or response.get("model_id") != public["model_id"]:
+            ) or response.get("model_id") != fvs_profile.binding_model(public, response.get("role")):
                 raise ProviderError("provider journal response mismatch")
             validate_receipt(
                 value["receipt"],
@@ -951,7 +1053,7 @@ def validate_recovery_artifacts(
                 run_id=value["run_id"],
                 sequence=value["sequence"],
                 request_id=request_id,
-                model_id=public["model_id"],
+                model_id=response["model_id"],
                 request_sha256=value["request_sha256"],
                 response_sha256=provider_config.canonical_sha256(response),
                 seen_receipt_sha256=seen_receipts,

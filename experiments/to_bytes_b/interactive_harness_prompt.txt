@@ -48,6 +48,9 @@ Read the target function, relevant definitions, and existing reduce
 specifications. Give a short proof plan before editing. Do not start by writing
 one large monolithic proof.
 
+- Before adding a helper, check related modules, existing specs, and local
+  libraries for reusable lemmas. Reuse them directly or add a small bridging
+  lemma; if none fits, prove your own without exhaustive searching.
 - Complete one small helper lemma or one small part of the main proof at a time,
   then compile it.
 - Use tactics available in the project's pinned Aeneas version. Check whether

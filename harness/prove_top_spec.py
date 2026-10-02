@@ -375,6 +375,9 @@ General proof workflow (Aeneas + this project):
 - Look for library lemmas in `.lake/packages/aeneas/backends/lean/Aeneas/Std/`
   and supplied project helpers. Keep searches scoped to the project and its
   dependencies.
+- Before adding a helper, check related modules, existing specs, and local
+  libraries for reusable lemmas. Reuse them directly or add a small bridging
+  lemma; if none fits, prove your own without exhaustive searching.
 """
 
 

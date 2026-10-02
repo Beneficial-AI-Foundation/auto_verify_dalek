@@ -250,7 +250,7 @@ def _upstream_request(
         policy = fvs_profile.model_policy(binding.public, request["model_id"])
         return {
             "model": request["model_id"], "messages": messages,
-            "tools": binding.tools, "tool_choice": "required",
+            "tools": binding.tools, "tool_choice": policy["tool_choice"],
             "max_tokens": policy["max_output_tokens"], "stream": False,
             "parallel_tool_calls": False,
             "reasoning": {"effort": "xhigh", "exclude": True},
@@ -530,6 +530,7 @@ def _provider_response(
             "role_profile_sha256": binding.public["role_profile_sha256"],
             "source_packet_sha256": binding.public["source_packet_sha256"],
             "requested_routing": fvs_profile.requested_routing(request["model_id"]),
+            "requested_tool_choice": policy["tool_choice"],
             "observed_provider": value["provider"],
             "parameter_observation": "routing-required; effort not independently reported",
             "cache_write_ttl": "unknown", "pricing": policy["tiers"],

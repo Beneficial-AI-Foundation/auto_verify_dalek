@@ -470,10 +470,16 @@ def _bind_provider_selection(
                 or not {"reasoning", "tools", "tool_choice"} <= set(item["supported_parameters"])
                 or not isinstance(item["supported_efforts"], list) or "xhigh" not in item["supported_efforts"]):
                 raise ContractError("FVS model lacks advertised required parameters/xhigh")
-            inventory = _exact_dict(item["endpoint_inventory"], {"routing_slug", "matching_endpoint_slugs", "pricing_tiers"},
+            inventory = _exact_dict(item["endpoint_inventory"], {"routing_slug", "matching_endpoint_slugs", "ignored_endpoint_slugs", "supported_tool_choices", "pricing_tiers"},
                                     "FVS provider endpoint inventory")
             policy = fvs_profile.profile()["models"][model_id]
+            choices = inventory["supported_tool_choices"]
+            if (not isinstance(choices, list)
+                or any(choice not in ("auto", "none", "required", "function") for choice in choices)
+                or choices != sorted(set(choices)) or policy["tool_choice"] not in choices):
+                raise ContractError("FVS endpoint lacks advertised exact tool-choice support")
             if (inventory["routing_slug"] != policy["provider"]
+                or inventory["ignored_endpoint_slugs"] != policy["ignored_endpoints"]
                 or inventory["matching_endpoint_slugs"] != [policy["provider"]]
                 or canonical_json_bytes(inventory["pricing_tiers"]) != canonical_json_bytes(policy["tiers"])):
                 raise ContractError("FVS routing has ambiguous endpoint variants or advertised price drift")

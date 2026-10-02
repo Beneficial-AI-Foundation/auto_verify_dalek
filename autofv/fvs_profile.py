@@ -33,13 +33,14 @@ def profile() -> dict[str, Any]:
         "role_models": dict(ROLE_MODELS),
         "parameters": {
             "reasoning": {"effort": "xhigh", "exclude": True},
-            "stream": False, "tool_choice": "required", "timeout_seconds": 30,
+            "stream": False, "timeout_seconds": 30,
             "work_max_output_tokens": 16384, "review_max_output_tokens": 8192,
         },
         "models": {
             AUTHOR: {
                 "provider": "openai", "observed_provider": "OpenAI",
-                "max_output_tokens": 16384,
+                "ignored_endpoints": ["openai/fast", "openai/flex"],
+                "tool_choice": "required", "max_output_tokens": 16384,
                 "tiers": [
                     {"min_input_tokens": 0, "input": "2", "cached": "0.10",
                      "write_lower": "2.50", "write_upper": "2.50", "output": "10"},
@@ -49,7 +50,8 @@ def profile() -> dict[str, Any]:
             },
             REVIEWER: {
                 "provider": "anthropic", "observed_provider": "Anthropic",
-                "max_output_tokens": 8192,
+                "ignored_endpoints": [],
+                "tool_choice": "auto", "max_output_tokens": 8192,
                 "tiers": [
                     {"min_input_tokens": 0, "input": "2", "cached": "0.20",
                      "write_lower": "2.50", "write_upper": "4", "output": "10"},
@@ -130,7 +132,7 @@ def reservation(model: str, input_ceiling: int) -> Decimal:
 
 def requested_routing(model: str) -> dict[str, Any]:
     policy = profile()["models"][model]
-    # Slash-qualified endpoint variants (fast/flex/etc.) are not selected. The
-    # observed provider and the pinned inference envelope are checked on return.
-    return {"only": [policy["provider"]], "allow_fallbacks": False,
-            "require_parameters": True}
+    # Base provider slugs also match variants. Exclude the frozen known variants;
+    # selection must reject any additional eligible endpoint before dispatch.
+    return {"only": [policy["provider"]], "ignore": list(policy["ignored_endpoints"]),
+            "allow_fallbacks": False, "require_parameters": True}

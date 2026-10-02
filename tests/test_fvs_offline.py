@@ -161,6 +161,8 @@ class FvsOfflineTests(unittest.TestCase):
             self.assertEqual(upstream["max_tokens"], 8192 if role in fvs_profile.REVIEW_ROLES else 16384)
             self.assertFalse(upstream["provider"]["allow_fallbacks"])
             self.assertTrue(upstream["provider"]["require_parameters"])
+            self.assertEqual(upstream["provider"]["ignore"], [] if role in fvs_profile.REVIEW_ROLES else ["openai/fast", "openai/flex"])
+            self.assertEqual(e["receipt"]["provider"]["requested_routing"], upstream["provider"])
             self.assertEqual(self.validate(e), Decimal("0.000300"))
             wrong = copy.deepcopy(request)
             wrong["model_id"] = fvs_profile.AUTHOR if role in fvs_profile.REVIEW_ROLES else fvs_profile.REVIEWER
@@ -293,6 +295,35 @@ class FvsOfflineTests(unittest.TestCase):
             fvs_packet.bind_original(p, prepared_root=self.root, preparation=preparation, source_paths=[PATH], rust_root=rust_root)
         with self.assertRaises(ValueError):
             fvs_packet.apply_patch(ORIGINAL + "-- drift first\n", PATH, patch(SPEC).replace("def increment", "def wrong"))
+
+    def test_sonnet_auto_tool_choice_is_bound_without_relaxing_submission(self):
+        for role, choice in (("specifier", "required"), ("spec_reviewer", "auto"), ("proof_reviewer", "auto")):
+            exchange = self.exchange(role)
+            upstream = provider_transport._upstream_request(self.binding, exchange["request"],
+                [{"role": "user", "content": "synthetic"}])
+            self.assertEqual(upstream["tool_choice"], choice)
+            self.assertEqual(exchange["receipt"]["provider"]["requested_tool_choice"], choice)
+            self.assertEqual(self.validate(exchange), Decimal("0.000300"))
+            forged = copy.deepcopy(exchange)
+            forged["receipt"]["provider"]["requested_tool_choice"] = "required" if choice == "auto" else "auto"
+            with self.assertRaises(worker.WorkerError):
+                self.validate(forged)
+        def prose_only(reply):
+            reply["choices"][0]["message"].pop("tool_calls")
+            reply["choices"][0]["message"]["content"] = PASS
+        with self.assertRaises(provider_config.ProviderConfigError):
+            self.exchange("spec_reviewer", response_overrides=prose_only)
+
+    def test_direct_routing_excludes_openai_price_variants(self):
+        # OpenRouter base slugs match all endpoints of that provider, not only the bare tag.
+        routing = fvs_profile.requested_routing(fvs_profile.AUTHOR)
+        advertised = ["openai", "openai/flex", "openai/fast", "azure"]
+        eligible = [tag for tag in advertised
+            if any(tag == allowed or tag.startswith(allowed + "/") for allowed in routing["only"])
+            and tag not in routing.get("ignore", [])]
+        self.assertEqual(eligible, ["openai"])
+        self.assertFalse(routing["allow_fallbacks"])
+        self.assertTrue(routing["require_parameters"])
 
     def test_runtime_binder_rejects_rehashed_rust_without_trusted_bytes(self):
         p = packet()
@@ -556,6 +587,8 @@ class FvsOfflineTests(unittest.TestCase):
                 "supported_parameters": ["reasoning", "tools", "tool_choice"], "supported_efforts": ["xhigh"], "catalog_sha256": "1" * 64,
                 "endpoint_inventory": {"routing_slug": fvs_profile.profile()["models"][e["request"]["model_id"]]["provider"],
                     "matching_endpoint_slugs": [fvs_profile.profile()["models"][e["request"]["model_id"]]["provider"]],
+                    "ignored_endpoint_slugs": fvs_profile.profile()["models"][e["request"]["model_id"]]["ignored_endpoints"],
+                    "supported_tool_choices": ["auto", "none"] if role == "spec_reviewer" else ["auto", "function", "none", "required"],
                     "pricing_tiers": fvs_profile.profile()["models"][e["request"]["model_id"]]["tiers"]}}
         selection = {"schema": "autofv-retained-model-selection/v2", "status": "selected", "selected_at": "synthetic", "selected_by": "fixture",
             "decision": "select-model", "scope": {"proof_smoke": True, "full_retained_run": True,
@@ -569,7 +602,11 @@ class FvsOfflineTests(unittest.TestCase):
         for mutation in (lambda s: s["accessibility_evidence"].pop(fvs_profile.REVIEWER),
                          lambda s: s["accessibility_evidence"][fvs_profile.REVIEWER].update(supported_efforts=["high"]),
                          lambda s: s["model"].update(source_packet_sha256="0" * 64),
-                         lambda s: s["accessibility_evidence"][fvs_profile.AUTHOR]["endpoint_inventory"].update(matching_endpoint_slugs=["openai", "openai/flex"])):
+                         lambda s: s["accessibility_evidence"][fvs_profile.AUTHOR]["endpoint_inventory"].update(matching_endpoint_slugs=["openai", "openai/flex"]),
+                         lambda s: s["accessibility_evidence"][fvs_profile.AUTHOR]["endpoint_inventory"].update(matching_endpoint_slugs=["openai", "openai/future-variant"]),
+                         lambda s: s["accessibility_evidence"][fvs_profile.AUTHOR]["endpoint_inventory"].update(ignored_endpoint_slugs=[]),
+                         lambda s: s["accessibility_evidence"][fvs_profile.REVIEWER]["endpoint_inventory"].update(supported_tool_choices=["none"]),
+                         lambda s: s["accessibility_evidence"][fvs_profile.AUTHOR]["endpoint_inventory"].update(supported_tool_choices=["auto", "none"])):
             bad = copy.deepcopy(selection)
             mutation(bad)
             path.write_bytes(contracts.canonical_json_bytes(bad) + b"\n")

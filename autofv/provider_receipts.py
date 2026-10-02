@@ -298,7 +298,7 @@ def validate_receipt(
         raise ProviderError("provider receipt usage is invalid")
     fvs = binding["schema"] == "autofv-provider-binding/v2"
     provider_extra = {"role", "role_profile_sha256", "source_packet_sha256", "requested_routing",
-                      "observed_provider", "parameter_observation", "cache_write_ttl"} if fvs else set()
+                      "requested_tool_choice", "observed_provider", "parameter_observation", "cache_write_ttl"} if fvs else set()
     provider = provider_config.exact_dict(
         receipt["provider"],
         provider_extra | {
@@ -322,6 +322,7 @@ def validate_receipt(
             or provider["source_packet_sha256"] != binding["source_packet_sha256"]
             or provider["observed_provider"] != policy["observed_provider"]
             or provider["requested_routing"] != fvs_profile.requested_routing(expected_model)
+            or provider["requested_tool_choice"] != policy["tool_choice"]
             or provider["parameter_observation"] != "routing-required; effort not independently reported"
             or provider["cache_write_ttl"] != "unknown"
             or usage["output_tokens"] > policy["max_output_tokens"]

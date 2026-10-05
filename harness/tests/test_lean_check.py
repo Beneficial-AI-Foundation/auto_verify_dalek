@@ -216,6 +216,51 @@ class LeanCheckTests(unittest.TestCase):
         self.assertIn("retry\n\nLocal Lean check tool", argv[-1])
         self.assertIn("lean_check.py", argv[argv.index("--allowedTools") + 1])
         self.assertTrue(Path(provenance["local_check"]["tool_path"]).is_file())
+        recovery = provenance["compact_recovery"]
+        self.assertEqual(argv[argv.index("--settings") + 1], recovery["settings_path"])
+        files = {Path(p).name: Path(p).read_text() for p in recovery["files"]}
+        self.assertIn("prove", files["workflow.md"])
+        self.assertIn("retry", files["round-context.md"])
+        self.assertIn("lean_check.py", files["lean-check.md"])
+
+    def test_compact_hook_preserves_settings_and_emits_reread_reminder(self):
+        settings = self.root / "original.json"
+        original = {"permissions": {"deny": ["WebFetch"]}, "hooks": {
+            "SessionStart": [{"matcher": "startup", "hooks": []}],
+            "Stop": [{"hooks": []}]}}
+        settings.write_text(json.dumps(original))
+        # Exercise shell quoting with a space and an apostrophe in the path.
+        runtime = self.root / "agent's config"
+        agentproc.prepare_check_tool(str(runtime))
+        target, prov = agentproc.prepare_compact_recovery(
+            str(runtime), "fixed task", "latest round handoff", "check rules", str(settings))
+        merged = json.loads(Path(target).read_text())
+        self.assertEqual(merged["permissions"], original["permissions"])
+        self.assertEqual(merged["hooks"]["Stop"], original["hooks"]["Stop"])
+        self.assertEqual(merged["hooks"]["SessionStart"][0], original["hooks"]["SessionStart"][0])
+        command = merged["hooks"]["SessionStart"][-1]["hooks"][0]["command"]
+        for source in ("compact", "startup", "resume"):
+            result = subprocess.run(command, shell=True, input=json.dumps({
+                "hook_event_name": "SessionStart", "source": source}),
+                text=True, capture_output=True, check=True, timeout=5)
+            if source == "compact":
+                output = json.loads(result.stdout)["hookSpecificOutput"]
+                self.assertEqual(output["hookEventName"], "SessionStart")
+                for path in prov["files"]:
+                    self.assertIn(path, output["additionalContext"])
+                self.assertIn("not live", output["additionalContext"])
+            else:
+                self.assertEqual(result.stdout, "")
+        self.assertEqual(json.loads(settings.read_text()), original)
+
+    def test_readonly_recovery_has_no_prover_check_rules_and_disabled_hooks_fail_explicitly(self):
+        agentproc.prepare_check_tool(str(self.root))
+        _, prov = agentproc.prepare_compact_recovery(str(self.root), "review", "evidence", "", None)
+        self.assertNotIn("lean-check.md", {Path(p).name for p in prov["files"]})
+        settings = self.root / "disabled.json"
+        settings.write_text('{"disableAllHooks": true}')
+        with self.assertRaisesRegex(ValueError, "disableAllHooks"):
+            agentproc.prepare_compact_recovery(str(self.root), "p", "m", "", str(settings))
 
     def test_sandbox_seals_only_standalone_tool(self):
         cfg = self.root / "cfg"
@@ -226,7 +271,8 @@ class LeanCheckTests(unittest.TestCase):
         tool_dir = str(cfg / "local_check_tool")
         index = prefix.index(tool_dir)
         self.assertEqual(prefix[index - 1:index + 2], ["--ro-bind", tool_dir, tool_dir])
-        self.assertEqual({p.name for p in Path(tool_dir).iterdir()}, {"lean_check.py", "proof_state.py"})
+        self.assertEqual({p.name for p in Path(tool_dir).iterdir()},
+                         {"lean_check.py", "proof_state.py", "compact_reminder.py"})
 
 
 if __name__ == "__main__":

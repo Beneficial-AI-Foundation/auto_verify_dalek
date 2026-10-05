@@ -60,6 +60,16 @@ python3 harness/lean_check.py Specs.ToBytes --snapshot-path Specs/ToBytes.lean
 
 同一任务的普通续跑和自动 reset 已自动带上摘要，不需额外参数。
 
+### Claude Code 上下文压缩后的提醒
+
+所有通过 `agentproc.run_round()` 启动的会话默认配置 `SessionStart` hook，匹配 `compact`。自动或手动压缩后，hook 通过 `additionalContext` 提醒 agent 使用 Read 重读本轮的 `workflow.md`、`round-context.md`，以及 prover 的 `lean-check.md`，再按其中引用查阅适用的 workflow/skill 文件。检查时机与证明策略仍由 agent 自主决定；不自动编译、不限制编辑，也不强制验证它确实完成了重读。
+
+这些文件由 harness 在每次调用前生成，放在运行配置目录的 `local_check_tool/recovery-<UUID>/` 中；沙箱内该目录只读。内容分别来自本轮完整任务 prompt、实际继续消息（含已有状态交接）、检查工具说明。它们是本轮开始时的快照，不是实时进度；提醒明确要求结合本轮后续对话、源码和最新检查日志恢复，不能用旧摘要覆盖新进展。独立只读 reviewer 也有自己的任务恢复提醒，但没有 prover 检查说明。
+
+生成的 settings 保留原 settings 的权限与 hooks，再追加压缩提醒；若显式设置 `disableAllHooks: true`，启动会报错，避免静默失效。每轮 provenance 的 `compact_recovery` 保存文件路径及哈希。运行时 hook 执行情况可查看 Claude Code debug 日志；provenance 记录配置，不代表模型已经重读。
+
+此入口使用 Claude Code 的 [SessionStart(compact) hook](https://code.claude.com/docs/en/hooks#sessionstart)。本地验证覆盖配置合并、真实 hook 子进程输出和 harness 启动参数，未进行真实模型的长上下文压缩实验。
+
 跨运行可以显式提供先前的 `state.json`，或者 partial 目录中的 `proof-state.json`：
 
 ```text

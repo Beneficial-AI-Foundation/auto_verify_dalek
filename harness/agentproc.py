@@ -310,7 +310,7 @@ def prepare_check_tool(directory):
     """Expose checker + state helpers, never the hidden harness/gates."""
     tool_dir = os.path.join(directory, "local_check_tool")
     os.makedirs(tool_dir, exist_ok=True)
-    for name in ("lean_check.py", "proof_state.py"):
+    for name in ("lean_check.py", "proof_state.py", "compact_reminder.py"):
         source = os.path.join(HERE, name)
         target = os.path.join(tool_dir, name)
         if not os.path.exists(target) or sha256_file(source) != sha256_file(target):
@@ -325,6 +325,37 @@ def prepare_check_tool(directory):
 
 
 # ── command construction ─────────────────────────────────────────────────
+def prepare_compact_recovery(runtime, prompt, message, instructions, settings_path):
+    """Keep recovery files in the existing read-only sandbox tool mount."""
+    root = os.path.join(runtime, "local_check_tool", "recovery-" + uuid.uuid4().hex)
+    os.makedirs(root)
+    files = {"workflow.md": prompt, "round-context.md": message}
+    if instructions:
+        files["lean-check.md"] = instructions
+    for name, content in files.items():
+        with open(os.path.join(root, name), "w") as fh:
+            fh.write(content)
+    settings = {}
+    if settings_path:
+        with open(settings_path) as fh:
+            settings = json.load(fh)
+    if settings.get("disableAllHooks"):
+        raise ValueError("Compaction recovery requires hooks; settings disableAllHooks is true")
+    hook = os.path.join(runtime, "local_check_tool", "compact_reminder.py")
+    command = "/usr/bin/python3 " + shlex.quote(hook) + " " + shlex.quote(root)
+    settings.setdefault("hooks", {}).setdefault("SessionStart", []).append({
+        "matcher": "compact", "hooks": [{"type": "command", "command": command,
+                                           "timeout": 10}]})
+    target = os.path.join(root, "settings.json")
+    with open(target, "w") as fh:
+        json.dump(settings, fh, indent=2)
+    return target, {"enabled": True, "event": "SessionStart", "matcher": "compact",
+                    "settings_path": target, "settings_sha256": sha256_file(target),
+                    "hook_path": hook, "hook_sha256": sha256_file(hook),
+                    "files": {os.path.join(root, name): sha256_file(os.path.join(root, name))
+                              for name in files}}
+
+
 def tool_names(allowed_tools):
     """Base tool names from an --allowedTools spec: "Bash(lake build*)" → Bash.
     Used for --tools, which filters tool *availability* (the subagent tool
@@ -437,6 +468,8 @@ def run_round(prompt, transcript_path, *, cwd, session_id, resume,
     message_path = transcript_path + ".prompt.txt"
     with open(message_path, "w") as fh:
         fh.write(effective_message)
+    settings_path, compact_recovery = prepare_compact_recovery(
+        runtime, prompt, effective_message, check_instructions, settings_path)
     cmd = build_command(prompt, session_id, resume, model, max_turns,
                         allowed_tools, continue_message, settings_path, skill_plugin)
     if sandbox_prefix:
@@ -508,6 +541,7 @@ def run_round(prompt, transcript_path, *, cwd, session_id, resume,
 
     wall = time.time() - t0
     result_event, provenance = last_result_event(transcript_path)
+    provenance["compact_recovery"] = compact_recovery
     provenance["local_check"] = {
         "enabled": local_checks,
         "tool_sha256": sha256_file(check_tool), "tool_path": check_tool,

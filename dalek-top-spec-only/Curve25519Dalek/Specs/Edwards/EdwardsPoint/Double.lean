@@ -9,6 +9,8 @@ import Curve25519Dalek.ExternallyVerified
 open Aeneas Aeneas.Std Result Aeneas.Std.WP
 namespace curve25519_dalek.edwards.EdwardsPoint
 
+/-- As upstream, validity includes the curve equation, `Z ≠ 0`, `XY = TZ`,
+and coordinate limbs below `2^53`, for both the input and the output. -/
 @[externally_verified, progress]
 theorem double_spec (e : EdwardsPoint) (he_valid : e.IsValid) :
     double e ⦃ result =>

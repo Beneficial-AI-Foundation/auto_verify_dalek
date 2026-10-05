@@ -61,9 +61,13 @@ harness/frozen/math_assumptions.json go too, unless --keep-math-assumptions;
 (e.g. simp lemmas the probe graph does not record).  --math-closure TSV merges
 the exact closure computed by harness/math_closure.lean (run in a built bundle:
 `lake env lean ../harness/math_closure.lean > .verilib/math_closure.tsv`); the probe
-graph misses the `_proof_N` auxiliaries of definitions, this does not.  A Math
-file left without
-declarations is dropped and imports of it are replaced by its own imports.
+graph misses the `_proof_N` auxiliaries of definitions, this does not.
+A Math declaration is indivisible: overlapping probe ranges (including a structure
+and its field projections) are retained together, along with their dependencies.
+This preserves validity predicates even when their fields are not referenced.
+Compilation alone cannot detect weakened predicates in specs proved by `sorry`.
+A Math file left without declarations is dropped and imports of it are replaced
+by its own imports.
 Rerun probe-lean on the result to check the closure; `lake build` is the
 final arbiter (implicit uses: simp sets, notation, deriving).
 
@@ -264,17 +268,26 @@ def decl_block_start(text, pos):
     # lines[-1] is the (empty) prefix of the theorem line itself
     k = len(lines) - 1
     while k > 0:
-        prev = lines[k - 1].rstrip()
+        # Whitespace (including blank lines left by comment stripping) does
+        # not end a command-scoped `... in` prefix. Only consume the gap if
+        # the preceding line belongs to this declaration, so neighboring
+        # declarations and file-scoped options retain their own boundaries.
+        previous = k - 1
+        while previous >= 0 and not lines[previous].strip():
+            previous -= 1
+        if previous < 0:
+            break
+        prev = lines[previous].rstrip()
         st = re.sub(r"(?<![/-])--.*$", "", prev).strip()  # ignore trailing `--` comment, not `/--`
         if st == "" and prev.strip().startswith("--"):     # a pure `--` comment line
-            k -= 1
+            k = previous
             continue
         if st.startswith("@[") or st.endswith(" in") or st == "in":
-            k -= 1
+            k = previous
             continue
         if st.endswith("-/"):
             # docstring or comment block directly above: find its opening line
-            j = k - 1
+            j = previous
             while j >= 0 and not lines[j].lstrip().startswith(("/--", "/-")):
                 j -= 1
             if j >= 0:
@@ -416,11 +429,31 @@ class MathMin:
             if pid not in d:
                 sys.exit(f"--minimize-math: {name} not in probe {probe_path}")
             roots.append(pid)
+        # A probe may report both a whole structure and each field projection.
+        # These are not independently removable source declarations. Keeping
+        # only referenced projections would silently weaken validity predicates.
+        # Join overlapping source ranges before computing the dependency closure;
+        # retained fields may themselves introduce additional Math dependencies.
+        atomic_neighbors = {}
+        ranges_by_file = {}
+        for k in self.math:
+            span = d[k]["code-text"]
+            ranges_by_file.setdefault(path(d[k]), []).append(
+                (span["lines-start"], span["lines-end"], k))
+        for spans in ranges_by_file.values():
+            active = []
+            for start, end, k in sorted(spans):
+                active = [(b, other) for b, other in active if b >= start]
+                for _, other in active:
+                    atomic_neighbors.setdefault(k, []).append(other)
+                    atomic_neighbors.setdefault(other, []).append(k)
+                active.append((end, k))
+
         seen = set(roots)
         stack = list(roots)
         while stack:
             k = stack.pop()
-            for x in d[k]["dependencies"]:
+            for x in d[k]["dependencies"] + atomic_neighbors.get(k, []):
                 if x in d and x not in seen:
                     seen.add(x)
                     stack.append(x)

@@ -51,7 +51,15 @@ open curve25519_dalek.backend.serial.u64.field Edwards
 @[mk_iff]
 structure EdwardsPoint.IsValid (e : EdwardsPoint) : Prop where
 
+  /-- Coordinate limb bounds, matching the upstream EdwardsPoint validity predicate. -/
+  X_bounds : ∀ i < 5, e.X[i]!.val < 2 ^ 53
+  Y_bounds : ∀ i < 5, e.Y[i]!.val < 2 ^ 53
+  Z_bounds : ∀ i < 5, e.Z[i]!.val < 2 ^ 53
+  T_bounds : ∀ i < 5, e.T[i]!.val < 2 ^ 53
+
   Z_ne_zero : e.Z.toField ≠ 0
+
+  T_relation : e.X.toField * e.Y.toField = e.T.toField * e.Z.toField
 
   on_curve :
     let X := e.X.toField; let Y := e.Y.toField; let Z := e.Z.toField

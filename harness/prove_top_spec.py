@@ -665,7 +665,9 @@ def main():
     ap.add_argument("--commit", action="store_true", help="commit each accepted step here")
     ap.add_argument("--dry-run", action="store_true")
     ap.add_argument("--resume-proof-state", help="prior proof-state state.json; import handoff without restoring code")
+    driver.review_subagent.add_arguments(ap)
     args = ap.parse_args()
+    driver.review_subagent.validate(args, ap)
     args.g2 = False  # driver.gate: no trust-base manifests in a bundle slot
     if args.fv_skills:
         import fv_skills
@@ -815,6 +817,7 @@ def main():
         "model", "rounds", "max_turns", "timeout", "build_timeout",
         "max_cost_usd", "stall_rounds", "bloat_threshold_tokens",
         "auto_reset", "max_auto_resets")}
+    limits.update(driver.review_subagent.options(args))
     plan_id = run_id
 
     if joint:

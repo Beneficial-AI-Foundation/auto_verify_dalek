@@ -79,7 +79,7 @@ def _kill_group(proc):
         proc.wait()
 
 
-def check(work, module, timeout, log_dir, cancel_fd=None, snapshot_paths=()):
+def check(work, module, timeout, log_dir, cancel_fd=None, snapshot_paths=(), obligation=None):
     """One serialized check. Only helper-managed builds share this lock.
 
     cancel_fd becomes readable/EOF when the caller disappears. Artifacts live
@@ -96,6 +96,7 @@ def check(work, module, timeout, log_dir, cancel_fd=None, snapshot_paths=()):
     result = {"schema_version": 1, "status": "error", "finished": False,
               "exit_code": None, "elapsed_seconds": 0, "command": command,
               "workspace": str(work), "module": module, "timeout_seconds": timeout,
+              "obligation": obligation, "obligation_source": "caller_label",
               "log_path": str(log_path), "result_path": str(result_path),
               "acceptance_checked": False, "task_id": os.environ.get("LEAN_CHECK_TASK_ID"),
               "started_at_ns": time.time_ns(), "checkpoint_path": None}
@@ -171,6 +172,7 @@ def main():
     parser.add_argument("--work", default=".")
     parser.add_argument("--timeout", type=_positive_seconds, default=120)
     parser.add_argument("--log-dir", help="default: <workspace>/.lake/harness-checks")
+    parser.add_argument("--obligation", help="stable Lean declaration name being worked on; diagnostic label, not verification")
     parser.add_argument("--snapshot-path", action="append", default=[],
                         help="relative editable Lean source to preserve after a stable successful build")
     args = parser.parse_args()
@@ -199,7 +201,7 @@ def main():
             signal.signal(sig, interrupted)
         try:
             try:
-                result = check(work, args.module, args.timeout, log_dir, read_fd, paths)
+                result = check(work, args.module, args.timeout, log_dir, read_fd, paths, args.obligation)
             except (OSError, KeyboardInterrupt) as exc:
                 # Even failure to create/write the log directory must not look
                 # like an empty successful check. No durable log is promised.

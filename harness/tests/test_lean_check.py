@@ -44,6 +44,20 @@ class LeanCheckTests(unittest.TestCase):
         self.assertEqual(json.loads(Path(result["result_path"]).read_text()), result)
         return proc.returncode, result
 
+    def test_obligation_label_reaches_review_detector_via_real_check_results(self):
+        import review_subagent
+        (self.root / "Test.lean").write_text("theorem target : True := by sorry\n")
+        self.env["LEAN_CHECK_TASK_ID"] = "review-test"
+        self.fake_lake("import sys\nprint('Test.lean:1:1: error: unsolved goals')\nprint('⊢ True')\nsys.exit(1)\n")
+        monitor = review_subagent.Monitor(self.root, "review-test")
+        for i in range(3):
+            rc, result = self.run_check("Test", "--obligation", "Namespace.target")
+            self.assertEqual(rc, 1)
+            self.assertEqual(result["obligation"], "Namespace.target")
+            self.assertEqual(result["obligation_source"], "caller_label")
+            trigger = monitor.poll(Path(result["result_path"]).parent)
+            self.assertEqual(trigger is not None, i == 2)
+
     def wait_file(self, path):
         deadline = time.monotonic() + 5
         while time.monotonic() < deadline:

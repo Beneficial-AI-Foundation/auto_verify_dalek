@@ -165,6 +165,7 @@ def handoff(state, work):
     view = {"notes_are_model_reports": True,
             "recorded_sources_match_current": matched,
             "progress": state.get("progress", {}),
+            "diagnosis_review_advisory_only": state.get("diagnosis_review"),
             "last_check": {k: last.get(k) for k in (
                 "status", "module", "first_error", "goal_text", "last_output", "log_path")},
             "check_matches_current_sources": check_matches,
@@ -178,7 +179,9 @@ def handoff(state, work):
     return ("\nProof-state handoff (advisory; current Lean diagnostics take precedence):\n"
             + json.dumps(view, ensure_ascii=False, indent=2)
             + "\nA checkpoint is recoverable source code, not an accepted proof. "
-              "Recheck before relying on it, especially if sources differ.\n")
+              "Recheck before relying on it, especially if sources differ. "
+              "Diagnosis review advice is unverified and cannot change the fixed "
+              "target, edit scope, budget, or acceptance gates.\n")
 
 
 class Recorder:

@@ -223,7 +223,7 @@ def _claude_binary_paths():
     return sorted(paths)
 
 
-def bwrap_prefix(repo, config_dir, hidden=SANDBOX_HIDDEN, extra_ro=(), sealed_ro=()):
+def bwrap_prefix(repo, config_dir, hidden=SANDBOX_HIDDEN, extra_ro=(), sealed_ro=(), read_only=False):
     """argv prefix that runs the rest of the command inside bwrap.
     extra_ro: files/dirs outside repo the agent process must read (e.g. the
     --settings file, which lives in the main checkout, not the slot)."""
@@ -245,7 +245,7 @@ def bwrap_prefix(repo, config_dir, hidden=SANDBOX_HIDDEN, extra_ro=(), sealed_ro
     for p in list(_claude_binary_paths()) + list(extra_ro) \
             + ([shared_pk] if shared_pk else []):
         argv += ["--ro-bind", p, p]
-    argv += ["--bind", repo, repo]
+    argv += ["--ro-bind" if read_only else "--bind", repo, repo]
     for h in hidden:
         full = os.path.join(repo, h)
         if os.path.exists(full):
@@ -384,11 +384,11 @@ def run_round(prompt, transcript_path, *, cwd, session_id, resume,
               model="", max_turns=30, allowed_tools="",
               deadline_seconds=None, continue_message=None, env=None,
               settings_path=None, sandbox_prefix=None, skill_plugin=None,
-              progress_log=None):
+              progress_log=None, stop_check=None, local_checks=True):
     """Run one claude round; stream-json goes verbatim to transcript_path.
 
     Returns (status, returncode, wall_seconds, result_event, provenance)
-    where status is "ok" | "deadline" | "signal". The process group is
+    where status is "ok" | "deadline" | "signal" | "review_requested". The process group is
     always SIGKILLed at the end — even on clean exit — to reap any
     background children claude left behind.
     """
@@ -416,10 +416,21 @@ def run_round(prompt, transcript_path, *, cwd, session_id, resume,
         "with sorry: success is local compilation only, never proof acceptance.\n"
         f"For the final full build use: {check_command} --full --timeout 1200\n"
         "The harness independently runs its acceptance gates afterward.\n")
-    prompt += check_instructions
-    if resume:
-        continue_message = (continue_message or "continue") + check_instructions
-    allowed_tools += f",Bash({check_command} *)"
+    if (env or {}).get("LEAN_REVIEW_ENABLED") == "1":
+        check_instructions += (
+            "Diagnosis review is enabled. Add --obligation DECLARATION to local "
+            "checks, using the stable Lean name of the obligation you are working "
+            "on. Keep this label across retries; change it when moving to another "
+            "obligation. It is a diagnostic label, not verified attribution. "
+            "Repeated failures may end this round for independent review; the next "
+            "available round receives advisory feedback.\n")
+    if local_checks:
+        prompt += check_instructions
+        if resume:
+            continue_message = (continue_message or "continue") + check_instructions
+        allowed_tools += f",Bash({check_command} *)"
+    else:
+        check_instructions = ""
     env = dict(env if env is not None else os.environ)
     env["LEAN_CHECK_LOG_DIR"] = check_logs
     effective_message = continue_message if resume else prompt
@@ -436,6 +447,7 @@ def run_round(prompt, transcript_path, *, cwd, session_id, resume,
     cmd = ["nice", "-n", "19"] + cmd
     t0 = time.time()
     killed_deadline = False
+    stopped_for_review = None
     with open(transcript_path, "w") as fh:
         proc = subprocess.Popen(
             cmd, cwd=cwd, stdout=fh, stderr=subprocess.STDOUT,
@@ -450,7 +462,8 @@ def run_round(prompt, transcript_path, *, cwd, session_id, resume,
             if deadline_seconds else None
         while True:
             try:
-                proc.wait(timeout=_bounded_wait(wall_deadline))
+                wait = _bounded_wait(wall_deadline)
+                proc.wait(timeout=min(wait or 5, 5) if stop_check else wait)
                 break
             except subprocess.TimeoutExpired:
                 if RECEIVED_SIGNAL is not None:
@@ -473,6 +486,15 @@ def run_round(prompt, transcript_path, *, cwd, session_id, resume,
                     except subprocess.TimeoutExpired:
                         pass
                     break
+                if stop_check:
+                    stopped_for_review = stop_check(check_logs)
+                    if stopped_for_review:
+                        try:
+                            os.killpg(proc.pid, signal.SIGKILL)
+                        except ProcessLookupError:
+                            pass
+                        proc.wait(timeout=5)
+                        break
         # Post-completion sweep: claude may have left background children
         # (build loops etc.) alive after the main process returned.
         try:
@@ -487,6 +509,7 @@ def run_round(prompt, transcript_path, *, cwd, session_id, resume,
     wall = time.time() - t0
     result_event, provenance = last_result_event(transcript_path)
     provenance["local_check"] = {
+        "enabled": local_checks,
         "tool_sha256": sha256_file(check_tool), "tool_path": check_tool,
         "state_helper_sha256": sha256_file(os.path.join(os.path.dirname(check_tool), "proof_state.py")),
         "log_dir": check_logs, "effective_message_path": message_path,
@@ -498,8 +521,12 @@ def run_round(prompt, transcript_path, *, cwd, session_id, resume,
         status = "signal"
     elif killed_deadline:
         status = "deadline"
+    elif stopped_for_review:
+        status = "review_requested"
     else:
         status = "ok"
+    if stopped_for_review:
+        provenance["review_trigger"] = stopped_for_review
     return status, proc.returncode, wall, result_event, provenance
 
 

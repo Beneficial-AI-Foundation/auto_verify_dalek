@@ -62,7 +62,9 @@ def main():
                         help="hide live per-turn summaries; preserve full transcripts")
     parser.add_argument("--max-turns", type=int, default=300)
     parser.add_argument("--build-timeout", type=int, default=harness.driver.BUILD_TIMEOUT)
+    harness.driver.review_subagent.add_arguments(parser)
     args = parser.parse_args()
+    harness.driver.review_subagent.validate(args, parser)
     if args.interactive_prompt:
         prompt_source = "experiments/to_bytes_b/interactive_harness_prompt.txt"
         harness.driver.PROMPT = (ROOT / prompt_source).read_text()
@@ -129,6 +131,7 @@ def main():
         "resume_proof_state": args.resume_proof_state,
         "prompt_sha256": hashlib.sha256(prompt.encode()).hexdigest(),
         "fv_skills": skills_manifest,
+        "review": harness.driver.review_subagent.options(args),
     }, indent=2) + "\n")
     # Keep repeated attempts' transcripts separate: driver otherwise names
     # them by target and round, which collide across independent runs.
@@ -142,6 +145,11 @@ def main():
                 "--build-timeout", str(args.build_timeout)]
     if args.quiet_turns:
         sys.argv.append("--quiet-turns")
+    if args.review_subagent:
+        sys.argv.append("--review-subagent")
+        for key, value in harness.driver.review_subagent.options(args).items():
+            if key != "review_subagent":
+                sys.argv += ["--" + key.replace("_", "-"), str(value)]
     if args.resume_proof_state:
         sys.argv += ["--resume-proof-state", str(Path(args.resume_proof_state).resolve())]
     if args.prepare_only:

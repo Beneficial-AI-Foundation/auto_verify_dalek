@@ -20,6 +20,8 @@ python3 harness/lean_check.py --full --timeout 1200
 
 完整构建也只是编译；statement 身份、修改范围、未完成证明等条件仍由原有 harness gate 独立验收。
 
+启用 `--review-subagent` 时，为局部检查增加 `--obligation Namespace.helper`，标记正在处理的稳定证明义务。检查结果保存该标签；它是调用者提供的诊断线索，不是编译器确认的声明位置。重复失败／超时的触发方式见 [subagent 设计与用法](SUBAGENT-DESIGN.md#8-已实现的-review-subagent-实验开关)。
+
 ## 返回结果
 
 标准输出是一份 JSON；详细编译输出保存在 `log_path`，同一份 JSON 保存在 `result_path`。例如：

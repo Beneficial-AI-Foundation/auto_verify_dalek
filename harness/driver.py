@@ -98,6 +98,7 @@ from buckets import classify, load_events  # noqa: E402
 import agentproc  # noqa: E402  (harness/agentproc.py — subprocess layer)
 import strip_comments  # noqa: E402  (anti-leak comment strip + merge-back)
 import proof_state
+import review_subagent
 
 LEDGER_DIR = os.path.join(REPO, "ledger")
 TRANSCRIPTS = os.path.join(LEDGER_DIR, "transcripts")
@@ -699,6 +700,10 @@ def run_rounds(prompt, tid, path, before_counts, args, env, settings_path,
     env = dict(env if env is not None else os.environ)
     env["LEAN_CHECK_TASK_ID"] = recovery.task_id
     env["LEAN_CHECK_EDITABLE_PATHS"] = json.dumps(list(editable_paths))
+    reviewer = (review_subagent.Controller(args, recovery)
+                if getattr(args, "review_subagent", False) else None)
+    if reviewer:
+        env["LEAN_REVIEW_ENABLED"] = "1"
     session_ids = [session_id]
     rounds = []
     outcome, detail = "agent_error", {"error": "no rounds ran"}
@@ -733,6 +738,7 @@ def run_rounds(prompt, tid, path, before_counts, args, env, settings_path,
             progress_log=(None if getattr(args, "quiet_turns", False) else
                           lambda message: log(f"[r{rnd}] {message}")),
             settings_path=settings_path, sandbox_prefix=sandbox_prefix,
+            **({"stop_check": reviewer.poll} if reviewer else {}),
             **({"skill_plugin": args.skill_plugin} if getattr(args, "skill_plugin", None) else {}))
         was_fresh, fresh = fresh, False
         result = result or {}
@@ -750,11 +756,13 @@ def run_rounds(prompt, tid, path, before_counts, args, env, settings_path,
         cut_off = None
         if status == "deadline":
             cut_off = "deadline_exhausted"
+        elif status == "review_requested":
+            cut_off = "review_requested"
         elif rc != 0 and result.get("subtype") == "error_max_turns":
             cut_off = "max_turns_exhausted"
         if skill_error:
             outcome, detail = "agent_error", {"error": skill_error}
-        elif status not in ("ok", "deadline"):
+        elif status not in ("ok", "deadline", "review_requested"):
             outcome, detail = "agent_error", {"error": status}
         elif cut_off:
             # Ran out of --max-turns or of the --timeout wall clock mid-work
@@ -824,6 +832,28 @@ def run_rounds(prompt, tid, path, before_counts, args, env, settings_path,
         })
         rounds[-1]["proof_state"] = recovery.record(
             tpath, rounds[-1], (prov.get("local_check") or {}).get("log_dir"))
+
+        if reviewer and outcome in FEEDBACK and agentproc.RECEIVED_SIGNAL is None:
+            check_dir = (prov.get("local_check") or {}).get("log_dir")
+            trigger = reviewer.poll(check_dir) if check_dir else None
+            exhausted = (cut_off in ("deadline_exhausted", "max_turns_exhausted")
+                         or end_reason == "LIMIT" or rnd == args.rounds)
+            if not trigger and exhausted:
+                trigger = {"reason": "budget_exhausted", "round": rnd,
+                           "kind": cut_off or end_reason or "rounds"}
+            if trigger:
+                report = reviewer.review(trigger, prompt, outcome, detail, env,
+                                         settings_path, cost_total, log)
+                if report:
+                    rounds[-1]["review"] = report
+                    cost_total += report.get("cost_usd", 0)
+                    rounds[-1]["prover_cost_usd"] = cost
+                    rounds[-1]["cost_usd"] = float(cost or 0) + report.get("cost_usd", 0)
+                    rounds[-1]["reported_cost_incomplete"] = (
+                        cost is None or report.get("reported_cost_incomplete", False))
+                    rounds[-1]["prover_wall_seconds"] = rounds[-1]["wall_seconds"]
+                    rounds[-1]["wall_seconds"] += report.get("wall_seconds", 0)
+            rounds[-1]["cost_total_with_review"] = round(cost_total, 4)
 
         # ── stop rules ──
         if outcome == "accepted" or outcome not in FEEDBACK \
@@ -1188,6 +1218,7 @@ def main():
                     help="git commit each accepted fill in the main checkout")
     ap.add_argument("--dry-run", action="store_true")
     ap.add_argument("--resume-proof-state", help="prior state.json; recover notes only, recheck code/evidence")
+    review_subagent.add_arguments(ap)
     args = ap.parse_args()
     if args.run_config:
         cfg = json.load(open(args.run_config))
@@ -1197,6 +1228,7 @@ def main():
     if not args.model:
         sys.exit("--model is required (or `model` in --run-config): "
                  "see DEC-13; the isolated agent has no default model setting")
+    review_subagent.validate(args, ap)
     if args.jobs < 1:
         sys.exit("--jobs must be >= 1")
 
@@ -1205,6 +1237,7 @@ def main():
                   "bloat_threshold_tokens", "auto_reset", "max_auto_resets",
                   "jobs")
     limits = {k: getattr(args, k) for k in LIMIT_KEYS}
+    limits.update(review_subagent.options(args))
     if args.run_config:
         limits["run_config"] = os.path.relpath(os.path.abspath(args.run_config), REPO)
         limits["run_config_sha256"] = agentproc.sha256_file(args.run_config)

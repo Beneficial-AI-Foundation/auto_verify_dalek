@@ -130,6 +130,61 @@ def reservation(model: str, input_ceiling: int) -> Decimal:
             + Decimal(policy["max_output_tokens"]) * output_rate) / Decimal(1000000)
 
 
+def public_endpoint_inventory(model: str, document: Any) -> dict[str, Any]:
+    """Normalize real public endpoint metadata against the frozen request policy."""
+    try:
+        policy = profile()["models"][model]
+        routing = requested_routing(model)
+        if document["data"]["id"] != model:
+            raise ContractError("FVS endpoint catalog model mismatch")
+        eligible = [e for e in document["data"]["endpoints"]
+                    if any(e["tag"] == slug or e["tag"].startswith(slug + "/")
+                           for slug in routing["only"])
+                    and e["tag"] not in routing["ignore"]]
+        if [e["tag"] for e in eligible] != [policy["provider"]]:
+            raise ContractError("FVS endpoint catalog has ambiguous eligible variants")
+        endpoint = eligible[0]
+        if (endpoint["provider_name"] != policy["observed_provider"]
+            or not {"reasoning", "tools", "tool_choice"} <= set(endpoint["supported_parameters"])
+            or type(endpoint["max_completion_tokens"]) is not int
+            or endpoint["max_completion_tokens"] < policy["max_output_tokens"]):
+            raise ContractError("FVS endpoint lacks required provider/parameter/output support")
+        choices = endpoint["supports_tool_choice"]
+        if (not isinstance(choices, dict) or any(type(v) is not bool for v in choices.values())
+            or not set(choices) <= {"none", "auto", "required", "function"}
+            or choices.get(policy["tool_choice"]) is not True):
+            raise ContractError("FVS endpoint lacks exact tool-choice support")
+        prices = endpoint["pricing"]
+        if (not set(prices) <= {"prompt", "completion", "input_cache_read", "input_cache_write",
+                               "input_cache_write_1h", "discount", "overrides", "web_search"}
+            or Decimal(str(prices.get("discount", 0))) != 0):
+            raise ContractError("FVS endpoint has unknown price categories/discounts")
+        # Native web search is advertised but never enabled by the scoped-tool adapter.
+        tiers = [{"min_prompt_tokens": 0, **{k: v for k, v in prices.items() if k != "overrides"}},
+                 *prices.get("overrides", [])]
+        if len(tiers) != len(policy["tiers"]):
+            raise ContractError("FVS endpoint price tier drift")
+        for actual, expected in zip(tiers, policy["tiers"]):
+            fields = {"prompt": "input", "completion": "output", "input_cache_read": "cached",
+                      "input_cache_write": "write_lower"}
+            if (not set(actual) <= {"min_prompt_tokens", "prompt", "completion", "input_cache_read",
+                                   "input_cache_write", "input_cache_write_1h", "discount", "web_search"}
+                or Decimal(str(actual.get("discount", 0))) != 0
+                or type(actual["min_prompt_tokens"]) is not int
+                or actual["min_prompt_tokens"] != expected["min_input_tokens"]
+                or any(Decimal(str(actual[key])) * 1000000 != Decimal(expected[value])
+                       for key, value in fields.items())
+                or Decimal(str(actual.get("input_cache_write_1h", actual["input_cache_write"])))
+                   * 1000000 != Decimal(expected["write_upper"])):
+                raise ContractError("FVS endpoint price tier drift")
+        return {"routing_slug": policy["provider"], "matching_endpoint_slugs": [e["tag"] for e in eligible],
+                "ignored_endpoint_slugs": routing["ignore"],
+                "supported_tool_choices": sorted(k for k, supported in choices.items() if supported),
+                "pricing_tiers": copy.deepcopy(policy["tiers"])}
+    except (KeyError, TypeError, ValueError, ArithmeticError, AttributeError) as exc:
+        raise ContractError("FVS public endpoint metadata is malformed") from exc
+
+
 def requested_routing(model: str) -> dict[str, Any]:
     policy = profile()["models"][model]
     # Base provider slugs also match variants. Exclude the frozen known variants;

@@ -8,10 +8,13 @@ import hashlib
 import json
 import os
 import re
+import signal
 import stat
 import sys
 import threading
 import time
+from contextlib import contextmanager
+from decimal import Decimal
 from pathlib import Path
 from typing import Any, Callable
 
@@ -381,6 +384,16 @@ def validate_runner_result(raw: bytes) -> dict[str, Any]:
     return value
 
 
+def _new_preflight_output(target: Path, output: str | Path) -> Path:
+    destination = Path(output).absolute()
+    if destination.exists() or destination.is_symlink():
+        raise ContractError("preflight output already exists")
+    destination = destination.parent.resolve(strict=True) / destination.name
+    if destination == target or destination.is_relative_to(target):
+        raise ContractError("preflight output must be outside the target")
+    return destination
+
+
 def _write_canonical(path: Path, value: dict[str, Any]) -> None:
     temporary = path.with_name(f".{path.name}.{os.getpid()}.tmp")
     try:
@@ -467,13 +480,7 @@ def run_preflight(
         _prepared_run["source_packet_sha256"] = config["source_packet"]["packet_sha256"]
     lock = load_toolchain_lock()
     validate_native_decide_policy(lock)
-    destination = Path(output).absolute()
-    if destination.exists() or destination.is_symlink():
-        raise ContractError("preflight output already exists")
-    parent = destination.parent.resolve(strict=True)
-    if destination == target or destination.is_relative_to(target):
-        raise ContractError("preflight output must be outside the target")
-    destination = parent / destination.name
+    destination = _new_preflight_output(target, output)
     destination.mkdir(mode=0o700)
     (destination / "checks").mkdir(mode=0o700)
     run = _prepared_run
@@ -489,7 +496,8 @@ def run_preflight(
             != hashlib.sha256(canonical_json_bytes(manifest)).hexdigest()
         ):
             raise ContractError("prepared preflight run identity mismatch")
-        _probe_distinct_verifier(run)
+        # Shared verifier VM: started or reused here, retained for its separate owner.
+        run["preflight_verifier_worker_id"] = _probe_distinct_verifier(run)
         if provider_config.provider_binding(run) is None:
             configure_prepared_provider(run, target, env_file=env_file)
         markers = provider_config.secret_markers(run)
@@ -667,7 +675,13 @@ def run_preflight(
             except BaseException as exc:
                 cleanup_error = exc
         if run is not None and (not succeeded or not retain_worker):
-            provider_config.abort_configuration(run)
+            try:
+                # Abort erases the binding key the listener registry is indexed by.
+                provider_service.release(run)
+            except BaseException as exc:
+                cleanup_error = cleanup_error or exc
+            finally:
+                provider_config.abort_configuration(run)
         if not succeeded:
             import shutil
             shutil.rmtree(destination, ignore_errors=True)
@@ -676,6 +690,316 @@ def run_preflight(
                 import shutil
                 shutil.rmtree(destination, ignore_errors=True)
             raise worker_runtime.WorkerError("preflight worker cleanup failed") from cleanup_error
+
+
+@contextmanager
+def _preflight_deadline(state):
+    """Stop active preflight work; retain the existing finalization reserve for cleanup.
+
+    The handler never touches run state. Expiry inside a serialized state commit (charge,
+    reservation, wall reduction) is redelivered just after it; transport runs unlocked.
+    """
+    from .run_state import BudgetExhausted, _state_lock
+    if threading.current_thread() is not threading.main_thread() or signal.getitimer(signal.ITIMER_REAL)[0]:
+        raise ContractError("FVS preflight requires a main thread without an active alarm")
+    limit = Decimal(state["config"]["max_wall_seconds"])
+    active = limit - state["finalization_reserve_seconds"]
+    if active <= 0:
+        raise ContractError("FVS preflight active-work deadline must be positive")
+    previous = signal.getsignal(signal.SIGALRM)
+    lock = _state_lock(state)
+
+    def expired(_signum, _frame):
+        if lock.held():
+            signal.setitimer(signal.ITIMER_REAL, 0.05)
+            return
+        raise BudgetExhausted("wall_seconds", limit, active)
+
+    try:
+        signal.signal(signal.SIGALRM, expired)
+        signal.setitimer(signal.ITIMER_REAL, float(active))
+        yield
+    finally:
+        signal.setitimer(signal.ITIMER_REAL, 0)
+        signal.signal(signal.SIGALRM, previous)
+
+
+def _error_detail(exc: BaseException, markers: tuple[bytes, ...]) -> str:
+    """Bounded cause chain; scanned in full before truncation, dropped on a credential match."""
+    parts, seen = [], set()
+    while exc is not None and id(exc) not in seen and len(parts) < 4:
+        seen.add(id(exc))
+        parts.append(f"{type(exc).__name__}: {exc}")
+        exc = exc.__cause__ or exc.__context__
+    text = " <- ".join(parts)
+    try:
+        _scan_secrets(markers, text.encode("utf-8", "replace"))
+    except ContractError:
+        return "redacted: provider credential marker matched"
+    return text[:2000]
+
+
+def _public_pair_inventory(state, destination):
+    """Fresh keyless GETs; advertised support is not authenticated accessibility."""
+    import urllib.request
+    from . import fvs_profile, model, provider_messages, provider_transport
+    root = destination / "public-metadata"
+    root.mkdir(mode=0o700)
+
+    def fetch(suffix, name, maximum):
+        request = urllib.request.Request("https://openrouter.ai/api/v1/models" + suffix,
+            headers={"Accept": "application/json", "User-Agent": "AutoFV-public-metadata-check"})
+        timeout = min(20, model._provider_timeout_seconds(state))
+        deadline = time.monotonic_ns() + int(timeout * 1_000_000_000)
+        # Same proxy-free, redirect-free, absolute-deadline opener as paid requests.
+        with provider_transport._open_upstream(request, timeout=timeout,
+                                               deadline_monotonic_ns=deadline) as reply:
+            if reply.status != 200:
+                raise ContractError("FVS public metadata did not return HTTP 200")
+            raw = provider_transport._read_upstream(reply, deadline, maximum)
+        value = provider_messages.strict_json(raw, "FVS public metadata", allow_floats=True)
+        with (root / name).open("xb") as output:
+            output.write(raw)
+        return value, hashlib.sha256(raw).hexdigest()
+
+    catalog, catalog_sha = fetch("", "models.json", 8 * 1024 * 1024)
+    records = {}
+    for model_id in (fvs_profile.AUTHOR, fvs_profile.REVIEWER):
+        matches = [m for m in catalog["data"] if m["id"] == model_id]
+        if len(matches) != 1:
+            raise ContractError("FVS exact model missing/duplicated in public catalog")
+        advertised = matches[0]
+        parameters, efforts = advertised["supported_parameters"], advertised["reasoning"]["supported_efforts"]
+        if (not isinstance(parameters, list) or any(not isinstance(x, str) for x in parameters)
+            or not isinstance(efforts, list) or any(not isinstance(x, str) for x in efforts)
+            or not {"reasoning", "tools", "tool_choice"} <= set(parameters) or "xhigh" not in efforts):
+            raise ContractError("FVS model lacks advertised parameters/xhigh")
+        endpoint, endpoint_sha = fetch("/" + model_id + "/endpoints",
+            hashlib.sha256(model_id.encode()).hexdigest()[:16] + ".json", 4 * 1024 * 1024)
+        records[model_id] = {"endpoint_inventory": fvs_profile.public_endpoint_inventory(model_id, endpoint),
+            "supported_parameters": advertised["supported_parameters"],
+            "supported_efforts": advertised["reasoning"]["supported_efforts"],
+            "catalog_sha256": catalog_sha, "endpoint_catalog_sha256": endpoint_sha}
+    record = {"schema": "local-fvs-public-inventory/v1", "models": records,
+              "profile_sha256": fvs_profile.digest(fvs_profile.profile()),
+              "fetched_at_unix": int(time.time()), "authenticated": False, "inference": False}
+    _write_canonical(root / "inventory.json", record)
+    return record
+
+
+def run_fvs_preflight(
+    repo: str | Path, run_config: str | Path, output: str | Path, *,
+    env_file: str | Path, preparation_manifest: str | Path,
+    probe_rust_evidence: str | Path, probe_aeneas_evidence: str | Path,
+    dependency_cache: str | Path, public_rust_root: str | Path,
+    check_model_accessibility: bool = False,
+) -> dict[str, Any]:
+    """One owned prepared-worker preflight, optionally two bounded accessibility calls.
+
+    Never allocates a scored experiment, selects a model pair or executes returned tools.
+    Cleanup uses the existing bounded worker operations; deadline overrun is not success.
+    """
+    from . import experiment, fvs_packet, fvs_profile, model, prepare_dalek, provider_service, worker
+    from .run_state import (_charge_wall, _check_budget, _checkpoint_value,
+                           _external_call, _finalization_reserve)
+    from .contracts import validate_native_decide_policy, validate_run_config, validate_target
+
+    target, manifest = validate_target(repo)
+    prepare_dalek._scan_prepared(target)
+    _, config = validate_run_config(run_config)
+    if not fvs_profile.enabled(config):
+        raise ContractError("prepared FVS preflight requires run/v2")
+    if type(check_model_accessibility) is not bool or any(value is None for value in
+        (env_file, preparation_manifest, probe_rust_evidence, probe_aeneas_evidence,
+         dependency_cache, public_rust_root)):
+        raise ContractError("FVS preflight requires complete explicit preparation/provider inputs")
+    lock = load_toolchain_lock()
+    validate_native_decide_policy(lock)
+    destination = _new_preflight_output(target, output)
+    state = {"run": {"events": []}, "config": config, "run_round": model.agentproc.run_round,
+             "cost": Decimal("0.000000"), "receipts": [], "model_exchanges": {},
+             "pending_model_exchanges": {}, "receipt_rejections": [],
+             "wall_seconds_used": Decimal("0.000000"), "wall_started_epoch_ns": time.time_ns(),
+             "wall_started_monotonic_ns": time.monotonic_ns(),
+             "finalization_reserve_seconds": _finalization_reserve(config)}
+    run, binding, markers, created, owned = None, None, (), False, False
+    calls, reservations, service_digest, release_failed = [], {}, None, False
+    journal, journal_failures = {}, {}
+    phase, error_type, error_detail, cleanup = "prepared_inputs", None, None, "not_created"
+    result = {"schema": "autofv-prepared-preflight/v1", "status": "failed", "execution_mode": "full",
+              "model_accessibility": "not_requested" if not check_model_accessibility else "failed",
+              "provider_model_preflights": {}, "config_sha256": fvs_profile.digest(_checkpoint_value(config)),
+              "role_profile_sha256": fvs_profile.digest(fvs_profile.profile()),
+              "source_packet_sha256": config["source_packet"]["packet_sha256"],
+              "billing": "bounded_reported_cost", "selection_authorized": False,
+              "formal_verification_or_review_claim": False}
+    try:
+        with _preflight_deadline(state):
+            prepared, graph, receipt, sources = experiment._load_prepared_inputs(target, manifest,
+                preparation_manifest, probe_rust_evidence, probe_aeneas_evidence, dependency_cache,
+                execution_mode="full")
+            fvs_packet.bind_original(config["source_packet"], prepared_root=target, preparation=prepared,
+                source_paths=list(graph["source_paths"].values()), rust_root=Path(public_rust_root))
+            _check_budget(state)
+            destination.mkdir(mode=0o700)
+            owned = True
+
+            def before_worker(preparing):
+                nonlocal run, binding, markers, service_digest
+                run = preparing
+                run.update(role_profile=config["role_profile"],
+                    source_packet_sha256=config["source_packet"]["packet_sha256"],
+                    preparation_manifest=prepared, prepared_graph_receipt=receipt,
+                    graph_sha256=graph["graph_sha256"])
+                state["run"] = run
+                configure_prepared_provider(run, target, env_file=env_file)
+                binding = provider_config.provider_binding(run)
+                markers = (*provider_config.secret_markers(run), bytes(binding.client_token))
+                service_digest = run["provider_binding_sha256"]
+                provider_service.start(run)
+
+            phase = "prepare_worker"
+            run = _external_call(state, phase, lambda: worker.prepare_run(target, manifest, lock,
+                                                                        before_worker=before_worker))
+            created = True
+            state["run"] = run
+            phase = "dependency_cache"
+            run["dependency_cache_receipt"] = _external_call(state, phase, lambda: worker.seed_dependency_cache(
+                run, sources["dependency-cache"], receipt["dependency_cache_sha256"]))
+            _write_canonical(destination / "prepared-graph.json", receipt)
+            phase = "sealed_suite"
+            result["sealed_preflight"] = _external_call(state, phase, lambda: authorize_prepared_run(
+                run, target, run_config, destination / "sealed", env_file=env_file,
+                max_age_seconds=min(MAX_AGE_SECONDS, config["max_wall_seconds"]),
+                public_rust_root=public_rust_root))
+            # Authorization rereads the config file; a change is rejected, never re-frozen.
+            if (fvs_profile.digest(_checkpoint_value(validate_run_config(run_config)[1])) != result["config_sha256"]
+                or run.get("role_profile") != config["role_profile"]
+                or run.get("source_packet_sha256") != config["source_packet"]["packet_sha256"]):
+                raise ContractError("FVS preflight configuration changed during authorization")
+            if check_model_accessibility:
+                phase = "public_inventory"
+                result["public_inventory"] = _external_call(state, phase,
+                    lambda: _public_pair_inventory(state, destination))
+                phase = "egress"
+                _external_call(state, phase, lambda: worker.verify_egress(run))
+                messages = [{"role": "system", "content": "This is an accessibility probe, not a proof or review. "
+                    "Call submit_candidate with patch='', claimed_status='blocked', "
+                    "and evidence=['accessibility probe only']. Do not claim approval."},
+                    {"role": "user", "content": "Return that accessibility-probe submission now."}]
+                inputs = [result["config_sha256"], fvs_profile.digest(prepared), graph["graph_sha256"]]
+                calls = [(model._model_envelope(state, request_id="preflight-accessibility-" + role,
+                    role=role, input_hashes=model._message_bound_hashes(inputs, messages), sequence=sequence),
+                    messages, "explicit") for sequence, role in enumerate(("scout", "spec_reviewer"), 1)]
+                phase = "pair_reservation"
+                _check_budget(state)
+                model._reserve_provider_calls(state, calls)
+                reservations = {key: Decimal(value["reservation_usd"])
+                                for key, value in state["pending_model_exchanges"].items()}
+                for request, _messages, _kind in calls:
+                    phase = "model_accessibility:" + request["role"]
+                    response, _ = model._model_request(state, request_id=request["request_id"],
+                        role=request["role"], input_hashes=inputs, messages=messages)
+                    if (response["kind"] != "tool_call" or response["payload"]["name"] != "submit_candidate"
+                        or response["payload"]["arguments"] != {"patch": "", "claimed_status": "blocked",
+                                                                  "evidence": ["accessibility probe only"]}):
+                        raise ContractError("FVS accessibility probe lacks the requested final submission")
+                result["model_accessibility"] = "passed"
+            _check_budget(state)
+            result["status"] = "passed"
+    except (Exception, KeyboardInterrupt) as exc:
+        result["status"] = "failed"
+        error_type = type(exc).__name__
+        # Never finalize into an output directory this invocation did not create.
+        if not owned:
+            raise
+        error_detail = _error_detail(exc, markers)
+    finally:
+        if run is not None:
+            if (created or run.get("worker_created")) and not run.get("worker_disposed"):
+                try:
+                    worker.force_destroy_worker(run)
+                    cleanup = "disposed"
+                except BaseException:
+                    cleanup = "failed"
+            elif run.get("worker_disposed"):
+                cleanup = "disposed"
+            if binding is not None:
+                for request, _messages, _kind in calls:
+                    key = request["request_id"]
+                    try:
+                        record = provider_service._load(provider_service._journal_path(run, key), binding, request)
+                        if record is not None:
+                            journal[key] = record
+                            if record["status"] == "completed" and key not in state["model_exchanges"]:
+                                model._accept_model_exchange(state, request, record["response"], record["receipt"],
+                                                             enforce_budget=False, allow_out_of_order=True)
+                        elif (key in state["model_exchanges"] or state["pending_model_exchanges"].get(key, {}).get("dispatch_state")
+                              in {"dispatched", "ambiguous"}):
+                            journal_failures[key] = "missing_dispatched_journal"
+                    except Exception:
+                        journal_failures[key] = "invalid_signed_journal_or_exchange"
+            try:
+                provider_service.release(run)
+            except BaseException:
+                release_failed = True
+        _charge_wall(state)
+    service_release = ("failed" if release_failed or (service_digest is not None
+                                                      and provider_service.is_running(service_digest))
+                       else "not_started" if service_digest is None else "released")
+    if (cleanup == "failed" or service_release == "failed"
+        or state["wall_seconds_used"] > config["max_wall_seconds"]):
+        result["status"] = "failed"
+    result.update(phase=phase, error_type=error_type, error_detail=error_detail, cleanup=cleanup,
+        service_release=service_release, reported_cost_usd=str(state["cost"]),
+        wall_seconds_used=str(state["wall_seconds_used"]))
+    if run is not None:
+        # The worker run root keeps the signed journal/inventory; the verifier VM is not stopped.
+        result.update(run_id=run.get("run_id"), retained_run_root=run.get("run_root"),
+            verifier_worker_id=run.get("preflight_verifier_worker_id"),
+            verifier_lifecycle="started_or_reused_and_retained"
+                if run.get("preflight_verifier_worker_id") else "not_probed")
+    pending = state["pending_model_exchanges"]
+    # A signal may arrive after reservation commit but before its local summary is copied.
+    reservations.update({key: Decimal(item["reservation_usd"]) for key, item in pending.items()})
+    if journal_failures:
+        result["status"] = "failed"
+        result["journal_failures"] = journal_failures
+    undispatched, liability = {}, {}
+    for key, amount in reservations.items():
+        record = journal.get(key)
+        if key in state["model_exchanges"]:
+            continue
+        if (record is not None and record["status"] != "reserved"
+            or pending.get(key, {}).get("dispatch_state") in {"dispatched", "ambiguous"}
+            or key in journal_failures):
+            liability[key] = max(amount, Decimal(record["reservation_usd"]) if record else amount)
+        elif key in pending:
+            undispatched[key] = amount
+    result["undispatched_reservation_usd"] = str(sum(undispatched.values(), Decimal("0.000000")))
+    result["unresolved_dispatched_liability_usd"] = str(sum(liability.values(), Decimal("0.000000")))
+    result["unresolved_reservation_usd"] = str(sum([*undispatched.values(), *liability.values()], Decimal("0.000000")))
+    result["reported_cost_usd"] = str(state["cost"])
+    if state["cost"] > config["max_cost_usd"]:
+        result["status"] = "failed"
+    accounting = _checkpoint_value({"receipts": state["receipts"], "pending_model_exchanges": pending,
+        "planned_reservations_usd": reservations, "receipt_rejections": state["receipt_rejections"],
+        "provider_journal": journal, "journal_failures": journal_failures})
+    _scan_secrets(markers, canonical_json_bytes(accounting))
+    _write_canonical(destination / "accounting.json", accounting)
+    if run is not None:
+        for model_id, record in dict(run.get("provider_model_preflights", {})).items():
+            provider_receipts.validate_preflight_record(record)
+            raw = canonical_json_bytes(record)
+            _scan_secrets(markers, raw)
+            path = destination / ("provider-model-preflight-" + hashlib.sha256(model_id.encode()).hexdigest()[:16] + ".json")
+            _write_canonical(path, record)
+            result["provider_model_preflights"][model_id] = {"path": str(path),
+                "preflight_sha256": record["preflight_sha256"],
+                "artifact_sha256": hashlib.sha256(path.read_bytes()).hexdigest()}
+    _scan_secrets(markers, canonical_json_bytes(result))
+    _write_canonical(destination / "preflight-result.json", result)
+    return result
 
 
 def authorize_prepared_run(

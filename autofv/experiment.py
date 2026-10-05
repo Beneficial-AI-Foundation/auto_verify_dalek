@@ -1118,6 +1118,12 @@ def _parser() -> argparse.ArgumentParser:
     preflight_command.add_argument("--config", required=True)
     preflight_command.add_argument("--output", required=True)
     preflight_command.add_argument("--env-file")
+    preflight_command.add_argument("--preparation-manifest")
+    preflight_command.add_argument("--preparation-evidence")
+    preflight_command.add_argument("--preparation-cache")
+    preflight_command.add_argument("--public-rust-root")
+    preflight_command.add_argument("--check-model-accessibility", action="store_true",
+                                   help="FVS only: at most one paid accessibility request per selected model")
     return parser
 
 
@@ -1143,18 +1149,28 @@ def main() -> None:
             parser.error(str(exc))
         return
     if args.command == "preflight":
-        from .preflight_runner import run_preflight
+        from .preflight_runner import run_fvs_preflight, run_preflight
 
+        prepared = (args.preparation_manifest, args.preparation_evidence,
+                    args.preparation_cache, args.public_rust_root)
+        if any(value is not None for value in prepared) or args.check_model_accessibility:
+            if args.env_file is None or any(value is None for value in prepared):
+                parser.error("FVS preflight requires --env-file and all preparation/public-Rust flags")
+            options = {"env_file": args.env_file, "preparation_manifest": args.preparation_manifest,
+                       "probe_rust_evidence": str(Path(args.preparation_evidence) / "probe-rust.json"),
+                       "probe_aeneas_evidence": str(Path(args.preparation_evidence) / "probe-aeneas.json"),
+                       "dependency_cache": args.preparation_cache, "public_rust_root": args.public_rust_root,
+                       "check_model_accessibility": args.check_model_accessibility}
+            operation = run_fvs_preflight
+        else:
+            operation, options = run_preflight, {"env_file": args.env_file}
         try:
-            result = run_preflight(
-                args.repo,
-                args.config,
-                args.output,
-                env_file=args.env_file,
-            )
+            result = operation(args.repo, args.config, args.output, **options)
         except (ContractError, OSError, worker.WorkerError) as exc:
             parser.error(str(exc))
         print(canonical_json_bytes(result).decode("utf-8"))
+        if result["status"] != "passed":
+            raise SystemExit(1)
         return
     target, run_config = _run_arguments(parser, args)
     try:

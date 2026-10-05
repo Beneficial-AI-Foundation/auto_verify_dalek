@@ -51,14 +51,16 @@ def _remaining_seconds(deadline_monotonic_ns: int) -> float:
     return min(30.0, remaining)
 
 
-def _read_upstream(reply: Any, deadline_monotonic_ns: int) -> bytes:
+def _read_upstream(
+    reply: Any, deadline_monotonic_ns: int, maximum: int = MAX_WIRE_BYTES
+) -> bytes:
     read_once = getattr(reply, "read1", None)
     if not callable(read_once):
         provider_deadline.set_reply_timeout(
             reply, _remaining_seconds(deadline_monotonic_ns)
         )
         try:
-            raw = reply.read(MAX_WIRE_BYTES + 1)
+            raw = reply.read(maximum + 1)
         except (OSError, http.client.HTTPException) as exc:
             if getattr(reply, "deadline_expired", False):
                 raise ProviderError(
@@ -68,7 +70,7 @@ def _read_upstream(reply: Any, deadline_monotonic_ns: int) -> bytes:
         _remaining_seconds(deadline_monotonic_ns)
         if not isinstance(raw, bytes):
             raise ProviderError("provider response body is invalid")
-        if len(raw) > MAX_WIRE_BYTES:
+        if len(raw) > maximum:
             raise ProviderError("provider response is too large")
         return raw
     chunks: list[bytes] = []
@@ -78,7 +80,7 @@ def _read_upstream(reply: Any, deadline_monotonic_ns: int) -> bytes:
             reply, _remaining_seconds(deadline_monotonic_ns)
         )
         try:
-            chunk = read_once(min(65_536, MAX_WIRE_BYTES + 1 - size))
+            chunk = read_once(min(65_536, maximum + 1 - size))
         except (OSError, http.client.HTTPException) as exc:
             if getattr(reply, "deadline_expired", False):
                 raise ProviderError(
@@ -92,7 +94,7 @@ def _read_upstream(reply: Any, deadline_monotonic_ns: int) -> bytes:
             raise ProviderError("provider response body is invalid")
         chunks.append(chunk)
         size += len(chunk)
-        if size > MAX_WIRE_BYTES:
+        if size > maximum:
             raise ProviderError("provider response is too large")
 
 

@@ -6,6 +6,7 @@ import hashlib
 import hmac
 import os
 import re
+import signal
 import threading
 import time
 from functools import wraps
@@ -201,6 +202,10 @@ class _CopyableRLock:
     def __exit__(self, *_: Any) -> None:
         self._lock.release()
 
+    def held(self) -> bool:
+        """Whether the calling thread is inside a serialized state commit."""
+        return self._lock._is_owned()
+
     def __deepcopy__(self, memo: dict[int, Any]) -> _CopyableRLock:
         copied = type(self)()
         memo[id(self)] = copied
@@ -216,7 +221,21 @@ def _serialized(method):
     @wraps(method)
     def locked(state, *args, **kwargs):
         with _state_lock(state):
-            return method(state, *args, **kwargs)
+            previous, pending = None, None
+            if threading.current_thread() is threading.main_thread():
+                previous = signal.getsignal(signal.SIGINT)
+                if callable(previous):
+                    def deferred(signum, frame):
+                        nonlocal pending
+                        pending = (signum, frame)
+                    signal.signal(signal.SIGINT, deferred)
+            try:
+                return method(state, *args, **kwargs)
+            finally:
+                if callable(previous):
+                    signal.signal(signal.SIGINT, previous)
+                    if pending is not None:
+                        previous(*pending)
     return locked
 
 
@@ -270,13 +289,12 @@ def _charge_wall(state: _RunState) -> Decimal:
         raise ContractError("monotonic clock moved backwards")
     if started_epoch is not None and epoch < started_epoch:
         raise ContractError("wall clock moved backwards")
-    state["wall_started_monotonic_ns"] = now
-    state["wall_started_epoch_ns"] = epoch
     used = Decimal(state.get("wall_seconds_used", Decimal("0.000000")))
     if started is not None:
         elapsed = max(now - started, epoch - started_epoch) if started_epoch is not None else now - started
         used += Decimal(elapsed) / Decimal(1_000_000_000)
-    state["wall_seconds_used"] = used
+    # Publish clocks and elapsed time together; an interrupt cannot lose a charged interval.
+    state.update(wall_started_monotonic_ns=now, wall_started_epoch_ns=epoch, wall_seconds_used=used)
     return used
 
 

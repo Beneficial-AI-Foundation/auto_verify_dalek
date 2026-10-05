@@ -471,13 +471,21 @@ def _serve(handler, port: int = 0):
 
 def _stop_service(service: _Service) -> None:
     stopper = threading.Thread(target=service.server.shutdown, daemon=True)
-    stopper.start()
-    stopper.join(timeout=1)
-    close_active = getattr(service.server, "close_active", None)
-    if callable(close_active):
-        close_active()
-    service.server.server_close()
-    service.thread.join(timeout=1)
+    try:
+        stopper.start()
+        stopper.join(timeout=1)
+    finally:
+        try:
+            close_active = getattr(service.server, "close_active", None)
+            if callable(close_active):
+                close_active()
+        finally:
+            try:
+                service.server.server_close()
+            finally:
+                service.thread.join(timeout=1)
+    if stopper.is_alive() or service.thread.is_alive():
+        raise provider_transport.ProviderError("provider service cleanup did not finish")
 
 
 def _record_service(run: dict[str, Any], digest: str, service: _Service) -> str:
@@ -737,7 +745,18 @@ def dispatch(
 def release(run: dict[str, Any]) -> None:
     digest = run.get("provider_binding_sha256")
     with _SERVICES_LOCK:
-        service = _SERVICES.pop(digest, None)
-    if service is not None:
-        _stop_service(service)
-    provider_config.release_provider(run)
+        service = _SERVICES.get(digest)
+    try:
+        if service is not None:
+            _stop_service(service)
+            with _SERVICES_LOCK:
+                if _SERVICES.get(digest) is service:
+                    _SERVICES.pop(digest)
+    finally:
+        # A failed/interrupted stop remains discoverable, but cannot retain dispatch authority.
+        provider_config.release_provider(run)
+
+
+def is_running(digest: str) -> bool:
+    with _SERVICES_LOCK:
+        return digest in _SERVICES

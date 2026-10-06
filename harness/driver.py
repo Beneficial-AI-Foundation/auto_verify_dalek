@@ -792,6 +792,8 @@ def run_rounds(prompt, tid, path, before_counts, args, env, settings_path,
                                    callees=getattr(args, "gate_callees", None),
                                    pure_callees=getattr(args, "gate_pure_callees", ()))
 
+        if getattr(args, "round_validator", None):
+            outcome, detail = args.round_validator(outcome, detail, result)
         m = END_REASON_RE.search(result.get("result") or "")
         end_reason = m.group(1).upper() if m else None
         try:
@@ -920,6 +922,7 @@ def stmt_fingerprints(modules, work, timeout=600):
             raise RuntimeError(f"StmtCanon: {r}")
         fps.setdefault(r["module"], {})[r["name"]] = {
             "kind": r["kind"], "canon": r["canon"], "pp": r["pp"],
+            "axioms": r.get("axioms"),
             "consts": [c["name"] for c in r.get("consts", [])]}
     return fps, round(time.time() - t0, 1)
 

@@ -97,12 +97,14 @@ def auditDecl (declName : Name) : MetaM Json := do
   | some ci =>
     let ty ← normalize ci.type
     let pp ← ppExpr ci.type
+    let axioms ← collectAxioms declName
     let consts := ty.getUsedConstants.toList.eraseDups.map fun c =>
       Json.mkObj [("name", toString c), ("module", moduleOf env c)]
     return Json.mkObj [
       ("name", toString declName), ("found", true),
       ("kind", kindOf ci), ("module", moduleOf env declName),
       ("canon", canon ty), ("pp", toString pp),
+      ("axioms", toJson (axioms.toList.map toString)),
       ("consts", Json.arr consts.toArray)]
 
 /-- Auxiliary constants whose existence/statement legitimately changes when

@@ -30,6 +30,9 @@ sorry-count gates, rollback. Differences from driver.py:
     the function) and published to the bundle before the next step. Known
     weakness, kept for A/B comparison: a locally true but too-weak spec
     passes its step and only fails at the top proof.
+  * --bottom-up --dynamic: fresh per-node Workers, structured blocker reports,
+    bounded read-only Refiner proposals, checked helper DAG expansion, and
+    durable local checkpoints. Publishes only after the final closure gate.
 
 Ledger: ledger/top_spec_rounds.jsonl (one record per attempt; transcripts
 in ledger/transcripts/topspec_*.jsonl like the driver's).
@@ -641,6 +644,14 @@ def main():
                     help="with --bottom-up: legacy leaves-first mode, one internal spec "
                          "per agent session (one editable file, accepted and published "
                          "step by step) instead of one joint batch; A/B control")
+    ap.add_argument("--dynamic", action="store_true",
+                    help="with --bottom-up: fresh per-node Workers and bounded Refiner splits")
+    ap.add_argument("--resume-dynamic", action="store_true",
+                    help="resume a verified dynamic checkpoint in --run-dir")
+    ap.add_argument("--max-refinements", type=int, default=2)
+    ap.add_argument("--max-helpers-per-split", type=int, default=4)
+    ap.add_argument("--max-proof-nodes", type=int, default=64)
+    ap.add_argument("--max-node-attempts", type=int, default=100)
     ap.add_argument("--max-joint-files", type=int, default=0,
                     help="reject a bottom-up closure above N editable files (0 = unlimited)")
     ap.add_argument("--model", default="")
@@ -667,6 +678,14 @@ def main():
     ap.add_argument("--resume-proof-state", help="prior proof-state state.json; import handoff without restoring code")
     driver.review_subagent.add_arguments(ap)
     args = ap.parse_args()
+    if args.resume_dynamic and (not args.dynamic or not args.run_dir):
+        ap.error("--resume-dynamic requires --dynamic and --run-dir")
+    if args.dynamic:
+        if not args.bottom_up or args.stepwise or args.commit or args.resume_proof_state:
+            ap.error("--dynamic requires --bottom-up; do not combine with --stepwise, --commit or --resume-proof-state")
+        if min(args.max_refinements, args.max_helpers_per_split,
+               args.max_proof_nodes, args.max_node_attempts) < 1:
+            ap.error("dynamic graph limits must be positive")
     driver.review_subagent.validate(args, ap)
     args.g2 = False  # driver.gate: no trust-base manifests in a bundle slot
     if args.fv_skills:
@@ -678,7 +697,7 @@ def main():
         fv_skills.manifest()
     if args.stepwise and not args.bottom_up:
         sys.exit("--stepwise requires --bottom-up")
-    joint = args.bottom_up and not args.stepwise
+    joint = args.bottom_up and not (args.stepwise or args.dynamic)
 
     rows = rank_candidates(args.bundle, args.probe)
     if args.list:
@@ -725,7 +744,7 @@ def main():
         ap.error("--resume-proof-state supports one step or one joint task, not a multi-step plan")
     top_stmt = statement_text(args.bundle, path, decl_line, line)
     if args.bottom_up:
-        what = ("joint batch" if joint else "stepwise plan")
+        what = ("dynamic graph" if args.dynamic else "joint batch" if joint else "stepwise plan")
         print(f"  {what}: {len(batch['planned_fns'])} internal function(s), "
               f"{len(batch['editable_files'])} editable file(s)")
         for i, s in enumerate(batch["planned"], 1):
@@ -748,6 +767,13 @@ def main():
             available=available_block(done_now, top_in_plan), module=driver.path_to_module(s["path"]))
 
     if args.dry_run:
+        if args.dynamic:
+            import dynamic_proof
+            if len(steps) > args.max_proof_nodes:
+                ap.error("initial plan exceeds --max-proof-nodes")
+            print(json.dumps(dynamic_proof.Graph(steps).nodes, indent=2))
+            print(dynamic_proof.REPORT)
+            return
         if joint:
             print("\n──── joint prompt ────\n" +
                   joint_prompt(batch, done, top_in_plan, short, top_stmt))
@@ -765,14 +791,23 @@ def main():
     settings_path = os.path.abspath(args.settings)
 
     run_id = datetime.datetime.now(datetime.timezone.utc).isoformat(timespec="seconds")
-    run_dir = args.run_dir or os.path.join(REPO, "ledger", "runs",
-                                           "topspec_" + run_id.replace(":", ""))
+    run_dir = os.path.abspath(args.run_dir or os.path.join(REPO, "ledger", "runs",
+                                           "topspec_" + run_id.replace(":", "")))
+    if args.dynamic and not args.resume_dynamic and os.path.exists(os.path.join(run_dir, "graph.json")):
+        ap.error("dynamic run directory already has a graph; choose a new --run-dir to preserve checkpoints")
+    if args.dynamic and len(steps) > args.max_proof_nodes:
+        ap.error("initial plan exceeds --max-proof-nodes")
     os.makedirs(run_dir, exist_ok=True)
     agentproc.install_signal_handler()
 
     baseline_imports = ([driver.path_to_module(p) for p in batch["spec_files"]]
                         if args.bottom_up else [])
-    work = make_bundle_slot(run_dir, args.bundle, skeletons, baseline_imports)
+    if args.resume_dynamic:
+        import dynamic_proof
+        work = os.path.join(run_dir, "slot0", "work")
+        dynamic_proof.Graph.restore(steps, run_dir, work)
+    else:
+        work = make_bundle_slot(run_dir, args.bundle, skeletons, baseline_imports)
     print(f"slot: {os.path.relpath(work, REPO)}; baseline lake build …", flush=True)
     rc, before_counts, base_s = driver.build_sorry_counts(work, args.build_timeout)
     if rc != 0:
@@ -819,6 +854,18 @@ def main():
         "auto_reset", "max_auto_resets")}
     limits.update(driver.review_subagent.options(args))
     plan_id = run_id
+
+    if args.dynamic:
+        import dynamic_proof
+        complete = dynamic_proof.run(
+            args, steps, work, run_dir, before_counts, env, settings_path,
+            prefix, step_prompt, done, top_in_plan, log, sys.modules[__name__])
+        print(f"dynamic {'accepted' if complete else 'incomplete'}; state: {run_dir}/graph.json")
+        if agentproc.RECEIVED_SIGNAL is not None:
+            sys.exit(128 + agentproc.RECEIVED_SIGNAL)
+        if not complete:
+            sys.exit(1)
+        return
 
     if joint:
         editable = batch["editable_files"]

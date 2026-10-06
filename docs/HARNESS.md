@@ -94,3 +94,55 @@ TODO: use OpenTelemetry to check a posteriori if the agent accessed the internet
 3. Close network: `--unshare-net`, API via proxy, credential out of sandbox (DEC-08).
 4. Decide what a broken seal / deadline / host restart does to a run (invalidation rules).
 5. Then Phase 2.
+
+## Dynamic per-node proof workflow
+
+`prove_top_spec.py --bottom-up --dynamic` runs a fresh Worker session for each
+internal specification, followed by the top-level proof. The initial dependency
+graph comes from the existing callee plan. Execution is serial; independent
+ready nodes can proceed even when another branch is blocked.
+
+```bash
+python harness/prove_top_spec.py --bottom-up --dynamic \
+  --target curve25519_dalek.edwards.EdwardsPoint.double_spec \
+  --model claude-sonnet-5 --rounds 3 --max-turns 60 --timeout 900 \
+  --run-dir ledger/runs/double_dynamic
+```
+
+Use `--dry-run` to inspect the initial graph without invoking a model.
+
+A Worker repairs ordinary Lean errors within its task. For a structural problem
+it returns a JSON `blocker` containing `kind`, `reason`, and `evidence`.
+`needs_split` invokes a fresh, read-only Refiner; `invalid_contract` blocks the
+node without silently changing its statement. The Refiner proposes closed helper
+statements, their dependencies, their purpose, and an exact insertion point.
+The harness inserts only theorem placeholders, checks elaboration and statement
+identity, adds the helper nodes, and schedules them before retrying the parent
+in a new session. Existing supplied statements are frozen. Synthesized internal
+specifications still need to be strong enough for the top-level theorem; Lean
+elaboration of a decomposition alone does not establish that sufficiency.
+
+Each Worker uses the existing scope/build/statement gates plus a transitive
+axiom check: its accepted theorem must not depend on `sorryAx`. New or previously
+verified declarations cannot acquire a `sorryAx` dependency. Unproved helper
+placeholders elsewhere in the graph are allowed. Failed decompositions are
+rolled back; ordinary timeouts do not automatically trigger decomposition.
+
+Accepted nodes are committed to the isolated workspace. `graph.json` records
+node states, dependency edges, session IDs, gate evidence, source hashes and
+refinement proposals; failed Worker edits are retained under `partials/`.
+The bundle is published only after every node and the final joint gate pass.
+This preserves local progress without exporting newly introduced placeholders.
+
+To resume the same checkpoint, repeat the command with `--resume-dynamic`.
+Recovery checks source hashes, a clean workspace, and the original plan, then
+opens fresh sessions for unfinished tasks. It deliberately refuses to overwrite
+a checkpoint with uncommitted edits after an abrupt crash; inspect and recover
+that workspace first. A new run must use a different run directory.
+
+Bounds: `--max-refinements` (default 2 per node), `--max-helpers-per-split` (4),
+`--max-proof-nodes` (64 total), and `--max-node-attempts` (100 across resumes).
+Worker rounds and Refiner invocations obey the configured turn/time limits.
+`--max-cost-usd` remains a per-Worker limit, not a total workflow budget.
+The dynamic mode does not support `--commit` or `--resume-proof-state`; it has
+its own checkpoint recovery and publishes without creating a repository commit.

@@ -254,7 +254,6 @@ def _upstream_request(
             "model": request["model_id"], "messages": messages,
             "tools": binding.tools, "tool_choice": policy["tool_choice"],
             "max_tokens": policy["max_output_tokens"], "stream": False,
-            "parallel_tool_calls": False,
             "reasoning": {"effort": "xhigh", "exclude": True},
             "provider": fvs_profile.requested_routing(request["model_id"]),
         }

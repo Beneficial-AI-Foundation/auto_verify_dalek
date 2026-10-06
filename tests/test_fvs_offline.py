@@ -296,6 +296,35 @@ class FvsOfflineTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             fvs_packet.apply_patch(ORIGINAL + "-- drift first\n", PATH, patch(SPEC).replace("def increment", "def wrong"))
 
+    def test_fvs_request_uses_only_advertised_provider_parameters(self):
+        # Default-provider metadata advertises these controls, not parallel_tool_calls.
+        supported = {"reasoning", "include_reasoning", "seed", "max_tokens", "response_format",
+                     "structured_outputs", "tools", "tool_choice", "verbosity", "reasoning_effort"}
+        for model_id in (fvs_profile.AUTHOR, fvs_profile.REVIEWER):
+            upstream = provider_transport._upstream_request(self.binding, {"model_id": model_id},
+                [{"role": "user", "content": "synthetic request"}])
+            controls = set(upstream) - {"model", "messages", "stream", "provider"}
+            self.assertLessEqual(controls, supported)
+            self.assertNotIn("parallel_tool_calls", upstream)
+            self.assertEqual(upstream["reasoning"], {"effort": "xhigh", "exclude": True})
+            self.assertTrue(upstream["provider"]["require_parameters"])
+            self.assertFalse(upstream["provider"]["allow_fallbacks"])
+            self.assertEqual(upstream["tool_choice"], "required" if model_id == fvs_profile.AUTHOR else "auto")
+            self.assertEqual(upstream["max_tokens"], 16384 if model_id == fvs_profile.AUTHOR else 8192)
+
+    def test_parallel_provider_reply_retains_only_the_first_validated_tool_call(self):
+        def add_discarded_call(reply):
+            second = copy.deepcopy(reply["choices"][0]["message"]["tool_calls"][0])
+            second["id"] = "discarded-second-call"
+            second["function"]["name"] = "unapproved-second-tool"
+            reply["choices"][0]["message"]["tool_calls"].append(second)
+        exchange = self.exchange("specifier", response_overrides=add_discarded_call)
+        self.assertEqual(exchange["response"]["kind"], "tool_call")
+        self.assertEqual(exchange["response"]["payload"]["name"], "read_allowed")
+        self.assertNotIn("unapproved-second-tool", json.dumps(exchange["response"]))
+        self.assertNotIn("discarded-second-call", json.dumps(exchange["response"]))
+        self.assertEqual(self.validate(exchange), Decimal("0.000300"))
+
     def test_sonnet_auto_tool_choice_is_bound_without_relaxing_submission(self):
         for role, choice in (("specifier", "required"), ("spec_reviewer", "auto"), ("proof_reviewer", "auto")):
             exchange = self.exchange(role)

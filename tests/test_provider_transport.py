@@ -4,12 +4,15 @@ import asyncio
 import base64
 import copy
 import hashlib
+import io
 import json
 import os
+import socket
 import subprocess
 import tempfile
 import time
 import unittest
+import urllib.error
 import urllib.request
 from concurrent.futures import ThreadPoolExecutor
 from decimal import Decimal
@@ -22,8 +25,10 @@ from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
 
 from autofv import (
     experiment,
+    fvs_profile,
     model,
     provider_config,
+    provider_receipts,
     provider_service,
     provider_transport,
     worker,
@@ -379,6 +384,149 @@ class ProviderTransportTests(unittest.TestCase):
                 self.assertNotIn(canary, retained)
             worker_proxy.stage_provider_messages(run, request, messages)
             worker_proxy.discard_provider_messages(run, request["request_id"])
+
+    def test_http_error_metadata_is_retained_without_raw_body_cost_or_retry(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            run, request, messages = _configured_provider(root, self.lock, self.base_commit)
+            worker_proxy.stage_provider_messages(run, request, messages)
+            error = urllib.error.HTTPError("https://provider.invalid/", 402, "private reason", {},
+                io.BytesIO(b'{"error":{"code":402,"message":"private provider text"},"usage":{"cost":123}}'))
+            opener = mock.Mock(side_effect=error)
+            with mock.patch("autofv.provider_transport._open_upstream", opener), self.assertRaises(
+                provider_transport.ProviderError
+            ) as caught:
+                provider_service.dispatch(run, request, run_token=RUN_TOKEN)
+            self.assertEqual(caught.exception.classification, "upstream_error")
+            self.assertEqual(caught.exception.status_code, 402)
+            journal = next((root / "evidence/provider-journal").glob("*.json"))
+            record = _strict_json(journal.read_bytes())
+            self.assertEqual(record["status"], "rejected")
+            self.assertIsNone(record["receipt"])
+            self.assertEqual(record["response"]["provider_response"], {
+                "schema": "autofv-provider-failure-metadata/v1", "classification": "upstream_error",
+                "http_status": 402, "upstream_error_code": 402,
+            })
+            for excluded in (b"private provider text", b"private reason", b'"usage"', b"provider-canary-secret"):
+                self.assertNotIn(excluded, journal.read_bytes())
+            self.assertEqual(provider_service._load(journal, provider_config.provider_binding(run), request), record)
+            retry = mock.Mock(side_effect=AssertionError("upstream retried"))
+            with mock.patch("autofv.provider_transport._open_upstream", retry), self.assertRaisesRegex(
+                provider_transport.ProviderError, "previous provider response was rejected"
+            ):
+                provider_service.dispatch(run, request, run_token=RUN_TOKEN)
+            opener.assert_called_once()
+            retry.assert_not_called()
+
+    def test_fvs_http_diagnostics_preserve_failed_accounting_and_no_model_preflight(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            run = _provider_run(root, self.lock, self.base_commit)
+            run.update(role_profile=fvs_profile.PROFILE_ID, source_packet_sha256="2" * 64)
+            _configure_provider(run, env_path=_provider_env(root, overrides={
+                "AUTOFV_PROVIDER_ENDPOINT": "https://openrouter.ai/api/v1/chat/completions",
+                "AUTOFV_PROVIDER_MODEL": fvs_profile.AUTHOR,
+                "AUTOFV_PROVIDER_CACHED_INPUT_USD_PER_MILLION": "0.100000",
+                "AUTOFV_PROVIDER_OUTPUT_USD_PER_MILLION": "10.000000",
+            }), tool_schemas=_provider_tools())
+            _install_trusted_authorization_fixture(run, root)
+            messages = _provider_messages()
+            request = copy.deepcopy(self.fixture["entries"][0]["request"])
+            request.update(model_id=fvs_profile.AUTHOR, input_hashes=sorted({
+                *request["input_hashes"], run["source_packet_sha256"],
+                fvs_profile.digest(fvs_profile.profile()), worker_proxy.provider_messages_sha256(messages),
+            }))
+            worker_proxy.stage_provider_messages(run, request, messages)
+            expected_reservation = provider_transport.reservation_usd(run, request, messages)
+            error = urllib.error.HTTPError("https://openrouter.ai/", 404, "private text", {},
+                io.BytesIO(b'{"error":{"code":404,"message":"private provider reason"}}'))
+            opener = mock.Mock(side_effect=error)
+            with mock.patch("autofv.provider_transport._open_upstream", opener), self.assertRaises(
+                provider_transport.ProviderError
+            ):
+                provider_service.dispatch(run, request, run_token=RUN_TOKEN)
+            record = _strict_json(next((root / "evidence/provider-journal").glob("*.json")).read_bytes())
+            self.assertEqual(record["status"], "rejected")
+            self.assertEqual(Decimal(record["reservation_usd"]), expected_reservation)
+            self.assertIsNone(record["receipt"])
+            self.assertEqual(record["response"]["provider_response"]["http_status"], 404)
+            self.assertEqual(record["response"]["classification"], "upstream_error")
+            self.assertFalse(run.get("provider_model_preflights"))
+            self.assertNotIn("private provider reason", json.dumps(record))
+            opener.assert_called_once()
+
+    def test_non_200_reply_retains_status_but_not_string_error_code(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            run, request, messages = _configured_provider(root, self.lock, self.base_commit)
+            worker_proxy.stage_provider_messages(run, request, messages)
+            reply = _ProviderReply({"error": {"code": "private-error-code", "message": "private text"}})
+            reply.status = 400
+            with mock.patch("autofv.provider_transport._open_upstream", return_value=reply), self.assertRaises(
+                provider_transport.ProviderError
+            ):
+                provider_service.dispatch(run, request, run_token=RUN_TOKEN)
+            record = _strict_json(next((root / "evidence/provider-journal").glob("*.json")).read_bytes())
+            self.assertEqual(record["status"], "rejected")
+            self.assertEqual(record["response"]["provider_response"], {
+                "schema": "autofv-provider-failure-metadata/v1", "classification": "upstream_error", "http_status": 400,
+            })
+            self.assertIsNone(record["receipt"])
+
+    def test_failure_companion_cannot_substitute_authoritative_journal_or_recovery(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            run, request, messages = _configured_provider(root, self.lock, self.base_commit)
+            worker_proxy.stage_provider_messages(run, request, messages)
+            with mock.patch("autofv.provider_transport._open_upstream", side_effect=urllib.error.URLError(
+                socket.gaierror(-2, "private context"))), self.assertRaises(provider_transport.ProviderError):
+                provider_service.dispatch(run, request, run_token=RUN_TOKEN)
+            journal = next((root / "evidence/provider-journal").glob("*.json"))
+            original = _strict_json(journal.read_bytes())
+            journal.write_bytes(journal.with_suffix(".failure").read_bytes())
+            binding = provider_config.provider_binding(run)
+            with self.assertRaisesRegex(provider_transport.ProviderError, "identity|schema|purpose"):
+                provider_service._load(journal, binding, request)
+            state = {"pending_model_exchanges": {request["request_id"]: {
+                "request": request, "reservation_usd": original["reservation_usd"], "dispatch_state": "dispatched"}},
+                "model_exchanges": {}}
+            with self.assertRaisesRegex(provider_transport.ProviderError, "identity|schema|purpose"):
+                provider_receipts.validate_recovery_artifacts(run, state, binding=binding)
+
+    def test_network_error_retains_safe_type_and_errno_not_exception_text(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            run, request, messages = _configured_provider(root, self.lock, self.base_commit)
+            worker_proxy.stage_provider_messages(run, request, messages)
+            error = urllib.error.URLError(socket.gaierror(-2, "private hostname or context"))
+            with mock.patch("autofv.provider_transport._open_upstream", side_effect=error), self.assertRaises(
+                provider_transport.ProviderError
+            ):
+                provider_service.dispatch(run, request, run_token=RUN_TOKEN)
+            journal = next((root / "evidence/provider-journal").glob("*.json"))
+            record = _strict_json(journal.read_bytes())
+            self.assertEqual(record["status"], "dispatched")
+            self.assertIsNone(record["response"])
+            self.assertIsNone(record["receipt"])
+            diagnostic_path = journal.with_suffix(".failure")
+            diagnostic = _strict_json(diagnostic_path.read_bytes())
+            self.assertEqual(diagnostic["response"]["provider_response"], {
+                "schema": "autofv-provider-failure-metadata/v1", "classification": "upstream_error",
+                "transport_error_type": "gaierror", "transport_errno": -2,
+            })
+            self.assertIsNone(diagnostic["receipt"])
+            self.assertNotIn(b"private hostname or context", diagnostic_path.read_bytes())
+            self.assertEqual(diagnostic["schema"], provider_service.FAILURE_COMPANION_SCHEMA)
+            self.assertEqual(provider_service._load_failure_companion(diagnostic_path, provider_config.provider_binding(run), request), diagnostic)
+            diagnostic_path.write_bytes(journal.read_bytes())
+            with self.assertRaisesRegex(provider_transport.ProviderError, "identity|schema|purpose"):
+                provider_service._load_failure_companion(diagnostic_path, provider_config.provider_binding(run), request)
+            retry = mock.Mock(side_effect=AssertionError("upstream retried"))
+            with mock.patch("autofv.provider_transport._open_upstream", retry), self.assertRaisesRegex(
+                provider_transport.ProviderError, "ambiguous"
+            ):
+                provider_service.dispatch(run, request, run_token=RUN_TOKEN)
+            retry.assert_not_called()
 
     def test_provider_retains_secret_scanned_rejected_response_without_retry(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

@@ -6,6 +6,7 @@ import json
 import signal
 import subprocess
 import unittest
+import urllib.error
 from contextlib import ExitStack
 from decimal import Decimal
 from pathlib import Path
@@ -109,9 +110,11 @@ class PreparedFvsPreflightTests(unittest.TestCase):
         bad_catalog = options.pop("bad_catalog", False)
         extra_catalog_models = options.pop("extra_catalog_models", 0)
         reject_reviewer = options.pop("reject_reviewer", False)
+        network_error = options.pop("network_error", False)
         cleanup_fails = options.pop("cleanup_fails", False)
         redirect = options.pop("redirect", False)
         lost_reply = options.pop("lost_reply", False)
+        invalid_companion = options.pop("invalid_companion", False)
         expired = options.pop("expired", False)
         patches = options.pop("patches", ())
         seed_error = contracts.BudgetExhausted("wall_seconds", Decimal(600), Decimal(600)) if expired else None
@@ -150,6 +153,8 @@ class PreparedFvsPreflightTests(unittest.TestCase):
                 return metadata(document)
             upstream = json.loads(request.data)
             self.requests.append(upstream)
+            if network_error:
+                raise urllib.error.URLError(OSError(61, "private synthetic network context"))
             reply = _provider_reply()
             model = upstream["model"]
             reply.update(model=model, provider="OpenAI" if model == fvs_profile.AUTHOR else "Anthropic")
@@ -165,6 +170,8 @@ class PreparedFvsPreflightTests(unittest.TestCase):
 
         def exchange(run, request):
             reply = provider_service.dispatch(run, request, run_token="synthetic-fvs-run-token")
+            if invalid_companion:
+                provider_service._journal_path(run, request["request_id"]).with_suffix(".failure").write_bytes(b"invalid companion")
             if lost_reply:
                 raise worker.WorkerError("synthetic lost reply after paid completion")
             return reply
@@ -270,6 +277,26 @@ class PreparedFvsPreflightTests(unittest.TestCase):
         self.assertTrue((self.output / "accounting.json").is_file())
         self.destroy_mock.assert_called_once_with(self.prepared_run)
 
+    def test_network_failure_metadata_exports_without_clearing_liability(self):
+        self.inputs()
+        result = self.exercise(check_model_accessibility=True, network_error=True)
+        self.assertEqual(result["status"], "failed")
+        self.assertEqual(len(self.requests), 1)
+        self.assertEqual(Decimal(result["reported_cost_usd"]), 0)
+        self.assertGreater(Decimal(result["unresolved_dispatched_liability_usd"]), 0)
+        self.assertGreater(Decimal(result["undispatched_reservation_usd"]), 0)
+        self.assertFalse(result["provider_model_preflights"])
+        raw = (self.output / "accounting.json").read_bytes()
+        accounting = json.loads(raw)
+        request_id = "preflight-accessibility-scout"
+        self.assertEqual(accounting["provider_journal"][request_id]["status"], "dispatched")
+        diagnostic = accounting["provider_failure_metadata"][request_id]
+        self.assertEqual(diagnostic["response"]["provider_response"]["transport_error_type"], type(OSError(61, "synthetic")).__name__)
+        self.assertEqual(diagnostic["response"]["provider_response"]["transport_errno"], 61)
+        self.assertIsNone(diagnostic["receipt"])
+        self.assertNotIn(b"private synthetic network context", raw)
+        self.assertNotIn(b"private synthetic network context", (self.output / "preflight-result.json").read_bytes())
+
     def test_cleanup_failure_never_reports_success_or_drops_records(self):
         self.inputs()
         result = self.exercise(check_model_accessibility=True, cleanup_fails=True)
@@ -295,6 +322,58 @@ class PreparedFvsPreflightTests(unittest.TestCase):
         self.assertEqual(Decimal(result["unresolved_dispatched_liability_usd"]), 0)
         self.assertGreater(Decimal(result["undispatched_reservation_usd"]), 0)
         self.assertEqual(len(result["provider_model_preflights"]), 1)
+
+    def test_invalid_companion_cannot_suppress_completed_journal_cost_recovery(self):
+        self.inputs()
+        result = self.exercise(check_model_accessibility=True, lost_reply=True, invalid_companion=True)
+        self.assertEqual(result["status"], "failed")
+        self.assertEqual(len(self.requests), 1)
+        self.assertEqual(Decimal(result["reported_cost_usd"]), Decimal("0.000300"))
+        self.assertEqual(Decimal(result["unresolved_dispatched_liability_usd"]), 0)
+        self.assertGreater(Decimal(result["undispatched_reservation_usd"]), 0)
+        accounting = json.loads((self.output / "accounting.json").read_bytes())
+        request_id = "preflight-accessibility-scout"
+        self.assertEqual(accounting["provider_journal"][request_id]["status"], "completed")
+        self.assertEqual(len(accounting["receipts"]), 1)
+        self.assertFalse(accounting["journal_failures"])
+        self.assertEqual(accounting["failure_metadata_failures"][request_id], "invalid_failure_companion")
+        self.assertNotIn(request_id, accounting["provider_failure_metadata"])
+
+    def test_companion_stat_error_cannot_skip_charge_export_and_provider_release(self):
+        self.inputs()
+        original_exists = Path.exists
+
+        def faulty_exists(path):
+            if path.suffix == ".failure":
+                raise OSError(5, "synthetic diagnostic stat failure")
+            return original_exists(path)
+
+        result = self.exercise(check_model_accessibility=True, lost_reply=True,
+            patches=(mock.patch.object(Path, "exists", faulty_exists),))
+        self.assertEqual(result["status"], "failed")
+        self.assertEqual(Decimal(result["reported_cost_usd"]), Decimal("0.000300"))
+        self.assertEqual(result["cleanup"], "disposed")
+        self.assertEqual(result["service_release"], "released")
+        with self.assertRaises(provider_config.ProviderConfigError):
+            provider_config.provider_binding(self.prepared_run)
+        accounting = json.loads((self.output / "accounting.json").read_bytes())
+        request_id = "preflight-accessibility-scout"
+        self.assertEqual(accounting["provider_journal"][request_id]["status"], "completed")
+        self.assertEqual(len(accounting["receipts"]), 1)
+        self.assertFalse(accounting["journal_failures"])
+        self.assertEqual(accounting["failure_metadata_failures"][request_id], "invalid_failure_companion")
+        self.assertTrue((self.output / "preflight-result.json").is_file())
+
+    def test_error_detail_does_not_export_suppressed_context_but_scans_its_secrets(self):
+        try:
+            try:
+                raise OSError("private suppressed provider context")
+            except OSError:
+                raise provider_transport.ProviderError("provider upstream_error") from None
+        except provider_transport.ProviderError as error:
+            self.assertNotIn("private suppressed", preflight_runner._error_detail(error, ()))
+            self.assertEqual(preflight_runner._error_detail(error, (b"private suppressed",)),
+                             "redacted: provider credential marker matched")
 
     def test_partial_cli_inputs_are_rejected_without_launch(self):
         with mock.patch("sys.argv", ["autofv", "preflight", "/target", "--config", "/config",

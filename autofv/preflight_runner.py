@@ -726,17 +726,22 @@ def _preflight_deadline(state):
 
 def _error_detail(exc: BaseException, markers: tuple[bytes, ...]) -> str:
     """Bounded cause chain; scanned in full before truncation, dropped on a credential match."""
-    parts, seen = [], set()
+    parts, visible_parts, seen = [], [], set()
+    visible = True
     while exc is not None and id(exc) not in seen and len(parts) < 4:
         seen.add(id(exc))
-        parts.append(f"{type(exc).__name__}: {exc}")
+        detail = f"{type(exc).__name__}: {exc}"
+        parts.append(detail)
+        if visible:
+            visible_parts.append(detail)
+        if exc.__cause__ is None and exc.__suppress_context__:
+            visible = False
         exc = exc.__cause__ or exc.__context__
-    text = " <- ".join(parts)
     try:
-        _scan_secrets(markers, text.encode("utf-8", "replace"))
+        _scan_secrets(markers, " <- ".join(parts).encode("utf-8", "replace"))
     except ContractError:
         return "redacted: provider credential marker matched"
-    return text[:2000]
+    return " <- ".join(visible_parts)[:2000]
 
 
 def _public_pair_inventory(state, destination):
@@ -824,7 +829,7 @@ def run_fvs_preflight(
              "finalization_reserve_seconds": _finalization_reserve(config)}
     run, binding, markers, created, owned = None, None, (), False, False
     calls, reservations, service_digest, release_failed = [], {}, None, False
-    journal, journal_failures = {}, {}
+    journal, journal_failures, failure_metadata, failure_metadata_failures = {}, {}, {}, {}
     phase, error_type, error_detail, cleanup = "prepared_inputs", None, None, "not_created"
     result = {"schema": "autofv-prepared-preflight/v1", "status": "failed", "execution_mode": "full",
               "model_accessibility": "not_requested" if not check_model_accessibility else "failed",
@@ -928,7 +933,8 @@ def run_fvs_preflight(
                 for request, _messages, _kind in calls:
                     key = request["request_id"]
                     try:
-                        record = provider_service._load(provider_service._journal_path(run, key), binding, request)
+                        path = provider_service._journal_path(run, key)
+                        record = provider_service._load(path, binding, request)
                         if record is not None:
                             journal[key] = record
                             if record["status"] == "completed" and key not in state["model_exchanges"]:
@@ -939,6 +945,16 @@ def run_fvs_preflight(
                             journal_failures[key] = "missing_dispatched_journal"
                     except Exception:
                         journal_failures[key] = "invalid_signed_journal_or_exchange"
+                        continue
+                    diagnostic_path = path.with_suffix(".failure")
+                    try:
+                        if diagnostic_path.exists():
+                            diagnostic = provider_service._load_failure_companion(diagnostic_path, binding, request)
+                            if record is None or record["status"] != "dispatched" or diagnostic is None:
+                                raise ContractError("failure metadata lacks an ambiguous dispatched journal")
+                            failure_metadata[key] = diagnostic
+                    except Exception:
+                        failure_metadata_failures[key] = "invalid_failure_companion"
             try:
                 provider_service.release(run)
             except BaseException:
@@ -965,6 +981,9 @@ def run_fvs_preflight(
     if journal_failures:
         result["status"] = "failed"
         result["journal_failures"] = journal_failures
+    if failure_metadata_failures:
+        result["status"] = "failed"
+        result["failure_metadata_failures"] = failure_metadata_failures
     undispatched, liability = {}, {}
     for key, amount in reservations.items():
         record = journal.get(key)
@@ -984,7 +1003,8 @@ def run_fvs_preflight(
         result["status"] = "failed"
     accounting = _checkpoint_value({"receipts": state["receipts"], "pending_model_exchanges": pending,
         "planned_reservations_usd": reservations, "receipt_rejections": state["receipt_rejections"],
-        "provider_journal": journal, "journal_failures": journal_failures})
+        "provider_journal": journal, "journal_failures": journal_failures,
+        "provider_failure_metadata": failure_metadata, "failure_metadata_failures": failure_metadata_failures})
     _scan_secrets(markers, canonical_json_bytes(accounting))
     _write_canonical(destination / "accounting.json", accounting)
     if run is not None:

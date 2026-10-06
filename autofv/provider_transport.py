@@ -568,6 +568,34 @@ def _status_classification(status: int) -> str:
     }.get(status, "upstream_error")
 
 
+def _upstream_failure(
+    classification: str, *, status_code: int | None = None,
+    error_value: Any = None, cause: BaseException | None = None,
+) -> ProviderError:
+    """Retain bounded diagnostics, never raw error text, usage or a cost receipt."""
+    diagnostic = {"schema": "autofv-provider-failure-metadata/v1", "classification": classification}
+    if type(status_code) is int and 100 <= status_code <= 599:
+        diagnostic["http_status"] = status_code
+    error = error_value.get("error") if isinstance(error_value, dict) else None
+    code = error.get("code") if isinstance(error, dict) else None
+    if type(code) is int and -(2 ** 31) <= code < 2 ** 31:
+        diagnostic["upstream_error_code"] = code
+    if cause is not None:
+        name = type(cause).__name__
+        diagnostic["transport_error_type"] = name if name in {
+            "OSError", "TimeoutError", "gaierror", "SSLError", "SSLCertVerificationError",
+            "ConnectionError", "ConnectionResetError", "ConnectionRefusedError", "ConnectionAbortedError",
+            "BrokenPipeError", "HTTPException", "RemoteDisconnected", "IncompleteRead", "BadStatusLine",
+        } else "unclassified_transport_error"
+        errno = getattr(cause, "errno", None)
+        if type(errno) is int and -(2 ** 31) <= errno < 2 ** 31:
+            diagnostic["transport_errno"] = errno
+    failure = ProviderError(f"provider {classification}", classification=classification, status_code=status_code)
+    failure.provider_response = diagnostic
+    failure.retain_dispatch_ambiguity = status_code is None
+    return failure
+
+
 def provider_round(
     run: dict[str, Any], request: dict[str, Any]
 ) -> tuple[dict[str, Any], dict[str, Any]]:
@@ -614,12 +642,7 @@ def provider_round(
                     error_value = None
                 if error_value is not None:
                     scan_response_secrets(error_value, binding, raw=raw)
-                classification = _status_classification(status)
-                raise ProviderError(
-                    f"provider {classification}",
-                    classification=classification,
-                    status_code=status,
-                )
+                raise _upstream_failure(_status_classification(status), status_code=status, error_value=error_value)
             value = _provider_json(raw)
             scan_response_secrets(value, binding, raw=raw)
     except urllib.error.HTTPError as exc:
@@ -629,13 +652,9 @@ def provider_round(
         except ProviderError:
             raise
         except (TimeoutError, socket.timeout) as error:
-            raise ProviderError(
-                "provider timeout", classification="timeout"
-            ) from error
+            raise _upstream_failure("timeout", status_code=exc.code, cause=error) from None
         except (OSError, http.client.HTTPException) as error:
-            raise ProviderError(
-                "provider upstream_error", classification="upstream_error"
-            ) from error
+            raise _upstream_failure("upstream_error", status_code=exc.code, cause=error) from None
         provider_messages.scan_encoded(error_raw, binding.secret_markers)
         try:
             error_value = _provider_json(error_raw)
@@ -643,27 +662,18 @@ def provider_round(
             error_value = None
         if error_value is not None:
             scan_response_secrets(error_value, binding, raw=error_raw)
-        classification = _status_classification(exc.code)
-        raise ProviderError(
-            f"provider {classification}",
-            classification=classification,
-            status_code=exc.code,
-        ) from None
+        raise _upstream_failure(_status_classification(exc.code), status_code=exc.code, error_value=error_value) from None
     except (TimeoutError, socket.timeout) as exc:
-        raise ProviderError("provider timeout", classification="timeout") from exc
+        raise _upstream_failure("timeout", cause=exc) from None
     except urllib.error.URLError as exc:
         classification = (
             "timeout"
             if isinstance(exc.reason, (TimeoutError, socket.timeout))
             else "upstream_error"
         )
-        raise ProviderError(
-            f"provider {classification}", classification=classification
-        ) from None
+        raise _upstream_failure(classification, cause=exc.reason) from None
     except (OSError, http.client.HTTPException) as exc:
-        raise ProviderError(
-            "provider upstream_error", classification="upstream_error"
-        ) from exc
+        raise _upstream_failure("upstream_error", cause=exc) from None
     try:
         response, provider = _provider_response(
             binding, request, value, run.get("base_commit", "")

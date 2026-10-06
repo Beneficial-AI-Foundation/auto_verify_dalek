@@ -27,6 +27,7 @@ from . import (
 
 
 JOURNAL_SCHEMA = provider_receipts.PROVIDER_JOURNAL_SCHEMA
+FAILURE_COMPANION_SCHEMA = "autofv-provider-failure-companion/v1"
 REJECTED_RESPONSE_SCHEMA = provider_receipts.REJECTED_RESPONSE_SCHEMA
 _JOURNAL_FIELDS = frozenset({
     "schema", "status", "run_id", "request_id", "sequence", "request_sha256",
@@ -140,9 +141,12 @@ def _record(
     *,
     response: dict[str, Any] | None = None,
     receipt: dict[str, Any] | None = None,
+    schema: str = JOURNAL_SCHEMA,
 ) -> dict[str, Any]:
+    if schema not in {JOURNAL_SCHEMA, FAILURE_COMPANION_SCHEMA}:
+        raise provider_transport.ProviderError("unknown provider record purpose")
     body = {
-        "schema": JOURNAL_SCHEMA,
+        "schema": schema,
         "status": status,
         "run_id": binding.public["run_id"],
         "request_id": request["request_id"],
@@ -180,13 +184,14 @@ def _validate_record(
     value: Any,
     binding: provider_config.ProviderBinding,
     request: dict[str, Any],
+    *, schema: str = JOURNAL_SCHEMA,
 ) -> dict[str, Any]:
     if not isinstance(value, dict) or set(value) != _JOURNAL_FIELDS:
         raise provider_transport.ProviderError("provider journal fields mismatch")
     signed = {key: item for key, item in value.items() if key != "record_sha256"}
     body = {key: item for key, item in signed.items() if key != "auth"}
     expected = {
-        "schema": JOURNAL_SCHEMA,
+        "schema": schema,
         "run_id": binding.public["run_id"],
         "request_id": request["request_id"],
         "sequence": request["sequence"],
@@ -202,6 +207,8 @@ def _validate_record(
         or not provider_receipts.is_reservation(value.get("reservation_usd"))
     ):
         raise provider_transport.ProviderError("provider journal identity mismatch")
+    if schema == FAILURE_COMPANION_SCHEMA and value["status"] != "rejected":
+        raise provider_transport.ProviderError("provider failure companion purpose mismatch")
     provider_receipts.verify_signature(
         body, value["auth"], binding.public["receipt_authentication"], "provider journal"
     )
@@ -230,6 +237,7 @@ def _load(
     path: Path,
     binding: provider_config.ProviderBinding,
     request: dict[str, Any],
+    *, schema: str = JOURNAL_SCHEMA,
 ) -> dict[str, Any] | None:
     flags = os.O_RDONLY | getattr(os, "O_CLOEXEC", 0) | getattr(os, "O_NOFOLLOW", 0)
     try:
@@ -254,7 +262,13 @@ def _load(
     finally:
         os.close(descriptor)
     provider_messages.scan_response(value, binding, raw=raw)
-    return _validate_record(value, binding, request)
+    return _validate_record(value, binding, request, schema=schema)
+
+
+def _load_failure_companion(
+    path: Path, binding: provider_config.ProviderBinding, request: dict[str, Any],
+) -> dict[str, Any] | None:
+    return _load(path, binding, request, schema=FAILURE_COMPANION_SCHEMA)
 
 
 def _write(path: Path, value: dict[str, Any]) -> None:
@@ -720,10 +734,15 @@ def dispatch(
                 reservation_usd,
                 "rejected",
                 response=rejected_response,
+                schema=FAILURE_COMPANION_SCHEMA if getattr(exc, "retain_dispatch_ambiguity", False) else JOURNAL_SCHEMA,
             )
             with binding.lock:
-                _write(path, rejected)
-                _remember(run, rejected)
+                if getattr(exc, "retain_dispatch_ambiguity", False):
+                    # Transport failure cannot establish whether upstream received or billed the call.
+                    _write(path.with_suffix(".failure"), rejected)
+                else:
+                    _write(path, rejected)
+                    _remember(run, rejected)
         raise
     completed = _record(
         binding,

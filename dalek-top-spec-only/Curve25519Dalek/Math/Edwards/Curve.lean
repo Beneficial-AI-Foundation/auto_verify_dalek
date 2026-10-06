@@ -29,10 +29,12 @@ lemma d_not_square : ¬IsSquare Ed25519.d := by
   apply (legendreSym.eq_neg_one_iff' p).mp
   norm_num [d, p]
 
+@[ext]
 structure Point {F : Type} [Mul F] [Add F] [Pow F ℕ] [One F] (C : EdwardsCurve F) where
   x : F
   y : F
   on_curve : C.a * x^2 + y^2 = 1 + C.d * x^2 * y^2 := by grind
+  deriving Repr
 
 instance : Inhabited (Point Ed25519) := ⟨{ x := 0, y := 1}⟩
 

@@ -1,0 +1,279 @@
+{
+  "target": "curve25519_dalek.edwards.EdwardsPoint.double_spec",
+  "bundle": "dalek-top-spec-only",
+  "command": "python harness/prove_top_spec.py --bottom-up --target curve25519_dalek.edwards.EdwardsPoint.double_spec --dry-run",
+  "probe": ".verilib/probes/lean_bundle_Curve25519Dalek_0.1.0.json",
+  "probe_full": ".verilib/probes/lean_Curve25519Dalek_0.1.0.json",
+  "note": "Plan regenerated from the synchronized bundle and existing probe call graph; probes were not re-extracted. This is a plan, not a completed proof.",
+  "internal_function_count": 16,
+  "editable_file_count": 10,
+  "accepted_internal_specs_used": {
+    "curve25519_dalek.Shared0FieldElement51.Insts.CoreOpsArithSubSharedAFieldElement51FieldElement51.sub": {
+      "path": "Curve25519Dalek/Specs/Backend/Serial/U64/Field/FieldElement51/Sub.lean",
+      "pp": {
+        "curve25519_dalek.Shared0FieldElement51.Insts.CoreOpsArithSubSharedAFieldElement51FieldElement51.sub_spec": "∀ (self _rhs : curve25519_dalek.backend.serial.u64.field.FieldElement51),\n  (∀ (i : Nat),\n      instLTNat.lt i 5 →\n        instLTNat.lt (Aeneas.Std.UScalar.val (Aeneas.Std.instGetElem?ArrayNatLtLengthValListEqVal.getElem! self i))\n          (instHPow.hPow 2 63)) →\n    (∀ (i : Nat),\n        instLTNat.lt i 5 →\n          instLTNat.lt (Aeneas.Std.UScalar.val (Aeneas.Std.instGetElem?ArrayNatLtLengthValListEqVal.getElem! _rhs i))\n            (instHPow.hPow 2 54)) →\n      Aeneas.Std.WP.spec\n        (curve25519_dalek.Shared0FieldElement51.Insts.CoreOpsArithSubSharedAFieldElement51FieldElement51.sub self _rhs)\n        fun result =>\n        And\n          (∀ (i : Nat),\n            instLTNat.lt i 5 →\n              instLTNat.lt\n                (Aeneas.Std.UScalar.val (Aeneas.Std.instGetElem?ArrayNatLtLengthValListEqVal.getElem! result i))\n                (instHPow.hPow 2 52))\n          (Eq (instHMod.hMod (instHAdd.hAdd (Field51_as_Nat result) (Field51_as_Nat _rhs)) p)\n            (instHMod.hMod (Field51_as_Nat self) p))"
+      },
+      "revisions": [],
+      "run_id": "2026-09-24T09:54:02+00:00",
+      "theorems": [
+        "curve25519_dalek.Shared0FieldElement51.Insts.CoreOpsArithSubSharedAFieldElement51FieldElement51.sub_spec"
+      ]
+    },
+    "curve25519_dalek.backend.serial.u64.field.FieldElement51.reduce": {
+      "path": "Curve25519Dalek/Specs/Backend/Serial/U64/Field/FieldElement51/Reduce.lean",
+      "pp": {
+        "curve25519_dalek.backend.serial.u64.field.FieldElement51.reduce_spec": "∀ (limbs : Aeneas.Std.Array Aeneas.Std.U64 (Aeneas.Std.Usize.ofNat 5 ⋯)),\n  Aeneas.Std.WP.spec (curve25519_dalek.backend.serial.u64.field.FieldElement51.reduce limbs) fun result =>\n    And\n      (∀ (i : Nat),\n        instLTNat.lt i 5 →\n          instLTNat.lt (Aeneas.Std.UScalar.val (Aeneas.Std.instGetElem?ArrayNatLtLengthValListEqVal.getElem! result i))\n            (instHAdd.hAdd (instHPow.hPow 2 51) (instHPow.hPow 2 18)))\n      (Eq\n        (instHAdd.hAdd (Field51_as_Nat result)\n          (instHMul.hMul\n            (instHDiv.hDiv\n              (Aeneas.Std.UScalar.val (Aeneas.Std.instGetElem?ArrayNatLtLengthValListEqVal.getElem! limbs 4))\n              (instHPow.hPow 2 51))\n            p))\n        (Field51_as_Nat limbs))"
+      },
+      "revisions": [],
+      "run_id": "2026-09-22T08:31:11+00:00",
+      "theorems": [
+        "curve25519_dalek.backend.serial.u64.field.FieldElement51.reduce_spec"
+      ]
+    },
+    "curve25519_dalek.backend.serial.u64.field.FieldElement51.reduce.LOW_51_BIT_MASK": {
+      "path": "Curve25519Dalek/Specs/Backend/Serial/U64/Field/FieldElement51/Reduce.lean",
+      "pp": {
+        "curve25519_dalek.backend.serial.u64.field.FieldElement51.reduce.LOW_51_BIT_MASK_spec": "Aeneas.Std.WP.spec curve25519_dalek.backend.serial.u64.field.FieldElement51.reduce.LOW_51_BIT_MASK fun r =>\n  Eq (Aeneas.Std.UScalar.val r) (instHSub.hSub (instHPow.hPow 2 51) 1)"
+      },
+      "revisions": [],
+      "run_id": "2026-09-22T08:31:11+00:00",
+      "theorems": [
+        "curve25519_dalek.backend.serial.u64.field.FieldElement51.reduce.LOW_51_BIT_MASK_spec"
+      ]
+    }
+  },
+  "available_top_spec_functions": [],
+  "batch": {
+    "planned": [
+      {
+        "mode": "spec",
+        "fn": "probe:curve25519_dalek.backend.serial.u64.field.MulShared0FieldElement51SharedAFieldElement51FieldElement51.mul.LOW_51_BIT_MASK",
+        "path": "Curve25519Dalek/Specs/Backend/Serial/U64/Field/FieldElement51/Mul.lean",
+        "path_source": "human",
+        "result": true,
+        "callers": [
+          "Shared0FieldElement51.Insts.CoreOpsArithMulSharedAFieldElement51FieldElement51.mul"
+        ]
+      },
+      {
+        "mode": "spec",
+        "fn": "probe:curve25519_dalek.backend.serial.u64.field.MulShared0FieldElement51SharedAFieldElement51FieldElement51.mul.m",
+        "path": "Curve25519Dalek/Specs/Backend/Serial/U64/Field/FieldElement51/Mul.lean",
+        "path_source": "human",
+        "result": true,
+        "callers": [
+          "Shared0FieldElement51.Insts.CoreOpsArithMulSharedAFieldElement51FieldElement51.mul"
+        ]
+      },
+      {
+        "mode": "spec",
+        "fn": "probe:curve25519_dalek.Shared0FieldElement51.Insts.CoreOpsArithMulSharedAFieldElement51FieldElement51.mul",
+        "path": "Curve25519Dalek/Specs/Backend/Serial/U64/Field/FieldElement51/Mul.lean",
+        "path_source": "human",
+        "result": true,
+        "callers": [
+          "backend.serial.curve_models.CompletedPoint.as_extended"
+        ]
+      },
+      {
+        "mode": "spec",
+        "fn": "probe:curve25519_dalek.backend.serial.curve_models.CompletedPoint.as_extended",
+        "path": "Curve25519Dalek/Specs/Backend/Serial/CurveModels/CompletedPoint/AsExtended.lean",
+        "path_source": "human",
+        "result": true,
+        "callers": [
+          "edwards.EdwardsPoint.double"
+        ]
+      },
+      {
+        "mode": "spec",
+        "fn": "probe:curve25519_dalek.backend.serial.u64.field.FieldElement51.Insts.CoreOpsArithAddAssignSharedAFieldElement51.add_assign_loop",
+        "path": "Curve25519Dalek/Specs/Backend/Serial/U64/Field/FieldElement51/AddAssign.lean",
+        "path_source": "human",
+        "result": true,
+        "callers": [
+          "backend.serial.u64.field.FieldElement51.Insts.CoreOpsArithAddAssignSharedAFieldElement51.add_assign"
+        ]
+      },
+      {
+        "mode": "spec",
+        "fn": "probe:curve25519_dalek.backend.serial.u64.field.FieldElement51.Insts.CoreOpsArithAddAssignSharedAFieldElement51.add_assign",
+        "path": "Curve25519Dalek/Specs/Backend/Serial/U64/Field/FieldElement51/AddAssign.lean",
+        "path_source": "human",
+        "result": true,
+        "callers": [
+          "Shared0FieldElement51.Insts.CoreOpsArithAddSharedAFieldElement51FieldElement51.add"
+        ]
+      },
+      {
+        "mode": "spec",
+        "fn": "probe:curve25519_dalek.Shared0FieldElement51.Insts.CoreOpsArithAddSharedAFieldElement51FieldElement51.add",
+        "path": "Curve25519Dalek/Specs/Backend/Serial/U64/Field/FieldElement51/Add.lean",
+        "path_source": "human",
+        "result": true,
+        "callers": [
+          "backend.serial.curve_models.ProjectivePoint.double"
+        ]
+      },
+      {
+        "mode": "spec",
+        "fn": "probe:curve25519_dalek.backend.serial.u64.field.FieldElement51.pow2k.LOW_51_BIT_MASK",
+        "path": "Curve25519Dalek/Specs/Backend/Serial/U64/Field/FieldElement51/Pow2K.lean",
+        "path_source": "human",
+        "result": true,
+        "callers": [
+          "backend.serial.u64.field.FieldElement51.pow2k_loop"
+        ]
+      },
+      {
+        "mode": "spec",
+        "fn": "probe:curve25519_dalek.backend.serial.u64.field.FieldElement51.pow2k.m",
+        "path": "Curve25519Dalek/Specs/Backend/Serial/U64/Field/FieldElement51/Pow2K.lean",
+        "path_source": "human",
+        "result": true,
+        "callers": [
+          "backend.serial.u64.field.FieldElement51.pow2k_loop"
+        ]
+      },
+      {
+        "mode": "spec",
+        "fn": "probe:curve25519_dalek.backend.serial.u64.field.FieldElement51.pow2k_loop",
+        "path": "Curve25519Dalek/Specs/Backend/Serial/U64/Field/FieldElement51/Pow2K.lean",
+        "path_source": "human",
+        "result": true,
+        "callers": [
+          "backend.serial.u64.field.FieldElement51.pow2k"
+        ]
+      },
+      {
+        "mode": "spec",
+        "fn": "probe:curve25519_dalek.backend.serial.u64.field.FieldElement51.pow2k",
+        "path": "Curve25519Dalek/Specs/Backend/Serial/U64/Field/FieldElement51/Pow2K.lean",
+        "path_source": "human",
+        "result": true,
+        "callers": [
+          "backend.serial.u64.field.FieldElement51.square",
+          "backend.serial.u64.field.FieldElement51.square2"
+        ]
+      },
+      {
+        "mode": "spec",
+        "fn": "probe:curve25519_dalek.backend.serial.u64.field.FieldElement51.square",
+        "path": "Curve25519Dalek/Specs/Backend/Serial/U64/Field/FieldElement51/Square.lean",
+        "path_source": "human",
+        "result": true,
+        "callers": [
+          "backend.serial.curve_models.ProjectivePoint.double"
+        ]
+      },
+      {
+        "mode": "spec",
+        "fn": "probe:curve25519_dalek.backend.serial.u64.field.FieldElement51.square2_loop",
+        "path": "Curve25519Dalek/Specs/Backend/Serial/U64/Field/FieldElement51/Square2.lean",
+        "path_source": "human",
+        "result": true,
+        "callers": [
+          "backend.serial.u64.field.FieldElement51.square2"
+        ]
+      },
+      {
+        "mode": "spec",
+        "fn": "probe:curve25519_dalek.backend.serial.u64.field.FieldElement51.square2",
+        "path": "Curve25519Dalek/Specs/Backend/Serial/U64/Field/FieldElement51/Square2.lean",
+        "path_source": "human",
+        "result": true,
+        "callers": [
+          "backend.serial.curve_models.ProjectivePoint.double"
+        ]
+      },
+      {
+        "mode": "spec",
+        "fn": "probe:curve25519_dalek.backend.serial.curve_models.ProjectivePoint.double",
+        "path": "Curve25519Dalek/Specs/Backend/Serial/CurveModels/ProjectivePoint/Double.lean",
+        "path_source": "human",
+        "result": true,
+        "callers": [
+          "edwards.EdwardsPoint.double"
+        ]
+      },
+      {
+        "mode": "spec",
+        "fn": "probe:curve25519_dalek.edwards.EdwardsPoint.as_projective",
+        "path": "Curve25519Dalek/Specs/Edwards/EdwardsPoint/AsProjective.lean",
+        "path_source": "human",
+        "result": true,
+        "callers": [
+          "edwards.EdwardsPoint.double"
+        ]
+      }
+    ],
+    "planned_fns": [
+      "probe:curve25519_dalek.backend.serial.u64.field.MulShared0FieldElement51SharedAFieldElement51FieldElement51.mul.LOW_51_BIT_MASK",
+      "probe:curve25519_dalek.backend.serial.u64.field.MulShared0FieldElement51SharedAFieldElement51FieldElement51.mul.m",
+      "probe:curve25519_dalek.Shared0FieldElement51.Insts.CoreOpsArithMulSharedAFieldElement51FieldElement51.mul",
+      "probe:curve25519_dalek.backend.serial.curve_models.CompletedPoint.as_extended",
+      "probe:curve25519_dalek.backend.serial.u64.field.FieldElement51.Insts.CoreOpsArithAddAssignSharedAFieldElement51.add_assign_loop",
+      "probe:curve25519_dalek.backend.serial.u64.field.FieldElement51.Insts.CoreOpsArithAddAssignSharedAFieldElement51.add_assign",
+      "probe:curve25519_dalek.Shared0FieldElement51.Insts.CoreOpsArithAddSharedAFieldElement51FieldElement51.add",
+      "probe:curve25519_dalek.backend.serial.u64.field.FieldElement51.pow2k.LOW_51_BIT_MASK",
+      "probe:curve25519_dalek.backend.serial.u64.field.FieldElement51.pow2k.m",
+      "probe:curve25519_dalek.backend.serial.u64.field.FieldElement51.pow2k_loop",
+      "probe:curve25519_dalek.backend.serial.u64.field.FieldElement51.pow2k",
+      "probe:curve25519_dalek.backend.serial.u64.field.FieldElement51.square",
+      "probe:curve25519_dalek.backend.serial.u64.field.FieldElement51.square2_loop",
+      "probe:curve25519_dalek.backend.serial.u64.field.FieldElement51.square2",
+      "probe:curve25519_dalek.backend.serial.curve_models.ProjectivePoint.double",
+      "probe:curve25519_dalek.edwards.EdwardsPoint.as_projective"
+    ],
+    "spec_files": [
+      "Curve25519Dalek/Specs/Backend/Serial/U64/Field/FieldElement51/Mul.lean",
+      "Curve25519Dalek/Specs/Backend/Serial/CurveModels/CompletedPoint/AsExtended.lean",
+      "Curve25519Dalek/Specs/Backend/Serial/U64/Field/FieldElement51/AddAssign.lean",
+      "Curve25519Dalek/Specs/Backend/Serial/U64/Field/FieldElement51/Add.lean",
+      "Curve25519Dalek/Specs/Backend/Serial/U64/Field/FieldElement51/Pow2K.lean",
+      "Curve25519Dalek/Specs/Backend/Serial/U64/Field/FieldElement51/Square.lean",
+      "Curve25519Dalek/Specs/Backend/Serial/U64/Field/FieldElement51/Square2.lean",
+      "Curve25519Dalek/Specs/Backend/Serial/CurveModels/ProjectivePoint/Double.lean",
+      "Curve25519Dalek/Specs/Edwards/EdwardsPoint/AsProjective.lean"
+    ],
+    "top": {
+      "mode": "fill",
+      "fn": "probe:curve25519_dalek.edwards.EdwardsPoint.double_spec",
+      "path": "Curve25519Dalek/Specs/Edwards/EdwardsPoint/Double.lean",
+      "top_fn": "probe:curve25519_dalek.edwards.EdwardsPoint.double"
+    },
+    "editable_files": [
+      "Curve25519Dalek/Specs/Backend/Serial/U64/Field/FieldElement51/Mul.lean",
+      "Curve25519Dalek/Specs/Backend/Serial/CurveModels/CompletedPoint/AsExtended.lean",
+      "Curve25519Dalek/Specs/Backend/Serial/U64/Field/FieldElement51/AddAssign.lean",
+      "Curve25519Dalek/Specs/Backend/Serial/U64/Field/FieldElement51/Add.lean",
+      "Curve25519Dalek/Specs/Backend/Serial/U64/Field/FieldElement51/Pow2K.lean",
+      "Curve25519Dalek/Specs/Backend/Serial/U64/Field/FieldElement51/Square.lean",
+      "Curve25519Dalek/Specs/Backend/Serial/U64/Field/FieldElement51/Square2.lean",
+      "Curve25519Dalek/Specs/Backend/Serial/CurveModels/ProjectivePoint/Double.lean",
+      "Curve25519Dalek/Specs/Edwards/EdwardsPoint/AsProjective.lean",
+      "Curve25519Dalek/Specs/Edwards/EdwardsPoint/Double.lean"
+    ]
+  },
+  "input_sha256": {
+    "dalek-top-spec-only/bundle_manifest.json": "3ebec828c3bdef63940bd24a3fa7c5b4178a9fce323ffffcd63baab79c5cfe54",
+    "dalek-top-spec-only/internal_specs.json": "fd11a9a8b9724dbe53b88ba6c73a705c5a34ed5262dc7e01553a2945290cde6f",
+    "dalek-top-spec-only/Curve25519Dalek/Funs.lean": "e6ae338c11b05f90f5c0f3341fa2e7d361d4418476674c285c589d68b9152f6c",
+    "dalek-top-spec-only/Curve25519Dalek/Specs/Edwards/EdwardsPoint/Double.lean": "92a3f37f08aff23223e3974ac07f8cbe49dfa151efc782a035ad1eba9f4542bf",
+    ".verilib/probes/lean_bundle_Curve25519Dalek_0.1.0.json": "dacd8aba26320ab747bc0712fc74cf06376a673c2e7a644c23e9d71f5c4414fd",
+    ".verilib/probes/lean_Curve25519Dalek_0.1.0.json": "40c40d870d1ff577d0890fb598bb7233a15278b274117dc13d3e2171645af35f",
+    "dalek-top-spec-only/Curve25519Dalek/Math/Basic.lean": "9b1f6ffd62f7b0ebfd07e4c18768a34cfbed3207895cb95dbeb8754665879dbe",
+    "dalek-top-spec-only/Curve25519Dalek/Math/Edwards/Basepoint.lean": "5e473f29fa3a3074b2de0f7c4cadb793f6740a8ea2cdceb15e8e8aac9555d21e",
+    "dalek-top-spec-only/Curve25519Dalek/Math/Edwards/Curve.lean": "a863104d6d968d53edab6205132052029c0a69f4cac94cd7317e13aa13b84508",
+    "dalek-top-spec-only/Curve25519Dalek/Math/Edwards/Representation.lean": "e2bf433682fbbf1f98639e287c4c46e5179c305819a3e3777a131af5252edd5b",
+    "dalek-top-spec-only/Curve25519Dalek/Math/Montgomery/Curve.lean": "c56de36e42c5f1c1a8a41129667bdd1a07ef98b6b7766b2ea454246a3ed9c5d9",
+    "dalek-top-spec-only/Curve25519Dalek/Math/Montgomery/Representation.lean": "543528a0a778ef2ea7329b44f20be9966e6b5df209538b45d30ad0d0ef63a2a4",
+    "dalek-top-spec-only/Curve25519Dalek/Math/Ristretto/Representation.lean": "d130491b11b24296bec0639aeb9fa44aa054f8bbcee1fbf87a6dd29e36a47444"
+  },
+  "validation": {
+    "bundle_lake_build": "passed (3385 jobs)",
+    "preserved_spec_registry_and_root_files": 79,
+    "preserved_accepted_internal_specs": 6,
+    "math_code_matches_fresh_generation_ignoring_comments_and_blank_lines": true
+  }
+}

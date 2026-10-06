@@ -28,6 +28,9 @@ open Edwards
 @[mk_iff]
 structure AffinePoint.IsValid (a : AffinePoint) : Prop where
 
+  x_valid : a.x.IsValid
+  y_valid : a.y.IsValid
+
   on_curve :
     let x := a.x.toField
     let y := a.y.toField

@@ -114,7 +114,8 @@ Use `--dry-run` to inspect the initial graph without invoking a model.
 A Worker repairs ordinary Lean errors within its task. For a structural problem
 it returns a JSON `blocker` containing `kind`, `reason`, and `evidence`.
 `needs_split` invokes a fresh, read-only Refiner; `invalid_contract` blocks the
-node without silently changing its statement. The Refiner proposes closed helper
+node without silently changing its statement; `needs_stronger_spec` names an
+accepted internal specification that is too weak for the current proof. The Refiner proposes closed helper
 statements, their dependencies, their purpose, and an exact insertion point.
 The harness inserts only theorem placeholders, checks elaboration and statement
 identity, adds the helper nodes, and schedules them before retrying the parent
@@ -140,8 +141,21 @@ opens fresh sessions for unfinished tasks. It deliberately refuses to overwrite
 a checkpoint with uncommitted edits after an abrupt crash; inspect and recover
 that workspace first. A new run must use a different run directory.
 
+Revision of an accepted spec (`needs_stronger_spec`): the harness checks that
+the named function is an accepted internal spec upstream of the requesting
+node, resets the slot to the commit before that spec was accepted, replays the
+later commits except the acceptances of the spec and of every node that
+transitively depends on it (a replay that conflicts or does not build falls
+back to replaying split commits only; any failure restores the slot exactly),
+and rebuilds the sorry counts. The spec and its dependents return to `pending`;
+the spec's next Worker is told the previous statement, the requester, and the
+missing equation or bound, and writes a stronger statement in a fresh session.
+Dependents are then re-proved against it. `graph.json` keeps the ordered slot
+commits and each revision request. Existing supplied statements stay frozen.
+
 Bounds: `--max-refinements` (default 2 per node), `--max-helpers-per-split` (4),
-`--max-proof-nodes` (64 total), and `--max-node-attempts` (100 across resumes).
+`--max-proof-nodes` (64 total), `--max-node-attempts` (100 across resumes),
+and `--max-spec-revisions` (2 per internal spec; 0 disables revision).
 Worker rounds and Refiner invocations obey the configured turn/time limits.
 `--max-cost-usd` remains a per-Worker limit, not a total workflow budget.
 The dynamic mode does not support `--commit` or `--resume-proof-state`; it has

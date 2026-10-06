@@ -16,13 +16,48 @@ import agentproc
 import driver
 
 REPORT = '''
-If a structural obstacle prevents this proof, return ONLY this JSON object:
+If a structural obstacle prevents this proof, return ONLY one JSON object:
 {"blocker":{"kind":"needs_split","reason":"...","evidence":"..."}}
-Use kind "invalid_contract" for an incorrect or insufficient specification.
+  when the proof needs auxiliary lemmas;
+{"blocker":{"kind":"needs_stronger_spec","spec":"<internal function>","reason":"...","evidence":"..."}}
+  when an already accepted internal specification (listed as available) is
+  too weak for this proof: name the function, say exactly which equation or
+  bound is missing, and quote the goal that needs it;
+{"blocker":{"kind":"invalid_contract","reason":"...","evidence":"..."}}
+  when the frozen target statement itself is false.
 Ordinary Lean errors should be repaired, not reported as structural blockers.
 Do not change existing theorem statements. Do not write a report file.
 '''
+REVISION = '''
+A previous specification for this function was accepted and later turned out
+to be too weak. It has been removed from the file; write a stronger one.
+Request from `{requester}`: {reason}
+Evidence: {evidence}
+Previous statement(s):
+{previous}
+The new statement must still hold for the function and must provide what the
+requester needs. Callers proved against the old statement are re-proved later.
+'''
+KINDS = ('needs_split', 'invalid_contract', 'needs_stronger_spec')
 NAME = re.compile(r"[A-Za-z_][A-Za-z0-9_']*(?:\.[A-Za-z_][A-Za-z0-9_']*)*\Z")
+GIT = ['git', '-c', 'user.name=harness', '-c', 'user.email=harness@localhost']
+
+
+def short(fn):
+    return fn.removeprefix('probe:').removeprefix('curve25519_dalek.')
+
+
+def git(work, *argv):
+    r = driver.sh(GIT + list(argv), work)
+    if r.returncode != 0:
+        raise RuntimeError(f"git {argv[0]} failed: {r.stderr[-800:]}")
+    return r.stdout.strip()
+
+
+def commit(work, path, msg):
+    """Commit in the slot and return the new HEAD sha."""
+    driver.slot_commit(work, path, msg)
+    return git(work, 'rev-parse', 'HEAD')
 
 
 def object_result(result):
@@ -38,10 +73,10 @@ def object_result(result):
 
 def blocker_result(result):
     value = object_result(result).get('blocker')
-    if (isinstance(value, dict) and value.get('kind') in
-            ('needs_split', 'invalid_contract') and
-            all(isinstance(value.get(k), str) and value[k].strip()
-                for k in ('reason', 'evidence'))):
+    if not isinstance(value, dict) or value.get('kind') not in KINDS:
+        return None
+    keys = ('reason', 'evidence') + (('spec',) if value['kind'] == 'needs_stronger_spec' else ())
+    if all(isinstance(value.get(k), str) and value[k].strip() for k in keys):
         return value
     return None
 
@@ -70,10 +105,9 @@ class Graph:
         for i, step in enumerate(steps):
             key = f'n{i + 1}'
             self.nodes[key] = dict(step, id=key, deps=previous[:],
-                                   status='pending', refinements=0)
+                                   status='pending', refinements=0, revisions=0)
             previous = [key]
         if any('callers' in s for s in steps):
-            short = lambda fn: fn.removeprefix('probe:').removeprefix('curve25519_dalek.')
             callers = {short(n.get('top_fn', n['fn'])): n for n in self.nodes.values()}
             for n in self.nodes.values():
                 n['deps'] = []
@@ -85,6 +119,7 @@ class Graph:
             # nodes reached through aliases omitted by the caller mapping.
             self.nodes[previous[0]]['deps'] = list(self.nodes)[:-1]
         self.events = []
+        self.commits = []  # ordered slot commits: {sha, kind: accept|split, node}
         self.attempts = 0
         self.initial = None
         self.initial_counts = None
@@ -94,6 +129,30 @@ class Graph:
         return next((n for n in self.nodes.values() if n['status'] == 'pending'
                      and all(self.nodes[d]['status'] == 'accepted'
                              for d in n['deps'])), None)
+
+    def upstream(self, key):
+        """Transitive dependencies of `key`."""
+        found, todo = set(), list(self.nodes[key]['deps'])
+        while todo:
+            d = todo.pop()
+            if d not in found:
+                found.add(d)
+                todo.extend(self.nodes[d]['deps'])
+        return found
+
+    def downstream(self, key):
+        """Every node that transitively depends on `key`."""
+        return {n['id'] for n in self.nodes.values() if key in self.upstream(n['id'])}
+
+    def spec_for(self, name, requester):
+        """The accepted internal spec node named by a Worker's report, if it is
+        an upstream dependency of the requesting node; otherwise None."""
+        want = short(name)
+        up = self.upstream(requester['id'])
+        hits = [n for n in self.nodes.values()
+                if n['mode'] == 'spec' and n['id'] in up and n['status'] == 'accepted'
+                and (short(n['fn']) == want or short(n['fn']).endswith('.' + want))]
+        return hits[0] if len(hits) == 1 else None
 
     def split(self, node, helpers):
         original = node['deps'][:]
@@ -112,7 +171,7 @@ class Graph:
     def save(self, run_dir, work):
         paths = {n['path'] for n in self.nodes.values()}
         state = dict(version=1, nodes=self.nodes, events=self.events,
-                     attempts=self.attempts,
+                     commits=self.commits, attempts=self.attempts,
                      initial=self.initial, initial_counts=self.initial_counts,
                      source_sha256={p: hashlib.sha256(Path(work, p).read_bytes()).hexdigest()
                                     for p in paths})
@@ -134,6 +193,10 @@ class Graph:
         if any(driver.changed_files(work)):
             raise ValueError('checkpoint workspace has uncommitted changes; inspect partials before recovery')
         graph.nodes, graph.events = state['nodes'], state['events']
+        graph.commits = state.get('commits', [])
+        for c in graph.commits:
+            if driver.sh(['git', 'cat-file', '-e', c['sha'] + '^{commit}'], work).returncode != 0:
+                raise ValueError(f"checkpoint commit missing from slot: {c['sha']}")
         graph.attempts = state['attempts']
         graph.initial, graph.initial_counts = state['initial'], state['initial_counts']
         validate_graph(graph.nodes)
@@ -176,6 +239,80 @@ def validate_proposal(proposal, source, limit):
         f"theorem _root_.{h['name']} : {h['type']} := by\n  sorry\n\n"
         for h in helpers)
     return source.replace(anchor, insertion + anchor, 1), helpers
+
+
+def revise(graph, args, spec, requester, report, work, log):
+    """Reopen an accepted internal spec that a downstream Worker found too weak.
+
+    The slot is reset to the commit before the spec's acceptance; later commits
+    are replayed except the acceptances of the spec and of every node that
+    transitively depends on it (their proofs may use the old statement). A
+    replayed acceptance that conflicts, or a replay that does not build, falls
+    back to replaying split commits only. Any failure restores the slot exactly.
+    Returns (reopened node ids, sorry counts after revision); raises ValueError.
+    """
+    if spec['revisions'] >= args.max_spec_revisions:
+        raise ValueError('spec revision budget exhausted')
+    idx = next((i for i, c in enumerate(graph.commits)
+                if c['kind'] == 'accept' and c['node'] == spec['id']), None)
+    if idx is None:
+        raise ValueError('no acceptance commit recorded for the spec')
+    module = driver.path_to_module(spec['path'])
+    fps, _ = driver.stmt_fingerprints([module], work)
+    previous = {t: fps.get(module, {}).get(t, {}).get('pp') for t in spec.get('theorems', [])}
+    dropped = graph.downstream(spec['id']) | {spec['id']}
+    pre = git(work, 'rev-parse', 'HEAD')
+    base = git(work, 'rev-parse', graph.commits[idx]['sha'] + '^')
+
+    def replay(keep_accepts):
+        git(work, 'reset', '--hard', base)
+        kept, lost = graph.commits[:idx], []
+        for c in graph.commits[idx + 1:]:
+            if c['kind'] == 'accept' and (c['node'] in dropped or not keep_accepts):
+                lost.append(c['node'])
+                continue
+            r = driver.sh(GIT + ['cherry-pick', '--allow-empty', c['sha']], work)
+            if r.returncode != 0:
+                driver.sh(['git', 'cherry-pick', '--abort'], work)
+                if c['kind'] != 'accept':
+                    raise ValueError(f"cannot replay split commit of {c['node']}")
+                lost.append(c['node'])
+                continue
+            kept.append(dict(c, sha=git(work, 'rev-parse', 'HEAD')))
+        rc, counts, _, output = driver.build_sorry_counts(work, args.build_timeout, include_output=True)
+        if rc != 0:
+            raise ValueError('slot does not build after revision: ' + output[-2000:])
+        return kept, lost, counts
+
+    try:
+        try:
+            kept, lost, counts = replay(True)
+        except ValueError as first:
+            log(f"revision replay with independent acceptances failed ({first}); retrying with splits only")
+            kept, lost, counts = replay(False)
+    except (ValueError, RuntimeError, subprocess.TimeoutExpired):
+        git(work, 'reset', '--hard', pre)
+        raise
+    graph.commits = kept
+    reopened = sorted(dropped | set(lost))
+    for key in reopened:
+        n = graph.nodes[key]
+        n['status'] = 'pending'
+        n.pop('theorems', None)
+    spec['revisions'] += 1
+    spec.setdefault('revision_requests', []).append(dict(
+        requester=requester['fn'], reason=report['reason'],
+        evidence=report['evidence'], previous=previous))
+    return reopened, counts
+
+
+def revision_block(node):
+    requests = node.get('revision_requests') or []
+    return ''.join(REVISION.format(
+        requester=short(r['requester']), reason=r['reason'], evidence=r['evidence'],
+        previous='\n'.join(f"  {t}: {pp or '(statement unavailable)'}"
+                           for t, pp in r['previous'].items()) or '  (none recorded)')
+        for r in requests)
 
 
 def run(args, steps, work, run_dir, before_counts, env, settings, prefix,
@@ -231,7 +368,7 @@ def run(args, steps, work, run_dir, before_counts, env, settings, prefix,
                       'Its type and all other declarations are frozen. '
                       'Previously accepted dependencies are in the workspace.\n')
         else:
-            prompt = step_prompt(attempt, node, done)
+            prompt = step_prompt(attempt, node, done) + revision_block(node)
         prompt += REPORT
         tid = 'dag_' + Path(run_dir).name + '_' + str(attempt)
         node['status'] = 'running'
@@ -247,7 +384,8 @@ def run(args, steps, work, run_dir, before_counts, env, settings, prefix,
             node['status'] = 'accepted'
             node['theorems'] = detail['verified_theorems']
             before_counts = detail['counts_after']
-            driver.slot_commit(work, path, f"DAG accepted {node['id']}")
+            graph.commits.append(dict(sha=commit(work, path, f"DAG accepted {node['id']}"),
+                                      kind='accept', node=node['id']))
             if node['mode'] == 'spec':
                 done[node['fn'].removeprefix('probe:')] = dict(
                     path=path, theorems=node['theorems'], run_id=Path(run_dir).name)
@@ -263,7 +401,26 @@ def run(args, steps, work, run_dir, before_counts, env, settings, prefix,
         if agentproc.RECEIVED_SIGNAL is not None:
             break
         report = detail.get('blocker', {})
-        if (outcome != 'structural_blocker' or report.get('kind') != 'needs_split'
+        kind = report.get('kind') if outcome == 'structural_blocker' else None
+        if kind == 'needs_stronger_spec':
+            spec = graph.spec_for(report['spec'], node)
+            rev_event = dict(role='revision', node=node['id'], request=report,
+                             spec=spec['id'] if spec else None)
+            graph.events.append(rev_event)
+            try:
+                if spec is None:
+                    raise ValueError('spec is not an accepted upstream internal specification of this node')
+                log(f"revision of {spec['id']} ({spec['fn']}) requested by {node['id']}: {report['reason']}")
+                reopened, before_counts = revise(graph, args, spec, node, report, work, log)
+                for key in reopened:
+                    if graph.nodes[key]['mode'] == 'spec':
+                        done.pop(graph.nodes[key]['fn'].removeprefix('probe:'), None)
+                rev_event.update(outcome='accepted_revision', reopened=reopened)
+            except (ValueError, RuntimeError, subprocess.TimeoutExpired) as error:
+                rev_event.update(outcome='rejected_revision', error=str(error))
+            graph.save(run_dir, work)
+            continue
+        if (kind != 'needs_split'
                 or node['refinements'] >= args.max_refinements
                 or len(graph.nodes) >= args.max_proof_nodes):
             # Independent ready nodes may still make progress.
@@ -322,7 +479,8 @@ inappropriate return {{"blocked":"reason"}}.
             for p in set(counts) | set(before_counts):
                 if p != path and counts.get(p, 0) != before_counts.get(p, 0):
                     raise ValueError('refinement changed another module')
-            driver.slot_commit(work, path, f"DAG split {node['id']}")
+            graph.commits.append(dict(sha=commit(work, path, f"DAG split {node['id']}"),
+                                      kind='split', node=node['id']))
             graph.split(node, helpers)
             before_counts = counts
             ref_event['outcome'] = 'accepted_decomposition'

@@ -652,6 +652,9 @@ def main():
     ap.add_argument("--max-helpers-per-split", type=int, default=4)
     ap.add_argument("--max-proof-nodes", type=int, default=64)
     ap.add_argument("--max-node-attempts", type=int, default=100)
+    ap.add_argument("--max-spec-revisions", type=int, default=2,
+                    help="with --dynamic: times an accepted internal spec may be reopened "
+                         "and strengthened after a downstream Worker reports it too weak (0 = never)")
     ap.add_argument("--max-joint-files", type=int, default=0,
                     help="reject a bottom-up closure above N editable files (0 = unlimited)")
     ap.add_argument("--model", default="")
@@ -686,6 +689,8 @@ def main():
         if min(args.max_refinements, args.max_helpers_per_split,
                args.max_proof_nodes, args.max_node_attempts) < 1:
             ap.error("dynamic graph limits must be positive")
+        if args.max_spec_revisions < 0:
+            ap.error("--max-spec-revisions must be >= 0")
     driver.review_subagent.validate(args, ap)
     args.g2 = False  # driver.gate: no trust-base manifests in a bundle slot
     if args.fv_skills:

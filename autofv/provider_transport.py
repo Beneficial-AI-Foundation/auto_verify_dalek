@@ -518,8 +518,8 @@ def _provider_response(
     }
     if fvs:
         completion = usage.get("completion_tokens_details", {})
-        if (set(completion) - {"reasoning_tokens", "accepted_prediction_tokens", "rejected_prediction_tokens"}
-            or any(completion.get(k, 0) for k in ("accepted_prediction_tokens", "rejected_prediction_tokens"))
+        if (set(completion) - {"reasoning_tokens", "accepted_prediction_tokens", "rejected_prediction_tokens", "audio_tokens", "image_tokens"}
+            or any(completion.get(k, 0) for k in ("accepted_prediction_tokens", "rejected_prediction_tokens", "audio_tokens", "image_tokens"))
             or details.get("audio_tokens", 0) or details.get("video_tokens", 0)
             or usage.get("is_byok", False)
             or set(usage.get("cost_details", {})) - {"upstream_inference_cost", "upstream_inference_prompt_cost", "upstream_inference_completions_cost"}):

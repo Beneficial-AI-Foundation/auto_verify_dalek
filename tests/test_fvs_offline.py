@@ -202,6 +202,33 @@ class FvsOfflineTests(unittest.TestCase):
             with self.assertRaises(worker.WorkerError):
                 self.exchange("spec_reviewer", response_overrides=lambda r: (writes(r), r["usage"].update(cost=Decimal(amount))))
 
+    def test_known_zero_completion_modality_counters_preserve_text_billing(self):
+        def observed_usage_shape(reply):
+            usage = reply["usage"]
+            usage.update(prompt_tokens=200, completion_tokens=32, total_tokens=232, cost=Decimal("0.000720"))
+            usage["completion_tokens_details"].update(audio_tokens=0, image_tokens=0)
+        for role in ("specifier", "spec_reviewer"):
+            exchange = self.exchange(role, response_overrides=observed_usage_shape)
+            self.assertEqual(self.validate(exchange), Decimal("0.000720"))
+            usage = exchange["receipt"]["provider"]["usage"]
+            self.assertEqual(usage["input_tokens"], 200)
+            self.assertEqual(usage["output_tokens"], 32)
+            self.assertEqual(usage["reasoning_tokens"], 5)
+            self.assertNotIn("audio_tokens", usage)
+            self.assertNotIn("image_tokens", usage)
+
+    def test_nonzero_untyped_or_unknown_completion_categories_still_fail_closed(self):
+        for field, value in [("audio_tokens", 1), ("image_tokens", 1),
+                             ("audio_tokens", False), ("image_tokens", False),
+                             ("audio_tokens", 0.0), ("image_tokens", Decimal(0)),
+                             ("unknown_zero_category", 0), ("accepted_prediction_tokens", 1),
+                             ("rejected_prediction_tokens", 1)]:
+            with self.subTest(field=field, value=value):
+                def unsupported(reply):
+                    reply["usage"]["completion_tokens_details"][field] = value
+                with self.assertRaises(provider_config.ProviderConfigError):
+                    self.exchange("specifier", response_overrides=unsupported)
+
     def test_tiered_reservations_cover_cache_writes_and_billed_reasoning(self):
         for model_id in (fvs_profile.AUTHOR, fvs_profile.REVIEWER):
             for count in (100, 272000, 280000):

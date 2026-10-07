@@ -346,11 +346,11 @@ class FvsOfflineTests(unittest.TestCase):
         e = self.exchange("spec_reviewer", response_overrides=writes)
         p = e["receipt"]["provider"]
         self.assertEqual(p["cache_write_ttl"], "unknown")
-        self.assertEqual(p["billing"]["bounds_usd"], {"lower": "0.000284", "upper": "0.000344"})
+        self.assertEqual(p["billing"]["bounds_usd"], {"lower": "0.000282", "upper": "0.000342"})
         self.assertEqual(p["billing"]["pricing_verification"], "bounded")
         self.assertEqual(e["receipt"]["cost"]["amount"], "0.000324")
         self.assertEqual(self.validate(e), Decimal("0.000324"))
-        for amount in ("0.000283", "0.000345"):
+        for amount in ("0.000281", "0.000343"):
             with self.assertRaises(worker.WorkerError):
                 self.exchange("spec_reviewer", response_overrides=lambda r: (writes(r), r["usage"].update(cost=Decimal(amount))))
 
@@ -380,6 +380,39 @@ class FvsOfflineTests(unittest.TestCase):
                     reply["usage"]["completion_tokens_details"][field] = value
                 with self.assertRaises(provider_config.ProviderConfigError):
                     self.exchange("specifier", response_overrides=unsupported)
+
+    def test_sonnet_cached_read_pin_matches_catalog_and_keeps_drift_errors(self):
+        from tests.test_fvs_preflight import endpoint
+        document = endpoint(fvs_profile.REVIEWER)
+        prices = document["data"]["endpoints"][0]["pricing"]
+        prices["input_cache_read"] = "0.0000001"
+        inventory = fvs_profile.public_endpoint_inventory(fvs_profile.REVIEWER, document)
+        self.assertEqual(inventory["pricing_tiers"][0]["cached"], "0.10")
+        for changed in ("0.0000002", "0.00000011"):
+            prices["input_cache_read"] = changed
+            with self.subTest(price=changed), self.assertRaisesRegex(contracts.ContractError, "price tier drift"):
+                fvs_profile.public_endpoint_inventory(fvs_profile.REVIEWER, document)
+        prices["input_cache_read"] = "0.0000001"
+        prices["unknown_fee"] = 0
+        with self.assertRaisesRegex(contracts.ContractError, "unknown price categories"):
+            fvs_profile.public_endpoint_inventory(fvs_profile.REVIEWER, document)
+        with self.assertRaisesRegex(contracts.ContractError, "metadata is malformed"):
+            fvs_profile.public_endpoint_inventory(fvs_profile.REVIEWER, {})
+
+    def test_sonnet_cached_usage_binds_new_reported_cost_without_changing_other_rates(self):
+        def cached(reply):
+            reply["usage"]["prompt_tokens_details"]["cached_tokens"] = 100
+            reply["usage"]["cost"] = Decimal("0.000110")
+        exchange = self.exchange("spec_reviewer", response_overrides=cached)
+        self.assertEqual(self.validate(exchange), Decimal("0.000110"))
+        usage = {"input_tokens": 100, "cached_input_tokens": 100, "cache_write_tokens": 0,
+                 "output_tokens": 10, "reasoning_tokens": 5}
+        self.assertEqual(fvs_profile.pricing_bounds(fvs_profile.REVIEWER, usage),
+                         (Decimal("0.000110"), Decimal("0.000110")))
+        self.assertEqual(fvs_profile.profile()["models"][fvs_profile.REVIEWER]["tiers"], [{
+            "min_input_tokens": 0, "input": "2", "cached": "0.10", "write_lower": "2.50",
+            "write_upper": "4", "output": "10"}])
+        self.assertEqual(fvs_profile.profile()["models"][fvs_profile.AUTHOR]["tiers"][1]["cached"], "0.20")
 
     def test_tiered_reservations_cover_cache_writes_and_billed_reasoning(self):
         for model_id in (fvs_profile.AUTHOR, fvs_profile.REVIEWER):

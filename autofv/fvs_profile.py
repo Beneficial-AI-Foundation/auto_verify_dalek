@@ -53,7 +53,7 @@ def profile() -> dict[str, Any]:
                 "ignored_endpoints": [],
                 "tool_choice": "auto", "max_output_tokens": 8192,
                 "tiers": [
-                    {"min_input_tokens": 0, "input": "2", "cached": "0.20",
+                    {"min_input_tokens": 0, "input": "2", "cached": "0.10",
                      "write_lower": "2.50", "write_upper": "4", "output": "10"},
                 ],
             },
@@ -187,6 +187,8 @@ def public_endpoint_inventory(model: str, document: Any) -> dict[str, Any]:
                 "ignored_endpoint_slugs": routing["ignore"],
                 "supported_tool_choices": sorted(k for k, supported in choices.items() if supported),
                 "pricing_tiers": copy.deepcopy(policy["tiers"])}
+    except ContractError:
+        raise
     except (KeyError, TypeError, ValueError, ArithmeticError, AttributeError) as exc:
         raise ContractError("FVS public endpoint metadata is malformed") from exc
 

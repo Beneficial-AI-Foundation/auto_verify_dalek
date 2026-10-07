@@ -44,9 +44,22 @@ CONTEXT = '''
 Context from earlier work on this target in this run. You are a fresh session;
 the workspace contains only accepted, verified work.
 {helpers}{history}'''
+SORRY_NOTE = ('Your proof depends on declarations that themselves contain `sorry` and are '
+              'not frozen Math-layer assumptions: {bad}. The sorry count alone does not '
+              'show this. Replace those dependencies with proved lemmas (or prove them '
+              'in the target file).')
 KINDS = ('needs_split', 'invalid_contract', 'needs_stronger_spec')
 NAME = re.compile(r"[A-Za-z_][A-Za-z0-9_']*(?:\.[A-Za-z_][A-Za-z0-9_']*)*\Z")
 GIT = ['git', '-c', 'user.name=harness', '-c', 'user.email=harness@localhost']
+
+
+def fingerprints(modules, work, args):
+    """Statement fingerprints of current sources. StmtCanon reads .olean files,
+    and a rollback restores sources only, so rebuild first (cheap when fresh)."""
+    rc, _, _, output = driver.build_sorry_counts(work, args.build_timeout, include_output=True)
+    if rc != 0:
+        raise RuntimeError('workspace does not build before fingerprinting: ' + output[-2000:])
+    return driver.stmt_fingerprints(modules, work)
 
 
 def short(fn):
@@ -98,11 +111,36 @@ def blocker_result(result):
     return None
 
 
-def clean_theorems(fps, names):
-    return bool(names) and all(
-        fps.get(n, {}).get('kind') == 'theorem' and
-        isinstance(fps[n].get('axioms'), list) and
-        'sorryAx' not in fps[n]['axioms'] for n in names)
+MATH_ASSUMPTIONS = Path(driver.REPO, 'harness', 'frozen', 'math_assumptions.json')
+
+
+def math_assumptions():
+    """Names of the frozen Math-layer sorries (plan.md §4): the only
+    declarations through which an accepted proof may depend on sorryAx."""
+    return frozenset(a['name'] for a in json.loads(MATH_ASSUMPTIONS.read_text())['assumptions'])
+
+
+def disallowed_sorries(fp, allowed):
+    """Closure members carrying a sorry that are not whitelisted Math
+    assumptions. Fails closed: missing evidence counts as disallowed."""
+    axioms = fp.get('axioms')
+    if not isinstance(axioms, list):
+        return ['<no axiom evidence>']
+    if 'sorryAx' not in axioms:
+        return []
+    sources = fp.get('sorry_sources')
+    if not isinstance(sources, list) or not sources:
+        return ['<no sorry-source evidence>']
+    return sorted(s['name'] for s in sources
+                  if s['name'] not in allowed or not s['module'].startswith('Curve25519Dalek.Math'))
+
+
+def is_clean(fp, allowed=frozenset()):
+    return fp.get('kind') == 'theorem' and not disallowed_sorries(fp, allowed)
+
+
+def clean_theorems(fps, names, allowed=frozenset()):
+    return bool(names) and all(is_clean(fps.get(n, {}), allowed) for n in names)
 
 
 def validate_graph(nodes):
@@ -136,7 +174,8 @@ class Graph:
             # nodes reached through aliases omitted by the caller mapping.
             self.nodes[previous[0]]['deps'] = list(self.nodes)[:-1]
         self.events = []
-        self.commits = []  # ordered slot commits: {sha, kind: accept|split, node}
+        self.commits = []  # ordered slot commits: {sha, kind: accept|split|unsplit, node}
+        self.math_assumptions = []
         self.attempts = 0
         self.initial = None
         self.initial_counts = None
@@ -196,6 +235,7 @@ class Graph:
         paths = {n['path'] for n in self.nodes.values()}
         state = dict(version=1, nodes=self.nodes, events=self.events,
                      commits=self.commits, attempts=self.attempts,
+                     math_assumptions=self.math_assumptions,
                      initial=self.initial, initial_counts=self.initial_counts,
                      source_sha256={p: hashlib.sha256(Path(work, p).read_bytes()).hexdigest()
                                     for p in paths})
@@ -282,7 +322,7 @@ def revise(graph, args, spec, requester, report, work, log):
     if idx is None:
         raise ValueError('no acceptance commit recorded for the spec')
     module = driver.path_to_module(spec['path'])
-    fps, _ = driver.stmt_fingerprints([module], work)
+    fps, _ = fingerprints([module], work, args)
     previous = {t: fps.get(module, {}).get(t, {}).get('pp') for t in spec.get('theorems', [])}
     dropped = graph.downstream(spec['id']) | {spec['id']}
     pre = git(work, 'rev-parse', 'HEAD')
@@ -403,7 +443,7 @@ def unsplit(graph, args, helper, report, work, before_counts, log):
             raise ValueError(f"{n['id']} depends on a helper being removed")
     path = parent['path']
     module = driver.path_to_module(path)
-    old, _ = driver.stmt_fingerprints([module], work)
+    old, _ = fingerprints([module], work, args)
     source = Path(work, path).read_text()
     for n in removed:
         source, k = placeholder_re(n['fn']).subn('', source)
@@ -455,7 +495,7 @@ def refine(graph, args, node, report, task_prompt, failed_source, work, run_dir,
     path = node['path']
     module = driver.path_to_module(path)
     log(f"refiner for {node['id']}: {report['reason']}")
-    baseline, _ = driver.stmt_fingerprints([module], work)
+    baseline, _ = fingerprints([module], work, args)
     source = Path(work, path).read_text()
     rejected = ''.join(f"  - {h['name']} : {h['type']}\n      why false: {h['reason']}\n"
                        for h in node.get('rejected_helpers', []))
@@ -486,7 +526,9 @@ inappropriate return {{"blocked":"reason"}}.
         cwd=work, session_id=ref_session, resume=False, model=args.model,
         max_turns=args.max_turns, deadline_seconds=args.timeout,
         allowed_tools='Read,Grep,Glob', env=env, settings_path=settings,
-        sandbox_prefix=ref_prefix, local_checks=False)
+        sandbox_prefix=ref_prefix, local_checks=False,
+        progress_log=(None if getattr(args, 'quiet_turns', False) else
+                      lambda message: log(f"[refiner {node['id']}] {message}")))
     ref_event = dict(role='refiner', node=node['id'], session=ref_session,
                      sandbox='read_only' if ref_prefix is not prefix else
                              ('shared_writable' if prefix else 'none'),
@@ -534,9 +576,11 @@ inappropriate return {{"blocked":"reason"}}.
 def run(args, steps, work, run_dir, before_counts, env, settings, prefix,
         step_prompt, done, top_in_plan, log, api):
     graph = (Graph.restore(steps, run_dir, work) if args.resume_dynamic else Graph(steps))
+    allowed = math_assumptions()
+    graph.math_assumptions = sorted(allowed)
     modules = list(dict.fromkeys(driver.path_to_module(s['path']) for s in steps))
     if graph.initial is None:
-        graph.initial, _ = driver.stmt_fingerprints(modules, work)
+        graph.initial, _ = fingerprints(modules, work, args)
         graph.initial_counts = dict(before_counts)
     initial, initial_counts = graph.initial, graph.initial_counts
     for n in graph.nodes.values():
@@ -552,7 +596,7 @@ def run(args, steps, work, run_dir, before_counts, env, settings, prefix,
         graph.attempts = attempt
         path = node['path']
         module = driver.path_to_module(path)
-        baseline, _ = driver.stmt_fingerprints([module], work)
+        baseline, _ = fingerprints([module], work, args)
         local = copy.copy(args)
         local.resume_proof_state = None
         local.gate_mode = 'fill' if node['mode'] == 'helper' else node['mode']
@@ -563,14 +607,17 @@ def run(args, steps, work, run_dir, before_counts, env, settings, prefix,
             if outcome == 'accepted':
                 fps = detail.get('g1_after', {}).get(module, {})
                 names = detail.get('specs', []) if node['mode'] == 'spec' else [node['fn'].removeprefix('probe:')]
-                if not clean_theorems(fps, names):
-                    return 'rejected_sorry_remains', {**detail, 'reason': 'target axiom closure contains sorryAx or evidence missing'}
+                bad = {n: disallowed_sorries(fps.get(n, {}), allowed) for n in names}
+                bad = {n: d for n, d in bad.items() if d or fps.get(n, {}).get('kind') != 'theorem'}
+                if not names or bad:
+                    return 'rejected_sorry_remains', {**detail, 'reason': f'target depends on sorry outside the math assumptions: {bad}',
+                        'harness_note': SORRY_NOTE.format(bad=json.dumps(bad))}
                 old = baseline.get(module, {})
                 for name, fp in fps.items():
-                    if (name not in old or old[name].get('axioms') == [] or
-                            isinstance(old[name].get('axioms'), list) and 'sorryAx' not in old[name]['axioms']):
-                        if not isinstance(fp.get('axioms'), list) or 'sorryAx' in fp['axioms']:
-                            return 'rejected_sorry_remains', {**detail, 'reason': f'new or previously verified declaration uses sorryAx: {name}'}
+                    if name not in old or is_clean(old[name], allowed):
+                        if (d := disallowed_sorries(fp, allowed)) and fp.get('kind') == 'theorem':
+                            return 'rejected_sorry_remains', {**detail, 'reason': f'new or previously verified declaration uses sorryAx: {name}',
+                                'harness_note': SORRY_NOTE.format(bad=json.dumps({name: d}))}
                 detail['verified_theorems'] = names
             elif outcome in driver.FEEDBACK:
                 report = blocker_result(result)
@@ -695,7 +742,7 @@ def run(args, steps, work, run_dir, before_counts, env, settings, prefix,
             pure_callees={s['fn'].removeprefix('probe:') for s in steps if s.get('result') is False})
         fps = detail.get('g1_after', {})
         complete = outcome == 'accepted' and all(
-            clean_theorems(fps.get(driver.path_to_module(n['path']), {}), n['theorems'])
+            clean_theorems(fps.get(driver.path_to_module(n['path']), {}), n['theorems'], allowed)
             for n in graph.nodes.values())
         graph.events.append(dict(role='final_gate', outcome=outcome, verified=complete))
         if complete:

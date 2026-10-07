@@ -145,8 +145,12 @@ blocker report skips the retries and goes straight to the Refiner, the spec
 revision, or the block. A split or a spec revision resets the node's tries.
 
 Each Worker uses the existing scope/build/statement gates plus a transitive
-axiom check: its accepted theorem must not depend on `sorryAx`. New or previously
-verified declarations cannot acquire a `sorryAx` dependency. Unproved helper
+axiom check: its accepted theorem may depend on `sorryAx` only through the
+frozen Math-layer assumptions (`harness/frozen/math_assumptions.json`, by name
+and declared in a `Curve25519Dalek.Math.*` module; StmtCanon reports the
+closure members that carry a sorry as `sorry_sources`). New or previously
+verified declarations cannot acquire any other `sorryAx` dependency. A rejection
+for this reason names the offending declarations in the Worker's feedback. Unproved helper
 placeholders elsewhere in the graph are allowed. Failed decompositions are
 rolled back; ordinary timeouts do not automatically trigger decomposition.
 

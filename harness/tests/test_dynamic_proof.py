@@ -108,6 +108,17 @@ class GraphTests(unittest.TestCase):
         for axioms in (None, ['sorryAx']):
             self.assertFalse(dag.clean_theorems({'h': dict(kind='theorem', axioms=axioms)}, ['h']))
         self.assertTrue(dag.clean_theorems({'h': dict(kind='theorem', axioms=['propext'])}, ['h']))
+        math = dict(name='Edwards.lemma', module='Curve25519Dalek.Math.Edwards.Curve')
+        spec = dict(name='pkg.other_spec', module='Curve25519Dalek.Specs.X')
+        allowed = frozenset(['Edwards.lemma', 'pkg.other_spec'])
+        fp = lambda *src: {'h': dict(kind='theorem', axioms=['sorryAx'], sorry_sources=list(src))}
+        self.assertTrue(dag.clean_theorems(fp(math), ['h'], allowed))      # whitelisted Math sorry
+        self.assertFalse(dag.clean_theorems(fp(math), ['h']))              # no whitelist given
+        self.assertFalse(dag.clean_theorems(fp(math, spec), ['h'], allowed))  # name listed but not in Math
+        self.assertFalse(dag.clean_theorems(fp(), ['h'], allowed))         # sorryAx without sources
+        self.assertEqual(dag.disallowed_sorries(fp(math, spec)['h'], allowed), ['pkg.other_spec'])
+        self.assertIn('Edwards.complete_addition_denominators_ne_zero', dag.math_assumptions())
+        self.assertFalse(dag.clean_theorems({'d': dict(kind='definition', axioms=[])}, ['d']))
 
 
 class WorkflowTests(unittest.TestCase):
@@ -223,6 +234,7 @@ class RetryTests(unittest.TestCase):
                  patch.object(dag.driver, 'run_rounds', side_effect=worker), \
                  patch.object(dag.driver, 'changed_files', return_value=([], [])), \
                  patch.object(dag.driver, 'rollback'), \
+                 patch.object(dag.driver, 'build_sorry_counts', return_value=(0, {'A.lean': 1}, 0, '')), \
                  patch.object(dag, 'commit', return_value='sha'), \
                  patch.object(dag.agentproc, 'RECEIVED_SIGNAL', None), \
                  patch.object(dag.driver, 'gate', side_effect=lambda *a, **k: ('accepted', {'g1_after': fps})):
@@ -468,7 +480,7 @@ class RevisionTests(unittest.TestCase):
                     dag.revise(graph, args, graph.nodes['n1'], graph.nodes['n2'], report, work, lambda *a: None)
                 args.max_spec_revisions = 1
                 with patch.object(dag.driver, 'build_sorry_counts', return_value=(1, {}, 0, 'boom')):
-                    with self.assertRaisesRegex(ValueError, 'does not build'):
+                    with self.assertRaisesRegex((ValueError, RuntimeError), 'does not build'):
                         dag.revise(graph, args, graph.nodes['n1'], graph.nodes['n2'], report, work, lambda *a: None)
             self.assertEqual(dag.git(work, 'rev-parse', 'HEAD'), head)
             self.assertIn('f_spec', Path(work, 'A.lean').read_text())

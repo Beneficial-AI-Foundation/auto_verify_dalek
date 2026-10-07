@@ -275,6 +275,8 @@ def diagnostics_block(outcome, detail):
     """Human-readable gate diagnostics for the next round's prompt (and the
     reset history). Empty string when there is nothing to say."""
     lines, hints = [], []
+    if detail.get("harness_note"):
+        lines.append(detail["harness_note"])
     errs = detail.get("errors") or []
     if errs:
         secs = detail.get("gate_build_seconds")
@@ -907,7 +909,7 @@ def stmt_fingerprints(modules, work, timeout=600):
     RuntimeError with the tool's tail."""
     t0 = time.time()
     p = subprocess.run(["nice", "-n", "19",
-                        "lake", "env", "lean", "--run", STMT_CANON,
+                        "lake", "env", "lean", "--run", os.path.join(REPO, STMT_CANON),
                         "--module", ",".join(modules)],
                        cwd=work, capture_output=True, text=True,
                        timeout=timeout)
@@ -923,6 +925,7 @@ def stmt_fingerprints(modules, work, timeout=600):
         fps.setdefault(r["module"], {})[r["name"]] = {
             "kind": r["kind"], "canon": r["canon"], "pp": r["pp"],
             "axioms": r.get("axioms"),
+            "sorry_sources": r.get("sorry_sources"),
             "consts": [c["name"] for c in r.get("consts", [])]}
     return fps, round(time.time() - t0, 1)
 

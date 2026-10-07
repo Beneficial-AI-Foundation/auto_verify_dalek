@@ -7,6 +7,8 @@ For each declaration name given on the command line, emit one JSON line:
     "canon":  canonical α-invariant dump of the NORMALIZED statement,
     "pp":     pretty-printed statement (display only, canon is authoritative),
     "consts": [ {"name": .., "module": ..}, .. ]   -- used constants, post-normalization
+    "axioms": [..],                                 -- axiom closure of the declaration
+    "sorry_sources": [ {"name": .., "module": ..} ] -- closure members that carry a sorry
     "error":  present only on failure }
 
 Normalization (plan.md §6 G1 v2): starting from ConstantInfo.type (fully
@@ -90,6 +92,28 @@ def kindOf : ConstantInfo → String
   | .ctorInfo _   => "constructor"
   | .recInfo _    => "recursor"
 
+/-- Constants reachable from `root` (through types and proof terms) whose own
+    type or value mentions `sorryAx` directly: the declarations that CARRY a
+    sorry, as opposed to merely depending on one. The gate compares this set
+    with the frozen math-assumption whitelist. -/
+def sorrySources (env : Environment) (root : Name) : Array (Name × String) := Id.run do
+  let mut seen : NameSet := {}
+  let mut todo : Array Name := #[root]
+  let mut out := #[]
+  while h : todo.size > 0 do
+    let c := todo.back
+    todo := todo.pop
+    if seen.contains c then continue
+    seen := seen.insert c
+    let some ci := env.find? c | continue
+    let es := match ci.value? with | some v => #[ci.type, v] | none => #[ci.type]
+    let mut direct := false
+    for e in es do
+      for n in e.getUsedConstants do
+        if n == ``sorryAx then direct := true else todo := todo.push n
+    if direct then out := out.push (c, moduleOf env c)
+  return out
+
 def auditDecl (declName : Name) : MetaM Json := do
   let env ← getEnv
   match env.find? declName with
@@ -105,6 +129,8 @@ def auditDecl (declName : Name) : MetaM Json := do
       ("kind", kindOf ci), ("module", moduleOf env declName),
       ("canon", canon ty), ("pp", toString pp),
       ("axioms", toJson (axioms.toList.map toString)),
+      ("sorry_sources", Json.arr ((sorrySources env declName).map fun (n, m) =>
+        Json.mkObj [("name", toString n), ("module", m)])),
       ("consts", Json.arr consts.toArray)]
 
 /-- Auxiliary constants whose existence/statement legitimately changes when

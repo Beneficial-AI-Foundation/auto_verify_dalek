@@ -9,7 +9,7 @@ import signal
 import subprocess
 import unittest
 import urllib.error
-from contextlib import ExitStack
+from contextlib import ExitStack, nullcontext
 from decimal import Decimal
 from pathlib import Path
 from unittest import mock
@@ -324,6 +324,159 @@ class PreparedFvsPreflightTests(unittest.TestCase):
                 path, bundle_path=self.output / "sealed/preflight-result.json", env_file=self.options["env_file"])
         credentials.assert_not_called()
 
+    def test_same_worker_handoff_keeps_pair_cost_and_fresh_dispatch_gate(self):
+        self.inputs()
+        authorize = preflight_runner.authorize_prepared_run
+        checked = []
+
+        def handoff(run, repo, config_path, output, **kwargs):
+            sealed = authorize(run, repo, config_path, output, **kwargs)
+            _, config = contracts.validate_run_config(config_path)
+            run.update(execution_mode="proof_only", fresh_pair_preflight=True)
+            state = {**self.state, "run": run, "config": config, "run_round": model.agentproc.run_round,
+                "receipt_rejections": [],
+                "wall_started_monotonic_ns": preflight_runner.time.monotonic_ns(),
+                "wall_started_epoch_ns": preflight_runner.time.time_ns(),
+                "wall_seconds_used": Decimal(42), "finalization_reserve_seconds": Decimal(0)}
+            path = preflight_runner.prepare_helper_handoff(state, Path(output) / "preflight-result.json")
+            self.assertGreaterEqual(state["wall_seconds_used"], Decimal(42))
+            self.assertEqual(state["cost"], Decimal("0.000600"))
+            self.assertEqual(len(state["receipts"]), 2)
+            self.assertEqual(len(self.requests), 2)
+            self.destroy_mock.assert_not_called()
+            self.assertIsNotNone(provider_config.provider_binding(run))
+            selection = json.loads(path.read_bytes())
+            self.assertFalse(selection["scope"]["spend_authorized"])
+            experiment._bind_provider_selection(run, path)
+            preflight_runner.validate_helper_handoff(run)
+            foreign = _provider_run(self.root / "foreign-worker", contracts.load_toolchain_lock(), "c" * 40)
+            foreign.update(run_id="synthetic-foreign-handoff-run", role_profile=config["role_profile"],
+                           source_packet_sha256=config["source_packet"]["packet_sha256"], execution_mode="full")
+            provider_config.configure_provider(foreign, env_path=self.options["env_file"],
+                tool_schemas=list(agent_lane._TOOL_SCHEMAS), project_root=self.target)
+            try:
+                # Unsigned metadata cannot be the enforcement boundary.
+                for strip_metadata in (False, True):
+                    reused = copy.deepcopy(selection)
+                    if strip_metadata:
+                        reused.update(selected_by="ordinary", constraints={}, verification={})
+                    reused_path = self.root / "reused-selection.json"
+                    reused_path.write_bytes(contracts.canonical_json_bytes(reused) + b"\n")
+                    with self.assertRaisesRegex(contracts.ContractError, "handoff"):
+                        experiment._bind_provider_selection(dict(foreign, events=[]), reused_path)
+                stripped = copy.deepcopy(selection)
+                record = stripped["accessibility_evidence"][fvs_profile.AUTHOR]["provider_preflight"]
+                record["request"]["input_hashes"].remove(preflight_runner.HELPER_HANDOFF_INPUT_SHA256)
+                record["preflight_sha256"] = fvs_profile.digest({k: v for k, v in record.items() if k != "preflight_sha256"})
+                reused_path.write_bytes(contracts.canonical_json_bytes(stripped) + b"\n")
+                with self.assertRaises(provider_config.ProviderConfigError):
+                    experiment._bind_provider_selection(dict(foreign, events=[]), reused_path)
+                with self.assertRaisesRegex(contracts.ContractError, "handoff"):
+                    experiment._bind_provider_selection(dict(run, execution_mode="full"), path)
+            finally:
+                provider_config.abort_configuration(foreign)
+            # Only the first scored dispatch requires the still-fresh pair gate.
+            messages = [{"role": "system", "content": "Synthetic helper context"},
+                        {"role": "user", "content": "Synthetic helper request"}]
+            with mock.patch.object(preflight_runner.time, "time", return_value=sealed["completed_at_unix"] + 301):
+                with self.assertRaisesRegex(contracts.ContractError, "stale"):
+                    experiment._bind_provider_selection(run, path)
+                with self.assertRaisesRegex(provider_config.ProviderConfigError, "handoff"):
+                    model._model_request(state, request_id="stale-helper", role="scout", input_hashes=[], messages=messages)
+            self.assertEqual(len(self.requests), 2)
+            state["pending_model_exchanges"].pop("stale-helper", None)
+            model._model_request(state, request_id="fresh-helper", role="scout", input_hashes=[], messages=messages)
+            self.assertEqual(len(self.requests), 3)
+            self.assertEqual(state["cost"], Decimal("0.000900"))
+            with mock.patch.object(preflight_runner.time, "time", return_value=sealed["completed_at_unix"] + 301):
+                model._model_request(state, request_id="continuing-helper", role="scout", input_hashes=[], messages=messages)
+            self.assertEqual(state["cost"], Decimal("0.001200"))
+            self.assertEqual(len(state["receipts"]), 4)
+            checked.append(run["helper_handoff"]["first_scored_request_id"])
+            return sealed
+
+        result = self.exercise(patches=[
+            mock.patch.object(preflight_runner, "authorize_prepared_run", side_effect=handoff),
+            mock.patch.object(preflight_runner, "_preflight_deadline", side_effect=lambda _state: nullcontext()),
+        ])
+        self.assertEqual(result["status"], "passed", result.get("error_detail"))
+        self.assertEqual(checked, ["fresh-helper"])
+        self.destroy_mock.assert_called_once_with(self.prepared_run)
+
+    def test_handoff_subcap_rejects_before_paid_calls_and_cleans_worker(self):
+        self.inputs()
+        authorize = preflight_runner.authorize_prepared_run
+
+        def handoff(run, repo, config_path, output, **kwargs):
+            authorize(run, repo, config_path, output, **kwargs)
+            _, config = contracts.validate_run_config(config_path)
+            run.update(execution_mode="proof_only", fresh_pair_preflight=True)
+            state = {**self.state, "run": run, "config": config, "receipt_rejections": [],
+                "wall_started_monotonic_ns": preflight_runner.time.monotonic_ns(),
+                "wall_started_epoch_ns": preflight_runner.time.time_ns(),
+                "wall_seconds_used": Decimal(0), "finalization_reserve_seconds": Decimal(0)}
+            with mock.patch("autofv.worker_proxy.provider_reservation_usd", return_value=Decimal("0.60")):
+                return preflight_runner.prepare_helper_handoff(state, Path(output) / "preflight-result.json")
+
+        result = self.exercise(patches=[
+            mock.patch.object(preflight_runner, "authorize_prepared_run", side_effect=handoff),
+            mock.patch.object(preflight_runner, "_preflight_deadline", side_effect=lambda _state: nullcontext()),
+        ])
+        self.assertEqual(result["status"], "failed")
+        self.assertIn("USD1 sub-limit", result["error_detail"])
+        self.assertEqual(self.requests, [])
+        self.destroy_mock.assert_called_once_with(self.prepared_run)
+        self.assertEqual(result["service_release"], "released")
+        self.assertNotIn("helper_handoff", self.prepared_run)
+
+    def test_public_helper_controller_prepares_once_and_hands_off_before_graph(self):
+        self.inputs()
+        self.prepared_inputs = (*self.prepared_inputs[:3],
+            {k: str(v) for k, v in self.prepared_inputs[3].items()})
+        for name in ("preparation_manifest", "probe_rust_evidence", "probe_aeneas_evidence", "dependency_cache"):
+            self.options[name].touch()
+        reference = self.root / "synthetic-reference.json"
+        reference.write_text("{}")
+        captured = []
+
+        def run_controller(repo, config_path, output, **options):
+            options.pop("check_model_accessibility", None)
+            return experiment.run_experiment(repo, config_path, output_root=self.root / "attempts",
+                verifier_reference=reference, execution_mode="proof_only", fresh_pair_preflight=True, **options)
+
+        def graph(state, **_kwargs):
+            self.prepare_mock.assert_called_once()
+            self.seed_mock.assert_called_once()
+            self.destroy_mock.assert_not_called()
+            self.assertEqual(state["cost"], Decimal("0.000600"))
+            self.assertTrue(state["run"]["fresh_pair_preflight"])
+            self.assertIn("provider_selected", state["run"]["events"])
+            model._model_request(state, request_id="controller-first-helper", role="scout", input_hashes=[],
+                messages=[{"role": "system", "content": "Synthetic context"}, {"role": "user", "content": "Synthetic helper"}])
+            self.assertEqual(state["cost"], Decimal("0.000900"))
+            self.assertEqual(len(state["receipts"]), 3)
+            state["verifier_report"] = {"terminal_status": "unverified"}
+            captured.append(state)
+            return []
+
+        with mock.patch.object(preflight_runner, "run_fvs_preflight", side_effect=run_controller), \
+             mock.patch.object(experiment.verifier, "bind_prepared_reference", return_value={"synthetic": True}), \
+             mock.patch.object(experiment.verifier.counterexample, "external_reference_identity", return_value={"synthetic": True}), \
+             mock.patch.object(experiment._EXPERIMENT_GRAPH, "stream", side_effect=graph), \
+             mock.patch.object(experiment, "_checkpoint_if_enabled"), \
+             mock.patch.object(model, "_checkpoint_if_enabled"), \
+             mock.patch.object(run_state, "_checkpoint_if_enabled"), \
+             mock.patch.object(experiment, "_final_terminal_audit"), \
+             mock.patch.object(experiment, "_finish_attempt", return_value={"outcome": "unverified"}) as finish:
+            result = self.exercise()
+        self.assertEqual(result["outcome"], "unverified")
+        self.assertEqual(len(captured), 1, (finish.call_args.args[1].get("termination_detail"),
+                                          finish.call_args.args[0].get("events")))
+        self.assertEqual(captured[0]["run"]["helper_handoff"]["first_scored_request_id"], "controller-first-helper")
+        finish.assert_called_once()
+        self.assertEqual(finish.call_args.kwargs["reason"], "proof_search_incomplete")
+        provider_config.abort_configuration(self.prepared_run)
+
     def test_public_rust_drift_is_rejected_before_worker_or_credentials(self):
         self.inputs()
         (self.options["public_rust_root"] / "increment.rs").write_text("fabricated public Rust\n")
@@ -504,10 +657,30 @@ class PreparedFvsPreflightTests(unittest.TestCase):
              mock.patch.object(preflight_runner.signal, "setitimer") as timer:
             with self.assertRaises(contracts.BudgetExhausted):
                 with preflight_runner._preflight_deadline(state):
-                    handler.call_args_list[0].args[1](None, None)
+                    alarm = next(call.args[1] for call in handler.call_args_list if call.args[0] == signal.SIGALRM)
+                    alarm(None, None)
         self.assertEqual(timer.call_args_list[0].args[1], 9)
         self.assertEqual(timer.call_args_list[-1].args[1], 0)
-        self.assertEqual(handler.call_count, 2)
+        self.assertEqual(sum(call.args[0] == signal.SIGALRM for call in handler.call_args_list), 2)
+
+    def test_handoff_deadline_uses_only_remaining_shared_wall(self):
+        state = {"run": {}, "config": {"max_wall_seconds": 1800},
+            "wall_seconds_used": Decimal(1700), "finalization_reserve_seconds": Decimal(5),
+            "wall_started_monotonic_ns": 1_000_000_000, "wall_started_epoch_ns": 101_000_000_000}
+        with mock.patch.object(preflight_runner.signal, "getitimer", return_value=(0, 0)), \
+             mock.patch.object(preflight_runner.signal, "signal"), \
+             mock.patch.object(preflight_runner.signal, "setitimer") as timer, \
+             mock.patch.object(run_state.time, "monotonic_ns", return_value=4_000_000_000), \
+             mock.patch.object(run_state.time, "time_ns", return_value=104_000_000_000):
+            with preflight_runner._preflight_deadline(state):
+                self.assertEqual(timer.call_args_list[0].args[1], 92)
+                self.assertEqual(state["wall_seconds_used"], Decimal(1703))
+            timer.reset_mock()
+            state["wall_seconds_used"] = Decimal(1795)
+            with self.assertRaises(contracts.ContractError):
+                with preflight_runner._preflight_deadline(state):
+                    self.fail("exhausted shared wall entered handoff")
+            timer.assert_not_called()
 
     def test_endpoint_metadata_rejects_exact_mode_price_and_fee_drift(self):
         mutations = [lambda e: e["data"]["endpoints"][0]["supports_tool_choice"].update(required=False),
@@ -669,7 +842,7 @@ class PreparedFvsPreflightTests(unittest.TestCase):
              mock.patch.object(preflight_runner.signal, "setitimer") as timer:
             with self.assertRaises(contracts.BudgetExhausted):
                 with preflight_runner._preflight_deadline(state):
-                    alarm = handler.call_args_list[0].args[1]
+                    alarm = next(call.args[1] for call in handler.call_args_list if call.args[0] == signal.SIGALRM)
                     commit(alarm)
                     self.assertEqual(timer.call_args_list[-1].args[1], 0.05, "expiry was not deferred")
                     alarm(signal.SIGALRM, None)  # Redelivered once the lock is released.

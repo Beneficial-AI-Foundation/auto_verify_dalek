@@ -61,6 +61,8 @@ CHECKPOINT_RUN_FIELDS = (
     "fvs_lane_generations",
     "provider_selection",
     "provider_selection_sha256",
+    "fresh_pair_preflight",
+    "helper_handoff",
     "provider_model_preflights",
     "provider_preflight_sha256",
     "deterministic_preflight",
@@ -830,6 +832,8 @@ def _restore_checkpoint(
     run_round: Any,
 ) -> _RunState:
     """Reattach trusted runtime objects and recover working state or accepted Git."""
+    if any(name in checkpoint["run"] for name in ("fresh_pair_preflight", "helper_handoff")):
+        raise ContractError("same-worker handoff cannot be resumed as a new allocation")
     run = dict(checkpoint["run"])
     run["lock"] = lock
     run["manifest"] = manifest

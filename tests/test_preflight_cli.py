@@ -99,6 +99,29 @@ class PreflightCliTests(unittest.TestCase):
         self.assertEqual(args.output, "/tmp/evidence")
         self.assertEqual(args.env_file, "/tmp/provider.env")
 
+    def test_helper_handoff_cli_is_explicit_and_bounded_to_prepared_proof_only(self) -> None:
+        argv = ["autofv", "run", "/target", "--config", "/config", "--env-file", "/fake-env",
+            "--fresh-pair-preflight", "--execution-mode", "proof-only",
+            "--preparation-manifest", "/manifest", "--preparation-evidence", "/probes",
+            "--preparation-cache", "/cache", "--public-rust-root", "/rust", "--verifier-reference", "/fake-reference"]
+        with mock.patch.object(sys, "argv", argv), mock.patch.object(experiment, "run_experiment",
+                return_value={"outcome": "success"}) as call, mock.patch("builtins.print"):
+            experiment.main()
+        self.assertTrue(call.call_args.kwargs["fresh_pair_preflight"])
+        self.assertEqual(call.call_args.kwargs["execution_mode"], "proof_only")
+        self.assertIsNone(call.call_args.kwargs["provider_selection"])
+        for bad in (argv + ["--selection-record", "/old-record"],
+                    ["full" if x == "proof-only" else x for x in argv]):
+            with mock.patch.object(sys, "argv", bad), mock.patch.object(experiment, "run_experiment") as call, \
+                 mock.patch("sys.stderr"), self.assertRaises(SystemExit):
+                experiment.main()
+            call.assert_not_called()
+        with self.assertRaisesRegex(experiment.ContractError, "new prepared helper"), \
+             mock.patch.object(worker, "prepare_run") as prepare:
+            experiment.run_experiment(TARGET, CONFIG, env_file="/not-read", execution_mode="full",
+                                      fresh_pair_preflight=True)
+        prepare.assert_not_called()
+
     def test_provider_run_starts_listener_before_worker_policy_and_authorizes_same_worker(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)

@@ -462,6 +462,7 @@ def _bind_provider_selection(
         fvs_profile.validate_profile(model["role_profile"])
         evidence = _exact_dict(selection["accessibility_evidence"],
                                {fvs_profile.AUTHOR, fvs_profile.REVIEWER}, "FVS pair accessibility")
+        handoff_records = {}
         for model_id, item in evidence.items():
             item = _exact_dict(item, {"provider_preflight", "supported_parameters", "supported_efforts", "catalog_sha256", "endpoint_inventory"},
                                "FVS model accessibility")
@@ -491,6 +492,19 @@ def _bind_provider_selection(
                 or old["receipt_authentication"] != binding["receipt_authentication"]
                 or any(old[name] != binding[name] for name in (*stable_fields, *sorted(extra)))):
                 raise ContractError("FVS pair accessibility is stale or wrong-model/profile")
+            if preflight_runner.HELPER_HANDOFF_INPUT_SHA256 in record["request"]["input_hashes"]:
+                handoff_records[model_id] = record
+        if handoff_records or run.get("fresh_pair_preflight"):
+            if (set(handoff_records) != {fvs_profile.AUTHOR, fvs_profile.REVIEWER}
+                or run.get("fresh_pair_preflight") is not True or run.get("execution_mode") != "proof_only"
+                or not isinstance(run.get("helper_handoff"), dict)):
+                raise ContractError("handoff selection cannot be reused outside its original helper invocation")
+            ready = preflight_runner.validate_helper_handoff(run)
+            for model_id, record in handoff_records.items():
+                if (record["provider_binding"] != binding or record["request"]["run_id"] != run["run_id"]
+                    or hashlib.sha256(canonical_json_bytes(record) + b"\n").hexdigest()
+                    != ready["model_records"][model_id]["sha256"]):
+                    raise ContractError("handoff selection does not match its current signed pair")
         digest = fvs_profile.digest(selection)
         if run.get("provider_selection") not in (None, selection) or run.get("provider_selection_sha256") not in (None, digest):
             raise ContractError("FVS frozen provider selection changed during replay")
@@ -516,9 +530,15 @@ def run_experiment(
     env_file: str | Path | None = None,
     provider_selection: str | Path | None = None,
     public_rust_root: str | Path | None = None,
+    fresh_pair_preflight: bool = False,
 ) -> dict[str, Any]:
     """Run the bounded sealed tracer and persist every attempted run."""
-    if (env_file is None) != (provider_selection is None):
+    if type(fresh_pair_preflight) is not bool or (fresh_pair_preflight and (
+        env_file is None or provider_selection is not None or resume_from is not None
+        or execution_mode != "proof_only"
+    )):
+        raise ContractError("fresh pair handoff requires a new prepared helper run without a selection record")
+    if not fresh_pair_preflight and (env_file is None) != (provider_selection is None):
         raise ContractError(
             "provider env file and selected model record must be supplied together"
         )
@@ -672,6 +692,10 @@ def run_experiment(
                 ContractError("prepared run requires an external verifier reference"),
             )
 
+    if fresh_pair_preflight and (not fvs_profile.enabled(config) or prepared_inputs is None
+        or config["max_cost_usd"] > Decimal("10.000000") or config["max_wall_seconds"] > 1800):
+        return persist_unallocated("invalid_config", "handoff_scope_invalid",
+            ContractError("fresh pair handoff requires prepared FVS with shared USD10/1800s limits"))
     if fvs_profile.enabled(config):
         try:
             if prepared_inputs is None:
@@ -687,6 +711,8 @@ def run_experiment(
     def prepare_provider(prepared: dict[str, Any]) -> None:
         nonlocal durable_run
         durable_run = prepared
+        if fresh_pair_preflight:
+            prepared["fresh_pair_preflight"] = True
         if fvs_profile.enabled(config):
             prepared["role_profile"] = config["role_profile"]
             prepared["source_packet_sha256"] = config["source_packet"]["packet_sha256"]
@@ -714,6 +740,8 @@ def run_experiment(
                     verifier_reference,
                 ),
             )
+            if any(name in checkpoint["run"] for name in ("fresh_pair_preflight", "helper_handoff")):
+                raise ContractError("same-worker handoff cannot be resumed as a new allocation")
             state = _restore_checkpoint(
                 checkpoint,
                 manifest=manifest,
@@ -958,9 +986,15 @@ def run_experiment(
                 run_config,
                 Path(run["evidence_dir"]) / "provider-prerequisite",
                 env_file=env_file,
-                max_age_seconds=config["max_wall_seconds"],
+                max_age_seconds=(preflight_runner.MAX_AGE_SECONDS if fresh_pair_preflight else config["max_wall_seconds"]),
                 **({"public_rust_root": public_rust_root} if public_rust_root is not None else {}),
             )
+            if fresh_pair_preflight:
+                if _checkpoint_value(validate_run_config(run_config)[1]) != _checkpoint_value(config):
+                    raise ContractError("helper handoff configuration changed during preparation")
+                provider_selection = preflight_runner.prepare_helper_handoff(
+                    state, Path(run["evidence_dir"]) / "provider-prerequisite/preflight-result.json")
+                preflight_runner.validate_helper_handoff(run)
             _bind_provider_selection(run, provider_selection)
             if run["provider_binding"]["model_id"] != config["model"]:
                 raise ContractError("run model does not match provider binding")
@@ -1105,6 +1139,8 @@ def _parser() -> argparse.ArgumentParser:
     run.add_argument("--output-root")
     run.add_argument("--env-file")
     run.add_argument("--selection-record")
+    run.add_argument("--fresh-pair-preflight", action="store_true",
+                     help="Prepared helper only: check the pair on the same worker within the shared budget")
     run.add_argument("--preparation-manifest")
     run.add_argument("--preparation-evidence")
     run.add_argument("--preparation-cache")
@@ -1174,11 +1210,16 @@ def main() -> None:
         return
     target, run_config = _run_arguments(parser, args)
     try:
-        if (args.env_file is None) != (args.selection_record is None):
+        if args.fresh_pair_preflight:
+            if args.env_file is None or args.selection_record is not None or args.execution_mode != "proof-only":
+                parser.error("--fresh-pair-preflight requires --env-file and prepared --execution-mode proof-only, without --selection-record")
+        elif (args.env_file is None) != (args.selection_record is None):
             parser.error(
                 "--env-file and --selection-record must be supplied together"
             )
         options = {"output_root": args.output_root}
+        if args.fresh_pair_preflight:
+            options["fresh_pair_preflight"] = True
         if args.public_rust_root is not None:
             options["public_rust_root"] = args.public_rust_root
         if args.env_file is not None:

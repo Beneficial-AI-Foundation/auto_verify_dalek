@@ -81,6 +81,26 @@ def _checkpoint_state(root: Path) -> dict:
 
 
 class RestartTests(unittest.TestCase):
+    def test_handoff_construction_and_ready_checkpoints_refuse_restoration(self):
+        for ready in (False, True):
+            with self.subTest(ready=ready), tempfile.TemporaryDirectory() as tmp:
+                root = Path(tmp)
+                state = _checkpoint_state(root)
+                state["run"]["fresh_pair_preflight"] = True
+                if ready:
+                    state["run"]["helper_handoff"] = {"path": "/synthetic/ready.json", "sha256": "a" * 64}
+                experiment._write_checkpoint(state, "handoff:ready" if ready else "handoff:constructing")
+                loaded = experiment._load_checkpoint(root, experiment._checkpoint_identities(state["run"]))
+                self.assertTrue(loaded["run"].get("fresh_pair_preflight"))
+                self.assertEqual("helper_handoff" in loaded["run"], ready)
+                with mock.patch.object(worker, "inspect_resume_state") as inspect_worker, \
+                     mock.patch.object(worker_proxy, "rebind_provider_transport") as rebind, \
+                     self.assertRaisesRegex(experiment.ContractError, "handoff cannot be resumed"):
+                    run_state._restore_checkpoint(loaded, manifest=state["manifest"], config=state["config"],
+                        lock=LOCK, run_round=state["run_round"])
+                inspect_worker.assert_not_called()
+                rebind.assert_not_called()
+
     def test_transient_state_lock_does_not_break_state_copying(self):
         state = _checkpoint_state(Path("/unused"))
         original_lock = run_state._state_lock(state)

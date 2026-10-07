@@ -706,12 +706,21 @@ def dispatch(
             raise provider_transport.ProviderError(
                 "provider preflight authorization failed"
             ) from exc
+        handoff = run.get("helper_handoff")
+        if handoff is not None and "first_scored_request_id" not in handoff:
+            from .preflight_runner import validate_helper_handoff
+            try:
+                validate_helper_handoff(run)
+            except (ContractError, provider_transport.ProviderError, OSError, KeyError, TypeError) as exc:
+                raise provider_transport.ProviderError("helper handoff validation failed") from exc
         reservation_usd = existing["reservation_usd"]
         dispatched = _record(
             binding, request, messages_sha256, reservation_usd, "dispatched"
         )
         _write(path, dispatched)
         _remember(run, dispatched)
+        if handoff is not None:
+            handoff.setdefault("first_scored_request_id", request["request_id"])
 
     try:
         response, receipt = provider_transport.provider_round(run, request)

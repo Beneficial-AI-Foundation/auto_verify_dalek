@@ -40,6 +40,7 @@ from autofv.contracts import (  # noqa: E402
 RUNNER_SCHEMA = "autofv-sealed-preflight-runner/v1"
 RESULT_SCHEMA = "autofv-preflight-result/v1"
 MAX_AGE_SECONDS = 300
+HELPER_HANDOFF_INPUT_SHA256 = hashlib.sha256(b"autofv:same-worker-helper-handoff:v1").hexdigest()
 _ALL_CHECKS = (
     *preflight_evidence.DETERMINISTIC_PREFLIGHT_CASES,
     *preflight_evidence.DETERMINISTIC_PREFLIGHT_GATES,
@@ -699,11 +700,12 @@ def _preflight_deadline(state):
     The handler never touches run state. Expiry inside a serialized state commit (charge,
     reservation, wall reduction) is redelivered just after it; transport runs unlocked.
     """
-    from .run_state import BudgetExhausted, _state_lock
+    from .run_state import BudgetExhausted, _charge_wall, _state_lock
     if threading.current_thread() is not threading.main_thread() or signal.getitimer(signal.ITIMER_REAL)[0]:
         raise ContractError("FVS preflight requires a main thread without an active alarm")
+    used = _charge_wall(state)
     limit = Decimal(state["config"]["max_wall_seconds"])
-    active = limit - state["finalization_reserve_seconds"]
+    active = limit - used - state["finalization_reserve_seconds"]
     if active <= 0:
         raise ContractError("FVS preflight active-work deadline must be positive")
     previous = signal.getsignal(signal.SIGALRM)
@@ -713,7 +715,7 @@ def _preflight_deadline(state):
         if lock.held():
             signal.setitimer(signal.ITIMER_REAL, 0.05)
             return
-        raise BudgetExhausted("wall_seconds", limit, active)
+        raise BudgetExhausted("wall_seconds", limit, used + active)
 
     try:
         signal.signal(signal.SIGALRM, expired)
@@ -1020,6 +1022,132 @@ def run_fvs_preflight(
     _scan_secrets(markers, canonical_json_bytes(result))
     _write_canonical(destination / "preflight-result.json", result)
     return result
+
+
+def prepare_helper_handoff(state: dict[str, Any], bundle_path: Path) -> Path:
+    """Check the pair on the owned helper worker; keep one clock and receipt ledger."""
+    from . import fvs_profile, model, provider_service, worker, worker_proxy
+    from .run_state import _check_budget, _checkpoint_value, _external_call
+
+    run, config = state["run"], state["config"]
+    if (not fvs_profile.enabled(config) or run.get("fresh_pair_preflight") is not True
+        or run.get("execution_mode") != "proof_only"
+        or config["max_cost_usd"] > Decimal("10.000000") or config["max_wall_seconds"] > 1800
+        or state["cost"] != 0 or state["receipts"] or state["model_exchanges"]
+        or state["pending_model_exchanges"] or run.get("provider_model_preflights")
+        or run.get("helper_handoff") is not None or run.get("worker_disposed")):
+        raise ContractError("helper handoff requires a new prepared FVS run")
+    bundle = validate_preflight_bundle(bundle_path, expected_source_head=run["base_commit"])
+    binding = provider_config.provider_binding(run)
+    if (binding is None or bundle["identities"]["provider_identity_sha256"] != binding.public["binding_sha256"]
+        or bundle["provider_authentication"] != binding.public["receipt_authentication"]
+        or binding.public["role_profile_sha256"] != fvs_profile.digest(fvs_profile.profile())
+        or binding.public["source_packet_sha256"] != config["source_packet"]["packet_sha256"]):
+        raise ContractError("helper handoff provider identity mismatch")
+    destination = Path(run["evidence_dir"]) / "helper-handoff"
+    destination.mkdir(mode=0o700, parents=True, exist_ok=False)
+    with _preflight_deadline(state):
+        inventory = _external_call(state, "handoff:inventory", lambda: _public_pair_inventory(state, destination))
+        _external_call(state, "handoff:egress", lambda: worker.verify_egress(run))
+        messages = [{"role": "system", "content": "This is an accessibility probe, not a proof or review. "
+            "Call submit_candidate with patch='', claimed_status='blocked', "
+            "and evidence=['accessibility probe only']. Do not claim approval."},
+            {"role": "user", "content": "Return that accessibility-probe submission now."}]
+        # Input hashes are covered by the provider receipt signature; unsigned
+        # selection metadata alone must not permit cross-worker reuse.
+        inputs = [HELPER_HANDOFF_INPUT_SHA256, fvs_profile.digest(_checkpoint_value(config)), run["graph_sha256"]]
+        calls = [(model._model_envelope(state, request_id="preflight-accessibility-" + role,
+            role=role, input_hashes=model._message_bound_hashes(inputs, messages), sequence=sequence),
+            messages, "explicit") for sequence, role in enumerate(("scout", "spec_reviewer"), 1)]
+        planned = sum((worker_proxy.provider_reservation_usd(run, request, messages)
+                       for request, messages, _kind in calls), Decimal(0))
+        if planned > Decimal("1.000000"):
+            raise ContractError("helper accessibility reservation exceeds USD1 sub-limit")
+        model._reserve_provider_calls(state, calls)
+        for request, _messages, _kind in calls:
+            response, _ = model._model_request(state, request_id=request["request_id"],
+                role=request["role"], input_hashes=inputs, messages=messages)
+            if (response["kind"] != "tool_call" or response["payload"]["name"] != "submit_candidate"
+                or response["payload"]["arguments"] != {"patch": "", "claimed_status": "blocked",
+                                                         "evidence": ["accessibility probe only"]}):
+                raise ContractError("helper accessibility probe lacks the requested final submission")
+        _check_budget(state)
+        if (state["cost"] > Decimal("1.000000") or state["pending_model_exchanges"]
+            or len(state["receipts"]) != 2 or state["receipt_rejections"]):
+            raise ContractError("helper accessibility accounting is incomplete")
+        evidence, model_paths = {}, {}
+        for model_id in (fvs_profile.AUTHOR, fvs_profile.REVIEWER):
+            path = Path(run["evidence_dir"]) / ("provider-model-preflight-" + hashlib.sha256(model_id.encode()).hexdigest()[:16] + ".json")
+            record = provider_service.validate_pinned_preflight(path, run=run)
+            item = inventory["models"][model_id]
+            evidence[model_id] = {**{k: item[k] for k in ("endpoint_inventory", "supported_parameters",
+                "supported_efforts", "catalog_sha256")}, "provider_preflight": record}
+            model_paths[model_id] = {"path": str(path.resolve(strict=True)),
+                "sha256": hashlib.sha256(path.read_bytes()).hexdigest()}
+        ready = {"schema": "autofv-helper-handoff/v1", "status": "passed",
+            "run_id": run["run_id"], "binding_sha256": binding.public["binding_sha256"],
+            "bundle_path": str(bundle_path.resolve(strict=True)),
+            "bundle_sha256": hashlib.sha256(bundle_path.read_bytes()).hexdigest(),
+            "model_records": model_paths, "cleanup": "retained_for_immediate_helper",
+            "service_release": "retained_for_immediate_helper",
+            "accessibility_cost_usd": str(state["cost"]), "planned_upper_usd": str(planned),
+            "budget_policy": "accessibility_included_in_shared_run_clock_and_receipts",
+            "selection_authorizes_spend": False}
+        ready_path = destination / "ready.json"
+        _write_canonical(ready_path, ready)
+        run["helper_handoff"] = {"path": str(ready_path.resolve(strict=True)),
+            "sha256": hashlib.sha256(ready_path.read_bytes()).hexdigest()}
+        validate_helper_handoff(run)
+        fields = {"model_id", "endpoint", "endpoint_sha256", "parameters", "pricing", "pricing_sha256",
+            "tool_schema_sha256", "capability_sha256", "fixed_proxy_sha256", "proxy_id", "route_id",
+            "role_profile", "role_profile_sha256", "source_packet_sha256"}
+        selection = {"schema": "autofv-retained-model-selection/v2", "status": "selected",
+            "selected_at": int(time.time()), "selected_by": "trusted_same_worker_handoff", "decision": "select-model",
+            "scope": {"proof_smoke": True, "full_retained_run": True, "provider_request_authorized": False,
+                "spend_authorized": False, "push_authorized": False, "dynamic_routing_allowed": False,
+                "model_substitution_allowed": False},
+            "model": {k: binding.public[k] for k in fields}, "accessibility_evidence": evidence,
+            "constraints": {"execution_mode": "proof_only", "freshness_seconds": MAX_AGE_SECONDS},
+            "verification": dict(run["helper_handoff"])}
+        selection_path = destination / "selection.json"
+        _write_canonical(selection_path, selection)
+        # A distinct run authorization retains the existing helper wall policy. The
+        # original signed 300-second bundle is never overwritten or extended.
+        provider_service.load_preflight_authorization(run,
+            preflight_path=bundle["artifacts"]["preflight"], suite_artifact_path=bundle["artifacts"]["suite"],
+            max_age_seconds=config["max_wall_seconds"])
+        return selection_path
+
+
+def validate_helper_handoff(run: dict[str, Any]) -> dict[str, Any]:
+    """Recheck current pair freshness at selection and immediately before first dispatch."""
+    from . import fvs_profile, provider_service
+
+    if run.get("fresh_pair_preflight") is not True or run.get("execution_mode") != "proof_only":
+        raise ContractError("helper handoff requires its original helper invocation")
+    ref = run["helper_handoff"]
+    path = Path(ref["path"])
+    ready = provider_receipts._read_canonical(path, "helper handoff")
+    binding = provider_config.provider_binding(run)
+    if (hashlib.sha256(path.read_bytes()).hexdigest() != ref["sha256"] or binding is None
+        or ready["schema"] != "autofv-helper-handoff/v1" or ready["status"] != "passed"
+        or ready["run_id"] != run["run_id"] or ready["binding_sha256"] != binding.public["binding_sha256"]
+        or run.get("worker_disposed") or set(ready["model_records"]) != {fvs_profile.AUTHOR, fvs_profile.REVIEWER}):
+        raise ContractError("helper handoff identity mismatch")
+    bundle_path = Path(ready["bundle_path"])
+    bundle = validate_preflight_bundle(bundle_path, expected_source_head=run["base_commit"])
+    if (hashlib.sha256(bundle_path.read_bytes()).hexdigest() != ready["bundle_sha256"]
+        or bundle["identities"]["provider_identity_sha256"] != binding.public["binding_sha256"]
+        or bundle["provider_authentication"] != binding.public["receipt_authentication"]):
+        raise ContractError("helper handoff bundle binding mismatch")
+    for model_id, item in ready["model_records"].items():
+        record_path = Path(item["path"])
+        record = provider_service.validate_pinned_preflight(record_path, run=run)
+        if (hashlib.sha256(record_path.read_bytes()).hexdigest() != item["sha256"]
+            or record["request"]["model_id"] != model_id
+            or HELPER_HANDOFF_INPUT_SHA256 not in record["request"]["input_hashes"]):
+            raise ContractError("helper handoff model record mismatch")
+    return ready
 
 
 def authorize_prepared_run(

@@ -61,6 +61,9 @@ import urllib.request
 path = os.environ["AUTOFV_PROXY_PATH"]
 upstream = os.environ["AUTOFV_PROXY_BASE"].rstrip("/") + path
 token = os.environ["AUTOFV_RUN_TOKEN"]
+request_timeout = int(os.environ.get("AUTOFV_PROXY_TIMEOUT_SECONDS", "30"))
+if request_timeout not in (30, 120):
+    raise ValueError("invalid fixed proxy timeout")
 
 class NoRedirect(urllib.request.HTTPRedirectHandler):
     def redirect_request(self, *args, **kwargs):
@@ -99,7 +102,7 @@ class Handler(http.server.BaseHTTPRequestHandler):
                     "X-AutoFV-Run-Token": token,
                 },
             )
-            with opener.open(request, timeout=30) as reply:
+            with opener.open(request, timeout=request_timeout) as reply:
                 response = reply.read(1_000_001)
                 if len(response) > 1_000_000:
                     self.send_value(502, b'{"error":"fixed proxy response too large"}')
@@ -139,8 +142,11 @@ if not 0 < len(raw) <= 1_000_000:
 request = urllib.request.Request(
     sys.argv[1], data=raw, method="POST", headers={"Content-Type": "application/json"}
 )
+request_timeout = int(sys.argv[2]) if len(sys.argv) > 2 else 30
+if request_timeout not in (30, 120):
+    raise SystemExit(22)
 try:
-    with urllib.request.urlopen(request, timeout=30) as reply:
+    with urllib.request.urlopen(request, timeout=request_timeout) as reply:
         output = reply.read(1_000_001)
         if len(output) > 1_000_000:
             output = (
@@ -474,6 +480,7 @@ def _configure_proxy_firewall(
 
 def _ensure_proxy_relay(run: dict[str, Any]) -> tuple[str, str]:
     network, relay = _proxy_resources(run)
+    request_timeout = provider_transport.request_timeout_seconds(run)
     if provider_transport.is_configured(run):
         base = provider_service.relay_base(run, lima_host_address())
         run["proxy_base"] = base
@@ -493,6 +500,7 @@ def _ensure_proxy_relay(run: dict[str, Any]) -> tuple[str, str]:
             f"AUTOFV_PROXY_BASE={base.rstrip('/')}",
             f"AUTOFV_PROXY_PATH={run['lock']['fixed_proxy']['path']}",
             f"AUTOFV_RUN_TOKEN={token}",
+            f"AUTOFV_PROXY_TIMEOUT_SECONDS={request_timeout}",
         }
         environment = set(values[0].get("Config", {}).get("Env") or [])
         if not expected_environment.issubset(environment):
@@ -540,6 +548,8 @@ def _ensure_proxy_relay(run: dict[str, Any]) -> tuple[str, str]:
         f"AUTOFV_PROXY_PATH={run['lock']['fixed_proxy']['path']}",
         "--env",
         f"AUTOFV_RUN_TOKEN={token}",
+        "--env",
+        f"AUTOFV_PROXY_TIMEOUT_SECONDS={request_timeout}",
         run["image_digest"],
         "python",
         "-c",
@@ -605,6 +615,7 @@ def proxy_round(
             "-c",
             _PROXY_CLIENT_PROGRAM,
             f"http://{address}:{RELAY_PORT}{route['path']}",
+            str(provider_transport.request_timeout_seconds(run)),
             network=network,
         ),
         input_bytes=_canonical_bytes(request),
@@ -1057,6 +1068,7 @@ validate_provider_receipt = provider_service.validate_pinned_receipt
 validate_provider_preflight = provider_service.validate_pinned_preflight
 provider_messages_sha256 = provider_transport.messages_sha256
 provider_reservation_usd = provider_transport.reservation_usd
+provider_request_timeout_seconds = provider_transport.request_timeout_seconds
 stage_provider_messages = provider_transport.stage_messages
 discard_provider_messages = provider_transport.discard_messages
 

@@ -15,7 +15,7 @@ def _remaining_seconds(deadline_monotonic_ns: int) -> float:
     remaining = (deadline_monotonic_ns - time.monotonic_ns()) / 1_000_000_000
     if remaining <= 0:
         raise TimeoutError("provider deadline expired")
-    return min(30.0, remaining)
+    return remaining
 
 
 def reply_socket(reply: Any) -> Any:

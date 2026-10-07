@@ -341,7 +341,7 @@ def stage_messages(
     if (
         isinstance(timeout_seconds, bool)
         or not isinstance(timeout_seconds, (int, float))
-        or not 0 < timeout_seconds <= 30
+        or not 0 < timeout_seconds <= fvs_profile.request_timeout_seconds(binding.public)
     ):
         raise ProviderError("provider timeout is invalid")
     request_id = request.get("request_id")

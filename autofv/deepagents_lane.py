@@ -17,6 +17,7 @@ from deepagents import (
     create_deep_agent,
     register_harness_profile,
 )
+from deepagents.middleware.filesystem import FilesystemMiddleware
 from langchain_core.language_models.chat_models import BaseChatModel
 from langchain_core.messages import AIMessage, convert_to_openai_messages
 from langchain_core.outputs import ChatGeneration, ChatResult
@@ -54,15 +55,20 @@ _EXCLUDED_TOOLS = frozenset(
 )
 _MODEL_KEY = "autofv:autofv-role-lane"
 _MODEL_NAME = "autofv-role-lane"
+_FVS_MODEL_NAME = "autofv-fvs-role-lane"
 
 
-register_harness_profile(
-    _MODEL_KEY,
-    HarnessProfile(
-        excluded_tools=_EXCLUDED_TOOLS,
-        general_purpose_subagent=GeneralPurposeSubagentProfile(enabled=False),
-    ),
-)
+for _name, _excluded_middleware in (
+    (_MODEL_NAME, ()), (_FVS_MODEL_NAME, ("SummarizationMiddleware",)),
+):
+    register_harness_profile(
+        f"autofv:{_name}",
+        HarnessProfile(
+            excluded_tools=_EXCLUDED_TOOLS,
+            excluded_middleware=set(_excluded_middleware),
+            general_purpose_subagent=GeneralPurposeSubagentProfile(enabled=False),
+        ),
+    )
 
 
 def runtime_compatibility() -> dict[str, Any]:
@@ -155,7 +161,8 @@ class _RoutedRoleModel(BaseChatModel):
         context_hashes: list[str],
         progress: dict[str, Any],
     ) -> None:
-        super().__init__(max_tokens=spec["max_output_tokens"])
+        super().__init__(max_tokens=spec["max_output_tokens"], model_name=(
+            _FVS_MODEL_NAME if job.get("methodology") == lane._FVS_METHODOLOGY else _MODEL_NAME))
         self._state = state
         self._job = job
         self._spec = spec
@@ -494,6 +501,12 @@ async def run_role_conversation(
         progress,
     )
     captured: dict[str, Any] = {}
+    fvs_options = {}
+    if trusted_job.get("methodology") == lane._FVS_METHODOLOGY:
+        # Complete source and tool history must reach the explicit byte-bound check.
+        fvs_options["middleware"] = [FilesystemMiddleware(
+            tool_token_limit_before_evict=None, human_message_token_limit_before_evict=None,
+        )]
     graph = create_deep_agent(
         model=routed,
         tools=_langchain_tools(
@@ -507,6 +520,7 @@ async def run_role_conversation(
         ),
         subagents=[],
         system_prompt=spec["system_prompt"],
+        **fvs_options,
     )
     user_message = lane.initial_role_messages(spec)[1]
     try:

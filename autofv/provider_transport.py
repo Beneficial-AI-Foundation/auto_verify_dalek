@@ -48,7 +48,7 @@ def _remaining_seconds(deadline_monotonic_ns: int) -> float:
     remaining = (deadline_monotonic_ns - time.monotonic_ns()) / 1_000_000_000
     if remaining <= 0:
         raise ProviderError("provider timeout", classification="timeout")
-    return min(30.0, remaining)
+    return remaining
 
 
 def _read_upstream(
@@ -164,6 +164,11 @@ def pinned_public_binding(run: dict[str, Any]) -> dict[str, Any]:
     if binding is None:
         raise ProviderError("provider binding is not configured")
     return json.loads(canonical_json_bytes(binding.public))
+
+
+def request_timeout_seconds(run: dict[str, Any]) -> int:
+    binding = _binding(run)
+    return fvs_profile.request_timeout_seconds(binding.public) if binding is not None else 30
 
 
 def _messages(value: Any, binding: ProviderBinding | None = None) -> list[dict[str, Any]]:

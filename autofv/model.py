@@ -269,7 +269,10 @@ def _provider_timeout_seconds(state: _RunState) -> float:
     remaining = limit - reserve - used
     if remaining <= 0:
         raise BudgetExhausted("wall_seconds", limit, used)
-    return float(min(Decimal("30"), remaining))
+    run = state.get("run", {})
+    request_limit = (worker_proxy.provider_request_timeout_seconds(run)
+                     if isinstance(run.get("provider_binding"), dict) else 30)
+    return float(min(Decimal(request_limit), remaining))
 
 
 def _invoke_model(

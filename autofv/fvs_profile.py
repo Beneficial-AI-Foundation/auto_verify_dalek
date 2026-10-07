@@ -33,7 +33,7 @@ def profile() -> dict[str, Any]:
         "role_models": dict(ROLE_MODELS),
         "parameters": {
             "reasoning": {"effort": "xhigh", "exclude": True},
-            "stream": False, "timeout_seconds": 30,
+            "stream": False, "timeout_seconds": 120,
             "work_max_output_tokens": 16384, "review_max_output_tokens": 8192,
         },
         "models": {
@@ -84,6 +84,12 @@ def model_for(config: dict[str, Any], role: str) -> str:
         return ROLE_MODELS[role]
     except KeyError as exc:
         raise ContractError("FVS request role is not in the frozen role table") from exc
+
+
+def request_timeout_seconds(binding: dict[str, Any]) -> int:
+    if binding.get("schema") != "autofv-provider-binding/v2":
+        return 30
+    return validate_profile(binding["role_profile"])["parameters"]["timeout_seconds"]
 
 
 def binding_model(binding: dict[str, Any], role: str) -> str:

@@ -780,6 +780,7 @@ class ProviderServiceTests(unittest.TestCase):
                                     sys.executable,
                                     "-c",
                                     worker_proxy._PROXY_CLIENT_PROGRAM,
+                                    args[-2],
                                     args[-1],
                                 ],
                                 input=worker_input,

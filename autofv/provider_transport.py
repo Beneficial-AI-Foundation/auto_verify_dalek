@@ -166,12 +166,12 @@ def pinned_public_binding(run: dict[str, Any]) -> dict[str, Any]:
     return json.loads(canonical_json_bytes(binding.public))
 
 
-def _messages(value: Any) -> list[dict[str, Any]]:
-    return provider_messages.validate_messages(value)
+def _messages(value: Any, binding: ProviderBinding | None = None) -> list[dict[str, Any]]:
+    return provider_messages.validate_messages(value, binding)
 
 
-def messages_sha256(value: Any) -> str:
-    return provider_messages.messages_sha256(value)
+def messages_sha256(value: Any, *, run: dict[str, Any] | None = None) -> str:
+    return provider_messages.messages_sha256(value, _binding(run) if run is not None else None)
 
 
 def stage_messages(
@@ -277,7 +277,7 @@ def reservation_usd(
     if binding is None:
         raise ProviderError("provider binding is not configured")
     validate_dispatch_request(binding, request)
-    validated = _messages(messages)
+    validated = _messages(messages, binding)
     if _sha(validated) not in request["input_hashes"]:
         raise ProviderError("provider messages are not bound to the request")
     upstream = _upstream_request(binding, request, validated)

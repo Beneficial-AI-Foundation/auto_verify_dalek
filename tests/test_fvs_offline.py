@@ -173,6 +173,99 @@ class FvsOfflineTests(unittest.TestCase):
         with self.assertRaises(contracts.ContractError):
             model._model_envelope(self.state, request_id="bad-role", role="opus", input_hashes=[])
 
+    def test_full_size_fvs_context_reaches_hash_reserve_stage_and_signed_transport(self):
+        from tests.test_provider_service import _install_trusted_authorization_fixture
+        from autofv import provider_service
+        _install_trusted_authorization_fixture(self.run, self.root)
+        self.state["run_round"] = model.agentproc.run_round
+        self.state["config"]["max_cost_usd"] = Decimal("5.000000")
+        graph = {"source_paths": {"helper": PATH}, "graph_sha256": "d" * 64}
+        lane = {"node": "helper", "assigned_path": PATH, "base_commit": "c" * 40}
+        sent = []
+        def upstream(request, **_kwargs):
+            body = json.loads(request.data)
+            sent.append(body)
+            reply = _provider_reply()
+            reply.update(model=body["model"], provider="OpenAI" if body["model"] == fvs_profile.AUTHOR else "Anthropic")
+            reply["usage"] = {"prompt_tokens": 100, "completion_tokens": 10, "total_tokens": 110,
+                "prompt_tokens_details": {"cached_tokens": 0, "cache_write_tokens": 0},
+                "completion_tokens_details": {"reasoning_tokens": 5}, "cost": 0.0003}
+            return _ProviderReply(reply)
+        for role in ("scout", "spec_reviewer"):
+            job = generic_role_runtime._role_job(self.state, graph, lane, role,
+                statement_sha256="e" * 64, contract_fingerprint="f" * 64, input_hashes=[packet()["packet_sha256"]],
+                role_context={"source_packet": packet(), "public_context_note": "x" * 150_625})
+            messages = agent_lane.initial_role_messages(agent_lane.role_conversation_spec(job))
+            self.assertGreater(len(messages[-1]["content"].encode()), 150_000)
+            self.assertLess(len(contracts.canonical_json_bytes(messages)), 262_144)
+            with mock.patch.object(provider_transport, "_open_upstream", side_effect=upstream), \
+                 mock.patch.object(worker, "proxy_round", side_effect=lambda run, req:
+                     provider_service.dispatch(run, req, run_token="synthetic-fvs-run-token")):
+                response, receipt = model._model_request(self.state, request_id="full-context-" + role,
+                    role=role, input_hashes=[], messages=messages)
+            self.assertEqual(response["role"], role)
+            self.assertEqual(Decimal(receipt["cost"]["amount"]), Decimal("0.000300"))
+            self.assertEqual(sent[-1]["messages"], messages)
+        self.assertEqual(len(sent), 2)
+        self.assertEqual(self.state["cost"], Decimal("0.000600"))
+        self.assertEqual(self.state["pending_model_exchanges"], {})
+
+    def test_message_limits_require_pinned_fvs_binding_and_keep_aggregate_bound(self):
+        from autofv import provider_messages
+        messages = [{"role": "system", "content": "synthetic context"}, {"role": "user", "content": "x" * 150_625}]
+        with self.assertRaises(provider_config.ProviderConfigError):
+            provider_transport.messages_sha256(messages)
+        with self.assertRaises(provider_config.ProviderConfigError):
+            provider_transport.messages_sha256(messages, run={"role_profile": fvs_profile.PROFILE_ID})
+        public_only = {**self.run, "provider_binding": copy.deepcopy(self.run["provider_binding"])}
+        public_only["provider_binding"]["binding_sha256"] = "0" * 64
+        with self.assertRaises(provider_config.ProviderConfigError):
+            provider_transport.messages_sha256(messages, run=public_only)
+        digest = provider_transport.messages_sha256(messages, run=self.run)
+        self.assertEqual(digest, fvs_profile.digest(messages))
+        messages[-1]["content"] = "é" * 35_000
+        self.assertGreater(len(messages[-1]["content"].encode()), 65_536)
+        provider_transport.messages_sha256(messages, run=self.run)
+        with self.assertRaises(provider_config.ProviderConfigError):
+            provider_transport.messages_sha256(messages)
+        messages[-1]["content"] = ""
+        overhead = len(contracts.canonical_json_bytes(messages))
+        messages[-1]["content"] = "x" * (262_144 - overhead)
+        self.assertEqual(len(contracts.canonical_json_bytes(messages)), 262_144)
+        provider_transport.messages_sha256(messages, run=self.run)
+        messages[-1]["content"] += "x"
+        with self.assertRaises(provider_config.ProviderConfigError):
+            provider_transport.messages_sha256(messages, run=self.run)
+        messages[-1]["content"] = "x" * 262_145
+        with self.assertRaises(provider_config.ProviderConfigError):
+            provider_transport.messages_sha256(messages, run=self.run)
+        self.assertEqual(provider_messages.MAX_MESSAGE_BYTES, 262_144)
+        self.assertEqual(provider_messages.MAX_WIRE_BYTES, 1_000_000)
+
+    def test_registered_legacy_binding_keeps_65536_byte_message_limit(self):
+        root = self.root / "legacy"
+        root.mkdir()
+        legacy = _provider_run(root, contracts.load_toolchain_lock(), "c" * 40)
+        provider_config.configure_provider(legacy, env_path=_provider_env(root),
+            tool_schemas=list(agent_lane._TOOL_SCHEMAS), project_root=root)
+        try:
+            messages = [{"role": "system", "content": "synthetic"}, {"role": "user", "content": "x" * 65_536}]
+            self.assertEqual(provider_transport.messages_sha256(messages, run=legacy),
+                             provider_transport.messages_sha256(messages))
+            messages[-1]["content"] += "x"
+            with self.assertRaises(provider_config.ProviderConfigError):
+                provider_transport.messages_sha256(messages, run=legacy)
+            request = {"schema": "autofv-model-request/v1", "run_id": legacy["run_id"], "sequence": 1,
+                "request_id": "synthetic-legacy-large", "batch_id": None, "role": "scout",
+                "model_id": legacy["proxy_model_id"], "input_hashes": [fvs_profile.digest(messages)],
+                "prompt_sha256": "a" * 64}
+            with self.assertRaises(provider_config.ProviderConfigError):
+                provider_transport.reservation_usd(legacy, request, messages)
+            with self.assertRaises(provider_config.ProviderConfigError):
+                provider_transport.stage_messages(legacy, request, messages)
+        finally:
+            provider_config.abort_configuration(legacy)
+
     def test_profile_parameter_and_pricing_drift_rejected_even_when_rehashed(self):
         public = self.binding.public
         for field, value in (("reasoning", {"effort": "high", "exclude": True}), ("work_max_output_tokens", 8192)):

@@ -11,6 +11,7 @@ import urllib.parse
 from decimal import Decimal, DecimalException
 from typing import Any
 
+from . import fvs_profile
 from .contracts import ContractError, canonical_json_bytes
 from .provider_config import ProviderBinding, ProviderConfigError, canonical_sha256, exact_dict
 
@@ -246,6 +247,9 @@ def _utf8(value: Any) -> bytes | None:
 
 
 def validate_messages(value: Any, binding: ProviderBinding | None = None) -> list[dict[str, Any]]:
+    content_limit = 65_536
+    if binding is not None and binding.public["schema"] == "autofv-provider-binding/v2":
+        content_limit = fvs_profile.validate_profile(binding.public["role_profile"])["context_bytes"]
     if not isinstance(value, list) or not 2 <= len(value) <= 64:
         raise ProviderError("provider messages are not a bounded array")
     messages: list[dict[str, Any]] = []
@@ -294,7 +298,7 @@ def validate_messages(value: Any, binding: ProviderBinding | None = None) -> lis
             or not content
             or "\x00" in content
             or (content_bytes := _utf8(content)) is None
-            or len(content_bytes) > 65_536
+            or len(content_bytes) > content_limit
             or (role == "tool" and (not isinstance(item["tool_call_id"], str) or not item["tool_call_id"]))
         ):
             raise ProviderError("provider message content is invalid")
@@ -319,8 +323,8 @@ def validate_messages(value: Any, binding: ProviderBinding | None = None) -> lis
     return messages
 
 
-def messages_sha256(value: Any) -> str:
-    return canonical_sha256(validate_messages(value))
+def messages_sha256(value: Any, binding: ProviderBinding | None = None) -> str:
+    return canonical_sha256(validate_messages(value, binding))
 
 
 def stage_messages(

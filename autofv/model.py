@@ -92,11 +92,11 @@ def _model_envelope(
     }
 
 
-def _message_bound_hashes(input_hashes: list[str], messages: Any) -> list[str]:
+def _message_bound_hashes(input_hashes: list[str], messages: Any, *, run: dict[str, Any] | None = None) -> list[str]:
     if messages is None:
         return input_hashes
     try:
-        message_sha256 = worker_proxy.provider_messages_sha256(messages)
+        message_sha256 = worker_proxy.provider_messages_sha256(messages, run=run)
     except worker.WorkerError as exc:
         raise ContractError(str(exc)) from exc
     return [*input_hashes, message_sha256]
@@ -486,7 +486,7 @@ def _model_request(
                 raise ContractError(f"stored model request is invalid: {request_id}") from exc
             request = _model_envelope(
                 state, request_id=request_id, role=role,
-                input_hashes=_message_bound_hashes(input_hashes, messages),
+                input_hashes=_message_bound_hashes(input_hashes, messages, run=state["run"]),
                 batch_id=batch_id, sequence=sequence,
             )
             if stored is not None and stored.get("request") != request:
@@ -557,7 +557,7 @@ def _parallel_model_requests(
         spec = dict(spec)
         messages = spec.pop("messages", None)
         spec["input_hashes"] = _message_bound_hashes(
-            spec["input_hashes"], messages
+            spec["input_hashes"], messages, run=state["run"]
         )
         messages_by_request[spec["request_id"]] = messages
         previous = stored.get(spec["request_id"])

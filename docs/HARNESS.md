@@ -112,16 +112,37 @@ python harness/prove_top_spec.py --bottom-up --dynamic \
 Use `--dry-run` to inspect the initial graph without invoking a model.
 
 A Worker repairs ordinary Lean errors within its task. For a structural problem
-it returns a JSON `blocker` containing `kind`, `reason`, and `evidence`.
-`needs_split` invokes a fresh, read-only Refiner; `invalid_contract` blocks the
+it ends its final message with `END_REASON:LIMIT` and a JSON `blocker` object
+(`kind`, `reason`, `evidence`) on the last line; the harness parses the last
+JSON object in the message, so surrounding prose or code fences do not hide it.
+`needs_split` invokes a fresh Refiner whose slot is mounted read-only (bwrap
+`--ro-bind`, self-tested at start; the tool allowlist and a post-hoc
+`changed_files` check remain as second lines of defense); `invalid_contract` blocks the
 node without silently changing its statement; `needs_stronger_spec` names an
 accepted internal specification that is too weak for the current proof. The Refiner proposes closed helper
 statements, their dependencies, their purpose, and an exact insertion point.
 The harness inserts only theorem placeholders, checks elaboration and statement
 identity, adds the helper nodes, and schedules them before retrying the parent
-in a new session. Existing supplied statements are frozen. Synthesized internal
+in a new session. That session's prompt carries the run context for its target:
+the helper lemmas with their stated purpose and status, and a bounded summary of
+each earlier failed attempt (outcome, reported reason and evidence, first Lean
+errors). Both are stored on the node in `graph.json`. Existing supplied statements are frozen. Synthesized internal
 specifications still need to be strong enough for the top-level theorem; Lean
 elaboration of a decomposition alone does not establish that sufficiency.
+
+A helper that its Worker reports as `invalid_contract` (the Refiner proposed a
+false statement) does not stall its parent: the harness removes that round's
+unproved helper placeholders (proved siblings stay), verifies the build and
+that no other statement changed, commits the removal, restores the parent's
+dependencies, records the false statement on the parent, and asks a fresh
+Refiner again with that statement marked as false. If the refinement budget
+is exhausted the parent simply returns to `pending`.
+
+An ordinary failure (gate rejection, agent limit, timeout) does not block a
+node at once: it is retried in a fresh session up to `--max-node-retries`
+times (default 1), each retry carrying the attempt history. A structural
+blocker report skips the retries and goes straight to the Refiner, the spec
+revision, or the block. A split or a spec revision resets the node's tries.
 
 Each Worker uses the existing scope/build/statement gates plus a transitive
 axiom check: its accepted theorem must not depend on `sorryAx`. New or previously
@@ -155,6 +176,7 @@ commits and each revision request. Existing supplied statements stay frozen.
 
 Bounds: `--max-refinements` (default 2 per node), `--max-helpers-per-split` (4),
 `--max-proof-nodes` (64 total), `--max-node-attempts` (100 across resumes),
+`--max-node-retries` (1 extra fresh attempt per node after an ordinary failure),
 and `--max-spec-revisions` (2 per internal spec; 0 disables revision).
 Worker rounds and Refiner invocations obey the configured turn/time limits.
 `--max-cost-usd` remains a per-Worker limit, not a total workflow budget.

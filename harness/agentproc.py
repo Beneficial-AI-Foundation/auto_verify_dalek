@@ -259,6 +259,23 @@ def bwrap_prefix(repo, config_dir, hidden=SANDBOX_HIDDEN, extra_ro=(), sealed_ro
     return argv
 
 
+def readonly_selftest(prefix, repo, config_dir):
+    """Probes for a read_only=True prefix: the slot must reject writes while
+    the config dir (claude session state) stays writable."""
+    probes = {
+        "repo_readonly": f"! touch {repo}/.rw 2>/dev/null",
+        "repo_readable": f"[ -r {repo}/lakefile.toml ] || [ -r {repo}/lakefile.lean ]",
+        "config_dir_writable": f"touch {config_dir}/.rw && rm {config_dir}/.rw",
+    }
+    out = {}
+    for name, sh in probes.items():
+        r = subprocess.run(prefix + ["bash", "-c", sh],
+                           stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                           timeout=120)
+        out[name] = (r.returncode == 0)
+    return out
+
+
 def sandbox_selftest(prefix, repo, config_dir, extra_ro=()):
     """Run probes inside the sandbox and return {check: bool}. Every check
     must be True before a scored run; the dict is recorded in the ledger."""

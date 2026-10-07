@@ -652,6 +652,9 @@ def main():
     ap.add_argument("--max-helpers-per-split", type=int, default=4)
     ap.add_argument("--max-proof-nodes", type=int, default=64)
     ap.add_argument("--max-node-attempts", type=int, default=100)
+    ap.add_argument("--max-node-retries", type=int, default=1,
+                    help="with --dynamic: extra fresh-session attempts on a node after an "
+                         "ordinary failure, before it is blocked (0 = one attempt only)")
     ap.add_argument("--max-spec-revisions", type=int, default=2,
                     help="with --dynamic: times an accepted internal spec may be reopened "
                          "and strengthened after a downstream Worker reports it too weak (0 = never)")
@@ -689,8 +692,8 @@ def main():
         if min(args.max_refinements, args.max_helpers_per_split,
                args.max_proof_nodes, args.max_node_attempts) < 1:
             ap.error("dynamic graph limits must be positive")
-        if args.max_spec_revisions < 0:
-            ap.error("--max-spec-revisions must be >= 0")
+        if min(args.max_spec_revisions, args.max_node_retries) < 0:
+            ap.error("--max-spec-revisions and --max-node-retries must be >= 0")
     driver.review_subagent.validate(args, ap)
     args.g2 = False  # driver.gate: no trust-base manifests in a bundle slot
     if args.fv_skills:
@@ -851,6 +854,17 @@ def main():
                 sys.exit(f"sandbox self-test FAILED: {failed}")
             isolation["sandbox_selftest"] = checks
             print(f"sandbox ok ({len(checks)} checks)", flush=True)
+            if args.dynamic:
+                # Refiner (and any other read-only role) gets the slot mounted
+                # read-only: no edit is possible, not merely detected afterwards.
+                args.refiner_prefix = agentproc.bwrap_prefix(
+                    work, cfg, hidden=hidden, extra_ro=[settings_path],
+                    sealed_ro=skill_ro, read_only=True)
+                ro = agentproc.readonly_selftest(args.refiner_prefix, work, cfg)
+                failed = [k for k, ok in ro.items() if not ok]
+                if failed:
+                    sys.exit(f"read-only sandbox self-test FAILED: {failed}")
+                isolation["readonly_sandbox_selftest"] = ro
 
     log = lambda msg: print(f"[topspec] {msg}", flush=True)
     limits = {k: getattr(args, k) for k in (

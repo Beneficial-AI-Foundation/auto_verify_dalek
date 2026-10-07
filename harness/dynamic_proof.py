@@ -16,7 +16,8 @@ import agentproc
 import driver
 
 REPORT = '''
-If a structural obstacle prevents this proof, return ONLY one JSON object:
+If a structural obstacle prevents this proof, end your final message with
+END_REASON:LIMIT followed by exactly one JSON object on the last line:
 {"blocker":{"kind":"needs_split","reason":"...","evidence":"..."}}
   when the proof needs auxiliary lemmas;
 {"blocker":{"kind":"needs_stronger_spec","spec":"<internal function>","reason":"...","evidence":"..."}}
@@ -27,6 +28,7 @@ If a structural obstacle prevents this proof, return ONLY one JSON object:
   when the frozen target statement itself is false.
 Ordinary Lean errors should be repaired, not reported as structural blockers.
 Do not change existing theorem statements. Do not write a report file.
+Without a blocker, do not end your message with a JSON object.
 '''
 REVISION = '''
 A previous specification for this function was accepted and later turned out
@@ -38,6 +40,10 @@ Previous statement(s):
 The new statement must still hold for the function and must provide what the
 requester needs. Callers proved against the old statement are re-proved later.
 '''
+CONTEXT = '''
+Context from earlier work on this target in this run. You are a fresh session;
+the workspace contains only accepted, verified work.
+{helpers}{history}'''
 KINDS = ('needs_split', 'invalid_contract', 'needs_stronger_spec')
 NAME = re.compile(r"[A-Za-z_][A-Za-z0-9_']*(?:\.[A-Za-z_][A-Za-z0-9_']*)*\Z")
 GIT = ['git', '-c', 'user.name=harness', '-c', 'user.email=harness@localhost']
@@ -60,19 +66,30 @@ def commit(work, path, msg):
     return git(work, 'rev-parse', 'HEAD')
 
 
+def json_objects(text):
+    """Every top-level JSON object in `text`, in order; surrounding prose,
+    code fences and trailing lines are ignored."""
+    decoder, found, pos = json.JSONDecoder(), [], 0
+    while (start := text.find('{', pos)) != -1:
+        try:
+            value, end = decoder.raw_decode(text, start)
+        except ValueError:
+            pos = start + 1
+            continue
+        if isinstance(value, dict):
+            found.append(value)
+        pos = end
+    return found
+
+
 def object_result(result):
-    text = (result.get('result') or '').strip()
-    if text.startswith('```json') and text.endswith('```'):
-        text = text[7:-3].strip()
-    try:
-        value = json.loads(text)
-        return value if isinstance(value, dict) else {}
-    except (ValueError, TypeError):
-        return {}
+    """The last JSON object in an agent's final message (its report)."""
+    objects = json_objects(result.get('result') or '')
+    return objects[-1] if objects else {}
 
 
 def blocker_result(result):
-    value = object_result(result).get('blocker')
+    value = object_result(result or {}).get('blocker')
     if not isinstance(value, dict) or value.get('kind') not in KINDS:
         return None
     keys = ('reason', 'evidence') + (('spec',) if value['kind'] == 'needs_stronger_spec' else ())
@@ -105,7 +122,7 @@ class Graph:
         for i, step in enumerate(steps):
             key = f'n{i + 1}'
             self.nodes[key] = dict(step, id=key, deps=previous[:],
-                                   status='pending', refinements=0, revisions=0)
+                                   status='pending', refinements=0, revisions=0, tries=0)
             previous = [key]
         if any('callers' in s for s in steps):
             callers = {short(n.get('top_fn', n['fn'])): n for n in self.nodes.values()}
@@ -158,13 +175,20 @@ class Graph:
         original = node['deps'][:]
         ids = [f"{node['id']}.r{node['refinements'] + 1}.h{i + 1}"
                for i in range(len(helpers))]
+        rnd = node['refinements'] + 1
         for i, helper in enumerate(helpers):
             self.nodes[ids[i]] = dict(
                 id=ids[i], mode='helper', fn=helper['name'], path=node['path'],
                 deps=original + [ids[j] for j in helper['deps']],
-                status='pending', refinements=0)
+                status='pending', refinements=0, tries=0,
+                parent=node['id'], round=rnd)
+        node.setdefault('split_deps', {})[str(rnd)] = original
+        node.setdefault('helpers', []).extend(
+            dict(id=ids[i], name=h['name'], type=h.get('type', ''), purpose=h.get('purpose', ''))
+            for i, h in enumerate(helpers))
         node['deps'] = ids
         node['status'] = 'pending'
+        node['tries'] = 0  # new situation: helpers available
         node['refinements'] += 1
         validate_graph(self.nodes)
 
@@ -298,12 +322,54 @@ def revise(graph, args, spec, requester, report, work, log):
     for key in reopened:
         n = graph.nodes[key]
         n['status'] = 'pending'
+        n['tries'] = 0
         n.pop('theorems', None)
     spec['revisions'] += 1
     spec.setdefault('revision_requests', []).append(dict(
         requester=requester['fn'], reason=report['reason'],
         evidence=report['evidence'], previous=previous))
     return reopened, counts
+
+
+def failure_summary(attempt, outcome, detail, rounds):
+    """Short, bounded record of one failed Worker attempt for later prompts."""
+    summary = dict(attempt=attempt, outcome=outcome)
+    blocker = detail.get('blocker') or {}
+    gate = detail.get('gate_detail') or detail  # agent_limit wraps the gate verdict
+    if blocker:
+        summary['reason'] = blocker['reason'][:400]
+        summary['evidence'] = blocker['evidence'][:800]
+    elif isinstance(gate.get('reason'), str):
+        summary['reason'] = gate['reason'][:400]
+    summary['errors'] = [f"{e['file']}:{e['line']}: {e['message'][:300]}"
+                         for e in (gate.get('errors') or [])[:3]]
+    summary['rounds'] = len(rounds or [])
+    return summary
+
+
+def context_block(graph, node):
+    """Helpers added for this node and its earlier failed attempts."""
+    helpers = ''.join(
+        f"  - {h['name']} : {h['type']}\n      purpose: {h['purpose']}"
+        f"  [{graph.nodes.get(h['id'], {}).get('status', 'unknown')}]\n"
+        for h in node.get('helpers', []))
+    if helpers:
+        helpers = ('Helper lemmas added for this proof (already in the file; use '
+                   'the accepted ones, do not restate or modify them):\n' + helpers)
+    history = ''
+    for h in node.get('history', []):
+        line = f"  attempt {h['attempt']}: {h['outcome']}"
+        if h.get('reason'):
+            line += f"; reason: {h['reason']}"
+        if h.get('evidence'):
+            line += f"\n      evidence: {h['evidence']}"
+        for e in h.get('errors', []):
+            line += f"\n      error: {e}"
+        history += line + '\n'
+    if history:
+        history = ('Previous attempts on this target (their edits were rolled back; '
+                   'do not repeat the same approach blindly):\n' + history)
+    return CONTEXT.format(helpers=helpers, history=history) if helpers or history else ''
 
 
 def revision_block(node):
@@ -313,6 +379,156 @@ def revision_block(node):
         previous='\n'.join(f"  {t}: {pp or '(statement unavailable)'}"
                            for t, pp in r['previous'].items()) or '  (none recorded)')
         for r in requests)
+
+
+def placeholder_re(name):
+    return re.compile(r"^theorem _root_\." + re.escape(name) +
+                      r"\s*:.*?:=\s*by[ \t]*\n\s*sorry[ \t]*\n\n?", re.M | re.S)
+
+
+def unsplit(graph, args, helper, report, work, before_counts, log):
+    """A helper proposed by the Refiner is false: remove that round's unproved
+    helper placeholders, restore the parent's dependencies (proved siblings
+    stay), and remember the false statement for the next Refiner.
+    Returns (removed node ids, sorry counts); raises ValueError, slot unchanged.
+    """
+    parent = graph.nodes[helper['parent']]
+    rnd = helper['round']
+    siblings = [n for n in graph.nodes.values()
+                if n.get('parent') == parent['id'] and n.get('round') == rnd]
+    removed = [n for n in siblings if n['status'] != 'accepted']
+    removed_ids = {n['id'] for n in removed}
+    for n in graph.nodes.values():
+        if n['id'] not in removed_ids and n['id'] != parent['id'] and removed_ids & set(n['deps']):
+            raise ValueError(f"{n['id']} depends on a helper being removed")
+    path = parent['path']
+    module = driver.path_to_module(path)
+    old, _ = driver.stmt_fingerprints([module], work)
+    source = Path(work, path).read_text()
+    for n in removed:
+        source, k = placeholder_re(n['fn']).subn('', source)
+        if k != 1:
+            raise ValueError(f"placeholder of {n['fn']} not found exactly once")
+    try:
+        Path(work, path).write_text(source)
+        rc, counts, _, output = driver.build_sorry_counts(work, args.build_timeout, include_output=True)
+        if rc != 0:
+            raise ValueError('slot does not build after removing helpers: ' + output[-2000:])
+        new, _ = driver.stmt_fingerprints([module], work)
+        gone = set(old.get(module, {})) - set(new.get(module, {}))
+        if gone != {n['fn'] for n in removed} or any(driver.stmt_diff(
+                {k: v for k, v in old[module].items() if k not in gone}, new[module])):
+            raise ValueError('removal changed other statements')
+        if counts.get(path, 0) != before_counts.get(path, 0) - len(removed):
+            raise ValueError('unexpected sorry count after removal')
+        for p in set(counts) | set(before_counts):
+            if p != path and counts.get(p, 0) != before_counts.get(p, 0):
+                raise ValueError('removal changed another module')
+    except (ValueError, RuntimeError, subprocess.TimeoutExpired):
+        mod, new_files = driver.changed_files(work)
+        driver.rollback(mod, new_files, work)
+        raise
+    graph.commits.append(dict(sha=commit(work, path, f"DAG unsplit {parent['id']} r{rnd}"),
+                              kind='unsplit', node=parent['id']))
+    for n in removed:
+        del graph.nodes[n['id']]
+    kept = [n['id'] for n in siblings if n['id'] not in removed_ids]
+    parent['deps'] = parent['split_deps'][str(rnd)] + kept
+    false_type = next((h['type'] for h in parent.get('helpers', []) if h['id'] == helper['id']), '')
+    parent['helpers'] = [h for h in parent.get('helpers', []) if h['id'] not in removed_ids]
+    parent.setdefault('rejected_helpers', []).append(dict(
+        name=helper['fn'], type=false_type,
+        reason=report['reason'][:400], evidence=report['evidence'][:800]))
+    parent.setdefault('history', []).append(dict(
+        attempt=graph.attempts, outcome='helper_invalid', rounds=0, errors=[],
+        reason=f"proposed helper {helper['fn']} is false: {report['reason'][:300]}"))
+    parent['status'] = 'pending'
+    parent['tries'] = 0
+    validate_graph(graph.nodes)
+    return sorted(removed_ids), counts
+
+
+def refine(graph, args, node, report, task_prompt, failed_source, work, run_dir,
+           attempt, env, settings, prefix, before_counts, log):
+    """Ask a read-only Refiner for helper statements, verify and insert them.
+    Returns the sorry counts after an accepted split, or None."""
+    path = node['path']
+    module = driver.path_to_module(path)
+    log(f"refiner for {node['id']}: {report['reason']}")
+    baseline, _ = driver.stmt_fingerprints([module], work)
+    source = Path(work, path).read_text()
+    rejected = ''.join(f"  - {h['name']} : {h['type']}\n      why false: {h['reason']}\n"
+                       for h in node.get('rejected_helpers', []))
+    ref_prompt = f'''You are the proof Refiner. Read the target file {path} and relevant definitions.
+Target: {node['fn']}. Blocker: {json.dumps(report)}
+Original Worker task:\n{task_prompt}
+Failed attempt excerpt (diagnostic only; workspace has been rolled back):
+{failed_source}
+''' + (f'''Helpers proposed earlier for this target turned out to be FALSE. Do not propose
+them again or anything equivalent; check the actual bounds and definitions:
+{rejected}''' if rejected else '') + f'''Keep every existing declaration and target statement unchanged. Propose auxiliary
+lemmas sufficient to simplify the parent proof. Do not weaken its contract.
+End your final message with exactly one JSON object on its last line:
+{{"before":"unique exact substring at a line start before the target",
+"helpers":[{{"name":"Fully.Qualified.unique_name", "type":"closed Lean proposition, including all forall binders",
+"deps":[], "purpose":"how the parent uses it"}}]}}
+Helpers appear in this order. deps are zero-based indices of earlier helpers.
+They must not depend on the parent or on later/unproved nodes. Use at most
+{args.max_helpers_per_split} helpers. Do not edit files. If decomposition is
+inappropriate return {{"blocked":"reason"}}.
+'''
+    ref_session = agentproc.new_session_id()
+    # Read-only mount when sandboxed (set up by prove_top_spec); the
+    # changed_files check below stays as a second line of defense.
+    ref_prefix = getattr(args, 'refiner_prefix', None) or prefix
+    status, rc, wall, result, provenance = agentproc.run_round(
+        ref_prompt, str(Path(run_dir, f'refiner-{attempt}.jsonl')),
+        cwd=work, session_id=ref_session, resume=False, model=args.model,
+        max_turns=args.max_turns, deadline_seconds=args.timeout,
+        allowed_tools='Read,Grep,Glob', env=env, settings_path=settings,
+        sandbox_prefix=ref_prefix, local_checks=False)
+    ref_event = dict(role='refiner', node=node['id'], session=ref_session,
+                     sandbox='read_only' if ref_prefix is not prefix else
+                             ('shared_writable' if prefix else 'none'),
+                     status=status, wall_seconds=wall, provenance=provenance,
+                     cost_usd=(result or {}).get('total_cost_usd'),
+                     num_turns=(result or {}).get('num_turns'))
+    graph.events.append(ref_event)
+    try:
+        if status != 'ok' or rc != 0:
+            raise ValueError('refiner did not complete')
+        if any(driver.changed_files(work)):
+            raise ValueError('refiner changed workspace')
+        proposal = object_result(result or {})
+        ref_event['proposal'] = proposal
+        updated, helpers = validate_proposal(proposal, source, min(
+            args.max_helpers_per_split, args.max_proof_nodes - len(graph.nodes)))
+        Path(work, path).write_text(updated)
+        rc, counts, _, output = driver.build_sorry_counts(work, args.build_timeout, include_output=True)
+        if rc != 0:
+            raise ValueError('helper statements do not elaborate: ' + output[-2000:])
+        after, _ = driver.stmt_fingerprints([module], work)
+        old, newfps = baseline[module], after[module]
+        if any(driver.stmt_diff(old, newfps)):
+            raise ValueError('refinement changed existing statements')
+        added = set(newfps) - set(old)
+        if added != {h['name'] for h in helpers} or any(newfps[n]['kind'] != 'theorem' for n in added):
+            raise ValueError('refinement must add exactly the declared helper theorems')
+        if counts.get(path, 0) != before_counts.get(path, 0) + len(helpers):
+            raise ValueError('unexpected refinement sorry count')
+        for p in set(counts) | set(before_counts):
+            if p != path and counts.get(p, 0) != before_counts.get(p, 0):
+                raise ValueError('refinement changed another module')
+        graph.commits.append(dict(sha=commit(work, path, f"DAG split {node['id']}"),
+                                  kind='split', node=node['id']))
+        graph.split(node, helpers)
+        ref_event['outcome'] = 'accepted_decomposition'
+        return counts
+    except (ValueError, RuntimeError, TimeoutError, subprocess.TimeoutExpired) as error:
+        mod, new = driver.changed_files(work)
+        driver.rollback(mod, new, work)
+        ref_event.update(outcome='rejected_decomposition', error=str(error))
+        return None
 
 
 def run(args, steps, work, run_dir, before_counts, env, settings, prefix,
@@ -363,17 +579,22 @@ def run(args, steps, work, run_dir, before_counts, env, settings, prefix,
             return outcome, detail
 
         local.round_validator = validate
-        if node['mode'] == 'helper':
-            prompt = (f"Prove ONLY the body of {node['fn']} in {path}. "
-                      'Its type and all other declarations are frozen. '
-                      'Previously accepted dependencies are in the workspace.\n')
-        else:
-            prompt = step_prompt(attempt, node, done) + revision_block(node)
-        prompt += REPORT
+
+        def task_prompt(n, i):
+            if n['mode'] == 'helper':
+                text = (f"Prove ONLY the body of {n['fn']} in {n['path']}. "
+                        'Its type and all other declarations are frozen. '
+                        'Previously accepted dependencies are in the workspace.\n')
+            else:
+                text = step_prompt(i, n, done) + revision_block(n)
+            return text + context_block(graph, n) + REPORT
+
+        prompt = task_prompt(node, attempt)
         tid = 'dag_' + Path(run_dir).name + '_' + str(attempt)
         node['status'] = 'running'
+        node['tries'] = node.get('tries', 0) + 1
         graph.save(run_dir, work)
-        log(f"worker {node['id']}: {node['fn']} (fresh session)")
+        log(f"worker {node['id']}: {node['fn']} (fresh session, try {node['tries']})")
         outcome, detail, rounds, sessions = driver.run_rounds(
             prompt, tid, path, before_counts, local, env, settings,
             baseline, work, prefix, log)
@@ -391,6 +612,7 @@ def run(args, steps, work, run_dir, before_counts, env, settings, prefix,
                     path=path, theorems=node['theorems'], run_id=Path(run_dir).name)
             graph.save(run_dir, work)
             continue
+        node.setdefault('history', []).append(failure_summary(attempt, outcome, detail, rounds))
         event['partial_manifest'] = api.save_partial_snapshot(
             run_dir, attempt, [path], work, {path: [node['fn']]}, rounds=rounds)
         failed_source = Path(work, path).read_text()[-16000:]
@@ -402,6 +624,14 @@ def run(args, steps, work, run_dir, before_counts, env, settings, prefix,
             break
         report = detail.get('blocker', {})
         kind = report.get('kind') if outcome == 'structural_blocker' else None
+        if kind is None and node['tries'] <= args.max_node_retries:
+            # Ordinary failure (gate rejection, limit, timeout): one more fresh
+            # session with the attempt history; no decomposition yet.
+            node['status'] = 'pending'
+            event['retry'] = True
+            log(f"retry {node['id']} ({node['tries']}/{1 + args.max_node_retries} tries used)")
+            graph.save(run_dir, work)
+            continue
         if kind == 'needs_stronger_spec':
             spec = graph.spec_for(report['spec'], node)
             rev_event = dict(role='revision', node=node['id'], request=report,
@@ -420,74 +650,40 @@ def run(args, steps, work, run_dir, before_counts, env, settings, prefix,
                 rev_event.update(outcome='rejected_revision', error=str(error))
             graph.save(run_dir, work)
             continue
+        if kind == 'invalid_contract' and node['mode'] == 'helper':
+            parent = graph.nodes[node['parent']]
+            un_event = dict(role='unsplit', node=node['id'], parent=parent['id'], request=report)
+            graph.events.append(un_event)
+            try:
+                log(f"helper {node['id']} reported false; removing round {node['round']} of {parent['id']}")
+                removed, before_counts = unsplit(graph, args, node, report, work, before_counts, log)
+                un_event.update(outcome='accepted_unsplit', removed=removed)
+            except (ValueError, RuntimeError, subprocess.TimeoutExpired) as error:
+                un_event.update(outcome='rejected_unsplit', error=str(error))
+                graph.save(run_dir, work)
+                continue
+            graph.save(run_dir, work)
+            last = parent.get('last_blocker')
+            if (last and parent['refinements'] < args.max_refinements
+                    and len(graph.nodes) < args.max_proof_nodes):
+                counts = refine(graph, args, parent, last, task_prompt(parent, attempt),
+                                Path(work, parent['path']).read_text()[-16000:], work, run_dir,
+                                attempt, env, settings, prefix, before_counts, log)
+                if counts is not None:
+                    before_counts = counts
+            # Otherwise the parent is pending again and gets fresh Worker attempts.
+            graph.save(run_dir, work)
+            continue
         if (kind != 'needs_split'
                 or node['refinements'] >= args.max_refinements
                 or len(graph.nodes) >= args.max_proof_nodes):
             # Independent ready nodes may still make progress.
             continue
-        log(f"refiner for {node['id']}: {report['reason']}")
-        source = Path(work, path).read_text()
-        ref_prompt = f'''You are the proof Refiner. Read the target file {path} and relevant definitions.
-Target: {node['fn']}. Blocker: {json.dumps(report)}
-Original Worker task:\n{prompt}
-Failed attempt excerpt (diagnostic only; workspace has been rolled back):
-{failed_source}
-Keep every existing declaration and target statement unchanged. Propose auxiliary
-lemmas sufficient to simplify the parent proof. Do not weaken its contract.
-Return ONLY JSON: {{"before":"unique exact substring at a line start before the target",
-"helpers":[{{"name":"Fully.Qualified.unique_name", "type":"closed Lean proposition, including all forall binders",
-"deps":[], "purpose":"how the parent uses it"}}]}}
-Helpers appear in this order. deps are zero-based indices of earlier helpers.
-They must not depend on the parent or on later/unproved nodes. Use at most
-{args.max_helpers_per_split} helpers. Do not edit files. If decomposition is
-inappropriate return {{"blocked":"reason"}}.
-'''
-        ref_session = agentproc.new_session_id()
-        status, rc, wall, result, provenance = agentproc.run_round(
-            ref_prompt, str(Path(run_dir, f'refiner-{attempt}.jsonl')),
-            cwd=work, session_id=ref_session, resume=False, model=args.model,
-            max_turns=args.max_turns, deadline_seconds=args.timeout,
-            allowed_tools='Read,Grep,Glob', env=env, settings_path=settings,
-            sandbox_prefix=prefix, local_checks=False)
-        ref_event = dict(role='refiner', node=node['id'], session=ref_session,
-                         status=status, wall_seconds=wall, provenance=provenance,
-                         cost_usd=(result or {}).get('total_cost_usd'),
-                         num_turns=(result or {}).get('num_turns'))
-        graph.events.append(ref_event)
-        try:
-            if status != 'ok' or rc != 0:
-                raise ValueError('refiner did not complete')
-            if any(driver.changed_files(work)):
-                raise ValueError('refiner changed workspace')
-            proposal = object_result(result or {})
-            ref_event['proposal'] = proposal
-            updated, helpers = validate_proposal(proposal, source, min(
-                args.max_helpers_per_split, args.max_proof_nodes - len(graph.nodes)))
-            Path(work, path).write_text(updated)
-            rc, counts, _, output = driver.build_sorry_counts(work, args.build_timeout, include_output=True)
-            if rc != 0:
-                raise ValueError('helper statements do not elaborate: ' + output[-2000:])
-            after, _ = driver.stmt_fingerprints([module], work)
-            old, newfps = baseline[module], after[module]
-            if any(driver.stmt_diff(old, newfps)):
-                raise ValueError('refinement changed existing statements')
-            added = set(newfps) - set(old)
-            if added != {h['name'] for h in helpers} or any(newfps[n]['kind'] != 'theorem' for n in added):
-                raise ValueError('refinement must add exactly the declared helper theorems')
-            if counts.get(path, 0) != before_counts.get(path, 0) + len(helpers):
-                raise ValueError('unexpected refinement sorry count')
-            for p in set(counts) | set(before_counts):
-                if p != path and counts.get(p, 0) != before_counts.get(p, 0):
-                    raise ValueError('refinement changed another module')
-            graph.commits.append(dict(sha=commit(work, path, f"DAG split {node['id']}"),
-                                      kind='split', node=node['id']))
-            graph.split(node, helpers)
+        node['last_blocker'] = report
+        counts = refine(graph, args, node, report, prompt, failed_source, work, run_dir,
+                        attempt, env, settings, prefix, before_counts, log)
+        if counts is not None:
             before_counts = counts
-            ref_event['outcome'] = 'accepted_decomposition'
-        except (ValueError, RuntimeError, TimeoutError, subprocess.TimeoutExpired) as error:
-            mod, new = driver.changed_files(work)
-            driver.rollback(mod, new, work)
-            ref_event.update(outcome='rejected_decomposition', error=str(error))
         graph.save(run_dir, work)
     complete = all(n['status'] == 'accepted' for n in graph.nodes.values())
     if complete:

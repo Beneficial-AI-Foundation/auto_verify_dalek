@@ -361,6 +361,10 @@ def _provider_response(
         {"content", "refusal", "annotations", "reasoning", "reasoning_details"},
         "provider message",
     )
+    if fvs:
+        # Enforce exclusion locally; the upstream request is not an attestation.
+        message = {key: item for key, item in message.items()
+                   if key not in {"reasoning", "reasoning_details"}}
     if (
         choice["finish_reason"] != "tool_calls"
         or ("index" in choice and type(choice["index"]) is not int)
@@ -393,8 +397,6 @@ def _provider_response(
         )
     ):
         raise ProviderError("provider response must contain a tool call")
-    if fvs and (message.get("reasoning") or message.get("reasoning_details")):
-        raise ProviderError("FVS reasoning.exclude was not honored")
     # Providers may batch calls and ignore parallel_tool_calls; only the first
     # runs, and the rebuilt history shows only it.
     call = _shape(

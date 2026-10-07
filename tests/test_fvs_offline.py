@@ -210,6 +210,65 @@ class FvsOfflineTests(unittest.TestCase):
         self.assertEqual(self.state["cost"], Decimal("0.000600"))
         self.assertEqual(self.state["pending_model_exchanges"], {})
 
+    def test_full_size_fvs_discards_reasoning_and_bills_complete_usage(self):
+        original = _provider_reply
+        def reply():
+            value = original()
+            value["choices"][0]["message"].update(
+                reasoning="synthetic-private-text",
+                reasoning_details=[{"type": "reasoning.encrypted", "data": "synthetic-private-opaque"}])
+            return value
+        with mock.patch(__name__ + "._provider_reply", side_effect=reply):
+            self.test_full_size_fvs_context_reaches_hash_reserve_stage_and_signed_transport()
+        records = list((Path(self.run["evidence_dir"]) / "provider-journal").glob("*.json"))
+        self.assertEqual(len(records), 2)
+        for path in records:
+            raw = path.read_bytes()
+            self.assertNotIn(b"synthetic-private-", raw)
+            record = json.loads(raw)
+            self.assertEqual(record["status"], "completed")
+            provider = record["receipt"]["provider"]
+            self.assertEqual(provider["usage"]["reasoning_tokens"], 5)
+            self.assertEqual(provider["usage"]["output_tokens"], 10)
+            self.assertEqual(Decimal(record["receipt"]["cost"]["amount"]), Decimal("0.000300"))
+        self.assertNotIn("synthetic-private-", json.dumps(self.state["model_exchanges"]))
+        self.assertNotIn("reasoning_details", json.dumps(self.state["model_exchanges"]))
+
+    def test_fvs_reasoning_discard_keeps_invalid_tools_rejected_and_private(self):
+        original = _provider_reply
+        def reply():
+            value = original()
+            message = value["choices"][0]["message"]
+            message.update(reasoning="synthetic-private-text",
+                reasoning_details=[{"type": "reasoning.encrypted", "data": "synthetic-private-opaque"}])
+            message["tool_calls"][0]["function"]["name"] = "unapproved_tool"
+            return value
+        with mock.patch(__name__ + "._provider_reply", side_effect=reply):
+            with self.assertRaisesRegex(provider_transport.ProviderError, "provider tool call is invalid"):
+                self.test_full_size_fvs_context_reaches_hash_reserve_stage_and_signed_transport()
+        records = list((Path(self.run["evidence_dir"]) / "provider-journal").glob("*.json"))
+        self.assertEqual(len(records), 1)
+        raw = records[0].read_bytes()
+        self.assertNotIn(b"synthetic-private-", raw)
+        self.assertNotIn(b"reasoning_details", raw)
+        self.assertEqual(json.loads(raw)["status"], "rejected")
+        self.assertFalse(self.state["receipts"])
+
+    def test_fvs_reasoning_discard_preserves_secret_scan_and_other_shape_checks(self):
+        for field in ("reasoning", "reasoning_details"):
+            with self.subTest(unexpected_top_level_field=field):
+                with self.assertRaises(provider_transport.ProviderError):
+                    self.exchange(response_overrides=lambda value: value.update({field: "unexpected"}))
+        original = _provider_reply
+        def reply():
+            value = original()
+            value["choices"][0]["message"]["reasoning"] = bytes(self.binding.api_key).decode()
+            return value
+        with mock.patch(__name__ + "._provider_reply", side_effect=reply):
+            with self.assertRaises(provider_transport.ProviderError):
+                self.test_full_size_fvs_context_reaches_hash_reserve_stage_and_signed_transport()
+        self.assertFalse(self.state["receipts"])
+
     def test_message_limits_require_pinned_fvs_binding_and_keep_aggregate_bound(self):
         from autofv import provider_messages
         messages = [{"role": "system", "content": "synthetic context"}, {"role": "user", "content": "x" * 150_625}]
@@ -340,7 +399,6 @@ class FvsOfflineTests(unittest.TestCase):
                      lambda r: r.update(provider="OpenAI/fast"),
                      lambda r: r.update(service_tier="flex"),
                      lambda r: r["usage"]["completion_tokens_details"].update(audio_tokens=1),
-                     lambda r: r["choices"][0]["message"].update(reasoning="never retained"),
                      lambda r: r["usage"]["prompt_tokens_details"].update(cache_write_tokens=101)]
         for mutate in mutations:
             with self.subTest(mutate=mutate), self.assertRaises((contracts.ContractError, worker.WorkerError)):

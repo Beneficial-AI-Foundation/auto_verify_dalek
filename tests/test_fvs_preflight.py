@@ -1,7 +1,9 @@
 """Prepared FVS preflight wiring; all workers, catalogs and provider replies are synthetic."""
 from __future__ import annotations
 
+import base64
 import copy
+import hashlib
 import json
 import signal
 import subprocess
@@ -12,8 +14,11 @@ from decimal import Decimal
 from pathlib import Path
 from unittest import mock
 
+from cryptography.hazmat.primitives import serialization
+from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
+
 from autofv import (agent_lane, contracts, experiment, fvs_packet, fvs_profile, model, preflight_runner,
-                    provider_config, provider_service, provider_transport, run_state, worker, worker_runtime)
+                    provider_config, provider_receipts, provider_service, provider_transport, run_state, worker, worker_runtime)
 from tests import test_fvs_offline as fixtures
 from tests.test_preflight_cli import _runner_raw
 from tests.test_provider_transport import _ProviderReply, _provider_reply, _provider_run
@@ -236,6 +241,88 @@ class PreparedFvsPreflightTests(unittest.TestCase):
             self.assertTrue(Path(record["path"]).is_file())
         self.assertTrue((self.output / "preflight-result.json").is_file())
         self.assertNotIn("provider-canary-secret", (self.output / "preflight-result.json").read_text())
+
+    def test_post_call_pair_validation_reconstructs_fvs_identity(self):
+        self.inputs()
+        result = self.exercise(check_model_accessibility=True)
+        self.assertEqual(set(result["provider_model_preflights"]), {fvs_profile.AUTHOR, fvs_profile.REVIEWER})
+        for model_id, ref in result["provider_model_preflights"].items():
+            with self.subTest(model=model_id):
+                validated = preflight_runner.validate_reconstructed_provider_preflight(
+                    ref["path"], bundle_path=self.output / "sealed/preflight-result.json",
+                    env_file=self.options["env_file"])
+                self.assertEqual(validated["status"], "passed")
+                self.assertEqual(validated["preflight_sha256"], ref["preflight_sha256"])
+
+    def test_post_call_reconstruction_rejects_foreign_binding_before_credentials(self):
+        self.inputs()
+        result = self.exercise(check_model_accessibility=True)
+        path = Path(result["provider_model_preflights"][fvs_profile.AUTHOR]["path"])
+        record = json.loads(path.read_bytes())
+        binding = record["provider_binding"]
+        binding["client_identity_sha256"] = "0" * 64
+        binding["binding_sha256"] = fvs_profile.digest({k: v for k, v in binding.items() if k != "binding_sha256"})
+        record["preflight_sha256"] = fvs_profile.digest({k: v for k, v in record.items() if k != "preflight_sha256"})
+        path.write_bytes(contracts.canonical_json_bytes(record) + b"\n")
+        provider_receipts.validate_preflight(path)  # Valid signed receipt, but a foreign binding commitment.
+        with mock.patch.object(provider_config, "configure_provider") as credentials, \
+             self.assertRaisesRegex(contracts.ContractError, "does not match sealed bundle"):
+            preflight_runner.validate_reconstructed_provider_preflight(
+                path, bundle_path=self.output / "sealed/preflight-result.json", env_file=self.options["env_file"])
+        credentials.assert_not_called()
+
+    def test_post_call_reconstruction_rejects_foreign_authorization_signer(self):
+        self.inputs()
+        result = self.exercise(check_model_accessibility=True)
+        bundle_path = self.output / "sealed/preflight-result.json"
+        bundle = json.loads(bundle_path.read_bytes())
+        auth_path = Path(bundle["artifacts"]["authorization"])
+        authorization = json.loads(auth_path.read_bytes())
+        body = {k: v for k, v in authorization.items() if k != "auth"}
+        foreign = Ed25519PrivateKey.generate()
+        public = foreign.public_key()
+        der = public.public_bytes(serialization.Encoding.DER, serialization.PublicFormat.SubjectPublicKeyInfo)
+        digest = hashlib.sha256(der).hexdigest()
+        authentication = {"algorithm": "Ed25519", "key_id": f"autofv-provider-ed25519-{digest[:16]}",
+            "public_key_der_sha256": digest, "public_key_pem": public.public_bytes(
+                serialization.Encoding.PEM, serialization.PublicFormat.SubjectPublicKeyInfo).decode()}
+        authorization["auth"] = {"algorithm": "Ed25519", "key_id": authentication["key_id"],
+            "signature": base64.b64encode(foreign.sign(contracts.canonical_json_bytes(body))).decode()}
+        raw = contracts.canonical_json_bytes(authorization) + b"\n"
+        auth_path.write_bytes(raw)
+        bundle["provider_authentication"] = authentication
+        bundle["hashes"]["authorization_sha256"] = hashlib.sha256(raw).hexdigest()
+        bundle_path.write_bytes(contracts.canonical_json_bytes(bundle) + b"\n")
+        preflight_runner.validate_preflight_bundle(bundle_path)  # Locally consistent foreign signature.
+        with mock.patch.object(provider_config, "configure_provider", wraps=provider_config.configure_provider) as credentials, \
+             self.assertRaisesRegex(contracts.ContractError, "authorization signer"):
+            preflight_runner.validate_reconstructed_provider_preflight(
+                result["provider_model_preflights"][fvs_profile.AUTHOR]["path"],
+                bundle_path=bundle_path, env_file=self.options["env_file"])
+        credentials.assert_not_called()
+
+    def test_post_call_reconstruction_keeps_signature_and_freshness_gates(self):
+        self.inputs()
+        result = self.exercise(check_model_accessibility=True)
+        path = Path(result["provider_model_preflights"][fvs_profile.AUTHOR]["path"])
+        original = path.read_bytes()
+        record = json.loads(original)
+        record["receipt"]["auth"]["signature"] = "invalid"
+        record["preflight_sha256"] = fvs_profile.digest({k: v for k, v in record.items() if k != "preflight_sha256"})
+        path.write_bytes(contracts.canonical_json_bytes(record) + b"\n")
+        with mock.patch.object(provider_config, "configure_provider") as credentials, \
+             self.assertRaises(provider_config.ProviderConfigError):
+            preflight_runner.validate_reconstructed_provider_preflight(
+                path, bundle_path=self.output / "sealed/preflight-result.json", env_file=self.options["env_file"])
+        credentials.assert_not_called()
+        path.write_bytes(original)
+        completed = json.loads((self.output / "sealed/preflight-result.json").read_bytes())["completed_at_unix"]
+        with mock.patch.object(preflight_runner.time, "time", return_value=completed + 301), \
+             mock.patch.object(provider_config, "configure_provider") as credentials, \
+             self.assertRaisesRegex(contracts.ContractError, "stale"):
+            preflight_runner.validate_reconstructed_provider_preflight(
+                path, bundle_path=self.output / "sealed/preflight-result.json", env_file=self.options["env_file"])
+        credentials.assert_not_called()
 
     def test_public_rust_drift_is_rejected_before_worker_or_credentials(self):
         self.inputs()

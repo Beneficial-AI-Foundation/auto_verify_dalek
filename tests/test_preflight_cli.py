@@ -9,13 +9,15 @@ import sys
 import tempfile
 import unittest
 from concurrent.futures import ThreadPoolExecutor
+from decimal import Decimal
 from pathlib import Path
 from unittest import mock
 
 from cryptography.hazmat.primitives import serialization
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
 
-from autofv import experiment, preflight_runner, provider_config, worker, worker_runtime
+from autofv import experiment, model, preflight_runner, provider_config, provider_receipts, provider_transport, worker, worker_runtime
+from tests.test_provider_transport import _provider_reply
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -448,43 +450,48 @@ class PreflightCliTests(unittest.TestCase):
                 )
 
     def test_reconstructed_validator_passes_independent_run_binding(self) -> None:
-        with tempfile.TemporaryDirectory() as temporary:
+        with tempfile.TemporaryDirectory() as temporary, mock.patch.dict(
+            "os.environ", {"AUTOFV_RUN_TOKEN": "preflight-run-token"}
+        ):
             root = Path(temporary)
-            authorization = root / "provider-authorization.json"
-            authorization.write_text(json.dumps({"run_id": "preflight-run-001"}))
-            bundle = {
-                "artifacts": {"authorization": str(authorization)},
-                "identities": {"provider_identity_sha256": "a" * 64},
-            }
-            with (
-                mock.patch(
-                    "autofv.preflight_runner.validate_preflight_bundle",
-                    return_value=bundle,
-                ),
-                mock.patch("autofv.contracts.load_toolchain_lock", return_value=LOCK),
-                mock.patch(
-                    "autofv.provider_config.configure_provider",
-                    return_value={"binding_sha256": "a" * 64},
-                ),
-                mock.patch(
-                    "autofv.provider_service.validate_pinned_preflight",
-                    return_value={"preflight_sha256": "b" * 64},
-                ) as validate,
-                mock.patch("autofv.provider_config.abort_configuration") as abort,
-            ):
-                result = preflight_runner.validate_reconstructed_provider_preflight(
-                    root / "provider-preflight.json",
-                    bundle_path=root / "preflight-result.json",
-                    env_file=root / "provider.env",
-                )
-
+            run, env, output = _run(root), _environment(root), root / "bundle"
+            run["snapshot_sha256"] = worker.hash_tree(TARGET)
+            run["manifest_sha256"] = hashlib.sha256(
+                experiment.canonical_json_bytes(json.loads((TARGET / "autofv.json").read_bytes()))
+            ).hexdigest()
+            try:
+                with (
+                    mock.patch("autofv.preflight_runner._probe_distinct_verifier",
+                        return_value="lima:synthetic-verifier"),
+                    mock.patch("autofv.worker_runtime._docker", side_effect=[
+                        subprocess.CompletedProcess((), 0, b"", b""),
+                        subprocess.CompletedProcess((), 0, b"", b""),
+                        subprocess.CompletedProcess((), 0, _runner_raw(), b""),
+                        subprocess.CompletedProcess((), 0, b"", b""),
+                    ]),
+                ):
+                    preflight_runner.authorize_prepared_run(
+                        run, TARGET, CONFIG, output, env_file=env, max_age_seconds=300)
+                binding = provider_config.provider_binding(run)
+                self.assertEqual(binding.public["schema"], "autofv-provider-binding/v1")
+                request = model._model_envelope({"run": run, "config": {
+                    "schema": "autofv-run/v1", "model": binding.model_id}},
+                    request_id="synthetic-legacy-post-call", role="specifier", input_hashes=[])
+                upstream = _provider_reply()
+                upstream["model"] = binding.model_id
+                upstream["usage"] = {"prompt_tokens": 100, "completion_tokens": 10,
+                    "total_tokens": 110, "cost": Decimal("0.000240")}
+                response, accounting = provider_transport._provider_response(
+                    binding, request, upstream, run["base_commit"])
+                receipt = provider_receipts.sign_receipt(binding, run, request, response, accounting)
+                provider_receipts.write_preflight(binding, run, request, response, receipt)
+            finally:
+                provider_config.abort_configuration(run)
+            result = preflight_runner.validate_reconstructed_provider_preflight(
+                Path(run["evidence_dir"]) / "provider-preflight.json",
+                bundle_path=output / "preflight-result.json", env_file=env)
             self.assertEqual(result["status"], "passed")
-            reconstructed = validate.call_args.kwargs["run"]
-            self.assertEqual(reconstructed["run_id"], "preflight-run-001")
-            validate.assert_called_once_with(
-                root / "provider-preflight.json", run=reconstructed
-            )
-            abort.assert_called_once_with(reconstructed)
+            self.assertEqual(result["binding_sha256"], binding.public["binding_sha256"])
 
     def test_bundle_validation_rejects_tamper(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:

@@ -1139,7 +1139,7 @@ def validate_reconstructed_provider_preflight(
     env_file: str | Path | None = None,
 ) -> dict[str, Any]:
     """Validate a post-call artifact against a freshly reconstructed binding."""
-    from autofv import agent_lane, provider_service
+    from autofv import agent_lane, fvs_profile, provider_service
     from autofv.contracts import load_toolchain_lock
 
     bundle = validate_preflight_bundle(bundle_path)
@@ -1154,6 +1154,15 @@ def validate_reconstructed_provider_preflight(
         ).hexdigest(),
     }
     try:
+        recorded = provider_receipts.validate_preflight(path)["provider_binding"]
+        if (recorded["binding_sha256"] != bundle["identities"]["provider_identity_sha256"]
+            or recorded["run_id"] != run["run_id"]):
+            raise ContractError("provider preflight binding does not match sealed bundle")
+        if bundle["provider_authentication"] != recorded["receipt_authentication"]:
+            raise ContractError("provider authorization signer does not match preflight binding")
+        if recorded["schema"] == "autofv-provider-binding/v2":
+            run.update(role_profile=fvs_profile.PROFILE_ID,
+                       source_packet_sha256=recorded["source_packet_sha256"])
         public = provider_config.configure_provider(
             run,
             env_path=env_file,

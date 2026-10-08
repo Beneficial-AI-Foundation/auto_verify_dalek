@@ -72,10 +72,14 @@ def parse_review(raw: Any) -> dict[str, Any]:
             "raw_sha256": _raw_sha256(raw)}
 
 
+class StatementBindingError(ContractError):
+    """Correctable author statement identity, not an integrity or transport error."""
+
+
 def statement(candidate: dict[str, Any]) -> str:
     statements = [s.removeprefix("statement:") for s in candidate.get("evidence", []) if s.startswith("statement:theorem ")]
-    if len(statements) != 1 or ":=" in statements[0]:
-        raise ContractError("FVS author lacks one proof-free frozen statement")
+    if len(statements) != 1 or ":=" in statements[0] or len(statements[0].split()) < 2:
+        raise StatementBindingError("FVS author lacks one proof-free frozen statement")
     return statements[0]
 
 
@@ -84,13 +88,13 @@ def validate_statement_source(canon: str, text: str) -> None:
     matches = [m for m in re.finditer(r"^\s*theorem\s+([A-Za-z_0-9.]+)\b", text, re.M)
                if m[1].rsplit(".", 1)[-1] == name.rsplit(".", 1)[-1]]
     if len(matches) != 1:
-        raise ContractError("FVS statement source declaration is ambiguous/missing")
+        raise StatementBindingError("FVS statement source declaration is ambiguous/missing")
     start = matches[0].start()
     end = text.find(":=", matches[0].end())
     actual = text[start:end].strip() if end >= 0 else ""
     actual = re.sub(r"^theorem\s+\S+", "theorem " + name, actual)
     if " ".join(actual.split()) != " ".join(canon.split()):
-        raise ContractError("FVS claimed statement does not match the reviewed source")
+        raise StatementBindingError("FVS claimed statement does not match the reviewed source")
 
 
 def triage(candidate: dict[str, Any], review: dict[str, Any]) -> dict[str, Any]:
@@ -308,11 +312,7 @@ class Stages:
         from . import worker
         packet = fvs_packet.review_snapshot(self.baseline, path=self.path, patch=candidate["patch"])
         target = packet["overlay"]["content"]
-        canon = statement(candidate)
-        validate_statement_source(canon, target)
         if specification:
-            if not re.search(r"∃|\bexists\b", canon) or "ok" not in canon:
-                raise ContractError("FVS target statement lacks existential functional relation")
             # Existing prepared implementations/definitions are immutable. The
             # author may insert a specification, not rewrite source to make it true.
             changes = difflib.SequenceMatcher(None, self.source.splitlines(keepends=True), target.splitlines(keepends=True), autojunk=False)
@@ -326,6 +326,11 @@ class Stages:
                 or prior["original_packet_sha256"] != self.original["packet_sha256"]
                 or prior["contracts_sha256"] != fvs_profile.digest(self.contracts)):
                 raise ContractError("FVS captured gate evidence drift")
+        canon = statement(candidate)
+        validate_statement_source(canon, target)
+        if specification and (not re.search(r"∃|\bexists\b", canon) or "ok" not in canon):
+            raise ContractError("FVS target statement lacks existential functional relation")
+        if prior is not None:
             return target, prior["diagnostic"]
         style_structure(target, self.original, specification=specification, baseline=self.source)
         from . import role_journal
@@ -373,8 +378,26 @@ class Stages:
                                 context={"untrusted_research": research["evidence"], "consumer_intent": author_context})
         history = []
         for round_index in range(3):
-            text, diagnostic = self.gate_author(candidate, f"spec-gates:{round_index}", specification=True)
-            canon = statement(candidate)
+            try:
+                text, diagnostic = self.gate_author(candidate, f"spec-gates:{round_index}", specification=True)
+                canon = statement(candidate)
+            except StatementBindingError as exc:
+                feedback = {"error": str(exc), "submitted_evidence": candidate["evidence"]}
+                self.record(f"spec-binding-error:{round_index}", {
+                    "candidate_sha256": fvs_profile.digest(candidate), "error": str(exc),
+                    "disposition": "rejected before review", "round": round_index,
+                })
+                if round_index == 2:
+                    raise ContractInconclusive("FVS statement binding correction cap exhausted") from exc
+                candidate = self.invoke("specifier", f"spec-author:{round_index+1}", candidate=candidate,
+                    fingerprint=fingerprint, context={"statement_binding_feedback": feedback,
+                        "consumer_intent": author_context, "untrusted_history": history,
+                        "task": "Correct the submitted statement/source binding; no review occurred. "
+                                "Copy the exact proof-free theorem signature from your source overlay into "
+                                "statement evidence, or correct the authored specification. Do not change "
+                                "the original implementation. Exact binding and all gates remain required."})
+                history.append({"statement_binding_rejection": feedback})
+                continue
             review = self.review(candidate, "spec_reviewer", f"spec-review:{round_index}",
                                  _raw_sha256(canon), history=history, diagnostic=diagnostic)
             if review["verdict"] == "PASS":

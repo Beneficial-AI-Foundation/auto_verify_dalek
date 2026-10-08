@@ -860,7 +860,7 @@ class FvsOfflineTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             experiment._bind_provider_selection(self.run, path)
 
-    def stage_fixture(self, verdict=PASS):
+    def stage_fixture(self, verdict=PASS, *, statement_overrides=None, review_overrides=None, patch_overrides=None):
         graph = {"source_paths": {"helper": PATH}, "graph_sha256": "d" * 64}
         lane = {"node": "helper", "assigned_path": PATH, "base_commit": "c" * 40,
                 "lane_id": "fixture-helper", "request_id": "fixture-helper", "worktree_path": "/synthetic/work",
@@ -870,11 +870,11 @@ class FvsOfflineTests(unittest.TestCase):
         async def conversation(state, job, tools):
             stage = job["role_context"]["stage"]
             calls.append(stage)
-            evidence = ["statement:" + CANON]
-            proposed = patch(PROOF) if stage.startswith("proof-") else patch(SPEC)
+            evidence = ["statement:" + (statement_overrides or {}).get(stage, CANON)]
+            proposed = (patch_overrides or {}).get(stage, patch(PROOF) if stage.startswith("proof-") else patch(SPEC))
             if job["role"] in fvs_profile.REVIEW_ROLES:
                 proposed = job["role_context"]["reviewed_candidate"]["patch"]
-                evidence = [verdict]
+                evidence = [(review_overrides or {}).get(stage, verdict)]
             elif "triage" in stage or stage not in {"implementation-research", "spec-author:0", "proof-author:0"}:
                 parsed = job["role_context"].get("review")
                 findings = [] if not parsed else [{"id": f["id"], "disposition": "FIX", "evidence": "Synthetic source-based correction at Arithmetic.lean:3."} for f in parsed["findings"]]
@@ -916,6 +916,90 @@ class FvsOfflineTests(unittest.TestCase):
         self.assertTrue(evidence["helper:spec-review:0"]["invocation_receipts"])
         with self.assertRaises(ValueError):
             stages.record("frozen-statement", {"candidate": proved, "statement": "changed"})
+
+    def test_statement_binding_feedback_corrects_before_any_review(self):
+        bad = CANON.replace("increment n", "Arithmetic.increment n")
+        graph, lane, actual, calls = self.stage_fixture(statement_overrides={"spec-author:0": bad})
+        stages = fvs_adapter.Stages(self.state, graph, lane, generic_role_runtime._run_role_lane, lambda *a: None)
+        candidate = stages.specification("e" * 64, {"intent": "successor"})
+        self.assertEqual(fvs_adapter.statement(candidate), CANON)
+        self.assertEqual(calls, ["implementation-research", "spec-author:0", "spec-author:1", "spec-review:1", "spec-pass-triage:1"])
+        entries = self.state["fvs_evidence"]
+        rejection = entries["helper:spec-binding-error:0"]
+        self.assertEqual(rejection["candidate_sha256"], fvs_profile.digest(entries["helper:spec-author:0"]["candidate"]))
+        self.assertEqual(rejection["error"], "FVS claimed statement does not match the reviewed source")
+        feedback = entries["helper:spec-author:1"]["stage_context"]["statement_binding_feedback"]
+        self.assertEqual(feedback["error"], rejection["error"])
+        self.assertEqual(feedback["submitted_evidence"], entries["helper:spec-author:0"]["candidate"]["evidence"])
+        self.assertNotIn("helper:spec-review:0", entries)
+        self.assertEqual(actual["text"], SPEC)
+        fvs_adapter.validate_evidence(entries, binding=self.binding.public, exchanges=self.state["model_exchanges"])
+
+    def test_statement_binding_feedback_exhausts_existing_rounds(self):
+        bad = CANON.replace("increment n", "Arithmetic.increment n")
+        graph, lane, _, calls = self.stage_fixture(statement_overrides={f"spec-author:{i}": bad for i in range(3)})
+        stages = fvs_adapter.Stages(self.state, graph, lane, generic_role_runtime._run_role_lane, lambda *a: None)
+        with self.assertRaisesRegex(contracts.ContractInconclusive, "binding correction cap exhausted"):
+            stages.specification("e" * 64, {})
+        self.assertEqual(calls, ["implementation-research", "spec-author:0", "spec-author:1", "spec-author:2"])
+        self.assertEqual(sum(":spec-binding-error:" in k for k in self.state["fvs_evidence"]), 3)
+        self.assertNotIn("helper:frozen-statement", self.state["fvs_evidence"])
+        fvs_adapter.validate_evidence(self.state["fvs_evidence"], binding=self.binding.public, exchanges=self.state["model_exchanges"])
+
+    def test_statement_correction_and_review_share_one_round_counter(self):
+        bad = CANON.replace("increment n", "Arithmetic.increment n")
+        graph, lane, _, calls = self.stage_fixture(statement_overrides={"spec-author:1": bad},
+            review_overrides={"spec-review:0": REVISE})
+        stages = fvs_adapter.Stages(self.state, graph, lane, generic_role_runtime._run_role_lane, lambda *a: None)
+        stages.specification("e" * 64, {})
+        self.assertEqual(calls, ["implementation-research", "spec-author:0", "spec-review:0", "spec-author:1",
+            "spec-author:2", "spec-review:2", "spec-pass-triage:2"])
+        self.assertNotIn("helper:spec-review:1", self.state["fvs_evidence"])
+        self.assertNotIn("helper:spec-author:3", self.state["fvs_evidence"])
+        fvs_adapter.validate_evidence(self.state["fvs_evidence"], binding=self.binding.public, exchanges=self.state["model_exchanges"])
+
+    def test_statement_feedback_does_not_swallow_other_gate_failures(self):
+        graph, lane, _, calls = self.stage_fixture()
+        stages = fvs_adapter.Stages(self.state, graph, lane, generic_role_runtime._run_role_lane, lambda *a: None)
+        with mock.patch.object(stages, "gate_author", side_effect=contracts.ContractError("synthetic source integrity failure")):
+            with self.assertRaisesRegex(contracts.ContractError, "source integrity"):
+                stages.specification("e" * 64, {})
+        self.assertEqual(calls, ["implementation-research", "spec-author:0"])
+        self.assertFalse(any(":spec-binding-error:" in k for k in self.state["fvs_evidence"]))
+
+    def test_binding_feedback_does_not_hide_source_tampering(self):
+        bad = CANON.replace("increment n", "Arithmetic.increment n")
+        graph, lane, _, calls = self.stage_fixture(statement_overrides={"spec-author:0": bad},
+            patch_overrides={"spec-author:0": patch(SPEC.replace("n + 1", "n + 2"))})
+        stages = fvs_adapter.Stages(self.state, graph, lane, generic_role_runtime._run_role_lane, lambda *a: None)
+        with self.assertRaisesRegex(contracts.ContractError, "changed original prepared source"):
+            stages.specification("e" * 64, {})
+        self.assertEqual(calls, ["implementation-research", "spec-author:0"])
+        self.assertNotIn("helper:spec-binding-error:0", self.state["fvs_evidence"])
+
+    def test_binding_feedback_does_not_hide_gate_evidence_drift(self):
+        bad = CANON.replace("increment n", "Arithmetic.increment n")
+        graph, lane, _, calls = self.stage_fixture(statement_overrides={"spec-author:0": bad})
+        stages = fvs_adapter.Stages(self.state, graph, lane, generic_role_runtime._run_role_lane, lambda *a: None)
+        stages.entries["helper:spec-gates:0"] = {"record_sha256": "0" * 64}
+        with self.assertRaisesRegex(contracts.ContractError, "captured gate evidence drift"):
+            stages.specification("e" * 64, {})
+        self.assertEqual(calls, ["implementation-research", "spec-author:0"])
+        self.assertNotIn("helper:spec-binding-error:0", self.state["fvs_evidence"])
+
+    def test_missing_statement_name_is_a_binding_error_not_an_index_error(self):
+        with self.assertRaises(fvs_adapter.StatementBindingError):
+            fvs_adapter.statement({"evidence": ["statement:theorem "]})
+
+    def test_proof_statement_change_is_not_repaired_by_spec_feedback(self):
+        bad = CANON.replace("increment n", "Arithmetic.increment n")
+        graph, lane, _, calls = self.stage_fixture(statement_overrides={"proof-author:0": bad})
+        stages = fvs_adapter.Stages(self.state, graph, lane, generic_role_runtime._run_role_lane, lambda *a: None)
+        candidate = stages.specification("e" * 64, {})
+        with self.assertRaisesRegex(contracts.ContractError, "frozen statement"):
+            stages.proof(candidate, "e" * 64, {})
+        self.assertNotIn("proof-author:1", calls)
+        self.assertNotIn("helper:proof-approved", self.state["fvs_evidence"])
 
     def test_review_revision_cap_blocks_without_forged_approval(self):
         graph, lane, actual, calls = self.stage_fixture(REVISE)

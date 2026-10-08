@@ -180,6 +180,59 @@ namespace is sufficient.
 State that training-data contamination is unknown. Do not claim a fully clean
 room unless there is stronger evidence.
 
+### DEC-21 — Does the agent see `Aux.lean`'s helper statements?
+
+**Status:** ACCEPTED (2026-10-08, Zhang-Liao)
+
+**Question:** `Curve25519Dalek/Aux.lean` holds 30 hand-written helper
+statements (bit shifts, Aeneas array indexing, byte-array digits), every one
+of them `sorry` since the reference was imported. They are not Math
+assumptions, so no proof may depend on them (the gate rejects any `sorryAx`
+outside `harness/frozen/math_assumptions.json`), yet the bundle showed them
+to the agent as if they were available.
+
+**Decision:** The bundle ships `Aux.lean` as a definitions-only stub, like a
+dropped `Specs/` file (`build_without_internal_spec.py`, `aux_stub` in the
+manifest). The agent writes its own helper lemmas inside its target file.
+
+- **Why:** in run `double_dynamic_01` two Workers (`mul`,
+  `ProjectivePoint.double`) used Aux lemmas, were rejected for `sorryAx`,
+  and spent a second round re-proving the same facts locally (≈ $2 of
+  $15). The statements also encode the reference authors' lemma design,
+  the same kind of hint DEC-20 removes from comments. Nothing else in the
+  bundle used them: the reference `Specs/` mention an Aux name twice,
+  `Math/Montgomery` imports the module without using a name.
+- The reference checkout's `Aux.lean` and `harness/frozen/statements.json`
+  are unchanged (replay fingerprints the reference, not the bundle).
+
+### DEC-22 — Where do accepted proofs accumulate?
+
+**Status:** ACCEPTED (2026-10-08, Zhang-Liao)
+
+**Question:** Between 2026-09-21 and 2026-09-24 four runs published into
+`dalek-top-spec-only/` on `main`: `identity_spec` with `from_limbs`/`ONE`/
+`ZERO` (`2bce1f6`), the hand-seeded `reduce` specs (`d0d8cab`, never
+accepted by a joint gate), and `sub_assign_spec` with `sub` (`3ccc004`).
+Every later run therefore started with those specs for free, so no run
+after 2026-09-21 measured the benchmark from scratch.
+
+**Decision:** The bundle on `main` is the benchmark and holds no agent
+output: every `Specs/` theorem body is `sorry`, `internal_specs.json` is
+`{}`. A run executes on its own `exp/...` branch created from a clean
+`main` (`harness/run_double_dynamic.sh` does this); publishes land there,
+and the registry may accumulate *within* that branch, which is what
+bottom-up reuse needs. Results of different experiments never meet.
+
+- **Applied 2026-10-08:** the files of the three commits above were
+  restored to their pre-publish versions (`Identity.lean`, `Reduce.lean`,
+  `SubAssign.lean`, the root module's import lines) or removed when the run
+  had created them (`FromLimbs.lean`, `ONE.lean`, `ZERO.lean`, `Sub.lean`);
+  the registry was emptied. The Math-layer fixes `a1d858d`/`2efa8b4` stay:
+  they repair the bundle, they are not agent output. `lake build` passes;
+  a scan of the 58 `Specs/` theorems finds every body `sorry`.
+- Runs recorded in `ledger/` before this date were measured against the
+  contaminated bundle and are not from-scratch results.
+
 ### DEC-20 — Which comments does the agent see?
 
 **Status:** ACCEPTED (2026-09-02, Zhang-Liao)

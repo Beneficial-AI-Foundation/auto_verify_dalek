@@ -38,6 +38,8 @@ Whole run: `replay.py` (fresh worktree, empty build cache) → `report.py` →
 ## What the agent sees
 
 - its slot only: no `.git`, no `harness/`, no `ledger/`; empty `$HOME`; mathlib read-only
+- `Aux.lean` is a definitions-only stub (DEC-21): no unproved helper statements to lean on
+- the bundle on `main` holds no agent output (DEC-22); a run publishes onto its own `exp/` branch
 - tools `Read Grep Glob Edit Write Bash(lake build, grep, cat, sed)` — no subagents, web, skills, MCP.
   `Edit(./**)` is also allowed so that `cat > F <<EOF` / `cat >> F` / `sed -i F` are
   auto-approved (Claude Code checks shell writes against *file* rules); every prompt

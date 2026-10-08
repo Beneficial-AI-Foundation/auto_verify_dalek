@@ -2503,5 +2503,11 @@
   "Curve25519Dalek/Specs/Scalar/Scalar/MulAssign.lean": 1,
   "Curve25519Dalek/Specs/Scalar/Scalar/Neg.lean": 3,
   "Curve25519Dalek/Specs/Scalar/Scalar/ToBytes.lean": 0
- }
+ },
+ "aux_stub": {
+  "file": "Curve25519Dalek/Aux.lean",
+  "theorems_removed": 30,
+  "applied": "in place 2026-10-08 (DEC-21)"
+ },
+ "agent_output": "none (DEC-22): every Specs/ theorem body is sorry, internal_specs.json is {}"
 }

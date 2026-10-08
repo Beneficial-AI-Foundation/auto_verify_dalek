@@ -28,7 +28,7 @@ DRIVER_ARGS=(
 #   --target curve25519_dalek.ristretto.RistrettoPoint.Insts.SubtleConditionallySelectable.conditional_select_spec
 #   closure: FieldElement51.conditional_select -> EdwardsPoint.conditional_select -> top; accepted in 1 round (2026-09-24)
 #   --target curve25519_dalek.backend.serial.u64.field.FieldElement51.Insts.CoreOpsArithSubAssignSharedAFieldElement51.sub_assign_spec
-#   closure: reduce (seeded) -> sub -> top; accepted 2026-09-24
+#   closure: reduce -> sub -> top (the 2026-09-24 publish was reverted, DEC-22)
 # Previous driver.py configuration, kept for reference:
 #   SCRIPT=harness/driver.py
 #   EXP_MSG="top-spec round: Scalar, claude-sonnet-5, limit 3"

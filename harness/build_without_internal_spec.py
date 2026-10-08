@@ -4,8 +4,14 @@
 The repository keeps the full human reference (internal specs + proofs).
 This script derives, into a separate directory, the input an agent receives:
 
-  * code, frozen:      Funs.lean, Types*.lean, Aux.lean, FunsExternal.lean,
+  * code, frozen:      Funs.lean, Types*.lean, FunsExternal.lean,
                        ExternallyVerified.lean, Tactics.lean, Math/, Utils/
+  * Aux.lean:          definitions-only stub (same treatment as a dropped
+                       Specs file): its hand-written helper statements were
+                       never proved, nothing in the bundle may depend on a
+                       sorry outside the Math assumptions, and the statements
+                       themselves hint at the reference proof design, so the
+                       agent writes its own helper lemmas instead
   * top-level specs:   the Specs/ files that functions.json attributes to a
                        row of .verilib/top_level_funs.json (DEC-04 lean-top),
                        with every theorem / lemma / example body replaced by
@@ -91,6 +97,7 @@ REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 DEFAULT_OUT = os.path.join(os.path.dirname(REPO), "dalek-without-interal-spec")
 MARKER = ".dalek-bundle"          # written into the output dir; guards rm -rf
 SPECS_DIR = "Curve25519Dalek/Specs"
+AUX_FILE = "Curve25519Dalek/Aux.lean"
 SPECS_MOD = "Curve25519Dalek.Specs."
 COPY_TOP = ["lakefile.toml", "lake-manifest.json", "lean-toolchain", "Utils.lean"]
 COPY_DIRS = ["Utils"]
@@ -99,7 +106,8 @@ MATH_DIR = "Curve25519Dalek/Math"
 MATH_MOD = "Curve25519Dalek.Math."
 MATH_ASSUMPTIONS = "harness/frozen/math_assumptions.json"
 
-DECL_RE = re.compile(r"^(?:private\s+|protected\s+)?(?:theorem|lemma|example)\b", re.M)
+# leading blanks allowed: the reference Aux.lean has ` lemma horner_natCast`
+DECL_RE = re.compile(r"^[ \t]*(?:private\s+|protected\s+)?(?:theorem|lemma|example)\b", re.M)
 VOCAB_RE = re.compile(
     r"^(?:@\[[^\]]*\]\s*)*(?:private\s+|protected\s+|noncomputable\s+|partial\s+|unsafe\s+)*"
     r"(?:def|abbrev|structure|inductive|class|instance|opaque|axiom|notation|infix|infixl|infixr|"
@@ -802,6 +810,15 @@ def main():
             with open(dst, "w") as fh:
                 fh.write(new)
 
+    # Aux.lean: hand-written helper statements, all `sorry` in the reference;
+    # keep only its vocabulary so the 40 `import Curve25519Dalek.Aux` lines
+    # still resolve (see module docstring).
+    aux_new, aux_removed, aux_changed = rewrite_stub(read(AUX_FILE), closure, args.strip_comments)
+    if aux_changed:
+        import_changes[AUX_FILE] = aux_changed
+    with open(os.path.join(out, AUX_FILE), "w") as fh:
+        fh.write(aux_new)
+
     root = read("Curve25519Dalek.lean")
     with open(os.path.join(out, "Curve25519Dalek.lean"), "w") as fh:
         fh.write(rewrite_root(root, kept_mods | closure.stub,
@@ -827,6 +844,7 @@ def main():
         "dropped_count": len(dropped_specs),
         "proofs_replaced_by_sorry": sorried,
         "proofs_replaced_total": sum(sorried.values()),
+        "aux_stub": {"file": AUX_FILE, "theorems_removed": aux_removed},
         "import_rewrites": import_changes,
         "unspecified_top_level": unspecified,
         "unspecified_top_level_count": len(unspecified),

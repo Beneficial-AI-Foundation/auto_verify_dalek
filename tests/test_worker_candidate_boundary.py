@@ -135,6 +135,29 @@ class CandidateRuntimeBoundaryTests(unittest.TestCase):
             self.assertIn("--network", warmed)
             self.assertIn("none", warmed)
 
+    def test_dependency_cache_failures_identify_each_stage(self) -> None:
+        stages = ("setup", "extract", "mathlib_unpack", "mathlib_no_build",
+                  "baseline_warm", "baseline_no_build")
+        with tempfile.TemporaryDirectory() as tmp:
+            archive = Path(tmp) / "cache.tar.zst"
+            archive.write_bytes(b"synthetic cache")
+            for failure_at, stage in enumerate(stages, start=1):
+                run = {"volume": "run-volume", "lock": _LOCK}
+                count = 0
+                def command(*_args, **_kwargs):
+                    nonlocal count
+                    count += 1
+                    if count == failure_at:
+                        raise worker_runtime.WorkerError("synthetic command timed out")
+                    return subprocess.CompletedProcess((), 0, b"", b"")
+                with self.subTest(stage=stage), \
+                     mock.patch.object(worker_runtime, "_docker", side_effect=command), \
+                     mock.patch.object(worker_runtime, "_lima_stream_file", side_effect=command), \
+                     mock.patch.object(worker_runtime.dependency_cache, "validated_archive", return_value=nullcontext(archive)):
+                    with self.assertRaisesRegex(worker_runtime.WorkerError, f"dependency cache {stage} failed"):
+                        worker_runtime.seed_dependency_cache(run, archive, "a" * 64)
+                self.assertEqual(count, failure_at)
+
     def test_candidate_source_digest_ignores_lake_generated_manifest(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)

@@ -510,41 +510,50 @@ def _seed_verified_dependency_cache(
         "ln -s /volume/dependencies/packages /volume/work/project/.lake/packages; "
         "printf '.lake/\\n' >> /volume/work/project/.git/info/exclude"
     )
-    _docker(
-        "run", "--rm", "--pull", "never", "--network", "none",
-        "--user", "0:0", "--mount",
-        f"type=volume,src={run['volume']},dst=/volume,volume-nocopy",
-        run["lock"]["image"]["image_digest"], "sh", "-eu", "-c", setup,
-    )
-    extract_argv = _runtime_argv(
-        run["lock"], run["volume"], "tar", "-xf", "-", "-C",
-        "/volume/dependencies",
-    )
-    command = "zstd -dc | " + shlex.join(("sudo", "docker", *extract_argv))
-    _lima_stream_file(archive, "sh", "-eu", "-c", command)
-    prep = list(_runtime_argv(
-        run["lock"], run["volume"], "sh", "-eu", "-c",
-        offline_mathlib_cache_script("/volume/dependencies"),
-    ))
-    prep[prep.index("--runtime") + 1] = "runc"
-    _docker(*prep, timeout=210)
-    _docker(*_runtime_argv(
-        run["lock"], run["volume"], "lake", "build", "--no-build", "Mathlib",
-    ), timeout=180)
-    run.setdefault("events", []).append("mathlib_public_cache_verified")
-    warm = list(_runtime_argv(
-        run["lock"], run["volume"], "sh", "-eu", "-c",
-        "export LEAN_NUM_THREADS=1; lake build",
-    ))
-    warm[warm.index("--runtime") + 1] = "runc"
-    warm[warm.index("--memory") + 1] = "6g"
-    warm[warm.index("--memory-swap") + 1] = "6g"
-    _docker(*warm, timeout=600)
-    _docker(*_runtime_argv(
-        run["lock"], run["volume"], "sh", "-eu", "-c",
-        "export LEAN_NUM_THREADS=1; lake build --no-build",
-    ), timeout=150)
-    run["events"].append("offline_baseline_warmed")
+    stage = "setup"
+    try:
+        _docker(
+            "run", "--rm", "--pull", "never", "--network", "none",
+            "--user", "0:0", "--mount",
+            f"type=volume,src={run['volume']},dst=/volume,volume-nocopy",
+            run["lock"]["image"]["image_digest"], "sh", "-eu", "-c", setup,
+        )
+        stage = "extract"
+        extract_argv = _runtime_argv(
+            run["lock"], run["volume"], "tar", "-xf", "-", "-C",
+            "/volume/dependencies",
+        )
+        command = "zstd -dc | " + shlex.join(("sudo", "docker", *extract_argv))
+        _lima_stream_file(archive, "sh", "-eu", "-c", command)
+        stage = "mathlib_unpack"
+        prep = list(_runtime_argv(
+            run["lock"], run["volume"], "sh", "-eu", "-c",
+            offline_mathlib_cache_script("/volume/dependencies"),
+        ))
+        prep[prep.index("--runtime") + 1] = "runc"
+        _docker(*prep, timeout=210)
+        stage = "mathlib_no_build"
+        _docker(*_runtime_argv(
+            run["lock"], run["volume"], "lake", "build", "--no-build", "Mathlib",
+        ), timeout=180)
+        run.setdefault("events", []).append("mathlib_public_cache_verified")
+        stage = "baseline_warm"
+        warm = list(_runtime_argv(
+            run["lock"], run["volume"], "sh", "-eu", "-c",
+            "export LEAN_NUM_THREADS=1; lake build",
+        ))
+        warm[warm.index("--runtime") + 1] = "runc"
+        warm[warm.index("--memory") + 1] = "6g"
+        warm[warm.index("--memory-swap") + 1] = "6g"
+        _docker(*warm, timeout=600)
+        stage = "baseline_no_build"
+        _docker(*_runtime_argv(
+            run["lock"], run["volume"], "sh", "-eu", "-c",
+            "export LEAN_NUM_THREADS=1; lake build --no-build",
+        ), timeout=150)
+        run["events"].append("offline_baseline_warmed")
+    except WorkerError as exc:
+        raise WorkerError(f"dependency cache {stage} failed: {exc}", run=run) from exc
     receipt_body = {
         "schema": "autofv-dependency-cache-binding/v1",
         "sha256": expected_sha256,
@@ -626,7 +635,8 @@ def bounded_run(
     limit: int,
     stdin: Any = None,
 ) -> subprocess.CompletedProcess[bytes]:
-    """Run with a wall deadline and per-stream cap, killing the process group."""
+    """Bound awake and elapsed time, including host sleep; kill the process group."""
+    started, started_epoch = time.monotonic(), time.time()
     process = subprocess.Popen(
         argv,
         stdin=stdin if stdin is not None else subprocess.PIPE if input_bytes is not None else subprocess.DEVNULL,
@@ -652,7 +662,6 @@ def bounded_run(
     ]
     for reader in readers:
         reader.start()
-    deadline = time.monotonic() + timeout
     try:
         if input_bytes is not None:
             try:
@@ -661,11 +670,13 @@ def bounded_run(
             except BrokenPipeError:
                 pass
         while process.poll() is None:
-            if overflow.is_set() or time.monotonic() >= deadline:
+            active, elapsed = time.monotonic() - started, time.time() - started_epoch
+            if overflow.is_set() or max(active, elapsed) >= timeout:
                 raise error(
                     f"{what} command output exceeded its bound"
                     if overflow.is_set()
-                    else f"{what} command timed out"
+                    else f"{what} command timed out ({active:.3f}s monotonic / "
+                         f"{elapsed:.3f}s epoch; limit {timeout:g}s)"
                 )
             time.sleep(0.05)
     except BaseException:

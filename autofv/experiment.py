@@ -140,6 +140,7 @@ def _persist_unallocated_attempt(
     run_config: str | Path,
     wall_started: int,
     *,
+    wall_started_epoch: int,
     outcome: str,
     reason: str,
     detail: Exception,
@@ -167,18 +168,15 @@ def _persist_unallocated_attempt(
             "wall_seconds_used": Decimal("0.000000"),
             "finalization_reserve_seconds": Decimal("0.000000"),
             "wall_started_monotonic_ns": wall_started,
-            "wall_started_epoch_ns": time.time_ns(),
+            "wall_started_epoch_ns": wall_started_epoch,
             "termination_detail": str(detail)[:1000],
         }
     else:
         state = dict(existing_state)
-        state.update(
-            {
-                "run": run,
-                "wall_started_monotonic_ns": wall_started,
-                "termination_detail": str(detail)[:1000],
-            }
-        )
+        state.update(run=run, termination_detail=str(detail)[:1000])
+        # Preserve already-charged intervals instead of resetting their anchors.
+        state.setdefault("wall_started_monotonic_ns", wall_started)
+        state.setdefault("wall_started_epoch_ns", wall_started_epoch)
     _charge_wall(state)
     results.persist_l0_sources(run, state)
     result, receipt = results.render_attempt(
@@ -592,6 +590,7 @@ def run_experiment(
                 target,
                 run_config,
                 wall_started,
+                wall_started_epoch=wall_started_epoch,
                 outcome=outcome,
                 reason=reason,
                 detail=exc,
@@ -605,6 +604,7 @@ def run_experiment(
             target,
             run_config,
             wall_started,
+            wall_started_epoch=wall_started_epoch,
             outcome="invalid_config",
             reason="attempt_ledger_invalid",
             detail=exc,
@@ -626,6 +626,7 @@ def run_experiment(
             target,
             run_config,
             wall_started,
+            wall_started_epoch=wall_started_epoch,
             outcome=outcome,
             reason=reason,
             detail=detail,

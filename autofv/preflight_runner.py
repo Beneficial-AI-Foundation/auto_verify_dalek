@@ -40,6 +40,7 @@ from autofv.contracts import (  # noqa: E402
 RUNNER_SCHEMA = "autofv-sealed-preflight-runner/v1"
 RESULT_SCHEMA = "autofv-preflight-result/v1"
 MAX_AGE_SECONDS = 300
+MAX_HELPER_WALL_SECONDS = 3600
 HELPER_HANDOFF_INPUT_SHA256 = hashlib.sha256(b"autofv:same-worker-helper-handoff:v1").hexdigest()
 _ALL_CHECKS = (
     *preflight_evidence.DETERMINISTIC_PREFLIGHT_CASES,
@@ -1032,7 +1033,7 @@ def prepare_helper_handoff(state: dict[str, Any], bundle_path: Path) -> Path:
     run, config = state["run"], state["config"]
     if (not fvs_profile.enabled(config) or run.get("fresh_pair_preflight") is not True
         or run.get("execution_mode") != "proof_only"
-        or config["max_cost_usd"] > Decimal("10.000000") or config["max_wall_seconds"] > 1800
+        or config["max_cost_usd"] > Decimal("10.000000") or config["max_wall_seconds"] > MAX_HELPER_WALL_SECONDS
         or state["cost"] != 0 or state["receipts"] or state["model_exchanges"]
         or state["pending_model_exchanges"] or run.get("provider_model_preflights")
         or run.get("helper_handoff") is not None or run.get("worker_disposed")):

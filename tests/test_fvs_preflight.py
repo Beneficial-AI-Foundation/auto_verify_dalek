@@ -429,8 +429,15 @@ class PreparedFvsPreflightTests(unittest.TestCase):
         self.assertEqual(result["service_release"], "released")
         self.assertNotIn("helper_handoff", self.prepared_run)
 
-    def test_public_helper_controller_prepares_once_and_hands_off_before_graph(self):
+    def test_public_helper_controller_prepares_once_and_hands_off_before_graph(
+        self, *, wall_limit=None, cost_limit=None, invalid_scope=False,
+    ):
         self.inputs()
+        if wall_limit is not None:
+            self.config["max_wall_seconds"] = wall_limit
+        if cost_limit is not None:
+            self.config["max_cost_usd"] = cost_limit
+        self.config_path.write_bytes(contracts.canonical_json_bytes(self.config) + b"\n")
         self.prepared_inputs = (*self.prepared_inputs[:3],
             {k: str(v) for k, v in self.prepared_inputs[3].items()})
         for name in ("preparation_manifest", "probe_rust_evidence", "probe_aeneas_evidence", "dependency_cache"):
@@ -469,13 +476,39 @@ class PreparedFvsPreflightTests(unittest.TestCase):
              mock.patch.object(experiment, "_final_terminal_audit"), \
              mock.patch.object(experiment, "_finish_attempt", return_value={"outcome": "unverified"}) as finish:
             result = self.exercise()
+        if invalid_scope:
+            self.assertEqual(result["outcome"], "invalid_config")
+            self.assertEqual(result["termination_reason"], "handoff_scope_invalid")
+            self.prepare_mock.assert_not_called()
+            self.seed_mock.assert_not_called()
+            self.fetch_mock.assert_not_called()
+            self.assertFalse(captured)
+            finish.assert_not_called()
+            return
         self.assertEqual(result["outcome"], "unverified")
         self.assertEqual(len(captured), 1, (finish.call_args.args[1].get("termination_detail"),
                                           finish.call_args.args[0].get("events")))
         self.assertEqual(captured[0]["run"]["helper_handoff"]["first_scored_request_id"], "controller-first-helper")
+        self.assertEqual(captured[0]["config"]["max_wall_seconds"], self.config["max_wall_seconds"])
         finish.assert_called_once()
         self.assertEqual(finish.call_args.kwargs["reason"], "proof_search_incomplete")
         provider_config.abort_configuration(self.prepared_run)
+
+    def test_one_hour_helper_controller_reaches_signed_handoff_and_first_dispatch(self):
+        self.test_public_helper_controller_prepares_once_and_hands_off_before_graph(
+            wall_limit=3600, cost_limit="10.000000")
+
+    def test_half_hour_helper_controller_keeps_its_configured_budget(self):
+        self.test_public_helper_controller_prepares_once_and_hands_off_before_graph(
+            wall_limit=1800, cost_limit="10.000000")
+
+    def test_helper_controller_rejects_over_hour_before_worker_or_provider(self):
+        self.test_public_helper_controller_prepares_once_and_hands_off_before_graph(
+            wall_limit=3601, cost_limit="10.000000", invalid_scope=True)
+
+    def test_helper_controller_rejects_over_cost_before_worker_or_provider(self):
+        self.test_public_helper_controller_prepares_once_and_hands_off_before_graph(
+            wall_limit=3600, cost_limit="10.000001", invalid_scope=True)
 
     def test_public_rust_drift_is_rejected_before_worker_or_credentials(self):
         self.inputs()
@@ -663,9 +696,9 @@ class PreparedFvsPreflightTests(unittest.TestCase):
         self.assertEqual(timer.call_args_list[-1].args[1], 0)
         self.assertEqual(sum(call.args[0] == signal.SIGALRM for call in handler.call_args_list), 2)
 
-    def test_handoff_deadline_uses_only_remaining_shared_wall(self):
-        state = {"run": {}, "config": {"max_wall_seconds": 1800},
-            "wall_seconds_used": Decimal(1700), "finalization_reserve_seconds": Decimal(5),
+    def test_handoff_deadline_uses_only_remaining_shared_wall(self, *, wall_limit=1800):
+        state = {"run": {}, "config": {"max_wall_seconds": wall_limit},
+            "wall_seconds_used": Decimal(wall_limit - 100), "finalization_reserve_seconds": Decimal(5),
             "wall_started_monotonic_ns": 1_000_000_000, "wall_started_epoch_ns": 101_000_000_000}
         with mock.patch.object(preflight_runner.signal, "getitimer", return_value=(0, 0)), \
              mock.patch.object(preflight_runner.signal, "signal"), \
@@ -674,13 +707,16 @@ class PreparedFvsPreflightTests(unittest.TestCase):
              mock.patch.object(run_state.time, "time_ns", return_value=104_000_000_000):
             with preflight_runner._preflight_deadline(state):
                 self.assertEqual(timer.call_args_list[0].args[1], 92)
-                self.assertEqual(state["wall_seconds_used"], Decimal(1703))
+                self.assertEqual(state["wall_seconds_used"], Decimal(wall_limit - 97))
             timer.reset_mock()
-            state["wall_seconds_used"] = Decimal(1795)
+            state["wall_seconds_used"] = Decimal(wall_limit - 5)
             with self.assertRaises(contracts.ContractError):
                 with preflight_runner._preflight_deadline(state):
                     self.fail("exhausted shared wall entered handoff")
             timer.assert_not_called()
+
+    def test_one_hour_handoff_deadline_keeps_charged_time_and_reserve(self):
+        self.test_handoff_deadline_uses_only_remaining_shared_wall(wall_limit=3600)
 
     def test_endpoint_metadata_rejects_exact_mode_price_and_fee_drift(self):
         mutations = [lambda e: e["data"]["endpoints"][0]["supports_tool_choice"].update(required=False),

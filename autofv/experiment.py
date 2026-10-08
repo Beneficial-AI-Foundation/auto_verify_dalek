@@ -694,9 +694,11 @@ def run_experiment(
             )
 
     if fresh_pair_preflight and (not fvs_profile.enabled(config) or prepared_inputs is None
-        or config["max_cost_usd"] > Decimal("10.000000") or config["max_wall_seconds"] > 1800):
+        or config["max_cost_usd"] > Decimal("10.000000")
+        or config["max_wall_seconds"] > preflight_runner.MAX_HELPER_WALL_SECONDS):
         return persist_unallocated("invalid_config", "handoff_scope_invalid",
-            ContractError("fresh pair handoff requires prepared FVS with shared USD10/1800s limits"))
+            ContractError("fresh pair handoff requires prepared FVS with shared USD10/"
+                          f"{preflight_runner.MAX_HELPER_WALL_SECONDS}s limits"))
     if fvs_profile.enabled(config):
         try:
             if prepared_inputs is None:

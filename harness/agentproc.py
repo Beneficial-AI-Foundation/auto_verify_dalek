@@ -420,6 +420,23 @@ def build_command(prompt, session_id, resume, model, max_turns,
     return ["claude", "-p", "--session-id", session_id, *flags, prompt]
 
 
+# Shown to every Worker in every round. The permission rules in
+# driver.ALLOWED_TOOLS only auto-approve exactly these forms; anything else
+# is denied in headless mode and the turn is lost. A heredoc that is part of
+# a compound command (`cd DIR; cat > F <<EOF`) is also denied.
+EDIT_INSTRUCTIONS = (
+    "\n\nEditing files — only these ways are approved; any other shell write "
+    "is denied and wastes a turn:\n"
+    "- the Edit tool (preferred for changing a proof body) or the Write tool;\n"
+    "- from the workspace root, as the WHOLE shell command (no `cd DIR;` "
+    "prefix, no `&&` chain — you already start at the workspace root):\n"
+    "    cat > FILE <<'EOF' ... EOF        (overwrite)\n"
+    "    cat >> FILE <<'EOF' ... EOF       (append)\n"
+    "    sed -i 'SCRIPT' FILE\n"
+    "python, tee, mv, cp, rm and other shell commands cannot modify files. "
+    "`cd DIR; lake build ...` style compound commands are fine for building.\n")
+
+
 # ── round execution ──────────────────────────────────────────────────────
 def _bounded_wait(wall_deadline):
     """A polling wait that cannot sleep past the wall-clock deadline."""
@@ -448,6 +465,7 @@ def run_round(prompt, transcript_path, *, cwd, session_id, resume,
     check_logs = os.path.join(runtime, "local_checks")
     os.makedirs(check_logs, exist_ok=True)
     check_command = "/usr/bin/python3 " + shlex.quote(check_tool)
+    edit_instructions = EDIT_INSTRUCTIONS
     check_instructions = (
         "\n\nLocal Lean check tool (provided by the harness):\n"
         f"From the workspace root run: {check_command} MODULE --timeout 120\n"
@@ -473,12 +491,13 @@ def run_round(prompt, transcript_path, *, cwd, session_id, resume,
             "Repeated failures may end this round for independent review; the next "
             "available round receives advisory feedback.\n")
     if local_checks:
-        prompt += check_instructions
-        if resume:
-            continue_message = (continue_message or "continue") + check_instructions
         allowed_tools += f",Bash({check_command} *)"
     else:
         check_instructions = ""
+    prompt += edit_instructions + check_instructions
+    if resume:
+        continue_message = ((continue_message or "continue")
+                            + edit_instructions + check_instructions)
     env = dict(env if env is not None else os.environ)
     env["LEAN_CHECK_LOG_DIR"] = check_logs
     effective_message = continue_message if resume else prompt

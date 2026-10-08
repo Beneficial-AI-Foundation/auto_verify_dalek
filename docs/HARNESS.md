@@ -38,7 +38,10 @@ Whole run: `replay.py` (fresh worktree, empty build cache) → `report.py` →
 ## What the agent sees
 
 - its slot only: no `.git`, no `harness/`, no `ledger/`; empty `$HOME`; mathlib read-only
-- tools `Read Grep Glob Edit Write Bash(lake build, grep)` — no subagents, web, skills, MCP
+- tools `Read Grep Glob Edit Write Bash(lake build, grep, cat, sed)` — no subagents, web, skills, MCP.
+  `Edit(./**)` is also allowed so that `cat > F <<EOF` / `cat >> F` / `sed -i F` are
+  auto-approved (Claude Code checks shell writes against *file* rules); every prompt
+  tells the Worker exactly these forms. Scope gate (a) still rejects edits outside the target file
 - 12-probe self-test before every run, receipt in each ledger record
 
 ## Decisions

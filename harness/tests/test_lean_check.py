@@ -213,7 +213,8 @@ class LeanCheckTests(unittest.TestCase):
             allowed_tools="Read,Bash(lake build*)", deadline_seconds=5)
         self.assertEqual((status, rc), ("ok", 0))
         argv = event["args"]
-        self.assertIn("retry\n\nLocal Lean check tool", argv[-1])
+        self.assertTrue(argv[-1].startswith("retry\n\nEditing files"), argv[-1][:80])
+        self.assertIn("\n\nLocal Lean check tool", argv[-1])
         self.assertIn("lean_check.py", argv[argv.index("--allowedTools") + 1])
         self.assertTrue(Path(provenance["local_check"]["tool_path"]).is_file())
         recovery = provenance["compact_recovery"]

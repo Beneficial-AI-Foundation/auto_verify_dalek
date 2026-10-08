@@ -437,8 +437,12 @@ def slot_commit(work, path, msg):
 # ── agent invocation (multi-round; subprocess mechanics in agentproc.py) ─────
 # No `lake env`: the offline settings deny it (it can run arbitrary binaries
 # under the toolchain env), and the agent only needs `lake build`.
-ALLOWED_TOOLS = ("Read,Grep,Glob,Edit,Write,"
-                 "Bash(lake build*),Bash(grep*)")
+# Edit(./**) is a *file* rule: Claude Code checks shell redirections
+# (`cat > F`) and `sed -i F` against file rules, not Bash rules, so without
+# it those commands are denied even when `Bash(cat *)` is allowed (verified
+# headlessly, 2026-10-08). The slot is the cwd, so ./** is the slot.
+ALLOWED_TOOLS = ("Read,Grep,Glob,Edit,Write,Edit(./**),"
+                 "Bash(lake build*),Bash(grep*),Bash(cat *),Bash(sed *)")
 OFFLINE_SETTINGS = os.path.join(REPO, ".claude", "settings-offline.json")
 
 # Gate rejections that mean "not done yet" — the same session is resumed

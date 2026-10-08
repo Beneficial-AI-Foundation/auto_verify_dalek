@@ -662,7 +662,16 @@ def run_generic_role_path(state: _RunState) -> dict[str, Any]:
     run["lanes"] = state["lanes"] = lanes
 
     dependency = None
-    if not proof_only or prepared:
+    if prepared and proof_only and fvs_profile.enabled(state["config"]):
+        # Helper smoke uses graph-derived DATA, not a fabricated model plan.
+        dependency = {
+            "schema": "autofv-frozen-helper-plan/v1", "source": "frozen_graph",
+            "graph_sha256": graph["graph_sha256"], "root": root,
+            "selected_nodes": deepcopy(graph["selected_nodes"]),
+            "term_dependencies": deepcopy(graph["term_dependencies"]),
+        }
+        _event_once(run, "helper_smoke:planning_from_frozen_graph")
+    elif not proof_only or prepared:
         scout = _run_role_lane(
             state,
             graph,

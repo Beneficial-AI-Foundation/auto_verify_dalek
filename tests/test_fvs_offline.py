@@ -951,6 +951,93 @@ class FvsOfflineTests(unittest.TestCase):
         self.assertEqual(self.state["target_states"][root]["status"], "pending")
         self.assertEqual(self.state["fvs_evidence"][node + ":distinct-helper-verifier"]["report"], report)
 
+    def test_prepared_fvs_helper_smoke_starts_at_bundle_and_keeps_acceptance_gates(
+        self, *, clean_verdict="SCOPED_PASS", review_verdict=PASS,
+    ):
+        graph, lane, actual, calls = self.stage_fixture(review_verdict)
+        node, root = "probe:Arithmetic.increment", "probe:Arithmetic.root"
+        graph.update(selected_nodes=[node, root], frozen_targets=[root],
+            supplied_specs={root: "probe:Arithmetic.root_spec"}, term_dependencies=[[root, node]],
+            source_paths={node: PATH, root: "Root.lean"})
+        lane.update(node=node, schema="autofv-proof-lane/v1")
+        root_lane = {**lane, "node": root, "assigned_path": "Root.lean"}
+        self.run.update(execution_mode="proof_only", preparation_manifest={})
+        self.state.update(graph=graph, target_states={node: {"status": "pending"}, root: {"status": "pending"}},
+                          accepted_nodes=[], accepted_sequence=[])
+        role = generic_role_runtime._run_role_lane
+        observed_plans = []
+        def guarded_role(state, graph, lane, role_name, **kwargs):
+            context = kwargs["role_context"]
+            self.assertIn("stage", context, "Root-wide advisory planning was dispatched before the helper")
+            plan = context.get("consumer_intent", {}).get("dependency_plan")
+            if plan is not None:
+                observed_plans.append(copy.deepcopy(plan))
+            return role(state, graph, lane, role_name, **kwargs)
+        def accept(state, candidate, manifest):
+            state["accepted_nodes"].append(node)
+            state["proof_patch_sha256"][node] = "a" * 64
+            return {"status": "accepted_dependency", "synthetic": True}
+        report = {"verdict": clean_verdict, "agent_worker_id": "agent", "verifier_worker_id": "distinct-verifier"}
+        with mock.patch.object(generic_role_runtime, "_supplied_statement", return_value={
+                "canon": "theorem Arithmetic.root_spec : True", "model_fingerprint": "e" * 64}), \
+             mock.patch.object(generic_role_runtime, "_lane_descriptors", return_value=[lane, root_lane]), \
+             mock.patch.object(generic_role_runtime, "_run_role_lane", side_effect=guarded_role), \
+             mock.patch.object(worker, "prepare_lanes"), \
+             mock.patch.object(generic_role_runtime, "_checkpoint_candidate", side_effect=accept), \
+             mock.patch.object(worker, "persist_lane_result", return_value={}), \
+             mock.patch("autofv.terminal_run.clean_verify_partial", return_value=report) as verifier:
+            result = generic_role_runtime.run_generic_role_path(self.state)
+        self.assertEqual(calls, ["implementation-research", "spec-author:0", "spec-review:0", "spec-pass-triage:0",
+                                "proof-author:0", "proof-review:0", "proof-pass-triage:0"])
+        self.assertTrue(observed_plans)
+        for plan in observed_plans:
+            self.assertEqual(plan, {"schema": "autofv-frozen-helper-plan/v1", "source": "frozen_graph",
+                "graph_sha256": graph["graph_sha256"], "root": root,
+                "selected_nodes": graph["selected_nodes"], "term_dependencies": graph["term_dependencies"]})
+        verifier.assert_called_once()
+        self.assertEqual(result["accepted_nodes"], [node])
+        self.assertEqual(self.state["target_states"][root]["status"], "pending")
+        self.assertIn("helper_smoke:planning_from_frozen_graph", self.run["events"])
+        self.assertEqual(actual["text"], PROOF)
+
+    def test_direct_helper_smoke_rejects_failed_distinct_verification(self):
+        with self.assertRaisesRegex(contracts.ContractError, "independent scoped verification"):
+            self.test_prepared_fvs_helper_smoke_starts_at_bundle_and_keeps_acceptance_gates(clean_verdict="FAIL")
+        self.assertEqual(self.state["target_states"]["probe:Arithmetic.increment"]["status"], "unverified")
+        self.assertEqual(self.state["target_states"]["probe:Arithmetic.root"]["status"], "pending")
+        self.assertNotIn("probe:Arithmetic.increment:distinct-helper-verifier", self.state["fvs_evidence"])
+
+    def test_direct_helper_smoke_rejects_unapproved_specification(self):
+        with self.assertRaisesRegex(contracts.ContractInconclusive, "cap exhausted"):
+            self.test_prepared_fvs_helper_smoke_starts_at_bundle_and_keeps_acceptance_gates(review_verdict=REVISE)
+        self.assertFalse(self.state["accepted_nodes"])
+        self.assertNotIn("probe:Arithmetic.increment:frozen-statement", self.state["fvs_evidence"])
+        self.assertNotIn("probe:Arithmetic.increment:proof-approved", self.state["fvs_evidence"])
+
+    def test_root_advisory_roles_remain_for_full_fvs_and_legacy_prepared_smoke(self):
+        for schema, mode in (("autofv-run/v2", "full"), ("autofv-run/v1", "proof_only")):
+            with self.subTest(schema=schema, mode=mode):
+                state = {**self.state, "config": {**self.state["config"], "schema": schema},
+                    "run": {**self.run, "execution_mode": mode, "preparation_manifest": {}},
+                    "graph": {"frozen_targets": ["root"], "selected_nodes": ["helper", "root"],
+                        "supplied_specs": {"root": "root_spec"}, "term_dependencies": [["root", "helper"]],
+                        "graph_sha256": "d" * 64, "source_paths": {"helper": PATH, "root": "Root.lean"}}}
+                lanes = [{"schema": "autofv-proof-lane/v1", "node": node, "lane_id": node,
+                    "request_id": node, "base_commit": "c" * 40,
+                    "assigned_path": state["graph"]["source_paths"][node],
+                    "worktree_path": "/synthetic/work", "cache_path": "/synthetic/cache", "result_path": "/synthetic/result"}
+                    for node in ("helper", "root")]
+                with mock.patch.object(generic_role_runtime, "_supplied_statement", return_value={
+                        "canon": "theorem root_spec : True", "model_fingerprint": "e" * 64}), \
+                     mock.patch.object(generic_role_runtime, "_lane_descriptors", return_value=lanes), \
+                     mock.patch.object(worker, "prepare_lanes"), \
+                     mock.patch.object(worker, "save_lane_snapshot", return_value={"sequence": 1, "synthetic": True}), \
+                     mock.patch.object(generic_role_runtime, "_run_role_lane", side_effect=[{"scout": "data"}, {"planner": "data"}]) as role, \
+                     mock.patch.object(generic_role_runtime, "_run_prepared_progressive", return_value={"synthetic": True}) as progressive:
+                    generic_role_runtime.run_generic_role_path(state)
+                self.assertEqual([call.args[3] for call in role.call_args_list], ["scout", "dependency_planner"])
+                self.assertEqual(progressive.call_args.args[4], {"planner": "data"})
+
     def test_retained_raw_review_audit_rejects_forgery_and_gate_replay_does_not_build(self):
         graph, lane, actual, calls = self.stage_fixture()
         stages = fvs_adapter.Stages(self.state, graph, lane, generic_role_runtime._run_role_lane, lambda *a: None)

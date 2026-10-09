@@ -161,7 +161,7 @@ class FvsOfflineTests(unittest.TestCase):
             self.assertEqual(upstream["max_tokens"], 8192 if role in fvs_profile.REVIEW_ROLES else 16384)
             self.assertFalse(upstream["provider"]["allow_fallbacks"])
             self.assertTrue(upstream["provider"]["require_parameters"])
-            self.assertEqual(upstream["provider"]["ignore"], [] if role in fvs_profile.REVIEW_ROLES else ["openai/fast", "openai/flex"])
+            self.assertEqual(upstream["provider"]["ignore"], [] if role in fvs_profile.REVIEW_ROLES else ["openai/fast", "openai/flex", "openai/ultrafast"])
             self.assertEqual(e["receipt"]["provider"]["requested_routing"], upstream["provider"])
             self.assertEqual(self.validate(e), Decimal("0.000300"))
             wrong = copy.deepcopy(request)
@@ -557,13 +557,38 @@ class FvsOfflineTests(unittest.TestCase):
     def test_direct_routing_excludes_openai_price_variants(self):
         # OpenRouter base slugs match all endpoints of that provider, not only the bare tag.
         routing = fvs_profile.requested_routing(fvs_profile.AUTHOR)
-        advertised = ["openai", "openai/flex", "openai/fast", "azure"]
+        advertised = ["openai", "openai/flex", "openai/fast", "openai/ultrafast", "azure"]
         eligible = [tag for tag in advertised
             if any(tag == allowed or tag.startswith(allowed + "/") for allowed in routing["only"])
             and tag not in routing.get("ignore", [])]
         self.assertEqual(eligible, ["openai"])
         self.assertFalse(routing["allow_fallbacks"])
         self.assertTrue(routing["require_parameters"])
+
+    def test_sol_catalog_excludes_forbidden_variants_and_rejects_unknown_routes(self):
+        from tests.test_fvs_preflight import endpoint
+        document = endpoint(fvs_profile.AUTHOR)
+        default = document["data"]["endpoints"][0]
+        forbidden = ["openai/fast", "openai/flex", "openai/ultrafast"]
+        for tag in forbidden:
+            variant = copy.deepcopy(default)
+            variant.update(tag=tag, pricing={"unapproved_fee": "99"})
+            document["data"]["endpoints"].append(variant)
+        inventory = fvs_profile.public_endpoint_inventory(fvs_profile.AUTHOR, document)
+        self.assertEqual(inventory["matching_endpoint_slugs"], ["openai"])
+        self.assertEqual(inventory["ignored_endpoint_slugs"], forbidden)
+        old_profile = fvs_profile.profile()
+        old_profile["models"][fvs_profile.AUTHOR]["ignored_endpoints"] = forbidden[:-1]
+        with self.assertRaisesRegex(contracts.ContractError, "profile drift"):
+            fvs_profile.validate_profile(old_profile)
+        unknown = copy.deepcopy(default)
+        unknown["tag"] = "openai/unapproved-new-variant"
+        document["data"]["endpoints"].append(unknown)
+        with self.assertRaisesRegex(contracts.ContractError, "ambiguous eligible variants"):
+            fvs_profile.public_endpoint_inventory(fvs_profile.AUTHOR, document)
+        document["data"]["endpoints"] = document["data"]["endpoints"][1:-1]
+        with self.assertRaisesRegex(contracts.ContractError, "ambiguous eligible variants"):
+            fvs_profile.public_endpoint_inventory(fvs_profile.AUTHOR, document)
 
     def test_runtime_binder_rejects_rehashed_rust_without_trusted_bytes(self):
         p = packet()

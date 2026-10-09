@@ -39,7 +39,7 @@ def profile() -> dict[str, Any]:
         "models": {
             AUTHOR: {
                 "provider": "openai", "observed_provider": "OpenAI",
-                "ignored_endpoints": ["openai/fast", "openai/flex"],
+                "ignored_endpoints": ["openai/fast", "openai/flex", "openai/ultrafast"],
                 "tool_choice": "required", "max_output_tokens": 16384,
                 "tiers": [
                     {"min_input_tokens": 0, "input": "2", "cached": "0.10",

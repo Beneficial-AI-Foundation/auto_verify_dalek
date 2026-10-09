@@ -1,1 +1,228 @@
-{}
+{
+ "curve25519_dalek.backend.serial.u64.constants.L": {
+  "path": "Curve25519Dalek/Specs/Backend/Serial/U64/Scalar/Scalar52/MontgomeryReduce.lean",
+  "run_id": "scalar_invert_dynamic_01",
+  "theorems": [
+   "curve25519_dalek.backend.serial.u64.constants.L_bounds",
+   "curve25519_dalek.backend.serial.u64.constants.L_limbs",
+   "curve25519_dalek.backend.serial.u64.constants.L_spec",
+   "curve25519_dalek.backend.serial.u64.constants.L_val"
+  ]
+ },
+ "curve25519_dalek.backend.serial.u64.constants.LFACTOR": {
+  "path": "Curve25519Dalek/Specs/Backend/Serial/U64/Scalar/Scalar52/MontgomeryReduce.lean",
+  "run_id": "scalar_invert_dynamic_01",
+  "theorems": [
+   "curve25519_dalek.backend.serial.u64.constants.LFACTOR_bound",
+   "curve25519_dalek.backend.serial.u64.constants.LFACTOR_spec",
+   "curve25519_dalek.backend.serial.u64.constants.LFACTOR_spec_L",
+   "curve25519_dalek.backend.serial.u64.constants.LFACTOR_val"
+  ]
+ },
+ "curve25519_dalek.backend.serial.u64.constants.RR": {
+  "path": "Curve25519Dalek/Specs/Backend/Serial/U64/Constants/RR.lean",
+  "run_id": "scalar_invert_dynamic_01",
+  "theorems": [
+   "curve25519_dalek.backend.serial.u64.constants.RR_bounds",
+   "curve25519_dalek.backend.serial.u64.constants.RR_limbs",
+   "curve25519_dalek.backend.serial.u64.constants.RR_lt_L",
+   "curve25519_dalek.backend.serial.u64.constants.RR_mod",
+   "curve25519_dalek.backend.serial.u64.constants.RR_spec",
+   "curve25519_dalek.backend.serial.u64.constants.RR_val"
+  ]
+ },
+ "curve25519_dalek.backend.serial.u64.scalar.Scalar52.Insts.CoreOpsIndexIndexMutUsizeU64.index_mut": {
+  "path": "Curve25519Dalek/Specs/Backend/Serial/U64/Scalar/Scalar52/IndexMut.lean",
+  "run_id": "scalar_invert_dynamic_01",
+  "theorems": [
+   "curve25519_dalek.backend.serial.u64.scalar.Scalar52.Insts.CoreOpsIndexIndexMutUsizeU64.index_mut_spec"
+  ]
+ },
+ "curve25519_dalek.backend.serial.u64.scalar.Scalar52.Insts.CoreOpsIndexIndexUsizeU64.index": {
+  "path": "Curve25519Dalek/Specs/Backend/Serial/U64/Scalar/Scalar52/Index.lean",
+  "run_id": "scalar_invert_dynamic_01",
+  "theorems": [
+   "curve25519_dalek.backend.serial.u64.scalar.Scalar52.Insts.CoreOpsIndexIndexUsizeU64.index_spec"
+  ]
+ },
+ "curve25519_dalek.backend.serial.u64.scalar.Scalar52.ZERO": {
+  "path": "Curve25519Dalek/Specs/Backend/Serial/U64/Scalar/Scalar52/ZERO.lean",
+  "run_id": "scalar_invert_dynamic_01",
+  "theorems": [
+   "curve25519_dalek.backend.serial.u64.scalar.Scalar52.ZERO_bounds",
+   "curve25519_dalek.backend.serial.u64.scalar.Scalar52.ZERO_getElem!",
+   "curve25519_dalek.backend.serial.u64.scalar.Scalar52.ZERO_index_val",
+   "curve25519_dalek.backend.serial.u64.scalar.Scalar52.ZERO_spec",
+   "curve25519_dalek.backend.serial.u64.scalar.Scalar52.ZERO_val",
+   "curve25519_dalek.backend.serial.u64.scalar.Scalar52.ZERO_val_getElem!"
+  ]
+ },
+ "curve25519_dalek.backend.serial.u64.scalar.Scalar52.as_montgomery": {
+  "path": "Curve25519Dalek/Specs/Backend/Serial/U64/Scalar/Scalar52/AsMontgomery.lean",
+  "run_id": "scalar_invert_dynamic_01",
+  "theorems": [
+   "curve25519_dalek.backend.serial.u64.scalar.Scalar52.as_montgomery_spec"
+  ]
+ },
+ "curve25519_dalek.backend.serial.u64.scalar.Scalar52.conditional_add_l": {
+  "path": "Curve25519Dalek/Specs/Backend/Serial/U64/Scalar/Scalar52/ConditionalAddL.lean",
+  "run_id": "scalar_invert_dynamic_01",
+  "theorems": [
+   "curve25519_dalek.backend.serial.u64.scalar.Scalar52.conditional_add_l_spec"
+  ]
+ },
+ "curve25519_dalek.backend.serial.u64.scalar.Scalar52.conditional_add_l_loop": {
+  "path": "Curve25519Dalek/Specs/Backend/Serial/U64/Scalar/Scalar52/ConditionalAddL.lean",
+  "run_id": "scalar_invert_dynamic_01",
+  "theorems": [
+   "curve25519_dalek.backend.serial.u64.scalar.Scalar52.conditional_add_l_loop_spec"
+  ]
+ },
+ "curve25519_dalek.backend.serial.u64.scalar.Scalar52.from_bytes": {
+  "path": "Curve25519Dalek/Specs/Backend/Serial/U64/Scalar/Scalar52/FromBytes.lean",
+  "run_id": "scalar_invert_dynamic_01",
+  "theorems": [
+   "curve25519_dalek.backend.serial.u64.scalar.Scalar52.from_bytes_spec"
+  ]
+ },
+ "curve25519_dalek.backend.serial.u64.scalar.Scalar52.from_bytes_loop": {
+  "path": "Curve25519Dalek/Specs/Backend/Serial/U64/Scalar/Scalar52/FromBytesLoop.lean",
+  "run_id": "scalar_invert_dynamic_01",
+  "theorems": [
+   "curve25519_dalek.backend.serial.u64.scalar.Scalar52.from_bytes_loop_spec"
+  ]
+ },
+ "curve25519_dalek.backend.serial.u64.scalar.Scalar52.from_montgomery": {
+  "path": "Curve25519Dalek/Specs/Backend/Serial/U64/Scalar/Scalar52/FromMontgomery.lean",
+  "run_id": "scalar_invert_dynamic_01",
+  "theorems": [
+   "curve25519_dalek.backend.serial.u64.scalar.Scalar52.from_montgomery_spec"
+  ]
+ },
+ "curve25519_dalek.backend.serial.u64.scalar.Scalar52.from_montgomery_loop": {
+  "path": "Curve25519Dalek/Specs/Backend/Serial/U64/Scalar/Scalar52/FromMontgomery.lean",
+  "run_id": "scalar_invert_dynamic_01",
+  "theorems": [
+   "curve25519_dalek.backend.serial.u64.scalar.Scalar52.from_montgomery_loop_spec"
+  ]
+ },
+ "curve25519_dalek.backend.serial.u64.scalar.Scalar52.montgomery_mul": {
+  "path": "Curve25519Dalek/Specs/Backend/Serial/U64/Scalar/Scalar52/MontgomeryMul.lean",
+  "run_id": "scalar_invert_dynamic_01",
+  "theorems": [
+   "curve25519_dalek.backend.serial.u64.scalar.Scalar52.montgomery_mul_spec"
+  ]
+ },
+ "curve25519_dalek.backend.serial.u64.scalar.Scalar52.montgomery_reduce": {
+  "path": "Curve25519Dalek/Specs/Backend/Serial/U64/Scalar/Scalar52/MontgomeryReduce.lean",
+  "run_id": "scalar_invert_dynamic_01",
+  "theorems": [
+   "curve25519_dalek.backend.serial.u64.scalar.Scalar52.montgomery_reduce_spec"
+  ]
+ },
+ "curve25519_dalek.backend.serial.u64.scalar.Scalar52.montgomery_reduce.part1": {
+  "path": "Curve25519Dalek/Specs/Backend/Serial/U64/Scalar/Scalar52/MontgomeryReduce.lean",
+  "run_id": "scalar_invert_dynamic_01",
+  "theorems": [
+   "curve25519_dalek.backend.serial.u64.scalar.Scalar52.montgomery_reduce.part1_spec"
+  ]
+ },
+ "curve25519_dalek.backend.serial.u64.scalar.Scalar52.montgomery_reduce.part2": {
+  "path": "Curve25519Dalek/Specs/Backend/Serial/U64/Scalar/Scalar52/MontgomeryReduce.lean",
+  "run_id": "scalar_invert_dynamic_01",
+  "theorems": [
+   "curve25519_dalek.backend.serial.u64.scalar.Scalar52.montgomery_reduce.part2_spec"
+  ]
+ },
+ "curve25519_dalek.backend.serial.u64.scalar.Scalar52.montgomery_square": {
+  "path": "Curve25519Dalek/Specs/Backend/Serial/U64/Scalar/Scalar52/MontgomerySquare.lean",
+  "run_id": "scalar_invert_dynamic_01",
+  "theorems": [
+   "curve25519_dalek.backend.serial.u64.scalar.Scalar52.montgomery_square_spec"
+  ]
+ },
+ "curve25519_dalek.backend.serial.u64.scalar.Scalar52.mul_internal": {
+  "path": "Curve25519Dalek/Specs/Backend/Serial/U64/Scalar/Scalar52/MulInternal.lean",
+  "run_id": "scalar_invert_dynamic_01",
+  "theorems": [
+   "curve25519_dalek.backend.serial.u64.scalar.Scalar52.mul_internal_spec"
+  ]
+ },
+ "curve25519_dalek.backend.serial.u64.scalar.Scalar52.square_internal": {
+  "path": "Curve25519Dalek/Specs/Backend/Serial/U64/Scalar/Scalar52/SquareInternal.lean",
+  "run_id": "scalar_invert_dynamic_01",
+  "theorems": [
+   "curve25519_dalek.backend.serial.u64.scalar.Scalar52.square_internal_spec"
+  ]
+ },
+ "curve25519_dalek.backend.serial.u64.scalar.Scalar52.sub": {
+  "path": "Curve25519Dalek/Specs/Backend/Serial/U64/Scalar/Scalar52/Sub.lean",
+  "run_id": "scalar_invert_dynamic_01",
+  "theorems": [
+   "curve25519_dalek.backend.serial.u64.scalar.Scalar52.sub_spec"
+  ]
+ },
+ "curve25519_dalek.backend.serial.u64.scalar.Scalar52.sub_loop": {
+  "path": "Curve25519Dalek/Specs/Backend/Serial/U64/Scalar/Scalar52/Sub.lean",
+  "run_id": "scalar_invert_dynamic_01",
+  "theorems": [
+   "curve25519_dalek.backend.serial.u64.scalar.Scalar52.sub_loop_spec"
+  ]
+ },
+ "curve25519_dalek.backend.serial.u64.scalar.Scalar52.to_bytes": {
+  "path": "Curve25519Dalek/Specs/Backend/Serial/U64/Scalar/Scalar52/ToBytes.lean",
+  "run_id": "scalar_invert_dynamic_01",
+  "theorems": [
+   "curve25519_dalek.backend.serial.u64.scalar.Scalar52.to_bytes_spec"
+  ]
+ },
+ "curve25519_dalek.backend.serial.u64.scalar.m": {
+  "path": "Curve25519Dalek/Specs/Backend/Serial/U64/Scalar/M.lean",
+  "run_id": "scalar_invert_dynamic_01",
+  "theorems": [
+   "curve25519_dalek.backend.serial.u64.scalar.m_spec"
+  ]
+ },
+ "curve25519_dalek.scalar.Scalar.unpack": {
+  "path": "Curve25519Dalek/Specs/Scalar/Scalar/Unpack.lean",
+  "run_id": "scalar_invert_dynamic_01",
+  "theorems": [
+   "curve25519_dalek.scalar.Scalar.unpack_spec"
+  ]
+ },
+ "curve25519_dalek.scalar.Scalar52.invert": {
+  "path": "Curve25519Dalek/Specs/Backend/Serial/U64/Scalar/Scalar52/Invert.lean",
+  "run_id": "scalar_invert_dynamic_01",
+  "theorems": [
+   "curve25519_dalek.scalar.Scalar52.invert_spec"
+  ]
+ },
+ "curve25519_dalek.scalar.Scalar52.montgomery_invert": {
+  "path": "Curve25519Dalek/Specs/Backend/Serial/U64/Scalar/Scalar52/MontgomeryInvert.lean",
+  "run_id": "scalar_invert_dynamic_01",
+  "theorems": [
+   "curve25519_dalek.scalar.Scalar52.montgomery_invert_spec"
+  ]
+ },
+ "curve25519_dalek.scalar.Scalar52.montgomery_invert.square_multiply": {
+  "path": "Curve25519Dalek/Specs/Backend/Serial/U64/Scalar/Scalar52/SquareMultiply.lean",
+  "run_id": "scalar_invert_dynamic_01",
+  "theorems": [
+   "curve25519_dalek.scalar.Scalar52.montgomery_invert.square_multiply_spec"
+  ]
+ },
+ "curve25519_dalek.scalar.Scalar52.montgomery_invert.square_multiply_loop": {
+  "path": "Curve25519Dalek/Specs/Scalar/Scalar52/MontgomeryInvert/SquareMultiplyLoop.lean",
+  "run_id": "scalar_invert_dynamic_01",
+  "theorems": [
+   "curve25519_dalek.scalar.Scalar52.montgomery_invert.square_multiply_loop_spec"
+  ]
+ },
+ "curve25519_dalek.scalar.Scalar52.pack": {
+  "path": "Curve25519Dalek/Specs/Backend/Serial/U64/Scalar/Scalar52/Pack.lean",
+  "run_id": "scalar_invert_dynamic_01",
+  "theorems": [
+   "curve25519_dalek.scalar.Scalar52.pack_spec"
+  ]
+ }
+}

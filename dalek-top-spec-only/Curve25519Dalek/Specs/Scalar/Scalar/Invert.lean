@@ -19,6 +19,9 @@ import Mathlib.Data.Nat.ModEq
 import Mathlib.Data.Int.ModEq
 import Mathlib.Data.ZMod.Basic
 import Curve25519Dalek.Specs.Backend.Serial.U64.Scalar.Scalar52.MontgomeryInvert
+import Curve25519Dalek.Specs.Scalar.Scalar.Unpack
+import Curve25519Dalek.Specs.Backend.Serial.U64.Scalar.Scalar52.Invert
+import Curve25519Dalek.Specs.Backend.Serial.U64.Scalar.Scalar52.Pack
 
 open Aeneas Aeneas.Std Aeneas.Std.WP Result
 namespace curve25519_dalek.scalar.Scalar
@@ -27,6 +30,12 @@ namespace curve25519_dalek.scalar.Scalar
 theorem invert_spec (self : Scalar) (h : U8x32_as_Nat self.bytes % L ≠ 0) :
     invert self ⦃ (result : Scalar) =>
       U8x32_as_Nat self.bytes * U8x32_as_Nat result.bytes ≡ 1 [MOD L] ⦄ := by
-  sorry
+  unfold invert
+  progress as ⟨s, hs, hsb⟩
+  progress as ⟨r, hrb, hrL, _hpow, hinv⟩
+  progress as ⟨p, _hp1, hp⟩
+  have hL : _root_.L < 2 ^ 256 := by unfold _root_.L; norm_num
+  rw [hp (by omega), ← hs]
+  exact hinv (by rw [hs]; exact h)
 
 end curve25519_dalek.scalar.Scalar

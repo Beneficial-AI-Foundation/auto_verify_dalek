@@ -109,3 +109,45 @@ with tempfile.TemporaryDirectory(prefix='dynamic-e2e-') as d:
     assert 'Demo.bad' not in (work/'A.lean').read_text()
     assert len(published)==1
     print('PASS: real Lean gates; false helper -> unsplit -> Refiner re-asked -> true helper -> parent -> final gate')
+
+    # Scenario 3: a shared helper file (--shared-file) is editable by every
+    # Worker. A sorry left there is rejected by the real gate; the retry puts a
+    # proved lemma there, the target imports it, both files are committed and
+    # published together.
+    subprocess.run(['git','reset','-q','--hard',subprocess.run(['git','rev-list','--max-parents=0','HEAD'],cwd=work,capture_output=True,text=True).stdout.strip()],cwd=work,check=True)
+    (work/'lakefile.toml').write_text('name = "DynamicTest"\nversion = "0.1.0"\ndefaultTargets = ["Curve25519Dalek"]\n[[lean_lib]]\nname = "Curve25519Dalek"\nroots = ["Curve25519Dalek", "A", "Shared"]\n')
+    (work/'Shared.lean').write_text('import Lean\n')
+    (work/'Curve25519Dalek.lean').write_text('import A\nimport Shared\n')   # StmtCanon sees modules the root imports
+    subprocess.run(['git','add','.'],cwd=work,check=True)
+    subprocess.run(['git','commit','-qm','shared baseline'],cwd=work,check=True)
+    run3 = run/'run3'; run3.mkdir()
+    rc,counts,_ = driver.build_sorry_counts(str(work),120)
+    assert rc == 0 and counts == {'A.lean': 1}, counts
+    args3 = SimpleNamespace(**vars(args), shared_file='Shared.lean'); args3.max_node_retries = 1
+    calls=[]
+    def fake_model3(prompt, transcript, **kw):
+        calls.append(prompt)
+        assert 'Shared helper file: Shared.lean' in prompt and '- Edit ONLY A.lean and Shared.lean.' in prompt, prompt[-1500:]
+        body = 'sorry' if len(calls)==1 else 'trivial'
+        (work/'Shared.lean').write_text(f'import Lean\ntheorem Demo.sh : True := by\n  {body}\n')
+        (work/'A.lean').write_text('import Lean\nimport Shared\nnamespace Demo\ntheorem target : True := by\n  exact Demo.sh\nend Demo\n')
+        event={'type':'result','result':'complete','total_cost_usd':0,'num_turns':1}
+        Path(transcript).parent.mkdir(parents=True,exist_ok=True)
+        Path(transcript).write_text(json.dumps(event)+'\n')
+        return 'ok',0,0,event,{}
+    published=[]
+    with patch.object(driver, 'TRANSCRIPTS', str(run3 / 'transcripts')), \
+         patch.object(dag.agentproc,'run_round',side_effect=fake_model3), \
+         patch.object(api,'atomic_publish_joint',side_effect=lambda *a: published.append(a)):
+        ok = dag.run(args3,[dict(mode='fill',fn='Demo.target',path='A.lean')],str(work),str(run3),counts,
+            {},'',None,lambda *a:'Prove Demo.target in A.lean\n- Edit ONLY A.lean. No other file.',{},[],print,api)
+    state=json.loads((run3/'graph.json').read_text())
+    assert ok, state['events']
+    outcomes=[e.get('outcome') for e in state['events'] if 'node' in e]
+    assert outcomes==['rejected_sorry_remains','accepted'], outcomes
+    assert state['events'][0]['detail'].get('path')=='Shared.lean', state['events'][0]['detail']
+    assert 'Shared.lean' in published[0][2] and 'A.lean' in published[0][2], published[0][2]
+    shown=subprocess.run(['git','show','--stat','--format=','HEAD'],cwd=work,capture_output=True,text=True).stdout
+    assert 'Shared.lean' in shown and 'A.lean' in shown, shown
+    assert 'sorry' not in (work/'Shared.lean').read_text()
+    print('PASS: shared helper file; sorry there rejected by the gate, retry proves it, both files committed and published')

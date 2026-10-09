@@ -670,6 +670,9 @@ def main():
     ap.add_argument("--build-timeout", type=int, default=driver.BUILD_TIMEOUT)
     ap.add_argument("--rounds", type=int, default=3)
     ap.add_argument("--max-cost-usd", type=float, default=0.0)
+    ap.add_argument("--shared-file", default="Curve25519Dalek/Aux.lean",
+                    help="--dynamic: shared helper file every node may extend "
+                         "(statements frozen, no sorry); '' disables")
     ap.add_argument("--stall-rounds", type=int, default=2)
     ap.add_argument("--bloat-threshold-tokens", type=int, default=200_000)
     ap.add_argument("--auto-reset", dest="auto_reset", action="store_true", default=True)

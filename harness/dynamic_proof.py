@@ -66,6 +66,24 @@ def short(fn):
     return fn.removeprefix('probe:').removeprefix('curve25519_dalek.')
 
 
+SHARED_PATH = 'Curve25519Dalek/Aux.lean'
+
+SHARED_NOTE = """
+Shared helper file: {shared}. It is editable in addition to {path}: append
+new, fully proved, general-purpose lemmas there (u64/u128 arithmetic, casts,
+masks and shifts, limb expansions) so later steps reuse them instead of
+re-proving them. Before proving such a lemma, `grep` {shared} and the already
+accepted spec files for an existing one and `import` its module. Do not change
+or remove any existing declaration in {shared}; it must stay free of `sorry`.
+"""
+
+
+def shared_paths(args, work):
+    """Shared helper file every Worker may extend ('' disables; absent file skipped)."""
+    rel = getattr(args, 'shared_file', SHARED_PATH)
+    return [rel] if rel and Path(work, rel).is_file() else []
+
+
 def git(work, *argv):
     r = driver.sh(GIT + list(argv), work)
     if r.returncode != 0:
@@ -578,7 +596,9 @@ def run(args, steps, work, run_dir, before_counts, env, settings, prefix,
     graph = (Graph.restore(steps, run_dir, work) if args.resume_dynamic else Graph(steps))
     allowed = math_assumptions()
     graph.math_assumptions = sorted(allowed)
-    modules = list(dict.fromkeys(driver.path_to_module(s['path']) for s in steps))
+    shared = shared_paths(args, work)
+    shared_modules = [driver.path_to_module(p) for p in shared]
+    modules = list(dict.fromkeys([driver.path_to_module(s['path']) for s in steps] + shared_modules))
     if graph.initial is None:
         graph.initial, _ = fingerprints(modules, work, args)
         graph.initial_counts = dict(before_counts)
@@ -596,7 +616,8 @@ def run(args, steps, work, run_dir, before_counts, env, settings, prefix,
         graph.attempts = attempt
         path = node['path']
         module = driver.path_to_module(path)
-        baseline, _ = fingerprints([module], work, args)
+        editable = list(dict.fromkeys([path] + shared))
+        baseline, _ = fingerprints([module] + shared_modules, work, args)
         local = copy.copy(args)
         local.resume_proof_state = None
         local.gate_mode = 'fill' if node['mode'] == 'helper' else node['mode']
@@ -612,12 +633,13 @@ def run(args, steps, work, run_dir, before_counts, env, settings, prefix,
                 if not names or bad:
                     return 'rejected_sorry_remains', {**detail, 'reason': f'target depends on sorry outside the math assumptions: {bad}',
                         'harness_note': SORRY_NOTE.format(bad=json.dumps(bad))}
-                old = baseline.get(module, {})
-                for name, fp in fps.items():
-                    if name not in old or is_clean(old[name], allowed):
-                        if (d := disallowed_sorries(fp, allowed)) and fp.get('kind') == 'theorem':
-                            return 'rejected_sorry_remains', {**detail, 'reason': f'new or previously verified declaration uses sorryAx: {name}',
-                                'harness_note': SORRY_NOTE.format(bad=json.dumps({name: d}))}
+                for mod in [module] + shared_modules:
+                    old = baseline.get(mod, {})
+                    for name, fp in detail.get('g1_after', {}).get(mod, {}).items():
+                        if name not in old or is_clean(old[name], allowed):
+                            if (d := disallowed_sorries(fp, allowed)) and fp.get('kind') == 'theorem':
+                                return 'rejected_sorry_remains', {**detail, 'reason': f'new or previously verified declaration uses sorryAx: {name}',
+                                    'harness_note': SORRY_NOTE.format(bad=json.dumps({name: d}))}
                 detail['verified_theorems'] = names
             elif outcome in driver.FEEDBACK:
                 report = blocker_result(result)
@@ -634,6 +656,12 @@ def run(args, steps, work, run_dir, before_counts, env, settings, prefix,
                         'Previously accepted dependencies are in the workspace.\n')
             else:
                 text = step_prompt(i, n, done) + revision_block(n)
+            if shared:
+                # driver.PROMPT and prove_top_spec.PROMPT_SPEC both carry this
+                # exact single-file rule; the shared helper file widens it.
+                rule = f"- Edit ONLY {n['path']}. No other file."
+                text = text.replace(rule, f"- Edit ONLY {n['path']} and {shared[0]}. No other file.")
+                text += SHARED_NOTE.format(shared=shared[0], path=n['path'])
             return text + context_block(graph, n) + REPORT
 
         prompt = task_prompt(node, attempt)
@@ -644,7 +672,7 @@ def run(args, steps, work, run_dir, before_counts, env, settings, prefix,
         log(f"worker {node['id']}: {node['fn']} (fresh session, try {node['tries']})")
         outcome, detail, rounds, sessions = driver.run_rounds(
             prompt, tid, path, before_counts, local, env, settings,
-            baseline, work, prefix, log)
+            baseline, work, prefix, log, editable_paths=editable)
         event = dict(node=node['id'], outcome=outcome, sessions=sessions,
                      rounds=rounds, detail=detail)
         graph.events.append(event)
@@ -652,7 +680,7 @@ def run(args, steps, work, run_dir, before_counts, env, settings, prefix,
             node['status'] = 'accepted'
             node['theorems'] = detail['verified_theorems']
             before_counts = detail['counts_after']
-            graph.commits.append(dict(sha=commit(work, path, f"DAG accepted {node['id']}"),
+            graph.commits.append(dict(sha=commit(work, editable, f"DAG accepted {node['id']}"),
                                       kind='accept', node=node['id']))
             if node['mode'] == 'spec':
                 done[node['fn'].removeprefix('probe:')] = dict(
@@ -661,7 +689,7 @@ def run(args, steps, work, run_dir, before_counts, env, settings, prefix,
             continue
         node.setdefault('history', []).append(failure_summary(attempt, outcome, detail, rounds))
         event['partial_manifest'] = api.save_partial_snapshot(
-            run_dir, attempt, [path], work, {path: [node['fn']]}, rounds=rounds)
+            run_dir, attempt, editable, work, {path: [node['fn']]}, rounds=rounds)
         failed_source = Path(work, path).read_text()[-16000:]
         mod, new = driver.changed_files(work)
         driver.rollback(mod, new, work)
@@ -737,7 +765,7 @@ def run(args, steps, work, run_dir, before_counts, env, settings, prefix,
         batch_callees = {s['fn'].removeprefix('probe:'): s['path'] for s in steps if s['mode'] == 'spec'}
         outcome, detail = driver.gate(
             work, steps[-1]['path'], initial_counts, args.build_timeout, initial,
-            g2=False, mode='joint', editable_paths=list(dict.fromkeys(s['path'] for s in steps)),
+            g2=False, mode='joint', editable_paths=list(dict.fromkeys([s['path'] for s in steps] + shared)),
             callees=batch_callees,
             pure_callees={s['fn'].removeprefix('probe:') for s in steps if s.get('result') is False})
         fps = detail.get('g1_after', {})
@@ -746,7 +774,7 @@ def run(args, steps, work, run_dir, before_counts, env, settings, prefix,
             for n in graph.nodes.values())
         graph.events.append(dict(role='final_gate', outcome=outcome, verified=complete))
         if complete:
-            paths = list(dict.fromkeys([s['path'] for s in steps] + [api.ROOT_MODULE]))
+            paths = list(dict.fromkeys([s['path'] for s in steps] + shared + [api.ROOT_MODULE]))
             api.atomic_publish_joint(args.bundle, work, paths, done)
     graph.save(run_dir, work)
     return complete

@@ -40,6 +40,7 @@ Whole run: `replay.py` (fresh worktree, empty build cache) → `report.py` →
 - its slot only: no `.git`, no `harness/`, no `ledger/`; empty `$HOME`; mathlib read-only
 - `Aux.lean` is a definitions-only stub (DEC-21): no unproved helper statements to lean on
 - the bundle on `main` holds no agent output (DEC-22); a run publishes onto its own `exp/` branch
+- in a dynamic run `Aux.lean` is the shared helper file every Worker may extend (DEC-23); statements frozen, no sorry
 - tools `Read Grep Glob Edit Write Bash(lake build, grep, cat, sed)` — no subagents, web, skills, MCP.
   `Edit(./**)` is also allowed so that `cat > F <<EOF` / `cat >> F` / `sed -i F` are
   auto-approved (Claude Code checks shell writes against *file* rules); every prompt
@@ -93,6 +94,8 @@ TODO: use OpenTelemetry to check a posteriori if the agent accessed the internet
 | ⬜ | Misc | DEC-18 claim boundary in report · run-invalidation rules | open |
 
 ## Next
+
+Current prioritized list: `docs/HARNESS-TODO.md`. Items below are from 2026-08-28.
 
 1. Shakeout: real multi-round run on the Scalar slice (`--jobs 2`).
 2. `--repeats` + aggregation (DEC-13, deferred to save tokens) — until then n = 1, no number is comparable.

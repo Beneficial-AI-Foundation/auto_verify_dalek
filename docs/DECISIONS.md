@@ -205,6 +205,33 @@ manifest). The agent writes its own helper lemmas inside its target file.
 - The reference checkout's `Aux.lean` and `harness/frozen/statements.json`
   are unchanged (replay fingerprints the reference, not the bundle).
 
+### DEC-23 — Where do generic helper lemmas live in a dynamic run?
+
+**Status:** ACCEPTED (2026-10-09, Zhang-Liao)
+
+**Question:** A dynamic Worker may edit only its node's file. In
+`double_dynamic_01` the generic u64 lemmas that used to live in `Aux.lean`
+(`cast_U64_val`, `mask51_spec`, `shiftRight51_spec`, `Field51_as_Nat_eq`,
+`prod_le`) were proved once in `Mul.lean` and again, under other names, in
+`Pow2K.lean`; the later Worker did not know the earlier file had them.
+Keeping the human statements in `Aux.lean` as reusable targets would hand
+the agent a curated lemma list, which DEC-21 rejects. LeanMarathon avoids
+the problem by working in a single file where every earlier node is in
+scope; this project has one spec file per Rust function.
+
+**Decision:** `Aux.lean` stays a definitions-only stub on `main`, and in a
+dynamic run it is the shared helper file every Worker may extend
+(`--shared-file`, default `Curve25519Dalek/Aux.lean`, `''` disables).
+Each node's editable set is its own file plus the shared file; the gate
+fingerprints both (existing statements frozen), the shared file may gain
+declarations but never a `sorry`, new theorems there must have a sorry-free
+closure, and both files are committed, snapshotted and published together.
+The prompt tells the Worker to `grep` the shared file and accepted spec
+files before proving a generic lemma, and to put new generic lemmas there.
+Editing `Aux.lean` rebuilds its 39 importers, acceptable while execution is
+serial; parallel slots would have to serialize shared-file changes.
+Measure on the next run: number of duplicated helper statements.
+
 ### DEC-22 — Where do accepted proofs accumulate?
 
 **Status:** ACCEPTED (2026-10-08, Zhang-Liao)

@@ -1112,19 +1112,21 @@ def gate(work, target_path, before_counts, build_timeout=BUILD_TIMEOUT,
                  "pp": fps_all[path_to_module(spec_path)][n]["pp"]}
                 for n in specs]
         b["result_specs"] = result_specs
-        for editable in editable_paths:
-            if editable == target_path:
-                continue
-            if after.get(editable, 0) > before_counts.get(editable, 0):
-                return "rejected_sorry_remains", {
-                    **b, "mode": mode, "path": editable,
-                    "before": before_counts.get(editable, 0),
-                    "after": after.get(editable, 0)}
     elif after.get(target_path, 0) >= before_counts.get(target_path, 0):
         return "rejected_sorry_remains", {**b,
                                           "before": before_counts.get(target_path, 0),
                                           "after": after.get(target_path, 0)}
-    exempt_sorry_paths = editable_set if mode == "joint" else {target_path}
+    # Every other editable file (joint batch members, the dynamic shared
+    # helper file) may gain declarations but never a sorry.
+    for editable in editable_paths:
+        if editable == target_path:
+            continue
+        if after.get(editable, 0) > before_counts.get(editable, 0):
+            return "rejected_sorry_remains", {
+                **b, "mode": mode, "path": editable,
+                "before": before_counts.get(editable, 0),
+                "after": after.get(editable, 0)}
+    exempt_sorry_paths = editable_set
     others_before = {f: c for f, c in before_counts.items()
                      if f not in exempt_sorry_paths}
     others_after = {f: c for f, c in after.items()

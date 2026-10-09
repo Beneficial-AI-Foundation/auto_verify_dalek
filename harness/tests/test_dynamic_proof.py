@@ -144,7 +144,7 @@ class WorkflowTests(unittest.TestCase):
             fps = {'A': {'pkg.top': top}}
             report = dict(kind=kind, reason='needs helper', evidence='hard goal')
 
-            def worker(prompt, tid, path, counts, local, env, settings, baseline, *rest):
+            def worker(prompt, tid, path, counts, local, env, settings, baseline, *rest, **kw):
                 calls.append(tid)
                 prompts.append(prompt)
                 if len(calls) == 1:
@@ -217,7 +217,7 @@ class RetryTests(unittest.TestCase):
             fps = {'A': {'pkg.top': dict(kind='theorem', canon='t', pp='top', axioms=['sorryAx'])}}
             prompts = []
 
-            def worker(prompt, tid, path, counts, local, env, settings, baseline, *rest):
+            def worker(prompt, tid, path, counts, local, env, settings, baseline, *rest, **kw):
                 prompts.append(prompt)
                 n = len(prompts)
                 if n <= len(outcomes):
@@ -293,7 +293,7 @@ class UnsplitTests(unittest.TestCase):
 
             prompts, ref_prompts = [], []
 
-            def worker(prompt, tid, path, cnt, local, env, settings, baseline, *rest):
+            def worker(prompt, tid, path, cnt, local, env, settings, baseline, *rest, **kw):
                 prompts.append(prompt)
                 n = len(prompts)
                 if n == 1:   # parent: needs split
@@ -407,7 +407,7 @@ class RevisionTests(unittest.TestCase):
             fps = {'A': {}, 'B': {}, 'Top': {'pkg.top': dict(kind='theorem', canon='t', pp='top', axioms=['sorryAx'])}}
             calls, prompts, done = [], [], {}
 
-            def worker(prompt, tid, path, counts, local, env, settings, baseline, *rest):
+            def worker(prompt, tid, path, counts, local, env, settings, baseline, *rest, **kw):
                 calls.append(path)
                 prompts.append(prompt)
                 n = len(calls)

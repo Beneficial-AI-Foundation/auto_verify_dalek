@@ -263,13 +263,23 @@ def save_internal_specs(bundle, specs):
         fh.write("\n")
 
 
+def top_function(data, name):
+    """The Funs.lean function a top spec `<fn>_spec` is about: the statement
+    dependency whose short name is the theorem's minus `_spec`; otherwise the
+    first function dependency (a postcondition may mention other functions,
+    e.g. to_edwards_spec names `invert` before `to_edwards`)."""
+    deps = [d for d in data["probe:" + name]["dependencies"] if is_fun(data, d)]
+    want = name.rsplit(".", 1)[-1].removesuffix("_spec")
+    return next((d for d in deps if d.rsplit(".", 1)[-1] == want), deps[0] if deps else None)
+
+
 def build_plan(args, row, data):
     """[(mode, fn, path)]: internal spec steps leaves-first, then the top
     spec ("fill"). `fn` is the probe id of the function (top: of the
     theorem). Skips callees that are kept top specs (their sorried lemma
     is in the bundle) or accepted internal specs (internal_specs.json)."""
     closure, funs, math, name, path = row
-    top_fn = next((d for d in data["probe:" + name]["dependencies"] if is_fun(data, d)), None)
+    top_fn = top_function(data, name)
     if top_fn is None:
         sys.exit(f"{name}: no Funs.lean function in its statement dependencies")
     manifest = json.load(open(os.path.join(REPO, args.bundle, "bundle_manifest.json")))

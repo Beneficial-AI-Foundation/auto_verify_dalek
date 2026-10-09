@@ -64,6 +64,9 @@ Ordered by expected saving.
 - Stale `.olean` after Worker edit made G1 report `rejected_statement_changed` (attempt 18).
 - Worker file edits via `cat > F <<'EOF'` and `sed -i` allowed; instructions in prompt.
 - Aux.lean stub (DEC-21); bundle on `main` holds no agent output (DEC-22); runs on `exp/` branches.
+- `build_plan` took the first Funs dependency of the top statement as the target function;
+  `to_edwards_spec` names `invert` before `to_edwards`, so its graph was invert's (9 nodes,
+  not 36). Now `top_function` matches the theorem name (2026-10-09); only to_edwards affected.
 
 ## Not from this run (older list)
 

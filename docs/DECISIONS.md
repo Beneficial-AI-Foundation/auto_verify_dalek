@@ -246,7 +246,7 @@ after 2026-09-21 measured the benchmark from scratch.
 **Decision:** The bundle on `main` is the benchmark and holds no agent
 output: every `Specs/` theorem body is `sorry`, `internal_specs.json` is
 `{}`. A run executes on its own `exp/...` branch created from a clean
-`main` (`harness/run_double_dynamic.sh` does this); publishes land there,
+`main` (`harness/run_dynamic.sh` does this); publishes land there,
 and the registry may accumulate *within* that branch, which is what
 bottom-up reuse needs. Results of different experiments never meet.
 

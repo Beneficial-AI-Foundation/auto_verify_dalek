@@ -18,7 +18,7 @@ from cryptography.hazmat.primitives import serialization
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
 
 from autofv import (agent_lane, contracts, experiment, fvs_packet, fvs_profile, model, preflight_runner,
-                    provider_config, provider_receipts, provider_service, provider_transport, run_state, worker, worker_runtime)
+                    provider_config, provider_receipts, provider_service, provider_transport, results, run_state, worker, worker_runtime)
 from tests import test_fvs_offline as fixtures
 from tests.test_preflight_cli import _runner_raw
 from tests.test_provider_transport import _ProviderReply, _provider_reply, _provider_run
@@ -509,6 +509,121 @@ class PreparedFvsPreflightTests(unittest.TestCase):
     def test_helper_controller_rejects_over_cost_before_worker_or_provider(self):
         self.test_public_helper_controller_prepares_once_and_hands_off_before_graph(
             wall_limit=3600, cost_limit="10.000001", invalid_scope=True)
+
+    def test_actual_helper_early_failure_retains_independent_failure_companion(
+        self, *, pending_liability=False, companion_storage_failure=False,
+    ):
+        self.inputs()
+        self.prepared_inputs = (*self.prepared_inputs[:3],
+            {k: str(v) for k, v in self.prepared_inputs[3].items()})
+        for name in ("preparation_manifest", "probe_rust_evidence", "probe_aeneas_evidence", "dependency_cache"):
+            self.options[name].touch()
+        reference = self.root / "synthetic-reference.json"
+        reference.write_text("{}")
+
+        def run_controller(repo, config_path, output, **options):
+            options.pop("check_model_accessibility", None)
+            return experiment.run_experiment(repo, config_path, output_root=self.root / "attempts",
+                verifier_reference=reference, execution_mode="proof_only", fresh_pair_preflight=True, **options)
+
+        def dispose(run, **_kwargs):
+            run["worker_disposed"] = True
+
+        write_once = results._atomic_write_once
+
+        def publication_write(path, raw):
+            if companion_storage_failure and path.name == "failure-companion.json":
+                raise OSError("synthetic failure storage unavailable")
+            return write_once(path, raw)
+
+        with mock.patch.object(preflight_runner, "run_fvs_preflight", side_effect=run_controller), \
+             mock.patch.object(experiment.verifier, "bind_prepared_reference", return_value={"synthetic": True}), \
+             mock.patch.object(experiment.verifier.counterexample, "external_reference_identity", return_value={"synthetic": True}), \
+             mock.patch.object(experiment.worker, "dispose_run", side_effect=dispose), \
+             mock.patch.object(experiment.results, "materialize_accepted"), \
+             mock.patch.object(results, "_atomic_write_once", side_effect=publication_write), \
+             mock.patch.object(experiment._EXPERIMENT_GRAPH, "stream", wraps=experiment._EXPERIMENT_GRAPH.stream) as graph, \
+             mock.patch.object(experiment, "_final_terminal_audit", wraps=experiment._final_terminal_audit) as audit, \
+             mock.patch.object(experiment, "_finish_attempt", wraps=experiment._finish_attempt) as finish:
+            with self.assertRaises(results.ResultError) as error:
+                self.exercise(bad_catalog=not pending_liability, network_error=pending_liability)
+        self.assertEqual(len(self.requests), 1 if pending_liability else 0)
+        graph.assert_not_called()
+        audit.assert_called_once()
+        finish.assert_called_once()
+        self.assertNotIn("target_states", finish.call_args.args[1])
+        self.assertTrue(self.prepared_run["worker_disposed"])
+        root = Path(self.prepared_run["run_root"])
+        self.assertFalse((root / "result.json").exists())
+        path = root / "failure-companion.json"
+        if companion_storage_failure:
+            self.assertFalse(path.exists())
+            self.assertIn("failure companion unavailable: OSError", str(error.exception))
+            self.assertIn("ambiguous eligible variants", str(error.exception))
+            provider_config.abort_configuration(self.prepared_run)
+            return
+        self.assertTrue(path.is_file(), "real early-failure finalization left no independent failure record")
+        record = json.loads(path.read_bytes())
+        self.assertEqual(record["schema"], "autofv-attempt-failure-companion/v1")
+        self.assertEqual(record["run_id"], self.prepared_run["run_id"])
+        self.assertEqual(record["original_failure"], {
+            "outcome": finish.call_args.kwargs["outcome"],
+            "termination_reason": finish.call_args.kwargs["reason"]})
+        if not pending_liability:
+            self.assertEqual(record["original_failure"]["termination_reason"], "contract_invalid")
+        self.assertFalse(record["is_result"])
+        self.assertFalse(record["acceptance_established"])
+        self.assertIsNone(record["provider_cost_usd"])
+        self.assertTrue(record["unknown_provider_spend"])
+        self.assertFalse(record["accounting_complete"])
+        self.assertFalse(record["accounting_bounded"])
+        self.assertIsNone(record["final_wall_seconds"])
+        self.assertFalse(record["cleanup_attested"])
+        self.assertNotIn("target_states", record)
+        self.assertNotIn("provider_binding", record)
+        self.assertNotIn(b"private synthetic network context", path.read_bytes())
+        with self.assertRaises(results.ResultError):
+            results.validate_smoke_audit(path)
+        if pending_liability:
+            checkpoint = json.loads(sorted((root / "checkpoints").glob("*.json"))[-1].read_bytes())
+            self.assertTrue(checkpoint["state"]["pending_model_exchanges"])
+        provider_config.abort_configuration(self.prepared_run)
+
+    def test_actual_helper_pending_probe_never_claims_zero_or_reconciled_spend(self):
+        self.test_actual_helper_early_failure_retains_independent_failure_companion(pending_liability=True)
+
+    def test_failure_companion_storage_error_preserves_original_failure(self):
+        self.test_actual_helper_early_failure_retains_independent_failure_companion(companion_storage_failure=True)
+
+    def test_failure_companion_is_private_safe_immutable_and_not_a_result(self):
+        root = self.root / "failure-record"
+        root.mkdir()
+        marker = "synthetic-private-diagnostic-marker"
+        run = {"run_root": str(root), "run_id": "synthetic-run", "attempt_id": "synthetic-attempt",
+               "artifact_scan_markers": (marker,)}
+        errors = {"finalization_error": RuntimeError(marker), "emergency_error": ValueError(marker)}
+        path = results.persist_failure_companion(run, outcome="infrastructure_failed",
+            reason="controller_failed", **errors)
+        raw = path.read_bytes()
+        self.assertNotIn(marker.encode(), raw)
+        self.assertEqual(json.loads(raw)["publication_error_types"], ["RuntimeError", "ValueError"])
+        self.assertEqual(results.persist_failure_companion(run, outcome="infrastructure_failed",
+            reason="controller_failed", **errors), path)
+        self.assertEqual(path.read_bytes(), raw)
+        with self.assertRaises(results.ResultError):
+            results.persist_failure_companion(run, outcome="budget_exhausted",
+                reason="wall_budget_exhausted", **errors)
+        self.assertEqual(path.read_bytes(), raw)
+        outside = self.root / "not-replaceable"
+        outside.write_bytes(b"synthetic preserved bytes")
+        path.unlink()
+        path.symlink_to(outside)
+        with self.assertRaises(results.ResultError):
+            results.persist_failure_companion(run, outcome="infrastructure_failed",
+                reason="controller_failed", **errors)
+        self.assertEqual(outside.read_bytes(), b"synthetic preserved bytes")
+        self.assertTrue(path.is_symlink())
+        self.assertFalse((root / "result.json").exists())
 
     def test_public_rust_drift_is_rejected_before_worker_or_credentials(self):
         self.inputs()

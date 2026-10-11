@@ -1065,9 +1065,9 @@ def run_experiment(
     except Exception as exc:
         state["termination_detail"] = str(exc)[:1000]
         outcome, reason = "infrastructure_failed", "controller_failed"
-    if outcome != "success":
-        _final_terminal_audit(state)
     try:
+        if outcome != "success":
+            _final_terminal_audit(state)
         return _finish_attempt(run, state, outcome=outcome, reason=reason)
     except (Exception, KeyboardInterrupt) as exc:
         detail = RuntimeError(
@@ -1083,8 +1083,15 @@ def run_experiment(
                 existing_state=state if durable_run is not None else None,
             )
         except (Exception, KeyboardInterrupt) as emergency:
+            companion_error_type = None
+            try:
+                results.persist_failure_companion(run, outcome=outcome, reason=reason,
+                    finalization_error=exc, emergency_error=emergency)
+            except (Exception, KeyboardInterrupt) as companion_error:
+                companion_error_type = type(companion_error).__name__
             raise results.ResultError(
-                f"emergency result persistence failed: {emergency}; {detail}"[:2000]
+                (f"emergency result persistence failed: {emergency}; {detail}"
+                 + (f"; failure companion unavailable: {companion_error_type}" if companion_error_type else ""))[:2000]
             ) from emergency
 
 

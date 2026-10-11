@@ -937,6 +937,32 @@ def persist_attempt(
     return _append_attempt(run, result, receipt, final_scan)
 
 
+def persist_failure_companion(
+    run: dict[str, Any], *, outcome: str, reason: str,
+    finalization_error: BaseException, emergency_error: BaseException,
+) -> Path:
+    """Retain safe failure metadata without claiming a result or reconciled spend."""
+    if (outcome not in OUTCOMES or not isinstance(reason, str) or not reason.isascii()
+        or not reason.replace("_", "").isalnum() or len(reason) > 128
+        or any(not isinstance(run.get(key), str) or not run[key] for key in ("run_id", "attempt_id"))):
+        raise ResultError("failure companion identity or reason is invalid")
+    record = {
+        "schema": "autofv-attempt-failure-companion/v1",
+        "run_id": run["run_id"], "attempt_id": run["attempt_id"],
+        "original_failure": {"outcome": outcome, "termination_reason": reason},
+        "publication_error_types": [type(finalization_error).__name__, type(emergency_error).__name__],
+        "is_result": False, "acceptance_established": False,
+        "provider_cost_usd": None, "unknown_provider_spend": True,
+        "accounting_complete": False, "accounting_bounded": False,
+        "final_wall_seconds": None, "cleanup_attested": False,
+    }
+    raw = _json_file_bytes(record)
+    worker.scan_artifacts({"failure-companion.json": raw}, run.get("artifact_scan_markers", ()))
+    path = Path(run["run_root"]) / "failure-companion.json"
+    _atomic_write_once(path, raw)
+    return path
+
+
 def persist_verifier_report(run: dict[str, Any], report: Any) -> Path | None:
     if not isinstance(report, dict):
         return None

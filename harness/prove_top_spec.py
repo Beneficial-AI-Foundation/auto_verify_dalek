@@ -168,15 +168,45 @@ def is_fun(data, k):
             and "rust_trait_impl" not in (n.get("attributes") or []))
 
 
-def callee_order(data, fn, skip):
+def body_callees(bundle, data, fn):
+    """Funs.lean functions named in the source block of `fn`, by scanning
+    its lines (`code-text` line range) for every probe id's short name.
+
+    Needed for `partial_fixpoint` loops: probe-lean records their only
+    dependency as `<fn>.mutual`, an auxiliary with no probe entry, so the
+    real callees (e.g. `differential_add_and_double` under the Montgomery
+    ladder `mul_loop`) are invisible in `dependencies`."""
+    ct = data.get(fn, {}).get("code-text") or {}
+    start, end = ct.get("lines-start"), ct.get("lines-end")
+    if not start:
+        return []
+    lines = open(os.path.join(REPO, bundle, "Curve25519Dalek/Funs.lean"),
+                 encoding="utf-8").read().splitlines()
+    block = "\n".join(lines[start - 1:(end or start + 40)])
+    names = set(re.findall(r"[A-Za-z_][\w'.]*", block))
+    found = []
+    for k in data:
+        if k == fn or not is_fun(data, k):
+            continue
+        short = k.removeprefix("probe:").removeprefix("curve25519_dalek.")
+        if short in names or k.removeprefix("probe:") in names:
+            found.append(k)
+    return sorted(found)
+
+
+def callee_order(data, fn, skip, extra=None):
     """Internal Funs.lean functions `fn` transitively calls, callees before
     callers (DFS post-order), stopping at functions in `skip` (already
     specified: kept top specs, accepted internal specs). Also returns
     {callee: [direct callers within the plan]} and the skipped callees
-    actually reached."""
+    actually reached. `extra(f)` supplies callees the probe misses (see
+    body_callees); it is consulted when `f` lists a `.mutual` dependency."""
     order, seen, callers, skipped = [], set(), {}, set()
     def visit(f):
-        for x in data[f]["dependencies"]:
+        deps = list(data[f]["dependencies"])
+        if extra and any(x.endswith(".mutual") for x in deps):
+            deps += [x for x in extra(f) if x not in deps]
+        for x in deps:
             if not is_fun(data, x) or x == f:
                 continue
             callers.setdefault(x, []).append(f)
@@ -286,7 +316,8 @@ def build_plan(args, row, data):
     top_funs = {"probe:" + f for v in manifest["kept_spec_files"].values() for f in v}
     done = load_internal_specs(args.bundle)
     skip = top_funs | {"probe:" + f for f in done}
-    order, callers, skipped = callee_order(data, top_fn, skip)
+    order, callers, skipped = callee_order(data, top_fn, skip,
+                                           extra=lambda f: body_callees(args.bundle, data, f))
     full = json.load(open(os.path.join(REPO, args.probe_full)))["data"]
     steps = []
     for f in order:

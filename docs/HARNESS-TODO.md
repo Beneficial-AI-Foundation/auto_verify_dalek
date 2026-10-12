@@ -63,6 +63,13 @@ Ordered by expected saving.
 
 ## Fixed, verify on next run
 
+- `partial_fixpoint` loops lost their callees in the plan: probe-lean lists only
+  `<loop>.mutual` (no entry) as dependency, so functions reached only through such a loop
+  were never nodes (`montgomery_mul`: `differential_add_and_double`, `add`, `sub`,
+  `APLUS2_OVER_FOUR` missing; 24 nodes, now 30). `scalar_invert` was unaffected by luck
+  (its loop callees had other callers; 31 nodes before and after). Fixed 2026-10-12:
+  `prove_top_spec.body_callees` scans the loop's Funs.lean block (`tests/test_plan_callees.py`).
+
 - Sorry policy: gate now reports `sorry_sources`; whitelisted `math_assumptions.json` entries
   no longer reject (attempt 17 was rejected for an allowed `Add` instance sorry).
 - Stale `.olean` after Worker edit made G1 report `rejected_statement_changed` (attempt 18).

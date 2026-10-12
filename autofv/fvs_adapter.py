@@ -76,6 +76,10 @@ class StatementBindingError(ContractError):
     """Correctable author statement identity, not an integrity or transport error."""
 
 
+class StatementShapeError(ContractError):
+    """The canonical specification lacks the required existential result form."""
+
+
 def statement(candidate: dict[str, Any]) -> str:
     statements = [s.removeprefix("statement:") for s in candidate.get("evidence", []) if s.startswith("statement:theorem ")]
     if len(statements) != 1 or ":=" in statements[0] or len(statements[0].split()) < 2:
@@ -329,7 +333,7 @@ class Stages:
         canon = statement(candidate)
         validate_statement_source(canon, target)
         if specification and (not re.search(r"∃|\bexists\b", canon) or "ok" not in canon):
-            raise ContractError("FVS target statement lacks existential functional relation")
+            raise StatementShapeError("FVS target statement lacks existential functional relation")
         if prior is not None:
             return target, prior["diagnostic"]
         style_structure(target, self.original, specification=specification, baseline=self.source)
@@ -381,22 +385,29 @@ class Stages:
             try:
                 text, diagnostic = self.gate_author(candidate, f"spec-gates:{round_index}", specification=True)
                 canon = statement(candidate)
-            except StatementBindingError as exc:
+            except (StatementBindingError, StatementShapeError) as exc:
+                kind = "shape" if isinstance(exc, StatementShapeError) else "binding"
                 feedback = {"error": str(exc), "submitted_evidence": candidate["evidence"]}
-                self.record(f"spec-binding-error:{round_index}", {
+                self.record(f"spec-{kind}-error:{round_index}", {
                     "candidate_sha256": fvs_profile.digest(candidate), "error": str(exc),
                     "disposition": "rejected before review", "round": round_index,
                 })
                 if round_index == 2:
-                    raise ContractInconclusive("FVS statement binding correction cap exhausted") from exc
+                    raise ContractInconclusive(f"FVS statement {kind} correction cap exhausted") from exc
+                correction = (
+                    "Correct the existential returned-value relation in the theorem itself: use explicit ∃ "
+                    "and an equality relating the function result to ok in the proof-free signature. "
+                    if kind == "shape" else
+                    "Copy the exact proof-free theorem signature from your source overlay into "
+                    "statement evidence, or correct the authored specification. "
+                )
                 candidate = self.invoke("specifier", f"spec-author:{round_index+1}", candidate=candidate,
-                    fingerprint=fingerprint, context={"statement_binding_feedback": feedback,
+                    fingerprint=fingerprint, context={f"statement_{kind}_feedback": feedback,
                         "consumer_intent": author_context, "untrusted_history": history,
-                        "task": "Correct the submitted statement/source binding; no review occurred. "
-                                "Copy the exact proof-free theorem signature from your source overlay into "
-                                "statement evidence, or correct the authored specification. Do not change "
-                                "the original implementation. Exact binding and all gates remain required."})
-                history.append({"statement_binding_rejection": feedback})
+                        "task": "Correct the submitted statement; no review occurred. " + correction +
+                                "Do not change the original implementation or weaken the supplied intent. "
+                                "Exact binding and all gates remain required."})
+                history.append({f"statement_{kind}_rejection": feedback})
                 continue
             review = self.review(candidate, "spec_reviewer", f"spec-review:{round_index}",
                                  _raw_sha256(canon), history=history, diagnostic=diagnostic)

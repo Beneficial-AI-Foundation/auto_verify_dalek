@@ -960,6 +960,112 @@ class FvsOfflineTests(unittest.TestCase):
         self.assertEqual(actual["text"], SPEC)
         fvs_adapter.validate_evidence(entries, binding=self.binding.public, exchanges=self.state["model_exchanges"])
 
+    def test_statement_shape_feedback_corrects_before_any_review(self):
+        relation = "∃ result, increment n = ok result"
+        bad_relation = "increment n = ok n"
+        graph, lane, actual, calls = self.stage_fixture(
+            statement_overrides={"spec-author:0": CANON.replace(relation, bad_relation)},
+            patch_overrides={"spec-author:0": patch(SPEC.replace(relation, bad_relation))})
+        stages = fvs_adapter.Stages(self.state, graph, lane, generic_role_runtime._run_role_lane, lambda *a: None)
+        candidate = stages.specification("e" * 64, {"intent": "successor"})
+        self.assertEqual(fvs_adapter.statement(candidate), CANON)
+        self.assertEqual(calls, ["implementation-research", "spec-author:0", "spec-author:1", "spec-review:1", "spec-pass-triage:1"])
+        entries = self.state["fvs_evidence"]
+        rejection = entries["helper:spec-shape-error:0"]
+        self.assertEqual(rejection["candidate_sha256"], fvs_profile.digest(entries["helper:spec-author:0"]["candidate"]))
+        self.assertEqual(rejection["error"], "FVS target statement lacks existential functional relation")
+        feedback = entries["helper:spec-author:1"]["stage_context"]["statement_shape_feedback"]
+        self.assertEqual(feedback["submitted_evidence"], entries["helper:spec-author:0"]["candidate"]["evidence"])
+        self.assertNotIn("helper:spec-review:0", entries)
+        self.assertEqual(actual["text"], SPEC)
+        fvs_adapter.validate_evidence(entries, binding=self.binding.public, exchanges=self.state["model_exchanges"])
+
+    def test_statement_shape_feedback_corrects_missing_result_marker(self):
+        graph, lane, _, calls = self.stage_fixture(
+            statement_overrides={"spec-author:0": CANON.replace("ok result", "result")},
+            patch_overrides={"spec-author:0": patch(SPEC.replace("ok result", "result"))})
+        stages = fvs_adapter.Stages(self.state, graph, lane, generic_role_runtime._run_role_lane, lambda *a: None)
+        self.assertEqual(fvs_adapter.statement(stages.specification("e" * 64, {})), CANON)
+        self.assertEqual(calls, ["implementation-research", "spec-author:0", "spec-author:1", "spec-review:1", "spec-pass-triage:1"])
+        self.assertNotIn("helper:spec-review:0", self.state["fvs_evidence"])
+        fvs_adapter.validate_evidence(self.state["fvs_evidence"], binding=self.binding.public, exchanges=self.state["model_exchanges"])
+
+    def test_statement_shape_feedback_exhausts_existing_rounds(self):
+        graph, lane, _, calls = self.stage_fixture(
+            statement_overrides={f"spec-author:{i}": CANON.replace("∃", "∀") for i in range(3)},
+            patch_overrides={f"spec-author:{i}": patch(SPEC.replace("∃", "∀")) for i in range(3)})
+        stages = fvs_adapter.Stages(self.state, graph, lane, generic_role_runtime._run_role_lane, lambda *a: None)
+        with self.assertRaisesRegex(contracts.ContractInconclusive, "shape correction cap exhausted"):
+            stages.specification("e" * 64, {})
+        self.assertEqual(calls, ["implementation-research", "spec-author:0", "spec-author:1", "spec-author:2"])
+        entries = self.state["fvs_evidence"]
+        self.assertEqual(sum(":spec-shape-error:" in key for key in entries), 3)
+        self.assertNotIn("helper:frozen-statement", entries)
+        self.assertFalse(any(":spec-review:" in key for key in entries))
+        fvs_adapter.validate_evidence(entries, binding=self.binding.public, exchanges=self.state["model_exchanges"])
+
+    def test_shape_and_binding_corrections_share_one_round_counter(self):
+        graph, lane, _, calls = self.stage_fixture(
+            statement_overrides={"spec-author:0": CANON.replace("∃", "∀"),
+                                 "spec-author:1": CANON.replace("increment n", "Arithmetic.increment n")},
+            patch_overrides={"spec-author:0": patch(SPEC.replace("∃", "∀"))})
+        stages = fvs_adapter.Stages(self.state, graph, lane, generic_role_runtime._run_role_lane, lambda *a: None)
+        stages.specification("e" * 64, {})
+        self.assertEqual(calls, ["implementation-research", "spec-author:0", "spec-author:1", "spec-author:2", "spec-review:2", "spec-pass-triage:2"])
+        self.assertIn("helper:spec-shape-error:0", self.state["fvs_evidence"])
+        self.assertIn("helper:spec-binding-error:1", self.state["fvs_evidence"])
+        self.assertNotIn("helper:spec-author:3", self.state["fvs_evidence"])
+        fvs_adapter.validate_evidence(self.state["fvs_evidence"], binding=self.binding.public, exchanges=self.state["model_exchanges"])
+
+    def test_shape_correction_and_review_share_one_round_counter(self):
+        graph, lane, _, calls = self.stage_fixture(
+            statement_overrides={"spec-author:1": CANON.replace("∃", "∀")},
+            patch_overrides={"spec-author:1": patch(SPEC.replace("∃", "∀"))},
+            review_overrides={"spec-review:0": REVISE})
+        stages = fvs_adapter.Stages(self.state, graph, lane, generic_role_runtime._run_role_lane, lambda *a: None)
+        stages.specification("e" * 64, {})
+        self.assertEqual(calls, ["implementation-research", "spec-author:0", "spec-review:0", "spec-author:1", "spec-author:2", "spec-review:2", "spec-pass-triage:2"])
+        self.assertNotIn("helper:spec-review:1", self.state["fvs_evidence"])
+        self.assertNotIn("helper:spec-author:3", self.state["fvs_evidence"])
+        fvs_adapter.validate_evidence(self.state["fvs_evidence"], binding=self.binding.public, exchanges=self.state["model_exchanges"])
+
+    def test_shape_feedback_does_not_hide_source_tampering(self):
+        graph, lane, _, calls = self.stage_fixture(
+            statement_overrides={"spec-author:0": CANON.replace("∃", "∀")},
+            patch_overrides={"spec-author:0": patch(SPEC.replace("∃", "∀").replace("n + 1", "n + 2"))})
+        stages = fvs_adapter.Stages(self.state, graph, lane, generic_role_runtime._run_role_lane, lambda *a: None)
+        with self.assertRaisesRegex(contracts.ContractError, "changed original prepared source"):
+            stages.specification("e" * 64, {})
+        self.assertEqual(calls, ["implementation-research", "spec-author:0"])
+        self.assertFalse(any(":spec-shape-error:" in key for key in self.state["fvs_evidence"]))
+
+    def test_shape_feedback_does_not_hide_gate_evidence_drift(self):
+        graph, lane, _, calls = self.stage_fixture(
+            statement_overrides={"spec-author:0": CANON.replace("∃", "∀")},
+            patch_overrides={"spec-author:0": patch(SPEC.replace("∃", "∀"))})
+        stages = fvs_adapter.Stages(self.state, graph, lane, generic_role_runtime._run_role_lane, lambda *a: None)
+        stages.entries["helper:spec-gates:0"] = {"record_sha256": "0" * 64}
+        with self.assertRaisesRegex(contracts.ContractError, "captured gate evidence drift"):
+            stages.specification("e" * 64, {})
+        self.assertEqual(calls, ["implementation-research", "spec-author:0"])
+        self.assertFalse(any(":spec-shape-error:" in key for key in self.state["fvs_evidence"]))
+
+    def test_fvs_author_receives_explicit_signature_shape_and_shared_round_guidance(self):
+        graph, lane, _, _ = self.stage_fixture()
+        conversation = agent_lane.run_role_conversation.side_effect
+        prompts = []
+        async def capture(state, job, tools):
+            if job["role"] == "specifier":
+                prompts.append(agent_lane.role_conversation_spec(job)["system_prompt"])
+            return await conversation(state, job, tools)
+        stages = fvs_adapter.Stages(self.state, graph, lane, generic_role_runtime._run_role_lane, lambda *a: None)
+        with mock.patch("autofv.agent_lane.run_role_conversation", side_effect=capture):
+            stages.specification("e" * 64, {})
+        self.assertIn("canonical specification theorem signature itself", prompts[0])
+        self.assertIn("explicit ∃", prompts[0])
+        self.assertIn("ok", prompts[0])
+        self.assertIn("one shared cap of three specification rounds", prompts[0])
+
     def test_statement_binding_feedback_exhausts_existing_rounds(self):
         bad = CANON.replace("increment n", "Arithmetic.increment n")
         graph, lane, _, calls = self.stage_fixture(statement_overrides={f"spec-author:{i}": bad for i in range(3)})

@@ -165,6 +165,15 @@ rolled back; ordinary timeouts do not automatically trigger decomposition.
 Accepted nodes are committed to the isolated workspace. `graph.json` records
 node states, dependency edges, session IDs, gate evidence, source hashes and
 refinement proposals; failed Worker edits are retained under `partials/`.
+Every Worker attempt, accepted or not, is appended to the node's `history`
+with its outcome, rounds, sessions, gate errors and `usage`: tokens per model
+(output, cache write, cache read, thinking), assistant turns, wall time and
+the SDK's list-price `cost_usd`. Tokens are split per model because
+subscription plans meter by tokens and model, not by that nominal cost. The
+same totals over the whole run are under `usage` at the top level, and each
+round record carries `model_usage` (from the API result's `modelUsage`).
+`python3 harness/usage_report.py <run>/graph.json` prints the per-node table;
+for graphs written before this field it rebuilds the numbers from `events`.
 The bundle is published only after every node and the final joint gate pass.
 This preserves local progress without exporting newly introduced placeholders.
 

@@ -133,6 +133,30 @@ def sh(cmd, work=None, **kw):
                           text=True, **kw)
 
 
+MODEL_USAGE_KEYS = {
+    "inputTokens": "input_tokens",
+    "outputTokens": "output_tokens",
+    "cacheReadInputTokens": "cache_read_input_tokens",
+    "cacheCreationInputTokens": "cache_creation_input_tokens",
+    "thinkingTokens": "thinking_tokens",
+    "webSearchRequests": "web_search_requests",
+    "costUSD": "cost_usd",
+}
+
+
+def model_usage(raw):
+    """Per-model token counts from the API result's `modelUsage`, snake_case.
+
+    Subscription plans are metered by tokens per model, not by the nominal
+    `cost_usd`, so every round keeps the split; `usage_totals` sums models."""
+    out = {}
+    for model, u in sorted((raw or {}).items()):
+        if not isinstance(u, dict):
+            continue
+        out[model] = {new: u[old] for old, new in MODEL_USAGE_KEYS.items() if old in u}
+    return out
+
+
 def now_iso():
     return datetime.datetime.now(datetime.timezone.utc).isoformat(timespec="seconds")
 
@@ -829,6 +853,7 @@ def run_rounds(prompt, tid, path, before_counts, args, env, settings_path,
             # actual models billed (the isolated config dir has no user
             # `model` setting, so "default" here means claude's default)
             "models_used": sorted(result.get("modelUsage") or {}),
+            "model_usage": model_usage(result.get("modelUsage")),
             "cost_usd": cost,
             "num_turns": result.get("num_turns"),
             "session_cache_creation_tokens": session_cc_tokens,

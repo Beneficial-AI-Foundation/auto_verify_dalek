@@ -220,12 +220,22 @@ class RetryTests(unittest.TestCase):
             def worker(prompt, tid, path, counts, local, env, settings, baseline, *rest, **kw):
                 prompts.append(prompt)
                 n = len(prompts)
+                rounds = [dict(round=1, cost_usd=0.5, assistant_turns=7, wall_seconds=12.5,
+                               models_used=['opus'], usage_totals={'output_tokens': 100},
+                               model_usage={'opus': dict(input_tokens=1, output_tokens=100,
+                                                         cache_read_input_tokens=1000,
+                                                         cache_creation_input_tokens=50, thinking_tokens=20)}),
+                          dict(round=2, cost_usd=0.25, assistant_turns=3, wall_seconds=2.5,
+                               models_used=['haiku'], usage_totals={'output_tokens': 10},
+                               model_usage={'haiku': dict(input_tokens=0, output_tokens=10,
+                                                          cache_read_input_tokens=200,
+                                                          cache_creation_input_tokens=5)})]
                 if n <= len(outcomes):
                     detail = {'errors': [dict(file='A.lean', line=n, col=1, kind='x', message=f'fail {n}')]}
-                    return local.round_validator(outcomes[n - 1], detail, {'result': 'gave up'}) + ([], [f's{n}'])
+                    return local.round_validator(outcomes[n - 1], detail, {'result': 'gave up'}) + (rounds, [f's{n}'])
                 fps['A']['pkg.top']['axioms'] = []
                 return local.round_validator('accepted', {'g1_after': json.loads(json.dumps(fps)),
-                    'counts_after': {'A.lean': 0}}, {}) + ([], [f's{n}'])
+                    'counts_after': {'A.lean': 0}}, {}) + (rounds, [f's{n}'])
 
             api = SimpleNamespace(ROOT_MODULE='Root.lean', save_partial_snapshot=lambda *a, **k: 'p')
             published = []
@@ -254,6 +264,52 @@ class RetryTests(unittest.TestCase):
         self.assertEqual(state['nodes']['n1']['tries'], 3)
         self.assertEqual([e.get('retry') for e in state['events'][:2]], [True, True])
         self.assertEqual(len(published), 1)
+
+    def test_every_attempt_records_history_with_per_model_tokens(self):
+        ok, prompts, state, _ = self.run_once(1, ['rejected_build'])
+        self.assertTrue(ok)
+        history = state['nodes']['n1']['history']
+        self.assertEqual([(h['attempt'], h['outcome']) for h in history],
+                         [(1, 'rejected_build'), (2, 'accepted')])
+        self.assertEqual(history[0]['errors'], ['A.lean:1: fail 1'])
+        self.assertEqual(history[1]['errors'], [])
+        self.assertNotIn('attempt 2: accepted', prompts[-1])
+        for h in history:
+            self.assertEqual(h['rounds'], 2)
+            self.assertEqual(h['sessions'], [f"s{h['attempt']}"])
+            u = h['usage']
+            self.assertEqual(sorted(u['models']), ['haiku', 'opus'])
+            self.assertEqual(u['models']['opus']['output_tokens'], 100)
+            self.assertEqual(u['models']['opus']['thinking_tokens'], 20)
+            self.assertEqual(u['models']['haiku']['thinking_tokens'], 0)
+            self.assertEqual(u['tokens']['output_tokens'], 110)
+            self.assertEqual(u['tokens']['cache_read_input_tokens'], 1200)
+            self.assertEqual((u['cost_usd'], u['assistant_turns'], u['wall_seconds']), (0.75, 10, 15.0))
+        run = state['usage']
+        self.assertEqual(run['worker_attempts'], 2)
+        self.assertEqual(run['models']['opus']['output_tokens'], 200)
+        self.assertEqual(run['tokens']['cache_creation_input_tokens'], 110)
+        self.assertEqual(run['cost_usd'], 1.5)
+
+    def test_usage_summary_falls_back_to_usage_totals_for_old_rounds(self):
+        old = [dict(cost_usd=1.0, models_used=['claude-opus-5-5'],
+                    usage_totals=dict(input_tokens=2, output_tokens=30, cache_read_input_tokens=400,
+                                      cache_creation_input_tokens=5))]
+        u = dag.usage_summary(old)
+        self.assertEqual(list(u['models']), ['claude-opus-5-5'])
+        self.assertEqual(u['models']['claude-opus-5-5']['output_tokens'], 30)
+        self.assertEqual(u['tokens']['thinking_tokens'], 0)
+        self.assertEqual(dag.usage_summary([])['tokens']['output_tokens'], 0)
+
+    def test_driver_model_usage_normalises_sdk_keys(self):
+        raw = {'claude-opus-5-5': dict(inputTokens=20, outputTokens=3994, cacheReadInputTokens=168584,
+                                       cacheCreationInputTokens=20428, thinkingTokens=562, costUSD=0.2771,
+                                       contextWindow=1000000, provider='firstParty'),
+               'bad': 'not a dict'}
+        self.assertEqual(dag.driver.model_usage(raw), {'claude-opus-5-5': dict(
+            input_tokens=20, output_tokens=3994, cache_read_input_tokens=168584,
+            cache_creation_input_tokens=20428, thinking_tokens=562, cost_usd=0.2771)})
+        self.assertEqual(dag.driver.model_usage(None), {})
 
     def test_retry_budget_exhausted_blocks_without_publishing(self):
         ok, prompts, state, published = self.run_once(1, ['rejected_build', 'rejected_build'])

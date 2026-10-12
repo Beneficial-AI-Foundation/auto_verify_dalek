@@ -42,6 +42,10 @@ Ordered by expected saving.
 4. **Per-attempt history only on failed nodes.** Accepted n1–n16 store `tries` and `result`
    but no `history` (cost, turns, outcome per attempt). Only n17 has it. Post-run analysis
    must re-parse transcripts. Record `history` for every attempt regardless of outcome.
+   Done 2026-10-12: every attempt gets a `history` entry with `usage` (tokens per model,
+   turns, wall, nominal `cost_usd`); run totals under `graph.json` `usage`; rounds carry
+   `model_usage`. `harness/usage_report.py` prints the table, also for older graphs
+   (rebuilt from `events`; rounds without an API result show as model `unknown`).
 
 5. **Trivial nodes open a full session.** `LOW_51_BIT_MASK`, `m` (×2 each), `as_extended`,
    `as_projective`: six sessions, $0.1–0.4 each, ~$1.3 total. Add a tactic pre-pass

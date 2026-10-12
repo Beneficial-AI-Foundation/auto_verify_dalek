@@ -249,10 +249,19 @@ class Graph:
         node['refinements'] += 1
         validate_graph(self.nodes)
 
+    def usage(self):
+        """Run-level token/model totals over Worker rounds and Refiner sessions."""
+        rounds = [r for e in self.events for r in (e.get('rounds') or [])]
+        rounds += [e for e in self.events if e.get('role') == 'refiner']
+        summary = usage_summary(rounds)
+        summary['worker_attempts'] = sum(1 for e in self.events if 'rounds' in e)
+        summary['refiner_sessions'] = sum(1 for e in self.events if e.get('role') == 'refiner')
+        return summary
+
     def save(self, run_dir, work):
         paths = {n['path'] for n in self.nodes.values()}
         state = dict(version=1, nodes=self.nodes, events=self.events,
-                     commits=self.commits, attempts=self.attempts,
+                     commits=self.commits, attempts=self.attempts, usage=self.usage(),
                      math_assumptions=self.math_assumptions,
                      initial=self.initial, initial_counts=self.initial_counts,
                      source_sha256={p: hashlib.sha256(Path(work, p).read_bytes()).hexdigest()
@@ -389,9 +398,43 @@ def revise(graph, args, spec, requester, report, work, log):
     return reopened, counts
 
 
-def failure_summary(attempt, outcome, detail, rounds):
-    """Short, bounded record of one failed Worker attempt for later prompts."""
-    summary = dict(attempt=attempt, outcome=outcome)
+TOKEN_KEYS = ('input_tokens', 'output_tokens', 'cache_read_input_tokens',
+              'cache_creation_input_tokens', 'thinking_tokens')
+
+
+def usage_summary(rounds):
+    """Token and model consumption of one attempt, summed over its rounds.
+
+    `models` keeps the per-model split (subscription plans meter tokens per
+    model); `cost_usd` is the API list-price equivalent the SDK reports, kept
+    only as a common yardstick between runs."""
+    models, cost = {}, 0.0
+    for r in rounds or []:
+        cost += float(r.get('cost_usd') or 0)
+        per_model = r.get('model_usage')
+        if not per_model and r.get('usage_totals'):
+            # Rounds recorded before `model_usage` existed: one bucket per
+            # listed model is impossible, so attribute to the union label.
+            label = ','.join(r.get('models_used') or ['unknown'])
+            per_model = {label: r['usage_totals']}
+        for model, u in (per_model or {}).items():
+            m = models.setdefault(model, {k: 0 for k in TOKEN_KEYS})
+            for k in TOKEN_KEYS:
+                m[k] += int(u.get(k) or 0)
+    totals = {k: sum(m[k] for m in models.values()) for k in TOKEN_KEYS}
+    return dict(models=models, tokens=totals, cost_usd=round(cost, 4),
+                assistant_turns=sum(int(r.get('assistant_turns') or 0) for r in rounds or []),
+                wall_seconds=round(sum(float(r.get('wall_seconds') or 0) for r in rounds or []), 1))
+
+
+def attempt_summary(attempt, outcome, detail, rounds, sessions=None):
+    """Bounded record of one Worker attempt, accepted or not, for graph.json
+    and (failures only) later prompts."""
+    summary = dict(attempt=attempt, outcome=outcome, rounds=len(rounds or []),
+                   sessions=list(sessions or []), usage=usage_summary(rounds))
+    if outcome == 'accepted':
+        summary['errors'] = []
+        return summary
     blocker = detail.get('blocker') or {}
     gate = detail.get('gate_detail') or detail  # agent_limit wraps the gate verdict
     if blocker:
@@ -401,8 +444,10 @@ def failure_summary(attempt, outcome, detail, rounds):
         summary['reason'] = gate['reason'][:400]
     summary['errors'] = [f"{e['file']}:{e['line']}: {e['message'][:300]}"
                          for e in (gate.get('errors') or [])[:3]]
-    summary['rounds'] = len(rounds or [])
     return summary
+
+
+failure_summary = attempt_summary  # name kept for callers
 
 
 def context_block(graph, node):
@@ -416,6 +461,8 @@ def context_block(graph, node):
                    'the accepted ones, do not restate or modify them):\n' + helpers)
     history = ''
     for h in node.get('history', []):
+        if h['outcome'] == 'accepted':
+            continue
         line = f"  attempt {h['attempt']}: {h['outcome']}"
         if h.get('reason'):
             line += f"; reason: {h['reason']}"
@@ -552,7 +599,9 @@ inappropriate return {{"blocked":"reason"}}.
                              ('shared_writable' if prefix else 'none'),
                      status=status, wall_seconds=wall, provenance=provenance,
                      cost_usd=(result or {}).get('total_cost_usd'),
-                     num_turns=(result or {}).get('num_turns'))
+                     num_turns=(result or {}).get('num_turns'),
+                     models_used=sorted((result or {}).get('modelUsage') or {}),
+                     model_usage=driver.model_usage((result or {}).get('modelUsage')))
     graph.events.append(ref_event)
     try:
         if status != 'ok' or rc != 0:
@@ -676,6 +725,8 @@ def run(args, steps, work, run_dir, before_counts, env, settings, prefix,
         event = dict(node=node['id'], outcome=outcome, sessions=sessions,
                      rounds=rounds, detail=detail)
         graph.events.append(event)
+        node.setdefault('history', []).append(
+            attempt_summary(attempt, outcome, detail, rounds, sessions))
         if outcome == 'accepted':
             node['status'] = 'accepted'
             node['theorems'] = detail['verified_theorems']
@@ -687,7 +738,6 @@ def run(args, steps, work, run_dir, before_counts, env, settings, prefix,
                     path=path, theorems=node['theorems'], run_id=Path(run_dir).name)
             graph.save(run_dir, work)
             continue
-        node.setdefault('history', []).append(failure_summary(attempt, outcome, detail, rounds))
         event['partial_manifest'] = api.save_partial_snapshot(
             run_dir, attempt, editable, work, {path: [node['fn']]}, rounds=rounds)
         failed_source = Path(work, path).read_text()[-16000:]

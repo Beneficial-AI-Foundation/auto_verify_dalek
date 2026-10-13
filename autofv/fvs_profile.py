@@ -11,7 +11,7 @@ from typing import Any
 
 from .contracts import ContractError, canonical_json_bytes
 
-PROFILE_ID = "autofv-fvs-sol-sonnet/v1"
+PROFILE_ID = "autofv-fvs-sol-sonnet/v2"
 AUTHOR = "openai/gpt-6.1-sol"
 REVIEWER = "anthropic/claude-sonnet-5.5"
 REVIEW_ROLES = frozenset({"spec_reviewer", "proof_reviewer"})
@@ -34,7 +34,7 @@ def profile() -> dict[str, Any]:
         "parameters": {
             "reasoning": {"effort": "xhigh", "exclude": True},
             "stream": False, "timeout_seconds": 120,
-            "work_max_output_tokens": 16384, "review_max_output_tokens": 8192,
+            "work_max_output_tokens": 16384, "review_max_output_tokens": 16384,
         },
         "models": {
             AUTHOR: {
@@ -51,7 +51,7 @@ def profile() -> dict[str, Any]:
             REVIEWER: {
                 "provider": "anthropic", "observed_provider": "Anthropic",
                 "ignored_endpoints": [],
-                "tool_choice": "auto", "max_output_tokens": 8192,
+                "tool_choice": "auto", "max_output_tokens": 16384,
                 "tiers": [
                     {"min_input_tokens": 0, "input": "2", "cached": "0.10",
                      "write_lower": "2.50", "write_upper": "4", "output": "10"},

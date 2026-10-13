@@ -233,7 +233,7 @@ class PreparedFvsPreflightTests(unittest.TestCase):
         self.assertEqual(result["model_accessibility"], "passed")
         self.assertEqual([x["model"] for x in self.requests], [fvs_profile.AUTHOR, fvs_profile.REVIEWER])
         self.assertEqual([x["tool_choice"] for x in self.requests], ["required", "auto"])
-        self.assertEqual([x["max_tokens"] for x in self.requests], [16384, 8192])
+        self.assertEqual([x["max_tokens"] for x in self.requests], [16384, 16384])
         self.assertTrue(all(x["reasoning"] == {"effort": "xhigh", "exclude": True} for x in self.requests))
         self.assertEqual(result["reported_cost_usd"], "0.000600")
         self.assertEqual(set(result["provider_model_preflights"]), {fvs_profile.AUTHOR, fvs_profile.REVIEWER})
@@ -502,9 +502,13 @@ class PreparedFvsPreflightTests(unittest.TestCase):
         self.test_public_helper_controller_prepares_once_and_hands_off_before_graph(
             wall_limit=1800, cost_limit="10.000000")
 
-    def test_helper_controller_rejects_over_hour_before_worker_or_provider(self):
+    def test_ninety_minute_helper_controller_reaches_signed_handoff(self):
         self.test_public_helper_controller_prepares_once_and_hands_off_before_graph(
-            wall_limit=3601, cost_limit="10.000000", invalid_scope=True)
+            wall_limit=5400, cost_limit="10.000000")
+
+    def test_helper_controller_rejects_over_ninety_minutes_before_worker_or_provider(self):
+        self.test_public_helper_controller_prepares_once_and_hands_off_before_graph(
+            wall_limit=5401, cost_limit="10.000000", invalid_scope=True)
 
     def test_helper_controller_rejects_over_cost_before_worker_or_provider(self):
         self.test_public_helper_controller_prepares_once_and_hands_off_before_graph(

@@ -31,6 +31,7 @@ from .run_state import (
     _charge_wall,
     _event_once,
     _external_call,
+    helper_reserve,
     helper_work_budget,
     _node_update,
     _state_lock,
@@ -350,9 +351,9 @@ def _run_prepared_progressive(
 
     def confirm_helper(node: str) -> None:
         state["target_states"][node]["status"] = "unverified"
-        with helper_work_budget(state, 1200):
-            pass  # Admission must still leave the full verification/finalization interval.
-        with helper_work_budget(state, 300):
+        with helper_work_budget(state, helper_reserve(state, "distinct_verification")):
+            pass  # Admission leaves both verification passes and finalization.
+        with helper_work_budget(state, helper_reserve(state, "terminal_audit")):
             report = terminal_run.clean_verify_partial(
                 state, node, checkpoint=_checkpoint_if_enabled, charge_wall=_charge_wall
             )
@@ -377,7 +378,7 @@ def _run_prepared_progressive(
             confirm_helper(node)
 
     def run_bundle(node: str) -> dict[str, Any]:
-        with helper_work_budget(state, 1200):
+        with helper_work_budget(state, helper_reserve(state, "distinct_verification")):
             return author_bundle(node)
 
     def author_bundle(node: str) -> dict[str, Any]:
@@ -407,7 +408,9 @@ def _run_prepared_progressive(
             }
             if proof_only:
                 task_brief["required_remaining_wall_seconds"] = {
-                    "first_specification_submission": 2100, "distinct_verification_start": 1200,
+                    "first_specification_submission": helper_reserve(state, "first_specification"),
+                    "distinct_verification_start": helper_reserve(state, "distinct_verification"),
+                    "terminal_audit_start": helper_reserve(state, "terminal_audit"),
                     "clock": "existing remaining total, including preparation; never reset",
                 }
             candidate = stages.specification(top, {
@@ -582,11 +585,13 @@ def _run_prepared_progressive(
         return True
 
     def accept_bundle(node: str, job: dict[str, Any]) -> bool:
-        with helper_work_budget(state, 1200):
+        with helper_work_budget(state, helper_reserve(state, "distinct_verification")):
             accepted = accept_local_bundle(node, job)
         # Verification owns the reserved interval; no authoring deadline leaks in.
         if accepted and node != root:
             confirm_helper(node)
+        if proof_only and not accepted:
+            raise ContractInconclusive("selected smoke helper was not accepted; no sibling retry")
         return accepted
 
     preferred = "probe:curve25519_dalek.backend.serial.u64.scalar.m"

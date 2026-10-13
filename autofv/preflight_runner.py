@@ -40,7 +40,7 @@ from autofv.contracts import (  # noqa: E402
 RUNNER_SCHEMA = "autofv-sealed-preflight-runner/v1"
 RESULT_SCHEMA = "autofv-preflight-result/v1"
 MAX_AGE_SECONDS = 300
-MAX_HELPER_WALL_SECONDS = 3600
+MAX_HELPER_WALL_SECONDS = 5400  # One helper; time for both required verifier passes.
 HELPER_HANDOFF_INPUT_SHA256 = hashlib.sha256(b"autofv:same-worker-helper-handoff:v1").hexdigest()
 _ALL_CHECKS = (
     *preflight_evidence.DETERMINISTIC_PREFLIGHT_CASES,

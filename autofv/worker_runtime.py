@@ -68,10 +68,9 @@ def _limactl(
     check: bool = True,
 ) -> subprocess.CompletedProcess[bytes]:
     try:
-        completed = subprocess.run(
-            ("limactl", *argv),
-            input=input_bytes,
-            capture_output=True,
+        completed = bounded_run(
+            ("limactl", *argv), input_bytes, COMMAND_TIMEOUT_SECONDS,
+            error=WorkerError, what="Lima lifecycle", limit=MAX_COMMAND_OUTPUT_BYTES,
         )
     except OSError as exc:
         raise WorkerError(f"Lima lifecycle command failed: {exc}") from exc
@@ -301,9 +300,10 @@ def _start_worker(run: dict[str, Any], instance: dict[str, Any]) -> None:
     if limactl is None:
         raise WorkerError("Lima lifecycle command is unavailable")
     try:
-        completed = subprocess.run(
+        completed = bounded_run(
             (str(SANDBOX_EXEC), "-p", profile, limactl, "start", AGENT_VM),
-            capture_output=True,
+            None, COMMAND_TIMEOUT_SECONDS, error=WorkerError,
+            what="sandboxed Lima launch", limit=MAX_COMMAND_OUTPUT_BYTES,
         )
     except OSError as exc:
         raise WorkerError(f"sandboxed Lima launch failed: {exc}") from exc
@@ -385,12 +385,13 @@ def _create_worker(run: dict[str, Any]) -> None:
         )
         _install_worker_firewall()
     except BaseException as exc:
-        _limactl("stop", AGENT_VM, check=False)
-        _limactl("delete", AGENT_VM, check=False)
-        if inspect_lima_instance(AGENT_VM) is not None:
-            raise WorkerError(
-                f"{exc}; failed to remove incomplete disposable worker", run=run
-            ) from exc
+        with cleanup_deadline():
+            _limactl("stop", AGENT_VM, check=False)
+            _limactl("delete", AGENT_VM, check=False)
+            if inspect_lima_instance(AGENT_VM) is not None:
+                raise WorkerError(
+                    f"{exc}; failed to remove incomplete disposable worker", run=run
+                ) from exc
         raise
     run["worker_created"] = True
     run["firewall_installed"] = True
@@ -416,15 +417,16 @@ def _owned_worker(run: dict[str, Any]) -> dict[str, Any] | None:
 
 
 def _destroy_worker(run: dict[str, Any]) -> None:
-    instance = _owned_worker(run)
-    if instance is None:
+    with cleanup_deadline():
+        instance = _owned_worker(run)
+        if instance is None:
+            run["worker_disposed"] = True
+            return
+        _limactl("stop", AGENT_VM)
+        _limactl("delete", AGENT_VM)
+        if inspect_lima_instance(AGENT_VM) is not None:
+            raise WorkerError("disposable worker still exists after deletion", run=run)
         run["worker_disposed"] = True
-        return
-    _limactl("stop", AGENT_VM)
-    _limactl("delete", AGENT_VM)
-    if inspect_lima_instance(AGENT_VM) is not None:
-        raise WorkerError("disposable worker still exists after deletion", run=run)
-    run["worker_disposed"] = True
 
 
 def _canonical_bytes(value: Any) -> bytes:
@@ -455,7 +457,7 @@ def _tree_files(root: Path) -> Iterable[tuple[str, bytes, int]]:
         if not stat.S_ISREG(status.st_mode):
             raise WorkerError(f"special file is forbidden in sealed input: {relative}")
         data = path.read_bytes()
-        if path.lstat() != status:
+        if dependency_cache._identity(path.lstat()) != dependency_cache._identity(status):
             raise WorkerError(f"input changed while being copied: {relative}")
         yield relative.as_posix(), data, stat.S_IMODE(status.st_mode)
 
@@ -629,6 +631,7 @@ def _seed_archive(
 COMMAND_TIMEOUT_SECONDS = 1200
 MAX_COMMAND_OUTPUT_BYTES = 64 * 1024 * 1024
 _WORK_DEADLINE: ContextVar[tuple[float, float, Decimal] | None] = ContextVar("work_deadline", default=None)
+_CLEANUP_DEADLINE: ContextVar[tuple[float, float, Decimal] | None] = ContextVar("cleanup_deadline", default=None)
 
 
 def work_timeout(timeout: float) -> float:
@@ -643,22 +646,42 @@ def work_timeout(timeout: float) -> float:
 
 
 @contextmanager
-def work_deadline(seconds: float, *, wall_limit: Decimal):
+def work_deadline(seconds: float, *, wall_limit: Decimal, cleanup_reserve_seconds: float = 0):
     """A tighter work window, not a new run clock; nesting cannot extend it.
 
     Context-local so async role tools inherit it, while verification and cleanup
     regain the outer budget after the scope exits. Never persist this deadline.
     """
+    cleanup = (time.monotonic() + seconds + cleanup_reserve_seconds,
+               time.time() + seconds + cleanup_reserve_seconds,
+               wall_limit + Decimal(str(cleanup_reserve_seconds)))
+    prior_cleanup = _CLEANUP_DEADLINE.get()
+    if prior_cleanup is not None:
+        cleanup = tuple(min(a, b) for a, b in zip(cleanup, prior_cleanup))
     seconds = work_timeout(seconds)
     prior = _WORK_DEADLINE.get()
     deadline = (time.monotonic() + seconds, time.time() + seconds, wall_limit)
     if prior is not None:
         deadline = (min(deadline[0], prior[0]), min(deadline[1], prior[1]), min(wall_limit, prior[2]))
     token = _WORK_DEADLINE.set(deadline)
+    cleanup_token = _CLEANUP_DEADLINE.set(cleanup)
     try:
         work_timeout(seconds)
         yield
         work_timeout(seconds)
+    finally:
+        _CLEANUP_DEADLINE.reset(cleanup_token)
+        _WORK_DEADLINE.reset(token)
+
+
+@contextmanager
+def cleanup_deadline():
+    """Allow removal, not new work, for at most 60s inside the reserved total."""
+    total = _CLEANUP_DEADLINE.get()
+    token = _WORK_DEADLINE.set(total)
+    try:
+        with work_deadline(60, wall_limit=total[2] if total is not None else Decimal(60)):
+            yield
     finally:
         _WORK_DEADLINE.reset(token)
 
@@ -701,14 +724,19 @@ def bounded_run(
     ]
     for reader in readers:
         reader.start()
+    def feed() -> None:
+        try:
+            process.stdin.write(input_bytes)
+            process.stdin.close()
+        except (BrokenPipeError, OSError):
+            pass
+
+    writers = [threading.Thread(target=feed, daemon=True)] if input_bytes is not None else []
+    for writer in writers:
+        writer.start()
     try:
-        if input_bytes is not None:
-            try:
-                process.stdin.write(input_bytes)
-                process.stdin.close()
-            except BrokenPipeError:
-                pass
-        while process.poll() is None:
+        # Pipes can stay open after the leader exits; input can block before it reads.
+        while process.poll() is None or any(t.is_alive() for t in readers + writers):
             work_timeout(timeout)
             active, elapsed = time.monotonic() - started, time.time() - started_epoch
             if overflow.is_set() or max(active, elapsed) >= timeout:
@@ -725,13 +753,15 @@ def bounded_run(
         except ProcessLookupError:
             pass
         process.wait()
-        for reader in readers:
-            reader.join(5)
+        for thread in readers + writers:
+            thread.join(5)
         process.stdout.close()
         process.stderr.close()
         raise
-    for reader in readers:
-        reader.join()
+    try:
+        os.killpg(process.pid, signal.SIGKILL)  # Reap background descendants, too.
+    except ProcessLookupError:
+        pass
     process.stdout.close()
     process.stderr.close()
     if overflow.is_set():
@@ -786,11 +816,12 @@ def _docker(
             "sudo", "docker", "run", "--name", name, *argv[1:],
             input_bytes=input_bytes, check=check, timeout=timeout,
         )
-    except BaseException:
+    except BaseException as exc:
         try:
-            _lima("sudo", "docker", "rm", "-f", name, check=False, timeout=60)
-        except WorkerError:
-            pass
+            with cleanup_deadline():
+                _lima("sudo", "docker", "rm", "-f", name, timeout=60)
+        except (Exception, KeyboardInterrupt) as cleanup_error:
+            raise WorkerError(f"{exc}; worker container cleanup failed: {cleanup_error}") from exc
         raise
 
 
@@ -1043,6 +1074,8 @@ def _guest_forbidden_paths() -> list[str]:
         "-o",
         "-name",
         ".kube",
+        "-o", "-name", ".claude",
+        "-o", "-name", ".codex",
         ")",
         "-o",
         "-type",
@@ -1056,6 +1089,9 @@ def _guest_forbidden_paths() -> list[str]:
         "-o",
         "-name",
         ".git-credentials",
+        "-o", "-name", ".gitconfig",
+        "-o", "-path", "*/.config/git/config",
+        "-o", "-path", "*/.config/gh/*",
         "-o",
         "-name",
         ".bash_history",
@@ -1076,6 +1112,24 @@ def _guest_forbidden_paths() -> list[str]:
         "-print",
     )
     return sorted(filter(None, completed.stdout.decode("utf-8", "strict").splitlines()))
+
+
+def _credential_environment(environment_names: list[str]) -> dict[str, bool]:
+    """Inspect names only; never return or persist credential values."""
+    forbidden = {
+        "SSH_AUTH_SOCK", "SSH_AGENT_PID", "SSH_ASKPASS", "GIT_ASKPASS",
+        "GH_TOKEN", "GITHUB_TOKEN", "GH_ENTERPRISE_TOKEN", "GITHUB_ENTERPRISE_TOKEN",
+        "GH_CONFIG_DIR", "GIT_CONFIG_GLOBAL", "GIT_CONFIG_SYSTEM", "GIT_CONFIG_COUNT",
+        "DOCKER_AUTH_CONFIG", "OPENAI_API_KEY", "ANTHROPIC_API_KEY", "OPENROUTER_API_KEY",
+        "AWS_ACCESS_KEY_ID", "AWS_SECRET_ACCESS_KEY", "AWS_SESSION_TOKEN",
+        "GOOGLE_APPLICATION_CREDENTIALS", "AZURE_CLIENT_SECRET",
+    }
+    forbidden.update(name for name in environment_names
+                     if name.startswith(("GH_", "GITHUB_", "GIT_CONFIG_")))
+    present = {name: name in environment_names for name in sorted(forbidden)}
+    if any(present.values()):
+        raise WorkerError("worker credential environment present: " + ", ".join(k for k,v in present.items() if v))
+    return present
 
 
 def inspect_worker(lock: dict[str, Any], *, run_id: str) -> dict[str, Any]:
@@ -1182,19 +1236,7 @@ def inspect_worker(lock: dict[str, Any], *, run_id: str) -> dict[str, Any]:
     environment_names = sorted(
         _lima("sh", "-c", "env | cut -d= -f1 | sort").stdout.decode().splitlines()
     )
-    forbidden_names = {
-        "SSH_AUTH_SOCK",
-        "DOCKER_AUTH_CONFIG",
-        "OPENAI_API_KEY",
-        "ANTHROPIC_API_KEY",
-        "AWS_ACCESS_KEY_ID",
-        "AWS_SECRET_ACCESS_KEY",
-        "AWS_SESSION_TOKEN",
-        "GOOGLE_APPLICATION_CREDENTIALS",
-        "AZURE_CLIENT_SECRET",
-    }
-    if forbidden_names.intersection(environment_names):
-        raise WorkerError("worker environment contains a reusable credential")
+    credential_environment = _credential_environment(environment_names)
     mounts = _lima("findmnt", "-rn", "-o", "FSTYPE,SOURCE,TARGET").stdout.decode()
     if any(kind in mounts for kind in ("virtiofs", "9p", str(ROOT))):
         raise WorkerError("worker contains a host checkout mount")
@@ -1227,6 +1269,7 @@ def inspect_worker(lock: dict[str, Any], *, run_id: str) -> dict[str, Any]:
         "control_bundle_sha256": control_manifest["bundle_sha256"],
         "native_decide_policy_sha256": policy_hash,
         "environment_names": environment_names,
+        "credential_environment_present": credential_environment,
         "host_checkout_mounts": [],
         "forbidden_guest_paths": forbidden_guest_paths,
         "resources": resources,
@@ -1371,6 +1414,8 @@ def inspect_scored_container(run: dict[str, Any]) -> dict[str, Any]:
             "dependency_mounts": len(dependency_mounts),
             "bind_mounts": [mount for mount in mounts if mount.get("Type") == "bind"],
             "runtime_sockets": sockets,
+            "credential_environment_present": _credential_environment(
+                [entry.split("=", 1)[0] for entry in config.get("Env", [])]),
             "cap_add": host.get("CapAdd") or [],
             "cap_drop": host.get("CapDrop") or [],
             "privileged": host.get("Privileged"),

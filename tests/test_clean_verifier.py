@@ -869,7 +869,7 @@ class VerifyRunWiringTests(unittest.TestCase):
                 mock.patch.object(verifier, "_prepared_dependency_cache", return_value=source),
                 mock.patch.object(verifier.dependency_cache, "validated_archive", return_value=nullcontext(source)) as validate,
                 mock.patch.object(verifier, "_docker", return_value=completed) as docker,
-                mock.patch.object(verifier.subprocess, "run", return_value=completed) as streamed,
+                mock.patch.object(verifier, "_bounded_run", return_value=completed) as streamed,
                 mock.patch.object(verifier.axiom_audit, "checkout_volume") as checkout,
             ):
                 verifier._seed_verifier_dependency_cache(
@@ -983,7 +983,7 @@ class VerifyRunWiringTests(unittest.TestCase):
         started = subprocess.CompletedProcess(("limactl", "start", verifier.VERIFIER_VM), 0, b"", b"")
         machine = subprocess.CompletedProcess(("cat", "/etc/machine-id"), 0, b"verifier-machine\n", b"")
         with (
-            mock.patch.object(verifier.subprocess, "run", return_value=started),
+            mock.patch.object(verifier, "_bounded_run", return_value=started),
             mock.patch.object(verifier, "_shell", return_value=machine),
             mock.patch.object(verifier, "_check_quiet_verifier_vm"),
             mock.patch.object(verifier, "_check_verifier_runtime"),
@@ -1044,7 +1044,7 @@ class VerifyRunWiringTests(unittest.TestCase):
             stderr=b"",
         )
         with (
-            mock.patch.object(verifier.subprocess, "run", return_value=started),
+            mock.patch.object(verifier, "_bounded_run", return_value=started),
             mock.patch.object(verifier, "_shell", return_value=machine),
             mock.patch.object(verifier, "_check_verifier_runtime") as runtime,
             mock.patch.object(verifier, "_run_bundle", return_value=bundle),

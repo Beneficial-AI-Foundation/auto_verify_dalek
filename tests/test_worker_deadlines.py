@@ -3,14 +3,17 @@ from pathlib import Path
 from decimal import Decimal
 import asyncio
 import copy
+import json
 import os
 import subprocess
 import sys
 import time
+import tempfile
 import unittest
+from types import SimpleNamespace
 from unittest import mock
 
-from autofv import contracts, experiment, fvs_profile, model, preflight_runner, run_state, worker, worker_runtime
+from autofv import contracts, dependency_cache, experiment, fvs_profile, model, preflight_runner, provider_config, run_state, verifier, worker, worker_runtime
 from tests import test_fvs_preflight as preflight_fixtures
 
 
@@ -78,6 +81,98 @@ class WorkerDeadlineTests(unittest.TestCase):
         self.assertEqual(state["wall_started_monotonic_ns"], 501_000_000_000)
 
 
+class SnapshotAndVerifierTests(unittest.TestCase):
+    def test_github_and_ssh_presence_is_checked_without_values(self):
+        clean = worker_runtime._credential_environment(['HOME', 'PATH', 'CI'])
+        self.assertFalse(any(clean.values()))
+        for name in ['GH_TOKEN', 'GITHUB_TOKEN', 'GH_ENTERPRISE_TOKEN', 'GH_CONFIG_DIR',
+                     'GIT_CONFIG_KEY_0', 'GIT_CONFIG_VALUE_0', 'SSH_AUTH_SOCK', 'SSH_AGENT_PID']:
+            with self.subTest(name=name), self.assertRaisesRegex(worker.WorkerError, name):
+                worker_runtime._credential_environment(['HOME', name])
+        with mock.patch.object(worker_runtime, '_lima', return_value=subprocess.CompletedProcess([], 0, b'', b'')) as shell:
+            worker_runtime._guest_forbidden_paths()
+        self.assertIn('*/.config/gh/*', shell.call_args.args)
+        self.assertIn('.gitconfig', shell.call_args.args)
+        self.assertIn('*/.ssh/id_*', shell.call_args.args)
+
+    def test_scored_container_rejects_github_credential_without_recording_value(self):
+        secret = 'synthetic-must-not-be-in-error'
+        with mock.patch.object(worker_runtime, '_runtime_argv', return_value=('run',)), \
+             mock.patch.object(worker_runtime, '_docker', return_value=subprocess.CompletedProcess([], 0, b'', b'')), \
+             mock.patch.object(worker_runtime, '_json_output', return_value=[{'Config': {'Env': ['GH_TOKEN='+secret]}}]), \
+             self.assertRaisesRegex(worker.WorkerError, 'GH_TOKEN') as raised:
+            worker_runtime.inspect_scored_container({'run_id':'synthetic','volume':'synthetic','lock':{}})
+        self.assertNotIn(secret, str(raised.exception))
+
+    def test_snapshot_ignores_only_access_time(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory).resolve()
+            target = root / 'source.lean'
+            target.write_text('-- synthetic source\n')
+            original = Path.lstat
+            fields = ('st_dev', 'st_ino', 'st_mode', 'st_nlink', 'st_uid', 'st_gid',
+                      'st_size', 'st_mtime_ns', 'st_ctime_ns', 'st_atime_ns')
+            for changed in fields:
+                with self.subTest(changed=changed):
+                    calls = 0
+                    def lstat(path, *args, **kwargs):
+                        nonlocal calls
+                        status = original(path, *args, **kwargs)
+                        if path == target:
+                            calls += 1
+                            if calls == 2:
+                                values = {k: getattr(status, k) for k in fields}
+                                values[changed] += 1
+                                return SimpleNamespace(**values)
+                        return status
+                    with mock.patch.object(Path, 'lstat', lstat):
+                        if changed == 'st_atime_ns':
+                            self.assertEqual(len(list(worker_runtime._tree_files(root))), 1)
+                        else:
+                            with self.assertRaisesRegex(worker.WorkerError, 'input changed'):
+                                list(worker_runtime._tree_files(root))
+
+    def test_snapshot_rejects_content_mutation_during_read(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory).resolve()
+            target = root / 'source.lean'
+            target.write_bytes(b'before')
+            read = Path.read_bytes
+            def mutate(path):
+                raw = read(path)
+                if path == target:
+                    path.write_bytes(b'changed after read')
+                return raw
+            with mock.patch.object(Path, 'read_bytes', mutate), \
+                 self.assertRaisesRegex(worker.WorkerError, 'input changed'):
+                list(worker_runtime._tree_files(root))
+
+    def test_verifier_start_refuses_expired_work_before_spawn(self):
+        now = [0.0]
+        with mock.patch.object(time, 'monotonic', side_effect=lambda: now[0]), \
+             mock.patch.object(time, 'time', side_effect=lambda: now[0]), \
+             mock.patch.object(subprocess, 'run', side_effect=AssertionError('unbounded start')), \
+             mock.patch.object(subprocess, 'Popen') as spawn:
+            with self.assertRaises(contracts.BudgetExhausted):
+                with worker_runtime.work_deadline(1, wall_limit=Decimal(1)):
+                    now[0] = 2
+                    verifier.verify_run({}, {})
+            spawn.assert_not_called()
+
+    def test_verifier_cache_stream_uses_bounded_runner(self):
+        with tempfile.TemporaryDirectory() as directory:
+            archive = Path(directory) / 'synthetic.zst'
+            archive.write_bytes(b'fixture; not extracted')
+            with mock.patch.object(subprocess, 'run', side_effect=AssertionError('unbounded cache seed')), \
+                 mock.patch.object(worker_runtime, 'bounded_run', return_value=subprocess.CompletedProcess([], 0, b'', b'')) as bounded, \
+                 mock.patch.object(verifier, '_docker'), \
+                 mock.patch.object(verifier.axiom_audit, 'checkout_volume'):
+                verifier._seed_verified_dependency_cache({}, 'image', 'volume', b'bundle', 'commit', archive)
+            bounded.assert_called_once()
+            self.assertEqual(bounded.call_args.args[0][:3], ('limactl', 'shell', verifier.VERIFIER_VM))
+            self.assertEqual(Path(bounded.call_args.kwargs['stdin'].name), archive)
+
+
 class HelperMilestoneTests(unittest.TestCase):
     def setUp(self):
         self.now = 100.0
@@ -97,6 +192,51 @@ class HelperMilestoneTests(unittest.TestCase):
     def advance(self, seconds):
         self.now += seconds
         self.epoch += seconds
+
+    def test_cleanup_after_work_expiry_can_use_only_the_remaining_total(self):
+        for backend, runner in [(worker_runtime, '_lima'), (verifier, '_shell')]:
+            with self.subTest(backend=backend.__name__):
+                self.now, self.epoch = 100.0, 1000.0
+                self.state.update(wall_seconds_used=Decimal(1300),
+                    wall_started_monotonic_ns=100_000_000_000, wall_started_epoch_ns=1000_000_000_000)
+                cleaned = []
+                def command(*args, **kwargs):
+                    if args[2] == 'run':
+                        self.advance(2001)  # Work stops at 3300 used; total still has 299s.
+                        worker_runtime.work_timeout(1200)
+                    else:
+                        self.assertEqual(args[2:4], ('rm', '-f'))
+                        self.assertLessEqual(worker_runtime.work_timeout(1200), 60)
+                        cleaned.append(True)
+                    return subprocess.CompletedProcess(args, 0, b'', b'')
+                with mock.patch.object(backend, runner, side_effect=command), \
+                     self.assertRaises(contracts.BudgetExhausted):
+                    with run_state.helper_work_budget(self.state, 300):
+                        backend._docker('run', '--rm', 'image', 'sleep', '100')
+                self.assertEqual(cleaned, [True])
+
+    def test_cleanup_cannot_renew_an_exhausted_total(self):
+        with self.assertRaises(contracts.BudgetExhausted):
+            with run_state.helper_work_budget(self.state, 300):
+                self.advance(2301)
+                with worker_runtime.cleanup_deadline():
+                    self.fail('cleanup must not acquire a new clock')
+
+    def test_configured_reserves_cover_both_verifiers_and_finalization(self):
+        self.state['config'].update(max_wall_seconds=5400, helper_reserves={
+            'first_specification':3000, 'distinct_verification':2100,
+            'terminal_audit':1200, 'finalization':300})
+        self.state['wall_seconds_used'] = Decimal(3300)
+        self.state['finalization_reserve_seconds'] = run_state._finalization_reserve(self.state['config'])
+        with run_state.helper_work_budget(self.state, run_state.helper_reserve(self.state, 'terminal_audit')):
+            self.assertEqual(worker_runtime.work_timeout(1200), 900)
+            self.advance(800)
+        with mock.patch.object(experiment.terminal_run, 'clean_verify', side_effect=lambda *a, **k: worker_runtime.work_timeout(1200)):
+            self.assertEqual(experiment._clean_verify(self.state), 1000)
+        self.advance(800)
+        with mock.patch.object(experiment, '_finish_attempt_within_budget', side_effect=lambda *a, **k: worker_runtime.work_timeout(1200)):
+            self.assertEqual(experiment._finish_attempt(self.state['run'], self.state, outcome='unverified', reason='proof_search_incomplete'), 500)
+        self.assertEqual(self.state['config']['max_wall_seconds'], 5400)
 
     def test_preparation_counts_and_provider_timeout_is_clamped_without_config_mutation(self):
         config = copy.deepcopy(self.state["config"])
@@ -162,6 +302,17 @@ class HelperMilestoneTests(unittest.TestCase):
 
 
 class HelperOwnedProcessTests(unittest.TestCase):
+    def test_blocked_stdin_and_orphaned_pipes_are_bounded(self):
+        cases = [("import time; time.sleep(60)", b'x' * (2 * 1024**2)),
+                 ("import os,time; pid=os.fork(); time.sleep(60) if pid==0 else None", None)]
+        for code, data in cases:
+            with self.subTest(code=code):
+                started = time.monotonic()
+                with self.assertRaisesRegex(worker.WorkerError, 'timed out'):
+                    worker_runtime.bounded_run((sys.executable, '-c', code), data, 0.15,
+                        error=worker.WorkerError, what='synthetic', limit=4096)
+                self.assertLess(time.monotonic() - started, 3)
+
     def test_scoped_work_deadline_reaps_real_owned_child(self):
         children = []
         spawn = subprocess.Popen
@@ -222,6 +373,8 @@ class EarlyFailureDeadlineTests(unittest.TestCase):
             result = self.exercise(patches=[mock.patch.object(worker, "seed_dependency_cache", side_effect=seed)])
         self.destroy_mock.assert_called_once()
         self.fetch_mock.assert_not_called()
+        with self.assertRaises(provider_config.ProviderConfigError):
+            provider_config.provider_binding(self.prepared_run)
         self.assertEqual(len(captured), 1)
         self.assertEqual(Decimal(result["wall"]), Decimal(31885 + outer_elapsed_seconds))
         original_epoch = (101 - outer_elapsed_seconds) * 1_000_000_000
@@ -230,6 +383,57 @@ class EarlyFailureDeadlineTests(unittest.TestCase):
 
     def test_pre_cli_preparation_is_counted_on_actual_controller_failure_path(self):
         self.test_controller_seed_failure_retains_original_epoch(outer_elapsed_seconds=60)
+
+    def test_helper_reserves_are_explicit_and_strictly_validated(self):
+        self.inputs()
+        config = json.loads(self.config_path.read_text())
+        config.update(max_wall_seconds=5400, helper_reserves={
+            'first_specification':3000, 'distinct_verification':2100,
+            'terminal_audit':1200, 'finalization':300})
+        self.config_path.write_bytes(contracts.canonical_json_bytes(config)+b'\n')
+        self.assertEqual(contracts.validate_run_config(self.config_path)[1]['helper_reserves'], config['helper_reserves'])
+        for stage, value in [('first_specification', 5400), ('terminal_audit', 2100),
+                             ('finalization', True), ('finalization', 0), ('surprise', 1)]:
+            bad = copy.deepcopy(config);bad['helper_reserves'][stage] = value
+            self.config_path.write_bytes(contracts.canonical_json_bytes(bad)+b'\n')
+            with self.subTest(stage=stage, value=value), self.assertRaises(contracts.ContractError):
+                contracts.validate_run_config(self.config_path)
+
+    def test_reference_failure_charges_preparation_and_original_epoch_once(self):
+        self.inputs()
+        self.config.update(max_wall_seconds=5400, helper_reserves={
+            'first_specification':3000, 'distinct_verification':2100,
+            'terminal_audit':1200, 'finalization':300})
+        self.config_path.write_bytes(contracts.canonical_json_bytes(self.config)+b'\n')
+        self.prepared_inputs = (*self.prepared_inputs[:3],
+            {k: str(v) for k, v in self.prepared_inputs[3].items()})
+        for name in ('preparation_manifest', 'probe_rust_evidence', 'probe_aeneas_evidence', 'dependency_cache'):
+            self.options[name].touch()
+        reference = self.root / 'synthetic-reference.json'
+        reference.write_text('{}')
+        clocks = {'mono': 1_000_000_000, 'epoch': 101_000_000_000}
+        def controller(repo, config_path, output, **options):
+            options.pop('check_model_accessibility', None)
+            return experiment.run_experiment(repo, config_path, output_root=self.root / 'attempts',
+                verifier_reference=reference, execution_mode='proof_only', fresh_pair_preflight=True,
+                budget_started_epoch_ns=41_000_000_000, **options)
+        def seed(*args):
+            self.assertAlmostEqual(worker_runtime.work_timeout(99999), 2340, delta=0.1)
+            clocks['mono'] += 180_000_000_000
+            clocks['epoch'] += 180_000_000_000
+            return {'sha256': 'synthetic'}
+        def finish(run, state, **kwargs):
+            experiment._charge_wall(state)
+            self.assertEqual(kwargs['reason'], 'verifier_reference_invalid')
+            return {'wall': state['wall_seconds_used']}
+        with mock.patch.object(preflight_runner, 'run_fvs_preflight', side_effect=controller), \
+             mock.patch.object(experiment.verifier, 'bind_prepared_reference', side_effect=verifier.VerifierError('synthetic invalid reference')), \
+             mock.patch.object(experiment, '_finish_attempt', side_effect=finish), \
+             mock.patch.object(experiment.time, 'monotonic_ns', side_effect=lambda: clocks['mono']), \
+             mock.patch.object(experiment.time, 'time_ns', side_effect=lambda: clocks['epoch']):
+            result = self.exercise(patches=[mock.patch.object(worker, 'seed_dependency_cache', side_effect=seed)])
+        self.assertEqual(result['wall'], Decimal(240))
+        self.fetch_mock.assert_not_called()
 
     def test_expired_outer_clock_stops_before_worker_allocation(self):
         self.inputs()
@@ -269,12 +473,23 @@ class EarlyFailureDeadlineTests(unittest.TestCase):
                 "--fresh-pair-preflight", "--execution-mode", "proof-only",
                 "--preparation-manifest", "/manifest", "--preparation-evidence", "/probes",
                 "--preparation-cache", "/cache", "--verifier-reference", "/reference",
-                "--budget-started-epoch-ns", "123"]
+                "--budget-started-epoch-ns", "100000000000"]
+        config = {'max_wall_seconds': 5400}
+        def invoke(*args, **kwargs):
+            self.assertEqual(worker_runtime.work_timeout(99999), 4800)
+            self.assertEqual(worker_runtime._WORK_DEADLINE.get()[2], Decimal(5400))
+            return {'outcome': 'success'}
         with mock.patch.object(sys, "argv", argv), mock.patch("builtins.print"), \
-             mock.patch.object(experiment, "run_experiment", return_value={"outcome": "success"}) as run:
+             mock.patch.object(experiment, 'validate_run_config', return_value=(Path('/config'), config)), \
+             mock.patch.object(time, 'time_ns', return_value=700_000_000_000), \
+             mock.patch.object(time, 'monotonic', return_value=10), \
+             mock.patch.object(time, 'time', return_value=700), \
+             mock.patch.object(experiment, "run_experiment", side_effect=invoke) as run:
             experiment.main()
+        self.assertEqual(config['max_wall_seconds'], 5400)
+        self.assertIsNone(worker_runtime._WORK_DEADLINE.get())
         self.assertEqual(run.call_args.args, ("/target", "/config"))
-        self.assertEqual(run.call_args.kwargs["budget_started_epoch_ns"], 123)
+        self.assertEqual(run.call_args.kwargs["budget_started_epoch_ns"], 100_000_000_000)
         self.assertTrue(run.call_args.kwargs["fresh_pair_preflight"])
 
 

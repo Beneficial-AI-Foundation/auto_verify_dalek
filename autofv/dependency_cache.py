@@ -33,7 +33,8 @@ class CacheError(ValueError):
 
 def _identity(status: os.stat_result) -> tuple[int, ...]:
     # Reading a file can update atime; only mutations and inode replacement matter.
-    return (status.st_dev, status.st_ino, status.st_mode, status.st_size,
+    return (status.st_dev, status.st_ino, status.st_mode, status.st_nlink,
+            status.st_uid, status.st_gid, status.st_size,
             status.st_mtime_ns, status.st_ctime_ns)
 
 

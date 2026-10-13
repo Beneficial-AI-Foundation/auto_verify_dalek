@@ -71,19 +71,18 @@ def _command_detail(completed: subprocess.CompletedProcess[bytes]) -> str:
     )[-4000:]
 
 
-# ponytail: fixed per-command ceilings; derive them from the run's absolute
-# deadline once the smoke/full wall envelope for verification is decided.
+# Per-command ceilings are additionally clamped by the controller's scoped deadline.
 COMMAND_TIMEOUT_SECONDS = 1200
 MAX_COMMAND_OUTPUT_BYTES = 64 * 1024 * 1024
 
 
 def _bounded_run(
-    argv: tuple[str, ...], input_bytes: bytes | None, timeout: float
+    argv: tuple[str, ...], input_bytes: bytes | None, timeout: float, *, stdin: Any = None
 ) -> subprocess.CompletedProcess[bytes]:
     """Run with a wall deadline and per-stream cap, killing the process group."""
     return worker_runtime.bounded_run(
         argv, input_bytes, timeout, error=VerifierInfrastructureError,
-        what="clean verifier", limit=MAX_COMMAND_OUTPUT_BYTES,
+        what="clean verifier", limit=MAX_COMMAND_OUTPUT_BYTES, stdin=stdin,
     )
 
 
@@ -115,11 +114,12 @@ def _docker(
             "sudo", "docker", "run", "--name", name, *argv[1:],
             input_bytes=input_bytes, timeout=timeout,
         )
-    except BaseException:
+    except BaseException as exc:
         try:
-            _shell("sudo", "docker", "rm", "-f", name, timeout=60)
-        except VerifierInfrastructureError:
-            pass
+            with worker_runtime.cleanup_deadline():
+                _shell("sudo", "docker", "rm", "-f", name, timeout=60)
+        except (Exception, KeyboardInterrupt) as cleanup_error:
+            raise VerifierInfrastructureError(f"{exc}; verifier container cleanup failed: {cleanup_error}") from exc
         raise
 
 
@@ -408,20 +408,17 @@ def _seed_verified_dependency_cache(
     )
     try:
         with archive.open("rb") as stream:
-            completed = subprocess.run(
+            completed = _bounded_run(
                 ("limactl", "shell", VERIFIER_VM, "--", "sh", "-eu", "-c", command),
-                stdin=stream,
-                capture_output=True,
-                timeout=COMMAND_TIMEOUT_SECONDS,
+                None, COMMAND_TIMEOUT_SECONDS, stdin=stream,
             )
-    except (OSError, subprocess.TimeoutExpired) as exc:
+    except BaseException as exc:
         try:
-            _shell("sudo", "docker", "rm", "-f", name, timeout=60)
-        except VerifierInfrastructureError:
-            pass
-        raise VerifierInfrastructureError(
-            "clean verifier dependency cache seed failed"
-        ) from exc
+            with worker_runtime.cleanup_deadline():
+                _shell("sudo", "docker", "rm", "-f", name, timeout=60)
+        except (Exception, KeyboardInterrupt) as cleanup_error:
+            raise VerifierInfrastructureError(f"{exc}; cache seed cleanup failed: {cleanup_error}") from exc
+        raise
     if completed.returncode:
         raise VerifierInfrastructureError(
             "clean verifier dependency cache seed failed: "
@@ -472,18 +469,20 @@ def _seed_verified_dependency_cache(
         try:
             _docker(*warm, timeout=540)
         finally:
-            try:
-                _docker("rm", "-f", warm_name)
-            except VerifierInfrastructureError as exc:
-                if "No such container" not in str(exc):
-                    raise
+            with worker_runtime.cleanup_deadline():
+                try:
+                    _docker("rm", "-f", warm_name)
+                except VerifierInfrastructureError as exc:
+                    if "No such container" not in str(exc):
+                        raise
         _docker(*warm_argv(
             image, warm_volume, "sh", "-eu", "-c",
             "export LEAN_NUM_THREADS=1; lake build --no-build",
             workdir="/project/repo", runtime="runc",
         ), timeout=150)
     finally:
-        _docker("volume", "rm", "-f", warm_volume)
+        with worker_runtime.cleanup_deadline():
+            _docker("volume", "rm", "-f", warm_volume)
 
 
 def _run_bundle(run: dict[str, Any], state: dict[str, Any]) -> bytes:
@@ -964,11 +963,15 @@ def _clean_worker_checks(
             "sorry_count_after": len(holes),
         }
     finally:
-        for isolated_volume in reversed(created):
-            try:
-                _docker("volume", "rm", isolated_volume)
-            except VerifierError:
-                pass
+        cleanup_errors = []
+        with worker_runtime.cleanup_deadline():
+            for isolated_volume in reversed(created):
+                try:
+                    _docker("volume", "rm", isolated_volume)
+                except (Exception, KeyboardInterrupt) as exc:
+                    cleanup_errors.append(str(exc))
+        if cleanup_errors:
+            raise VerifierInfrastructureError("verifier volume cleanup failed: " + "; ".join(cleanup_errors))
 
 
 def verify_run(
@@ -977,7 +980,7 @@ def verify_run(
     verification_state: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Rebuild the exact commit and evaluate it on the dedicated clean worker."""
-    started = subprocess.run(("limactl", "start", VERIFIER_VM), capture_output=True)
+    started = _bounded_run(("limactl", "start", VERIFIER_VM), None, COMMAND_TIMEOUT_SECONDS)
     if started.returncode:
         detail = _command_detail(started)
         raise VerifierInfrastructureError(

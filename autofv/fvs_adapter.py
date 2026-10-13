@@ -377,11 +377,11 @@ class Stages:
         return result
 
     def specification(self, fingerprint: str, author_context: dict[str, Any]) -> dict[str, Any]:
-        from .run_state import helper_work_budget
+        from .run_state import helper_reserve, helper_work_budget
         self.task_brief = copy.deepcopy(author_context.get("task_brief", {}))
         author_context = {k: v for k, v in author_context.items() if k != "task_brief"}
         # The first submission must leave room for reviews, proof and verification.
-        with helper_work_budget(self.state, 2100):
+        with helper_work_budget(self.state, helper_reserve(self.state, "first_specification")):
             research = self.invoke("scout", "implementation-research", fingerprint=fingerprint,
                                    context={"consumer_intent": author_context})
             candidate = self.invoke("specifier", "spec-author:0", fingerprint=fingerprint,

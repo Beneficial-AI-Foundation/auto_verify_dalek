@@ -144,6 +144,7 @@ class OperationalPath(unittest.TestCase):
         job = generic_role_runtime._role_job(self.state, graph, lane, role,
             statement_sha256='e' * 64, contract_fingerprint='f' * 64,
             input_hashes=[fixture.packet()['packet_sha256'], fvs_profile.digest(context)], role_context=context)
+        self.assertEqual(agent_lane.role_conversation_spec(job)['max_output_tokens'], 16384)
         tools = agent_lane.build_lane_tools(job,
             read_file=lambda path: self.fail('FVS read must use immutable packet'),
             search_files=lambda query: self.fail('FVS search must use immutable packet'),
@@ -210,7 +211,7 @@ class OperationalPath(unittest.TestCase):
         self.assertEqual(context['role_context']['task_brief'], brief)
         self.assertEqual(context['role_context']['source_packet']['original_packet'], fixture.packet())
         self.assertIn('concise complete review', messages[0]['content'])
-        self.assertTrue(all(body['max_tokens'] == 8192 for body in self.sent))
+        self.assertTrue(all(body['max_tokens'] == 16384 for body in self.sent))
 
     def test_reviewer_denied_read_continues_without_extra_source_access(self):
         self.run_role('spec_reviewer', [('read_allowed', {'path': 'NotInPacket.lean'}),

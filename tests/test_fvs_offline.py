@@ -159,7 +159,7 @@ class FvsOfflineTests(unittest.TestCase):
             upstream = provider_transport._upstream_request(self.binding, request, [{"role": "user", "content": "synthetic"}])
             self.assertEqual(upstream["reasoning"], {"effort": "xhigh", "exclude": True})
             self.assertNotIn("temperature", upstream)
-            self.assertEqual(upstream["max_tokens"], 8192 if role in fvs_profile.REVIEW_ROLES else 16384)
+            self.assertEqual(upstream["max_tokens"], 16384)
             self.assertFalse(upstream["provider"]["allow_fallbacks"])
             self.assertTrue(upstream["provider"]["require_parameters"])
             self.assertEqual(upstream["provider"]["ignore"], [] if role in fvs_profile.REVIEW_ROLES else ["openai/fast", "openai/flex", "openai/ultrafast"])
@@ -522,7 +522,7 @@ class FvsOfflineTests(unittest.TestCase):
             self.assertTrue(upstream["provider"]["require_parameters"])
             self.assertFalse(upstream["provider"]["allow_fallbacks"])
             self.assertEqual(upstream["tool_choice"], "required" if model_id == fvs_profile.AUTHOR else "auto")
-            self.assertEqual(upstream["max_tokens"], 16384 if model_id == fvs_profile.AUTHOR else 8192)
+            self.assertEqual(upstream["max_tokens"], 16384)
 
     def test_parallel_provider_reply_retains_only_the_first_validated_tool_call(self):
         def add_discarded_call(reply):
@@ -1226,7 +1226,7 @@ class FvsOfflineTests(unittest.TestCase):
         self.assertEqual(self.state["fvs_evidence"][node + ":distinct-helper-verifier"]["report"], report)
 
     def test_prepared_fvs_helper_smoke_starts_at_bundle_and_keeps_acceptance_gates(
-        self, *, clean_verdict="SCOPED_PASS", review_verdict=PASS,
+        self, *, clean_verdict="SCOPED_PASS", review_verdict=PASS, reject_acceptance=False,
     ):
         graph, lane, actual, calls = self.stage_fixture(review_verdict)
         node, root = "probe:Arithmetic.increment", "probe:Arithmetic.root"
@@ -1257,6 +1257,8 @@ class FvsOfflineTests(unittest.TestCase):
             return role(state, graph, lane, role_name, **kwargs)
         def accept(state, candidate, manifest):
             self.assertEqual(worker_runtime._WORK_DEADLINE.get()[2], 2400)
+            if reject_acceptance:
+                return {"status": "rejected", "reason": "synthetic rejection"}
             state["accepted_nodes"].append(node)
             state["proof_patch_sha256"][node] = "a" * 64
             return {"status": "accepted_dependency", "synthetic": True}
@@ -1295,6 +1297,13 @@ class FvsOfflineTests(unittest.TestCase):
         self.assertEqual(self.state["target_states"][root]["status"], "pending")
         self.assertIn("helper_smoke:planning_from_frozen_graph", self.run["events"])
         self.assertEqual(actual["text"], PROOF)
+
+    def test_direct_helper_smoke_stops_on_rejected_acceptance_without_sibling_retry(self):
+        with mock.patch.object(generic_role_runtime, "_block_dependents"), \
+             self.assertRaisesRegex(contracts.ContractInconclusive, "no sibling retry"):
+            self.test_prepared_fvs_helper_smoke_starts_at_bundle_and_keeps_acceptance_gates(reject_acceptance=True)
+        self.assertFalse(self.state["accepted_nodes"])
+        self.assertNotIn("probe:Arithmetic.increment:distinct-helper-verifier", self.state["fvs_evidence"])
 
     def test_direct_helper_smoke_rejects_failed_distinct_verification(self):
         with self.assertRaisesRegex(contracts.ContractError, "independent scoped verification"):

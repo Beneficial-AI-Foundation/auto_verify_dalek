@@ -12,6 +12,7 @@ import os
 import secrets
 import tempfile
 import time
+from contextlib import nullcontext
 from decimal import Decimal
 from pathlib import Path
 from typing import Any
@@ -29,6 +30,7 @@ from . import (
     terminal_run,
     verifier,
     worker,
+    worker_runtime,
 )
 from .contracts import (
     BudgetExhausted,
@@ -98,6 +100,8 @@ from .run_state import (
     _checkpoint_value,
     _external_call,
     _finalization_reserve,
+    helper_reserve,
+    helper_work_budget,
     _load_checkpoint,
     _node_update,
     _restore_checkpoint,
@@ -108,11 +112,12 @@ from .run_state import (
 
 
 def _clean_verify(state: _RunState) -> dict[str, Any]:
-    return terminal_run.clean_verify(
-        state,
-        checkpoint=_checkpoint_if_enabled,
-        charge_wall=_charge_wall,
-    )
+    with helper_work_budget(state, helper_reserve(state, "finalization")):
+        return terminal_run.clean_verify(
+            state,
+            checkpoint=_checkpoint_if_enabled,
+            charge_wall=_charge_wall,
+        )
 
 
 def _final_terminal_audit(state: _RunState) -> None:
@@ -190,6 +195,13 @@ def _persist_unallocated_attempt(
 
 
 def _finish_attempt(
+    run: dict[str, Any], state: _RunState, *, outcome: str, reason: str,
+) -> dict[str, Any]:
+    with helper_work_budget(state, 0, finalizing=True):
+        return _finish_attempt_within_budget(run, state, outcome=outcome, reason=reason)
+
+
+def _finish_attempt_within_budget(
     run: dict[str, Any],
     state: _RunState,
     *,
@@ -633,6 +645,22 @@ def run_experiment(
         existing_run: dict[str, Any] | None = None,
         existing_state: _RunState | None = None,
     ) -> dict[str, Any]:
+        if durable_run is not None and existing_state is None:
+            cleanup_errors = []
+            if (durable_run.get("execution_tier") == "sealed_runsc"
+                    and (durable_run.get("worker_created") or durable_run.get("base_commit"))
+                    and not durable_run.get("worker_disposed")):
+                try:
+                    worker.force_destroy_worker(durable_run)
+                    durable_run["worker_disposed"] = True
+                except (Exception, KeyboardInterrupt) as exc:
+                    cleanup_errors.append(f"worker cleanup failed: {exc}")
+            try:
+                provider_service.release(durable_run)
+            except (Exception, KeyboardInterrupt) as exc:
+                cleanup_errors.append(f"provider release failed: {exc}")
+            if cleanup_errors:
+                detail = RuntimeError(f"{detail}; " + "; ".join(cleanup_errors))
         return _persist_unallocated_attempt(
             identity,
             target,
@@ -729,6 +757,16 @@ def run_experiment(
             return persist_unallocated("invalid_config", "prepared_inputs_invalid", exc)
 
     preparation_failure = None
+    preparation_budget = {
+        "run": {"execution_mode": execution_mode, "preparation_manifest": prepared_inputs[0] if prepared_inputs else None},
+        "config": config, "wall_seconds_used": Decimal(0),
+        "wall_started_monotonic_ns": wall_started, "wall_started_epoch_ns": wall_started_epoch,
+        "finalization_reserve_seconds": _finalization_reserve(config),
+    }
+
+    def preparation_window():
+        return (helper_work_budget(preparation_budget, helper_reserve(preparation_budget, "first_specification"))
+                if "helper_reserves" in config else nullcontext())
 
     def prepare_provider(prepared: dict[str, Any]) -> None:
         nonlocal durable_run
@@ -787,13 +825,14 @@ def run_experiment(
             )
     else:
         try:
-            run = (
-                worker.prepare_run(
-                    target_path, manifest, lock, before_worker=prepare_provider
+            with preparation_window():
+                run = (
+                    worker.prepare_run(
+                        target_path, manifest, lock, before_worker=prepare_provider
+                    )
+                    if env_file is not None
+                    else worker.prepare_run(target_path, manifest, lock)
                 )
-                if env_file is not None
-                else worker.prepare_run(target_path, manifest, lock)
-            )
         except KeyboardInterrupt:
             return persist_unallocated(
                 "infrastructure_failed",
@@ -814,15 +853,17 @@ def run_experiment(
         if prepared_inputs is not None and run.get("execution_tier") == "sealed_runsc":
             try:
                 prepared_receipt = prepared_inputs[2]
-                run["dependency_cache_receipt"] = worker.seed_dependency_cache(
-                    run,
-                    prepared_inputs[3]["dependency-cache"],
-                    prepared_receipt["dependency_cache_sha256"],
-                )
+                with preparation_window():
+                    run["dependency_cache_receipt"] = worker.seed_dependency_cache(
+                        run,
+                        prepared_inputs[3]["dependency-cache"],
+                        prepared_receipt["dependency_cache_sha256"],
+                    )
                 run["events"].append("dependency_cache_seeded")
             except BaseException as exc:
                 try:
                     worker.force_destroy_worker(run)
+                    run["worker_disposed"] = True
                 except BaseException as destroy_exc:
                     exc = RuntimeError(
                         f"{exc}; forced worker destruction failed: {destroy_exc}"
@@ -851,6 +892,7 @@ def run_experiment(
                 ):
                     try:
                         worker.force_destroy_worker(prepared_run)
+                        prepared_run["worker_disposed"] = True
                     except BaseException as destroy_exc:
                         detail = RuntimeError(
                             f"{exc}; forced worker destruction failed: {destroy_exc}"
@@ -911,6 +953,7 @@ def run_experiment(
             "receipt_rejections": [],
             "compiler_assumptions": verifier.compiler_assumptions(lock, run),
             "wall_seconds_used": Decimal("0.000000"),
+            "wall_started_monotonic_ns": wall_started,
             "wall_started_epoch_ns": wall_started_epoch,
             "finalization_reserve_seconds": _finalization_reserve(config),
         }
@@ -1209,6 +1252,7 @@ def _run_arguments(
 
 
 def main() -> None:
+    entered_epoch = time.time_ns()
     parser = _parser()
     args = parser.parse_args()
     if args.command == "inspect":
@@ -1290,7 +1334,18 @@ def main() -> None:
                 if args.execution_mode
                 else None,
             )
-        result = run_experiment(target, run_config, **options)
+        deadline = nullcontext()
+        if args.fresh_pair_preflight:
+            _, config = validate_run_config(run_config)
+            origin = options.setdefault("budget_started_epoch_ns", entered_epoch)
+            remaining = config["max_wall_seconds"] - (time.time_ns() - origin) / 1e9
+            if remaining > 0:
+                deadline = worker_runtime.work_deadline(
+                    remaining, wall_limit=Decimal(config["max_wall_seconds"]))
+            # An already-expired or invalid origin still uses the ordinary durable
+            # early-failure path; it cannot allocate a worker or dispatch a request.
+        with deadline:
+            result = run_experiment(target, run_config, **options)
     except (ContractError, results.ResultError) as exc:
         parser.error(str(exc))
     print(canonical_json_bytes(result).decode("utf-8"))

@@ -279,11 +279,19 @@ def _node_update(state: _RunState, **values: Any) -> dict[str, Any]:
 
 
 def _finalization_reserve(config: dict[str, Any]) -> Decimal:
+    if "helper_reserves" in config:
+        return Decimal(config["helper_reserves"]["finalization"])
     return min(Decimal("5.000000"), Decimal(config["max_wall_seconds"]) / 10)
 
 
+def helper_reserve(state: dict[str, Any], stage: str) -> int:
+    defaults = {"first_specification": 2100, "distinct_verification": 1200,
+                "terminal_audit": 300, "finalization": 5}
+    return state["config"].get("helper_reserves", defaults)[stage]
+
+
 @contextmanager
-def helper_work_budget(state: dict[str, Any], reserve_seconds: int):
+def helper_work_budget(state: dict[str, Any], reserve_seconds: int, *, finalizing: bool = False):
     """Leave downstream capacity inside the existing prepared FVS smoke clock.
 
     `_charge_wall` counts preparation/accessibility, including pre-CLI time when
@@ -298,11 +306,13 @@ def helper_work_budget(state: dict[str, Any], reserve_seconds: int):
         yield
         return
     used = _charge_wall(state)
-    reserve = max(Decimal(reserve_seconds), Decimal(state.get("finalization_reserve_seconds", 0)))
+    reserve = max(Decimal(reserve_seconds),
+                  Decimal(0 if finalizing else state.get("finalization_reserve_seconds", 0)))
     limit = max(Decimal(0), Decimal(state["config"]["max_wall_seconds"]) - reserve)
     if used >= limit:
         raise BudgetExhausted("wall_seconds", limit, used)
-    with worker_runtime.work_deadline(float(limit - used), wall_limit=limit):
+    with worker_runtime.work_deadline(float(limit - used), wall_limit=limit,
+                                      cleanup_reserve_seconds=float(reserve)):
         yield
 
 

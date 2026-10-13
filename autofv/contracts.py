@@ -124,7 +124,8 @@ def validate_run_config(path: str | Path) -> tuple[Path, dict[str, Any]]:
     config = _exact_dict(
         value,
         {"schema", "model", "max_wall_seconds", "max_cost_usd"} |
-        ({"role_profile", "source_packet"} if fvs else set()),
+        ({"role_profile", "source_packet"} if fvs else set()) |
+        ({"helper_reserves"} if fvs and "helper_reserves" in value else set()),
         "run config",
     )
     if fvs:
@@ -139,6 +140,13 @@ def validate_run_config(path: str | Path) -> tuple[Path, dict[str, Any]]:
     _text(config["model"], "model")
     if type(config["max_wall_seconds"]) is not int or config["max_wall_seconds"] <= 0:
         raise ContractError("max_wall_seconds must be a positive integer")
+    if "helper_reserves" in config:
+        stages = ("first_specification", "distinct_verification", "terminal_audit", "finalization")
+        reserves = _exact_dict(config["helper_reserves"], set(stages), "helper reserves")
+        values = [config["max_wall_seconds"], *(reserves[name] for name in stages)]
+        if (any(type(value) is not int or value <= 0 for value in values)
+                or any(a <= b for a, b in zip(values, values[1:]))):
+            raise ContractError("helper reserves must be positive decreasing seconds within the total")
     cost = config["max_cost_usd"]
     if (
         isinstance(cost, bool)

@@ -9,7 +9,7 @@ from collections.abc import Callable, Mapping
 from pathlib import PurePosixPath
 from typing import Any
 
-from . import worker
+from . import fvs_profile, worker
 from .contracts import canonical_json_bytes
 from .run_state import _checkpoint_if_enabled
 
@@ -562,7 +562,7 @@ def role_conversation_spec(job: Any) -> dict[str, Any]:
         "conversation_id": identity,
         "role": role,
         "max_output_tokens": (
-            8192 if role in {"spec_reviewer", "proof_reviewer"} else 16384
+            fvs_profile.profile()["models"][fvs_profile.ROLE_MODELS[role]]["max_output_tokens"]
         ) if fvs else (4096 if role in review_roles else 8192),
         "system_prompt": system_prompt,
         "context": {

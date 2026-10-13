@@ -338,6 +338,9 @@ def build_lane_tools(
     def read_allowed(arguments: dict[str, Any]) -> str:
         relative = _safe_relative_path(arguments["path"], "read path")
         if relative not in allowed_paths:
+            if trusted_job.get("methodology") == _FVS_METHODOLOGY:
+                return ("read_denied: path outside the frozen packet allowlist; use exact source_packet source paths. "
+                        "If relevant source is missing, report BLOCKED. No extra read was performed.")
             raise worker.WorkerError("read path is not allowlisted")
         if trusted_job.get("methodology") == _FVS_METHODOLOGY:
             packet = trusted_job["role_context"]["source_packet"]

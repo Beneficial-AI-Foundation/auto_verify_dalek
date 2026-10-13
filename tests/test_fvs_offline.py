@@ -802,6 +802,48 @@ class FvsOfflineTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             contracts.validate_run_config(path)
 
+    def test_fvs_outside_packet_read_returns_no_data_refusal(self):
+        graph = {"source_paths": {"helper": PATH}, "graph_sha256": "d" * 64}
+        lane = {"node": "helper", "assigned_path": PATH, "base_commit": "c" * 40}
+        job = generic_role_runtime._role_job(self.state, graph, lane, "spec_reviewer", statement_sha256="e" * 64,
+            contract_fingerprint="f" * 64, input_hashes=["e" * 64], role_context={"source_packet": packet()})
+        callbacks = {k: mock.Mock(side_effect=AssertionError("No ambient operation permitted"))
+                     for k in ("read_file", "search_files", "edit_assigned", "check_lean")}
+        tools = agent_lane.build_lane_tools(job, **callbacks)
+        denied = agent_lane.invoke_lane_tool(tools, "read_allowed", {"path": "NotInPacket.lean"})
+        self.assertEqual(denied, "read_denied: path outside the frozen packet allowlist; use exact source_packet source paths. "
+                                 "If relevant source is missing, report BLOCKED. No extra read was performed.")
+        self.assertNotIn("NotInPacket", denied)
+        self.assertEqual(agent_lane.invoke_lane_tool(tools, "read_allowed", {"path": PATH}), ORIGINAL)
+        self.assertIn("read_only_role", agent_lane.invoke_lane_tool(tools, "edit_assigned", {"patch": "synthetic"}))
+        self.assertIn("read_only_role", agent_lane.invoke_lane_tool(tools, "check_lean", {}))
+        for callback in callbacks.values():
+            callback.assert_not_called()
+        for unsafe in ("/absolute/No.lean", "../No.lean", "No/../Other.lean"):
+            with self.subTest(unsafe=unsafe), self.assertRaises(worker.WorkerError):
+                agent_lane.invoke_lane_tool(tools, "read_allowed", {"path": unsafe})
+        for malformed in ({}, {"path": None}, {"path": PATH, "extra": True}):
+            with self.subTest(malformed=malformed), self.assertRaises(worker.WorkerError):
+                agent_lane.invoke_lane_tool(tools, "read_allowed", malformed)
+        with mock.patch.object(fvs_packet, "validate_view", return_value={}):
+            with self.assertRaisesRegex(worker.WorkerError, "FVS read lacks immutable packet source"):
+                agent_lane.invoke_lane_tool(tools, "read_allowed", {"path": PATH})
+        with mock.patch.object(fvs_packet, "validate_view", side_effect=contracts.ContractError("synthetic packet integrity failure")):
+            with self.assertRaisesRegex(contracts.ContractError, "packet integrity"):
+                agent_lane.invoke_lane_tool(tools, "read_allowed", {"path": PATH})
+        for callback in callbacks.values():
+            callback.assert_not_called()
+
+    def test_legacy_outside_allowlist_read_remains_fatal(self):
+        from tests.test_agent_lane import _job
+        callbacks = {k: mock.Mock(side_effect=AssertionError("No ambient operation permitted"))
+                     for k in ("read_file", "search_files", "edit_assigned", "check_lean")}
+        tools = agent_lane.build_lane_tools(_job(), **callbacks)
+        with self.assertRaisesRegex(worker.WorkerError, "read path is not allowlisted"):
+            agent_lane.invoke_lane_tool(tools, "read_allowed", {"path": "NotInPacket.lean"})
+        for callback in callbacks.values():
+            callback.assert_not_called()
+
     def test_fresh_read_only_review_blocks_patch_substitution_and_diagnostics(self):
         graph = {"source_paths": {"helper": PATH}, "graph_sha256": "d" * 64}
         lane = {"node": "helper", "assigned_path": PATH, "base_commit": "c" * 40}

@@ -192,6 +192,18 @@ class OperationalPath(unittest.TestCase):
         text = json.dumps(self.sent[-1]['messages'])
         self.assertIn('read_only_role', text)
 
+    def test_reviewer_denied_read_continues_without_extra_source_access(self):
+        self.run_role('spec_reviewer', [('read_allowed', {'path': 'NotInPacket.lean'}),
+            ('read_allowed', {'path': fixture.PATH}), self.submit()])
+        self.verify_completed(3)
+        self.assertFalse(self.effects)
+        transcript = json.dumps(self.sent[-1]['messages'])
+        self.assertIn('read_denied:', transcript)
+        self.assertIn('No extra read was performed.', transcript)
+        self.assertEqual(self.state['cost'], Decimal('0.0009'))
+        self.assertEqual(len(self.state['role_tool_outcomes']), 3)
+        self.assertEqual([row['status'] for row in self.state['role_tool_outcomes'].values()], ['completed'] * 3)
+
     def test_prover_tool_flow_through_actual_framework(self):
         self.test_author_edit_check_submit_through_actual_framework_and_http_hops()
 

@@ -13,7 +13,7 @@ from decimal import Decimal
 from types import SimpleNamespace
 from typing import Any
 
-from . import fvs_profile, preflight, worker, worker_proxy
+from . import fvs_profile, preflight, worker, worker_proxy, worker_runtime
 from .contracts import (
     BudgetExhausted,
     ContractError,
@@ -272,7 +272,7 @@ def _provider_timeout_seconds(state: _RunState) -> float:
     run = state.get("run", {})
     request_limit = (worker_proxy.provider_request_timeout_seconds(run)
                      if isinstance(run.get("provider_binding"), dict) else 30)
-    return float(min(Decimal(request_limit), remaining))
+    return worker_runtime.work_timeout(float(min(Decimal(request_limit), remaining)))
 
 
 def _invoke_model(

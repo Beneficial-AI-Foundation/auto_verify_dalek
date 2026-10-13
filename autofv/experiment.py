@@ -148,6 +148,7 @@ def _persist_unallocated_attempt(
     accepted_source: Path | None = None,
     existing_run: dict[str, Any] | None = None,
     existing_state: _RunState | None = None,
+    budget_started_epoch_ns: int | None = None,
 ) -> dict[str, Any]:
     run = existing_run
     if run is None:
@@ -159,6 +160,8 @@ def _persist_unallocated_attempt(
         )
         if accepted_source is not None:
             results.snapshot_input(run, accepted_source)
+    if budget_started_epoch_ns is not None:
+        run["budget_started_epoch_ns"] = budget_started_epoch_ns
     if existing_state is None:
         state: _RunState = {
             "run": run,
@@ -529,6 +532,7 @@ def run_experiment(
     provider_selection: str | Path | None = None,
     public_rust_root: str | Path | None = None,
     fresh_pair_preflight: bool = False,
+    budget_started_epoch_ns: int | None = None,
 ) -> dict[str, Any]:
     """Run the bounded sealed tracer and persist every attempted run."""
     if type(fresh_pair_preflight) is not bool or (fresh_pair_preflight and (
@@ -556,6 +560,12 @@ def run_experiment(
         )
     wall_started = time.monotonic_ns()
     wall_started_epoch = time.time_ns()
+    if budget_started_epoch_ns is not None:
+        if (not fresh_pair_preflight or type(budget_started_epoch_ns) is not int
+                or not 0 < budget_started_epoch_ns <= wall_started_epoch):
+            raise ContractError("outer budget clock requires a new helper and a past positive epoch")
+        # Only deduct earlier preparation; never import another process's monotonic origin.
+        wall_started_epoch = budget_started_epoch_ns
     results.validate_output_root(target, output_root)
     # A malformed path argument never starts a run, so it must not use an attempt.
     path_arguments = (
@@ -595,6 +605,7 @@ def run_experiment(
                 reason=reason,
                 detail=exc,
                 output_root=output_root,
+                budget_started_epoch_ns=budget_started_epoch_ns,
             )
     try:
         identity = results.new_attempt_identity(target)
@@ -609,6 +620,7 @@ def run_experiment(
             reason="attempt_ledger_invalid",
             detail=exc,
             output_root=output_root,
+            budget_started_epoch_ns=budget_started_epoch_ns,
         )
     target_path: Path | None = None
     durable_run: dict[str, Any] | None = None
@@ -634,6 +646,7 @@ def run_experiment(
             accepted_source=target_path,
             existing_run=existing_run,
             existing_state=existing_state,
+            budget_started_epoch_ns=budget_started_epoch_ns,
         )
 
     try:
@@ -656,6 +669,12 @@ def run_experiment(
         )
     except ContractError as exc:
         return persist_unallocated("invalid_config", "run_config_invalid", exc)
+    if budget_started_epoch_ns is not None:
+        elapsed = Decimal(max(time.monotonic_ns() - wall_started,
+                              time.time_ns() - wall_started_epoch)) / Decimal(1_000_000_000)
+        if elapsed >= Decimal(config["max_wall_seconds"]) - _finalization_reserve(config):
+            return persist_unallocated("budget_exhausted", "wall_budget_exhausted",
+                BudgetExhausted("wall_seconds", Decimal(config["max_wall_seconds"]), elapsed))
     try:
         lock = load_toolchain_lock()
         policy = validate_native_decide_policy(lock)
@@ -714,6 +733,8 @@ def run_experiment(
     def prepare_provider(prepared: dict[str, Any]) -> None:
         nonlocal durable_run
         durable_run = prepared
+        if budget_started_epoch_ns is not None:
+            prepared["budget_started_epoch_ns"] = budget_started_epoch_ns
         if fresh_pair_preflight:
             prepared["fresh_pair_preflight"] = True
         if fvs_profile.enabled(config):
@@ -1151,6 +1172,8 @@ def _parser() -> argparse.ArgumentParser:
     run.add_argument("--selection-record")
     run.add_argument("--fresh-pair-preflight", action="store_true",
                      help="Prepared helper only: check the pair on the same worker within the shared budget")
+    run.add_argument("--budget-started-epoch-ns", type=int,
+                     help="Fresh helper only: original approved preparation clock; deduct pre-CLI time, never reset it")
     run.add_argument("--preparation-manifest")
     run.add_argument("--preparation-evidence")
     run.add_argument("--preparation-cache")
@@ -1230,6 +1253,8 @@ def main() -> None:
         options = {"output_root": args.output_root}
         if args.fresh_pair_preflight:
             options["fresh_pair_preflight"] = True
+        if args.budget_started_epoch_ns is not None:
+            options["budget_started_epoch_ns"] = args.budget_started_epoch_ns
         if args.public_rust_root is not None:
             options["public_rust_root"] = args.public_rust_root
         if args.env_file is not None:

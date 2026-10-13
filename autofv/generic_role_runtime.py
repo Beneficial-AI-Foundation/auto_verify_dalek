@@ -31,6 +31,7 @@ from .run_state import (
     _charge_wall,
     _event_once,
     _external_call,
+    helper_work_budget,
     _node_update,
     _state_lock,
     _checkpoint_if_enabled,
@@ -349,9 +350,12 @@ def _run_prepared_progressive(
 
     def confirm_helper(node: str) -> None:
         state["target_states"][node]["status"] = "unverified"
-        report = terminal_run.clean_verify_partial(
-            state, node, checkpoint=_checkpoint_if_enabled, charge_wall=_charge_wall
-        )
+        with helper_work_budget(state, 1200):
+            pass  # Admission must still leave the full verification/finalization interval.
+        with helper_work_budget(state, 300):
+            report = terminal_run.clean_verify_partial(
+                state, node, checkpoint=_checkpoint_if_enabled, charge_wall=_charge_wall
+            )
         if report["verdict"] != "SCOPED_PASS":
             raise ContractError("helper lacks independent scoped verification")
         state["target_states"][node]["status"] = "accepted"
@@ -373,6 +377,10 @@ def _run_prepared_progressive(
             confirm_helper(node)
 
     def run_bundle(node: str) -> dict[str, Any]:
+        with helper_work_budget(state, 1200):
+            return author_bundle(node)
+
+    def author_bundle(node: str) -> dict[str, Any]:
         lane = lanes_by_node[node]
         if fvs_profile.enabled(state["config"]):
             lane = _dependency_ready_lane(state, lane)
@@ -387,8 +395,23 @@ def _run_prepared_progressive(
                              "source_path": graph["source_paths"][consumer]}
                             for consumer in _immediate_consumers(graph, node)]
             contracts["immediate_consumer_requirements"][node] = requirements
+            task_brief = {
+                "selected_helper": node,
+                "final_goal": {"declaration": supplied_spec, "canon": supplied["canon"]},
+                "direct_callers": requirements,
+                "accepted_dependencies": [{"declaration": item, "fingerprint": contracts["node_fingerprints"][item]}
+                                          for item in dependencies],
+                "navigation": fvs_packet.navigation(stages.baseline, {
+                    item: graph["source_paths"][item] for item in {node, root, *(r["consumer"] for r in requirements)}
+                }),
+            }
+            if proof_only:
+                task_brief["required_remaining_wall_seconds"] = {
+                    "first_specification_submission": 2100, "distinct_verification_start": 1200,
+                    "clock": "existing remaining total, including preparation; never reset",
+                }
             candidate = stages.specification(top, {
-                "node": node, "dependency_plan": dependency,
+                "node": node, "dependency_plan": dependency, "task_brief": task_brief,
                 "immediate_consumer_requirements": requirements,
                 "accepted_dependency_contracts": [contracts["frozen"][f"{item.removeprefix('probe:')}_spec"] for item in dependencies],
             })
@@ -515,7 +538,7 @@ def _run_prepared_progressive(
         return {"node": node, "lane": lane, "fingerprints": fingerprints,
                 "reviewed": reviewed}
 
-    def accept_bundle(node: str, job: dict[str, Any]) -> bool:
+    def accept_local_bundle(node: str, job: dict[str, Any]) -> bool:
         selected = job["reviewed"]
         if selected["claimed_status"] != "candidate":
             _block_dependents(state, node, "proof_repair_exhausted:" + selected["claimed_status"])
@@ -555,8 +578,16 @@ def _run_prepared_progressive(
             _block_dependents(state, node, "proof_repair_exhausted:" + str(transition.get("reason")))
             return False
         if node != root:
-            confirm_helper(node)
+            state["target_states"][node]["status"] = "unverified"
         return True
+
+    def accept_bundle(node: str, job: dict[str, Any]) -> bool:
+        with helper_work_budget(state, 1200):
+            accepted = accept_local_bundle(node, job)
+        # Verification owns the reserved interval; no authoring deadline leaks in.
+        if accepted and node != root:
+            confirm_helper(node)
+        return accepted
 
     preferred = "probe:curve25519_dalek.backend.serial.u64.scalar.m"
     if preferred not in graph["selected_nodes"]:

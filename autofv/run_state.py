@@ -9,12 +9,13 @@ import re
 import signal
 import threading
 import time
+from contextlib import contextmanager
 from functools import wraps
 from decimal import Decimal
 from pathlib import Path
 from typing import Any, TypedDict
 
-from . import evidence, provider_config, provider_receipts, results, worker, worker_proxy
+from . import evidence, provider_config, provider_receipts, results, worker, worker_proxy, worker_runtime
 from .contracts import (
     BudgetExhausted,
     ContractError,
@@ -29,6 +30,7 @@ CHECKPOINT_RUN_FIELDS = (
     "attempt_id",
     "attempt_ledger",
     "run_id",
+    "budget_started_epoch_ns",
     "run_root",
     "input_root",
     "project_dir",
@@ -280,6 +282,30 @@ def _finalization_reserve(config: dict[str, Any]) -> Decimal:
     return min(Decimal("5.000000"), Decimal(config["max_wall_seconds"]) / 10)
 
 
+@contextmanager
+def helper_work_budget(state: dict[str, Any], reserve_seconds: int):
+    """Leave downstream capacity inside the existing prepared FVS smoke clock.
+
+    `_charge_wall` counts preparation/accessibility, including pre-CLI time when
+    the launcher supplies the original budget epoch. A smaller existing allowance
+    stays smaller; no transient deadline is checkpointed.
+    """
+    from . import fvs_profile
+    run = state["run"]
+    if (run.get("execution_mode") != "proof_only"
+            or not isinstance(run.get("preparation_manifest"), dict)
+            or not fvs_profile.enabled(state["config"])):
+        yield
+        return
+    used = _charge_wall(state)
+    reserve = max(Decimal(reserve_seconds), Decimal(state.get("finalization_reserve_seconds", 0)))
+    limit = max(Decimal(0), Decimal(state["config"]["max_wall_seconds"]) - reserve)
+    if used >= limit:
+        raise BudgetExhausted("wall_seconds", limit, used)
+    with worker_runtime.work_deadline(float(limit - used), wall_limit=limit):
+        yield
+
+
 @_serialized
 def _charge_wall(state: _RunState) -> Decimal:
     now, epoch = time.monotonic_ns(), time.time_ns()
@@ -311,6 +337,7 @@ def _check_wall_budget(state: _RunState) -> None:
     )
     if used >= limit - reserve:
         raise BudgetExhausted("wall_seconds", limit, used)
+    worker_runtime.work_timeout(float(limit - reserve - used))
 
 
 def _check_budget(state: _RunState) -> None:
@@ -345,6 +372,7 @@ def _checkpoint_identities(run: dict[str, Any]) -> dict[str, Any]:
             "attempt_id",
             "attempt_ledger",
             "run_id",
+            "budget_started_epoch_ns",
             "snapshot_sha256",
             "manifest_sha256",
             "image_digest",
@@ -507,6 +535,7 @@ def _valid_checkpoint(
             "attempt_id",
             "attempt_ledger",
             "run_id",
+            "budget_started_epoch_ns",
             "snapshot_sha256",
             "manifest_sha256",
             "image_digest",

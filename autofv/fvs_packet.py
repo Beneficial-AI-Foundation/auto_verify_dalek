@@ -328,6 +328,29 @@ def validate_view(packet: Any) -> dict[str, dict[str, Any]]:
     return copy.deepcopy(sources)
 
 
+def navigation(packet: Any, declarations: dict[str, str]) -> dict[str, Any]:
+    """Source-bound baseline anchors, not inferred specifications or extra source.
+
+    A missing declaration anchor is explicit: the full hashed file remains the
+    authority. Review overlays can move lines; reviewers must recheck citations.
+    """
+    sources = validate_view(packet)
+    entries = []
+    for name, path in sorted(declarations.items()):
+        if path not in sources:
+            raise ContractError("FVS navigation source missing from complete packet")
+        source_name = name.removeprefix("probe:")
+        names = {source_name, source_name.rsplit(".", 1)[-1]}
+        pattern = r"\b(?:def|theorem|abbrev)\s+(?:" + "|".join(re.escape(n) for n in sorted(names)) + r")(?=\s|[({:])"
+        entries.append({"declaration": name, "path": path, "source_sha256": sources[path]["sha256"],
+                        "declaration_lines": [i for i, line in enumerate(sources[path]["content"].splitlines(), 1)
+                                              if re.search(pattern, line)]})
+    return {"baseline_declarations": entries,
+            "supporting_sources": [{"path": s["path"], "surface": s["surface"], "sha256": s["sha256"]}
+                                   for s in sources.values() if s["surface"] in {"types", "interpretation", "intent"}],
+            "grounding_location": "original_packet.grounding for an overlay, otherwise source_packet.grounding"}
+
+
 def review_snapshot(packet: Any, *, path: str, patch: str) -> dict[str, Any]:
     sources = validate_view(packet)
     dependencies = {k: copy.deepcopy(packet[k]) for k in ("dependency_generation", "dependency_overlays") if k in packet}

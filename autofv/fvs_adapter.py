@@ -237,6 +237,7 @@ class Stages:
         supplied = graph.get("supplied_specs", {}).get(self.node)
         self.theorem = supplied.removeprefix("probe:") if supplied else self.node.removeprefix("probe:") + "_spec"
         self.contracts = contracts()
+        self.task_brief: dict[str, Any] = {}
         self.entries = state.setdefault("fvs_evidence", {})
         self.source = fvs_packet.validate_view(self.baseline)[self.path]["content"]
 
@@ -261,7 +262,7 @@ class Stages:
         packet = (fvs_packet.review_snapshot(self.baseline, path=self.path, patch=candidate["patch"])
                   if candidate is not None else self.baseline)
         role_context = {"stage": key, "target_theorem": self.theorem, "source_packet": packet, "contracts_sha256": fvs_profile.digest(self.contracts),
-                        **(context or {})}
+                        "task_brief": copy.deepcopy(self.task_brief), **(context or {})}
         if role in fvs_profile.REVIEW_ROLES:
             role_context["reviewed_candidate"] = candidate
         from . import worker
@@ -376,10 +377,15 @@ class Stages:
         return result
 
     def specification(self, fingerprint: str, author_context: dict[str, Any]) -> dict[str, Any]:
-        research = self.invoke("scout", "implementation-research", fingerprint=fingerprint,
-                               context={"consumer_intent": author_context})
-        candidate = self.invoke("specifier", "spec-author:0", fingerprint=fingerprint,
-                                context={"untrusted_research": research["evidence"], "consumer_intent": author_context})
+        from .run_state import helper_work_budget
+        self.task_brief = copy.deepcopy(author_context.get("task_brief", {}))
+        author_context = {k: v for k, v in author_context.items() if k != "task_brief"}
+        # The first submission must leave room for reviews, proof and verification.
+        with helper_work_budget(self.state, 2100):
+            research = self.invoke("scout", "implementation-research", fingerprint=fingerprint,
+                                   context={"consumer_intent": author_context})
+            candidate = self.invoke("specifier", "spec-author:0", fingerprint=fingerprint,
+                                    context={"untrusted_research": research["evidence"], "consumer_intent": author_context})
         history = []
         for round_index in range(3):
             try:

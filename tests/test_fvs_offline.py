@@ -60,7 +60,8 @@ def packet() -> dict:
                     fvs_packet.source("rust/increment.rs", "rust", "pub fn increment(n: u64) -> u64 { n + 1 }\n"),
                     fvs_packet.source("Types.lean", "types", "def Word := Nat\n"),
                     fvs_packet.source("Interpretation.lean", "interpretation", "def interpret (n : Nat) := n\n"),
-                    fvs_packet.source("Intent.md", "intent", "Return the successor of the input.\n")],
+                    fvs_packet.source("Intent.md", "intent", "Return the successor of the input.\n"),
+                    fvs_packet.source("Root.lean", "lean", "theorem Arithmetic.root_spec : True := by sorry\n")],
         "style": {"path": "FVS fallback", "content": "At most 100 columns and two namespace dots.",
                   "max_columns": 100, "max_namespace_dots": 2},
         "grounding": {"version": 1, "declarations": [], "cited_apis": [{"path": PATH, "start": 3, "end": 3}], "limitations": "Synthetic pinned API inventory."}}
@@ -967,6 +968,22 @@ class FvsOfflineTests(unittest.TestCase):
             self.addCleanup(p.stop)
         return graph, lane, actual, calls
 
+    def test_navigation_preserves_complete_packet_and_rejects_missing_or_drifted_source(self):
+        original = packet()
+        before = copy.deepcopy(original)
+        nav = fvs_packet.navigation(original, {"probe:Arithmetic.increment": PATH})
+        self.assertEqual(original, before)
+        self.assertEqual(nav["baseline_declarations"], [{"declaration": "probe:Arithmetic.increment",
+            "path": PATH, "source_sha256": original["sources"][0]["sha256"], "declaration_lines": [3]}])
+        self.assertEqual({s["surface"] for s in nav["supporting_sources"]}, {"types", "interpretation", "intent"})
+        missing = fvs_packet.navigation(original, {"probe:Arithmetic.absent": PATH})
+        self.assertEqual(missing["baseline_declarations"][0]["declaration_lines"], [])
+        with self.assertRaisesRegex(contracts.ContractError, "navigation source missing"):
+            fvs_packet.navigation(original, {"probe:Arithmetic.increment": "NotInPacket.lean"})
+        original["sources"][0]["content"] += "-- drift\n"
+        with self.assertRaises(contracts.ContractError):
+            fvs_packet.navigation(original, {"probe:Arithmetic.increment": PATH})
+
     def test_integrated_fc_stages_preserve_raw_review_triage_and_frozen_statement(self):
         graph, lane, actual, calls = self.stage_fixture()
         stages = fvs_adapter.Stages(self.state, graph, lane, generic_role_runtime._run_role_lane, lambda *a: None)
@@ -1219,22 +1236,35 @@ class FvsOfflineTests(unittest.TestCase):
         lane.update(node=node, schema="autofv-proof-lane/v1")
         root_lane = {**lane, "node": root, "assigned_path": "Root.lean"}
         self.run.update(execution_mode="proof_only", preparation_manifest={})
+        self.state["config"]["max_wall_seconds"] = 3600
         self.state.update(graph=graph, target_states={node: {"status": "pending"}, root: {"status": "pending"}},
                           accepted_nodes=[], accepted_sequence=[])
         role = generic_role_runtime._run_role_lane
         observed_plans = []
+        briefs = []
         def guarded_role(state, graph, lane, role_name, **kwargs):
             context = kwargs["role_context"]
             self.assertIn("stage", context, "Root-wide advisory planning was dispatched before the helper")
+            expected_limit = 1500 if context["stage"] in {"implementation-research", "spec-author:0"} else 2400
+            self.assertEqual(worker_runtime._WORK_DEADLINE.get()[2], expected_limit)
+            briefs.append(copy.deepcopy(context["task_brief"]))
+            source_packet = context["source_packet"]
+            self.assertEqual(source_packet.get("original_packet", source_packet), packet())
+            self.assertIn(fvs_profile.digest(context), kwargs["input_hashes"])
             plan = context.get("consumer_intent", {}).get("dependency_plan")
             if plan is not None:
                 observed_plans.append(copy.deepcopy(plan))
             return role(state, graph, lane, role_name, **kwargs)
         def accept(state, candidate, manifest):
+            self.assertEqual(worker_runtime._WORK_DEADLINE.get()[2], 2400)
             state["accepted_nodes"].append(node)
             state["proof_patch_sha256"][node] = "a" * 64
             return {"status": "accepted_dependency", "synthetic": True}
         report = {"verdict": clean_verdict, "agent_worker_id": "agent", "verifier_worker_id": "distinct-verifier"}
+        def verify(*args, **kwargs):
+            self.assertEqual(worker_runtime._WORK_DEADLINE.get()[2], 3300)
+            self.assertEqual(self.state["target_states"][node]["status"], "unverified")
+            return report
         with mock.patch.object(generic_role_runtime, "_supplied_statement", return_value={
                 "canon": "theorem Arithmetic.root_spec : True", "model_fingerprint": "e" * 64}), \
              mock.patch.object(generic_role_runtime, "_lane_descriptors", return_value=[lane, root_lane]), \
@@ -1242,11 +1272,20 @@ class FvsOfflineTests(unittest.TestCase):
              mock.patch.object(worker, "prepare_lanes"), \
              mock.patch.object(generic_role_runtime, "_checkpoint_candidate", side_effect=accept), \
              mock.patch.object(worker, "persist_lane_result", return_value={}), \
-             mock.patch("autofv.terminal_run.clean_verify_partial", return_value=report) as verifier:
+             mock.patch("autofv.terminal_run.clean_verify_partial", side_effect=verify) as verifier:
             result = generic_role_runtime.run_generic_role_path(self.state)
         self.assertEqual(calls, ["implementation-research", "spec-author:0", "spec-review:0", "spec-pass-triage:0",
                                 "proof-author:0", "proof-review:0", "proof-pass-triage:0"])
         self.assertTrue(observed_plans)
+        self.assertIsNone(worker_runtime._WORK_DEADLINE.get())
+        self.assertEqual(len(briefs), 7)  # Includes both reviewers and both PASS triages.
+        self.assertTrue(all(brief == briefs[0] for brief in briefs))
+        self.assertEqual(briefs[0]["selected_helper"], node)
+        self.assertEqual(briefs[0]["final_goal"], {"declaration": "probe:Arithmetic.root_spec",
+                                               "canon": "theorem Arithmetic.root_spec : True"})
+        self.assertEqual(briefs[0]["direct_callers"][0]["consumer"], root)
+        self.assertEqual(briefs[0]["navigation"]["baseline_declarations"][0]["declaration_lines"], [3])
+        self.assertEqual(briefs[0]["required_remaining_wall_seconds"]["distinct_verification_start"], 1200)
         for plan in observed_plans:
             self.assertEqual(plan, {"schema": "autofv-frozen-helper-plan/v1", "source": "frozen_graph",
                 "graph_sha256": graph["graph_sha256"], "root": root,

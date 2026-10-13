@@ -130,7 +130,7 @@ class OperationalPath(unittest.TestCase):
             'completion_tokens_details': {'reasoning_tokens': 5}, 'cost': 0.0003}
         return fixture._ProviderReply(reply)
 
-    def run_role(self, role, actions, *, note_bytes=150_625, packet=None):
+    def run_role(self, role, actions, *, note_bytes=150_625, packet=None, task_brief=None):
         self.synthetic_actions = actions
         graph = {'source_paths': {'helper': fixture.PATH}, 'graph_sha256': 'd' * 64}
         lane = {'node': 'helper', 'assigned_path': fixture.PATH, 'base_commit': 'c' * 40}
@@ -139,9 +139,11 @@ class OperationalPath(unittest.TestCase):
             context['reviewed_candidate'] = {'patch': fixture.patch(fixture.SPEC)}
             context['source_packet'] = fvs_packet.review_snapshot(fixture.packet(),
                 path=fixture.PATH, patch=context['reviewed_candidate']['patch'])
+        if task_brief is not None:
+            context['task_brief'] = task_brief
         job = generic_role_runtime._role_job(self.state, graph, lane, role,
             statement_sha256='e' * 64, contract_fingerprint='f' * 64,
-            input_hashes=[fixture.packet()['packet_sha256']], role_context=context)
+            input_hashes=[fixture.packet()['packet_sha256'], fvs_profile.digest(context)], role_context=context)
         tools = agent_lane.build_lane_tools(job,
             read_file=lambda path: self.fail('FVS read must use immutable packet'),
             search_files=lambda query: self.fail('FVS search must use immutable packet'),
@@ -191,6 +193,24 @@ class OperationalPath(unittest.TestCase):
         self.assertFalse(self.effects)
         text = json.dumps(self.sent[-1]['messages'])
         self.assertIn('read_only_role', text)
+
+    def test_focused_reviewer_searches_present_source_and_submits_complete_review(self):
+        brief = {'selected_helper': 'probe:Arithmetic.increment',
+                 'final_goal': {'declaration': 'Arithmetic.root_spec', 'canon': 'theorem Arithmetic.root_spec : True'},
+                 'direct_callers': [{'consumer': 'root', 'source_path': 'Root.lean'}],
+                 'navigation': fvs_packet.navigation(fixture.packet(), {'probe:Arithmetic.increment': fixture.PATH})}
+        candidate = self.run_role('spec_reviewer', [('search_allowed', {'query': 'increment'}), self.submit()],
+                                  task_brief=brief)
+        self.verify_completed(2)
+        self.assertEqual(fixture.fvs_adapter.parse_review(candidate['evidence'][0])['verdict'], 'PASS')
+        self.assertEqual(candidate['patch'], fixture.patch(fixture.SPEC))
+        self.assertFalse(self.effects)
+        messages = self.sent[0]['messages']
+        context = json.loads(next(m['content'] for m in messages if m['role'] == 'user'))['context']
+        self.assertEqual(context['role_context']['task_brief'], brief)
+        self.assertEqual(context['role_context']['source_packet']['original_packet'], fixture.packet())
+        self.assertIn('concise complete review', messages[0]['content'])
+        self.assertTrue(all(body['max_tokens'] == 8192 for body in self.sent))
 
     def test_reviewer_denied_read_continues_without_extra_source_access(self):
         self.run_role('spec_reviewer', [('read_allowed', {'path': 'NotInPacket.lean'}),

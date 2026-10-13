@@ -21,8 +21,13 @@ import tempfile
 import threading
 import time
 import urllib.parse
+from contextlib import contextmanager
+from contextvars import ContextVar
+from decimal import Decimal
 from pathlib import Path, PurePosixPath
 from typing import Any, Iterable
+
+from .contracts import BudgetExhausted
 
 from . import dependency_cache
 
@@ -623,6 +628,39 @@ def _seed_archive(
 
 COMMAND_TIMEOUT_SECONDS = 1200
 MAX_COMMAND_OUTPUT_BYTES = 64 * 1024 * 1024
+_WORK_DEADLINE: ContextVar[tuple[float, float, Decimal] | None] = ContextVar("work_deadline", default=None)
+
+
+def work_timeout(timeout: float) -> float:
+    """Clamp active work to its scoped deadline, including elapsed host sleep."""
+    deadline = _WORK_DEADLINE.get()
+    if deadline is None:
+        return timeout
+    remaining = min(deadline[0] - time.monotonic(), deadline[1] - time.time())
+    if remaining <= 0:
+        raise BudgetExhausted("wall_seconds", deadline[2], deadline[2] - Decimal(str(remaining)))
+    return min(timeout, remaining)
+
+
+@contextmanager
+def work_deadline(seconds: float, *, wall_limit: Decimal):
+    """A tighter work window, not a new run clock; nesting cannot extend it.
+
+    Context-local so async role tools inherit it, while verification and cleanup
+    regain the outer budget after the scope exits. Never persist this deadline.
+    """
+    seconds = work_timeout(seconds)
+    prior = _WORK_DEADLINE.get()
+    deadline = (time.monotonic() + seconds, time.time() + seconds, wall_limit)
+    if prior is not None:
+        deadline = (min(deadline[0], prior[0]), min(deadline[1], prior[1]), min(wall_limit, prior[2]))
+    token = _WORK_DEADLINE.set(deadline)
+    try:
+        work_timeout(seconds)
+        yield
+        work_timeout(seconds)
+    finally:
+        _WORK_DEADLINE.reset(token)
 
 
 def bounded_run(
@@ -636,6 +674,7 @@ def bounded_run(
     stdin: Any = None,
 ) -> subprocess.CompletedProcess[bytes]:
     """Bound awake and elapsed time, including host sleep; kill the process group."""
+    timeout = work_timeout(timeout)
     started, started_epoch = time.monotonic(), time.time()
     process = subprocess.Popen(
         argv,
@@ -670,6 +709,7 @@ def bounded_run(
             except BrokenPipeError:
                 pass
         while process.poll() is None:
+            work_timeout(timeout)
             active, elapsed = time.monotonic() - started, time.time() - started_epoch
             if overflow.is_set() or max(active, elapsed) >= timeout:
                 raise error(
@@ -696,6 +736,7 @@ def bounded_run(
     process.stderr.close()
     if overflow.is_set():
         raise error(f"{what} command output exceeded its bound")
+    work_timeout(timeout)
     return subprocess.CompletedProcess(
         argv, process.returncode, captured.get("stdout", b""), captured.get("stderr", b"")
     )

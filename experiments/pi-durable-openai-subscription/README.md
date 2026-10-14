@@ -1,8 +1,15 @@
 # Pi Durable + managed OpenAI subscription: bounded SDK spike
 
 This opt-in spike is stacked on `946bd3c73e2a417e3a2f432b9e0faa59511d062e`.
-It is **not wired into the `autofv` CLI**, is not a qualified experiment backend,
-and supplies no proof-success or scored-run evidence. The existing OpenRouter
+This **Durable Harness spike is not wired into the `autofv` CLI**, is not a
+qualified experiment backend, and supplies no proof-success or scored-run
+evidence. A separate production integration now lives in `autofv/pi_runtime`
+and uses public `ModelRuntime.stream` beneath the existing DeepAgents loop;
+it does not use this Harness. See the [local integration/testing handoff](../../autofv/PI_RUNTIME.md)
+for its actual CLI, frozen installs, resume, and pending local sealed/live gates.
+Its supported local qualification producers are the separate
+`python -m autofv.pi_qualification prepare|qualify|probe|grant` commands;
+this directory's `qualify.mjs` remains metadata-only. The existing OpenRouter
 FVS profile, mixed OpenAI/Claude roles, budgets, receipts, and verifier pipeline
 are unchanged. No success-rate improvement is established.
 
@@ -72,11 +79,11 @@ and `@earendil-works/chord`, all 1.2.0. Chord is also a Pi transitive dependency
 it is explicit here because the bridge uses its public context API. Source
 declarations and interfaces were inspected at upstream commit
 `7d75a0e3eb273dff753d49c066ea29fbe7b3b6f6`. Source package versions alone do not
-prove published registry artifacts match that commit. Installation and generated
-lockfile must be reviewed separately. Do not install as part of qualification.
+prove published registry artifacts match that commit. The generated `package-lock.json` now records the approved exact registry
+installation. Reproduce it separately with `npm ci --ignore-scripts`; never
+install packages as a side effect of qualification or model dispatch.
 
-After an authorized installation with lifecycle scripts disabled, the separate
-SDK test command is:
+After the authorized frozen installation, the separate SDK test command is:
 
 ```sh
 node --test test-sdk/*.test.mjs
@@ -85,7 +92,8 @@ node --test test-sdk/*.test.mjs
 Those tests use real SDK imports and real Durable execution with synthetic
 credentials/responses. All `fetch` calls are intercepted: no real authentication
 or model request is required. The source-level tests and real-SDK tests are
-separate evidence classes. Do not report the latter as passed until executed.
+separate evidence classes. The real-SDK suite has now been executed offline;
+see [VALIDATION.md](VALIDATION.md) for the dated result and remaining limits.
 
 ## Authentication and budgeting decisions
 
@@ -102,7 +110,10 @@ Reads use the public `modify` lock with an unchanged-on-undefined callback,
 because some stores execute command-backed API keys inside their raw `read()`.
 No model/account rotation is implemented. A dedicated store must not be changed
 to a different account while a run is active; account/entitlement provisioning
-remains a trusted-controller setup requirement.
+remains a trusted-controller setup requirement. The production transport has a
+separate user-operated `setup.mjs` using the public SDK login API. It is not
+invoked by this spike, and login alone does not establish account identity or
+model entitlement.
 
 Pi 1.2.0 does not publicly export its default `AuthStorage` class. A supported
 host-supplied `CredentialStore` is required; this spike intentionally does not
@@ -138,19 +149,24 @@ OAuth refresh is separate from model retries. Pi may finish refresh persistence
 after cancellation to avoid losing a rotated credential, with an internal
 15-second timeout. The controller deadline does not establish remote cancellation.
 
-## Remaining before CLI integration or a live experiment
+## Remaining for this Durable spike or any live experiment
 
-1. Install/verify the exact packages under an explicit installation approval;
-   run the real-SDK suite and retain the resolved dependency lockfile.
+1. Preserve the approved exact dependency lock and passed offline SDK evidence.
+   Re-run `npm ci --ignore-scripts` and the tests when reproducing this spike.
 2. Supply a supported managed, dedicated host credential store and separately
    authorize sign-in. Validate exact model entitlement without reading/exporting
-   credential values. This spike does not provide that setup adapter.
+   credential values. This spike does not provide that setup adapter; the
+   separate production setup script and its identity limitations are documented
+   in the integration guide.
 3. Approve the new role arrangement and bounded subscription policy. Neither the
    example profile nor the existing API experiment approval covers this profile.
-4. Add an explicit Python/controller-to-Node adapter using the existing role-job,
+4. If promoting Durable itself, add an explicit alternative role-runtime adapter
+   replacing DeepAgents for that role, using the existing role-job,
    source/statement-binding, candidate validation, journal, and callback protocols.
    The copied schemas are checked against `autofv.agent_lane._TOOL_SCHEMAS`;
    matching schemas alone do not establish transport/protocol compatibility.
+   The production ModelRuntime transport already has a Python/Node adapter, but
+   that does not integrate this separate Durable role loop.
 5. Bind the admission journal and grant to the existing trusted run root, original
    clock and approval record. Keep auth, journal and controller memory outside
    every model-visible filesystem, durable document, transcript, and artifact.

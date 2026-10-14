@@ -8,6 +8,15 @@ role-based lanes, provider dispatch, and scoped helper verification; those paths
 have separate evidence boundaries. Keep this file and [README.html](README.html)
 in sync.
 
+The opt-in Pi/OpenAI subscription transport now has a public CLI integration
+under the separate `autofv-run/v3` profile. Read the
+[local Pi testing and qualification guide](PI_RUNTIME.md) before using it:
+installation/offline tests, user-operated authentication, runtime records,
+resume, and remaining sealed/live qualification blockers are separate gates.
+The dollar-budget/API-receipt explanations below describe the API/fixture
+profiles; Pi subscription cost remains `null`/unknown. The older Durable spike
+is not the production role loop.
+
 ## Status
 
 The current launcher completed one full sealed diamond under `runsc` and passed

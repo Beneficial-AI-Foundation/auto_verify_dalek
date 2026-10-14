@@ -1,0 +1,92 @@
+[
+  {
+    "name": "read_allowed",
+    "description": "Read one allowlisted project file.",
+    "input_schema": {
+      "type": "object",
+      "properties": {
+        "path": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "path"
+      ],
+      "additionalProperties": false
+    }
+  },
+  {
+    "name": "search_allowed",
+    "description": "Search bounded allowlisted project context.",
+    "input_schema": {
+      "type": "object",
+      "properties": {
+        "query": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "query"
+      ],
+      "additionalProperties": false
+    }
+  },
+  {
+    "name": "edit_assigned",
+    "description": "Edit only the assigned project file.",
+    "input_schema": {
+      "type": "object",
+      "properties": {
+        "patch": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "patch"
+      ],
+      "additionalProperties": false
+    }
+  },
+  {
+    "name": "check_lean",
+    "description": "Run the fixed Lean diagnostic.",
+    "input_schema": {
+      "type": "object",
+      "properties": {},
+      "additionalProperties": false
+    }
+  },
+  {
+    "name": "submit_candidate",
+    "description": "Return an untrusted candidate for controller review.",
+    "input_schema": {
+      "type": "object",
+      "properties": {
+        "patch": {
+          "type": "string"
+        },
+        "claimed_status": {
+          "type": "string",
+          "enum": [
+            "candidate",
+            "blocked",
+            "false_spec"
+          ]
+        },
+        "evidence": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "maxItems": 32
+        }
+      },
+      "required": [
+        "patch",
+        "claimed_status",
+        "evidence"
+      ],
+      "additionalProperties": false
+    }
+  }
+]

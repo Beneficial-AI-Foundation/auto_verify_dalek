@@ -15,7 +15,7 @@ import { subscriptionCredentials, SDK_VERSIONS, ROLES, TOOL_NAMES } from '../pol
 import { grant, message, options, context } from '../test/helpers.mjs';
 
 function fakeStore(credential = { type: 'oauth', access: 'SYNTHETIC_ACCESS_NOT_REAL',
-  refresh: 'SYNTHETIC_REFRESH_NOT_REAL', expires: Date.now() + 86400000 }) {
+  refresh: 'SYNTHETIC_REFRESH_NOT_REAL', expires: Date.now() + 86400000, clientId: 'SYNTHETIC_CLIENT_ID', scopes: ['api.responses.write'] }) {
   return {
     async read() { return credential; },
     async list() { return [{ providerId: 'openai', type: credential?.type }]; },
@@ -135,7 +135,7 @@ test('real SDK OAuth refresh failure is terminal and cannot fall back to an API-
   });
   const f = await fixture(t);
   const expired = await ModelRuntime.create({ credentials: subscriptionCredentials(fakeStore({ type: 'oauth',
-    access: 'SYNTHETIC_EXPIRED_ACCESS', refresh: 'SYNTHETIC_EXPIRED_REFRESH', expires: 1 })),
+    access: 'SYNTHETIC_EXPIRED_ACCESS', refresh: 'SYNTHETIC_EXPIRED_REFRESH', expires: 1, clientId: 'SYNTHETIC_CLIENT_ID', scopes: ['api.responses.write'] })),
     modelsPath: null, refreshOnCreate: false, allowModelNetwork: false });
   const models = guardedModels(expired, { ...f, role: 'prover', AssistantMessageEventStream });
   const result = await models.streamSimple(f.model, context, options).result();

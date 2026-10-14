@@ -1,0 +1,5 @@
+node_modules/
+credential.json
+provisioning.json
+*.lock
+store-signing-key.pem

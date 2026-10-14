@@ -340,6 +340,74 @@ class EarlyFailureDeadlineTests(unittest.TestCase):
     def setUp(self):
         preflight_fixtures.PreparedFvsPreflightTests.setUp(self)
 
+    def test_failed_worker_preparation_skips_cache_and_preserves_failure(self):
+        self.inputs()
+        self.prepared_inputs = (*self.prepared_inputs[:3],
+            {k: str(v) for k, v in self.prepared_inputs[3].items()})
+        for name in ("preparation_manifest", "probe_rust_evidence", "probe_aeneas_evidence", "dependency_cache"):
+            self.options[name].touch()
+        reference = self.root / "synthetic-reference.json"
+        reference.write_text("{}")
+        elapsed = [0]
+        original_error = "provider run credential is unavailable"
+
+        def controller(repo, config_path, output, **options):
+            options.pop("check_model_accessibility", None)
+            return experiment.run_experiment(repo, config_path, output_root=self.root / "attempts",
+                verifier_reference=reference, execution_mode="proof_only", fresh_pair_preflight=True,
+                budget_started_epoch_ns=200_000_000_000, **options)
+
+        def fail_preparation(*args, **kwargs):
+            run = self.prepare_mock(*args, **kwargs)
+            run.pop("base_commit")
+            elapsed[0] = 20_000_000_000
+            self.seed_mock.side_effect = worker.WorkerError("synthetic missing worker during cache seed")
+            error = provider_config.ProviderConfigError(original_error)
+            error.run = run  # prepare_run attaches its partial run to WorkerError subclasses.
+            raise error
+
+        def render(run, state, *, outcome, reason):
+            return {"outcome": outcome, "termination_reason": reason,
+                    "termination_detail": state["termination_detail"],
+                    "wall_seconds": f"{state['wall_seconds_used']:.6f}"}, {}
+
+        # The prepared-input fixture omits terminal-audit and publication evidence.
+        with mock.patch.object(preflight_runner, "run_fvs_preflight", side_effect=controller), \
+             mock.patch.object(experiment.verifier, "bind_prepared_reference", return_value={"synthetic": True}), \
+             mock.patch.object(experiment.verifier.counterexample, "external_reference_identity", return_value={"synthetic": True}), \
+             mock.patch.object(experiment.time, "monotonic_ns", side_effect=lambda: 100_000_000_000 + elapsed[0]), \
+             mock.patch.object(experiment.time, "time_ns", side_effect=lambda: 200_000_000_000 + elapsed[0]), \
+             mock.patch.object(experiment._EXPERIMENT_GRAPH, "stream") as graph, \
+             mock.patch.object(experiment.provider_service, "dispatch") as dispatch, \
+             mock.patch.object(experiment.provider_service, "release", wraps=experiment.provider_service.release) as release, \
+             mock.patch.object(experiment, "_final_terminal_audit"), \
+             mock.patch.object(experiment, "_checkpoint_if_enabled"), \
+             mock.patch.object(experiment.results, "persist_l0_sources"), \
+             mock.patch.object(experiment.results, "reconcile_provider_finalization"), \
+             mock.patch.object(experiment.results, "render_attempt", side_effect=render), \
+             mock.patch.object(experiment.results, "persist_attempt"), \
+             mock.patch.object(experiment, "_finish_attempt", wraps=experiment._finish_attempt) as finish:
+            result = self.exercise(patches=[mock.patch.object(worker, "prepare_run", side_effect=fail_preparation)])
+        self.assertEqual(self.seed_mock.call_count, 0)
+        self.prepare_mock.assert_called_once()
+        self.assertEqual(result["outcome"], "infrastructure_failed")
+        self.assertEqual(result["termination_reason"], "worker_preparation_failed")
+        self.assertEqual(result["termination_detail"], original_error)
+        self.assertEqual(result["wall_seconds"], "20.000000")
+        finish.assert_called_once()
+        run, state = finish.call_args.args
+        self.assertEqual(state["wall_seconds_used"], Decimal(20))
+        self.assertEqual(run["budget_started_epoch_ns"], 200_000_000_000)
+        self.assertTrue(run["worker_disposed"])
+        self.destroy_mock.assert_called_once_with(run)
+        release.assert_called_once_with(run)
+        with self.assertRaises(provider_config.ProviderConfigError):
+            provider_config.provider_binding(self.prepared_run)
+        graph.assert_not_called()
+        dispatch.assert_not_called()
+        self.fetch_mock.assert_not_called()
+        self.assertEqual(self.requests, [])
+
     def test_controller_seed_failure_retains_original_epoch(self, *, outer_elapsed_seconds=0):
         self.inputs()
         self.prepared_inputs = (*self.prepared_inputs[:3],

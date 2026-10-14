@@ -850,7 +850,11 @@ def run_experiment(
             return persist_unallocated(
                 "infrastructure_failed", "worker_preparation_failed", exc
             )
-        if prepared_inputs is not None and run.get("execution_tier") == "sealed_runsc":
+        if (
+            preparation_failure is None
+            and prepared_inputs is not None
+            and run.get("execution_tier") == "sealed_runsc"
+        ):
             try:
                 prepared_receipt = prepared_inputs[2]
                 with preparation_window():

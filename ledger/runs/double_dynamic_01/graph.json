@@ -1,0 +1,2616 @@
+{
+ "version": 1,
+ "nodes": {
+  "n1": {
+   "mode": "spec",
+   "fn": "probe:curve25519_dalek.backend.serial.u64.field.MulShared0FieldElement51SharedAFieldElement51FieldElement51.mul.LOW_51_BIT_MASK",
+   "path": "Curve25519Dalek/Specs/Backend/Serial/U64/Field/FieldElement51/Mul.lean",
+   "path_source": "human",
+   "result": true,
+   "callers": [
+    "Shared0FieldElement51.Insts.CoreOpsArithMulSharedAFieldElement51FieldElement51.mul"
+   ],
+   "funs_line": 142,
+   "id": "n1",
+   "deps": [],
+   "status": "accepted",
+   "refinements": 0,
+   "revisions": 0,
+   "tries": 1,
+   "theorems": [
+    "curve25519_dalek.backend.serial.u64.field.MulShared0FieldElement51SharedAFieldElement51FieldElement51.mul.LOW_51_BIT_MASK_spec"
+   ]
+  },
+  "n2": {
+   "mode": "spec",
+   "fn": "probe:curve25519_dalek.backend.serial.u64.field.MulShared0FieldElement51SharedAFieldElement51FieldElement51.mul.m",
+   "path": "Curve25519Dalek/Specs/Backend/Serial/U64/Field/FieldElement51/Mul.lean",
+   "path_source": "human",
+   "result": true,
+   "callers": [
+    "Shared0FieldElement51.Insts.CoreOpsArithMulSharedAFieldElement51FieldElement51.mul"
+   ],
+   "funs_line": 151,
+   "id": "n2",
+   "deps": [],
+   "status": "accepted",
+   "refinements": 0,
+   "revisions": 0,
+   "tries": 1,
+   "theorems": [
+    "curve25519_dalek.backend.serial.u64.field.MulShared0FieldElement51SharedAFieldElement51FieldElement51.mul.m_spec"
+   ]
+  },
+  "n3": {
+   "mode": "spec",
+   "fn": "probe:curve25519_dalek.Shared0FieldElement51.Insts.CoreOpsArithMulSharedAFieldElement51FieldElement51.mul",
+   "path": "Curve25519Dalek/Specs/Backend/Serial/U64/Field/FieldElement51/Mul.lean",
+   "path_source": "human",
+   "result": true,
+   "callers": [
+    "backend.serial.curve_models.CompletedPoint.as_extended"
+   ],
+   "funs_line": 160,
+   "id": "n3",
+   "deps": [
+    "n1",
+    "n2"
+   ],
+   "status": "accepted",
+   "refinements": 0,
+   "revisions": 0,
+   "tries": 1,
+   "theorems": [
+    "curve25519_dalek.Shared0FieldElement51.Insts.CoreOpsArithMulSharedAFieldElement51FieldElement51.mul_spec"
+   ]
+  },
+  "n4": {
+   "mode": "spec",
+   "fn": "probe:curve25519_dalek.backend.serial.curve_models.CompletedPoint.as_extended",
+   "path": "Curve25519Dalek/Specs/Backend/Serial/CurveModels/CompletedPoint/AsExtended.lean",
+   "path_source": "human",
+   "result": true,
+   "callers": [
+    "edwards.EdwardsPoint.double"
+   ],
+   "funs_line": 550,
+   "id": "n4",
+   "deps": [
+    "n3"
+   ],
+   "status": "accepted",
+   "refinements": 0,
+   "revisions": 0,
+   "tries": 1,
+   "theorems": [
+    "curve25519_dalek.backend.serial.curve_models.CompletedPoint.as_extended_spec"
+   ]
+  },
+  "n5": {
+   "mode": "spec",
+   "fn": "probe:curve25519_dalek.backend.serial.u64.field.FieldElement51.Insts.CoreOpsArithAddAssignSharedAFieldElement51.add_assign_loop",
+   "path": "Curve25519Dalek/Specs/Backend/Serial/U64/Field/FieldElement51/AddAssign.lean",
+   "path_source": "human",
+   "result": true,
+   "callers": [
+    "backend.serial.u64.field.FieldElement51.Insts.CoreOpsArithAddAssignSharedAFieldElement51.add_assign"
+   ],
+   "funs_line": 426,
+   "id": "n5",
+   "deps": [],
+   "status": "accepted",
+   "refinements": 0,
+   "revisions": 0,
+   "tries": 1,
+   "theorems": [
+    "curve25519_dalek.backend.serial.u64.field.FieldElement51.Insts.CoreOpsArithAddAssignSharedAFieldElement51.add_assign_loop_spec"
+   ]
+  },
+  "n6": {
+   "mode": "spec",
+   "fn": "probe:curve25519_dalek.backend.serial.u64.field.FieldElement51.Insts.CoreOpsArithAddAssignSharedAFieldElement51.add_assign",
+   "path": "Curve25519Dalek/Specs/Backend/Serial/U64/Field/FieldElement51/AddAssign.lean",
+   "path_source": "human",
+   "result": true,
+   "callers": [
+    "Shared0FieldElement51.Insts.CoreOpsArithAddSharedAFieldElement51FieldElement51.add"
+   ],
+   "funs_line": 447,
+   "id": "n6",
+   "deps": [
+    "n5"
+   ],
+   "status": "accepted",
+   "refinements": 0,
+   "revisions": 0,
+   "tries": 1,
+   "theorems": [
+    "curve25519_dalek.backend.serial.u64.field.FieldElement51.Insts.CoreOpsArithAddAssignSharedAFieldElement51.add_assign_spec"
+   ]
+  },
+  "n7": {
+   "mode": "spec",
+   "fn": "probe:curve25519_dalek.Shared0FieldElement51.Insts.CoreOpsArithAddSharedAFieldElement51FieldElement51.add",
+   "path": "Curve25519Dalek/Specs/Backend/Serial/U64/Field/FieldElement51/Add.lean",
+   "path_source": "human",
+   "result": true,
+   "callers": [
+    "backend.serial.curve_models.ProjectivePoint.double"
+   ],
+   "funs_line": 459,
+   "id": "n7",
+   "deps": [
+    "n6"
+   ],
+   "status": "accepted",
+   "refinements": 0,
+   "revisions": 0,
+   "tries": 1,
+   "theorems": [
+    "curve25519_dalek.Shared0FieldElement51.Insts.CoreOpsArithAddSharedAFieldElement51FieldElement51.add_spec"
+   ]
+  },
+  "n8": {
+   "mode": "spec",
+   "fn": "probe:curve25519_dalek.backend.serial.u64.field.FieldElement51.pow2k.LOW_51_BIT_MASK",
+   "path": "Curve25519Dalek/Specs/Backend/Serial/U64/Field/FieldElement51/Pow2K.lean",
+   "path_source": "human",
+   "result": true,
+   "callers": [
+    "backend.serial.u64.field.FieldElement51.pow2k_loop"
+   ],
+   "funs_line": 824,
+   "id": "n8",
+   "deps": [],
+   "status": "accepted",
+   "refinements": 0,
+   "revisions": 0,
+   "tries": 1,
+   "theorems": [
+    "curve25519_dalek.backend.serial.u64.field.FieldElement51.pow2k.LOW_51_BIT_MASK_spec"
+   ]
+  },
+  "n9": {
+   "mode": "spec",
+   "fn": "probe:curve25519_dalek.backend.serial.u64.field.FieldElement51.pow2k.m",
+   "path": "Curve25519Dalek/Specs/Backend/Serial/U64/Field/FieldElement51/Pow2K.lean",
+   "path_source": "human",
+   "result": true,
+   "callers": [
+    "backend.serial.u64.field.FieldElement51.pow2k_loop"
+   ],
+   "funs_line": 832,
+   "id": "n9",
+   "deps": [],
+   "status": "accepted",
+   "refinements": 0,
+   "revisions": 0,
+   "tries": 1,
+   "theorems": [
+    "curve25519_dalek.backend.serial.u64.field.FieldElement51.pow2k.m_spec"
+   ]
+  },
+  "n10": {
+   "mode": "spec",
+   "fn": "probe:curve25519_dalek.backend.serial.u64.field.FieldElement51.pow2k_loop",
+   "path": "Curve25519Dalek/Specs/Backend/Serial/U64/Field/FieldElement51/Pow2K.lean",
+   "path_source": "human",
+   "result": true,
+   "callers": [
+    "backend.serial.u64.field.FieldElement51.pow2k"
+   ],
+   "funs_line": 840,
+   "id": "n10",
+   "deps": [
+    "n8",
+    "n9"
+   ],
+   "status": "accepted",
+   "refinements": 0,
+   "revisions": 0,
+   "tries": 1,
+   "theorems": [
+    "curve25519_dalek.backend.serial.u64.field.FieldElement51.pow2k_loop_spec"
+   ]
+  },
+  "n11": {
+   "mode": "spec",
+   "fn": "probe:curve25519_dalek.backend.serial.u64.field.FieldElement51.pow2k",
+   "path": "Curve25519Dalek/Specs/Backend/Serial/U64/Field/FieldElement51/Pow2K.lean",
+   "path_source": "human",
+   "result": true,
+   "callers": [
+    "backend.serial.u64.field.FieldElement51.square",
+    "backend.serial.u64.field.FieldElement51.square2"
+   ],
+   "funs_line": 937,
+   "id": "n11",
+   "deps": [
+    "n10"
+   ],
+   "status": "accepted",
+   "refinements": 0,
+   "revisions": 0,
+   "tries": 1,
+   "theorems": [
+    "curve25519_dalek.backend.serial.u64.field.FieldElement51.pow2k_spec"
+   ]
+  },
+  "n12": {
+   "mode": "spec",
+   "fn": "probe:curve25519_dalek.backend.serial.u64.field.FieldElement51.square",
+   "path": "Curve25519Dalek/Specs/Backend/Serial/U64/Field/FieldElement51/Square.lean",
+   "path_source": "human",
+   "result": true,
+   "callers": [
+    "backend.serial.curve_models.ProjectivePoint.double"
+   ],
+   "funs_line": 973,
+   "id": "n12",
+   "deps": [
+    "n11"
+   ],
+   "status": "accepted",
+   "refinements": 0,
+   "revisions": 0,
+   "tries": 1,
+   "theorems": [
+    "curve25519_dalek.backend.serial.u64.field.FieldElement51.square_spec"
+   ]
+  },
+  "n13": {
+   "mode": "spec",
+   "fn": "probe:curve25519_dalek.backend.serial.u64.field.FieldElement51.square2_loop",
+   "path": "Curve25519Dalek/Specs/Backend/Serial/U64/Field/FieldElement51/Square2.lean",
+   "path_source": "human",
+   "result": true,
+   "callers": [
+    "backend.serial.u64.field.FieldElement51.square2"
+   ],
+   "funs_line": 947,
+   "id": "n13",
+   "deps": [],
+   "status": "accepted",
+   "refinements": 0,
+   "revisions": 0,
+   "tries": 1,
+   "theorems": [
+    "curve25519_dalek.backend.serial.u64.field.FieldElement51.square2_loop_spec",
+    "curve25519_dalek.backend.serial.u64.field.FieldElement51.square2_loop_zero_spec"
+   ]
+  },
+  "n14": {
+   "mode": "spec",
+   "fn": "probe:curve25519_dalek.backend.serial.u64.field.FieldElement51.square2",
+   "path": "Curve25519Dalek/Specs/Backend/Serial/U64/Field/FieldElement51/Square2.lean",
+   "path_source": "human",
+   "result": true,
+   "callers": [
+    "backend.serial.curve_models.ProjectivePoint.double"
+   ],
+   "funs_line": 964,
+   "id": "n14",
+   "deps": [
+    "n11",
+    "n13"
+   ],
+   "status": "accepted",
+   "refinements": 0,
+   "revisions": 0,
+   "tries": 1,
+   "theorems": [
+    "curve25519_dalek.backend.serial.u64.field.FieldElement51.square2_spec"
+   ]
+  },
+  "n15": {
+   "mode": "spec",
+   "fn": "probe:curve25519_dalek.backend.serial.curve_models.ProjectivePoint.double",
+   "path": "Curve25519Dalek/Specs/Backend/Serial/CurveModels/ProjectivePoint/Double.lean",
+   "path_source": "human",
+   "result": true,
+   "callers": [
+    "edwards.EdwardsPoint.double"
+   ],
+   "funs_line": 981,
+   "id": "n15",
+   "deps": [
+    "n7",
+    "n12",
+    "n14"
+   ],
+   "status": "accepted",
+   "refinements": 0,
+   "revisions": 0,
+   "tries": 1,
+   "theorems": [
+    "curve25519_dalek.backend.serial.curve_models.ProjectivePoint.double_spec"
+   ]
+  },
+  "n16": {
+   "mode": "spec",
+   "fn": "probe:curve25519_dalek.edwards.EdwardsPoint.as_projective",
+   "path": "Curve25519Dalek/Specs/Edwards/EdwardsPoint/AsProjective.lean",
+   "path_source": "human",
+   "result": true,
+   "callers": [
+    "edwards.EdwardsPoint.double"
+   ],
+   "funs_line": 4247,
+   "id": "n16",
+   "deps": [],
+   "status": "accepted",
+   "refinements": 0,
+   "revisions": 0,
+   "tries": 1,
+   "theorems": [
+    "curve25519_dalek.edwards.EdwardsPoint.as_projective_spec"
+   ]
+  },
+  "n17": {
+   "mode": "fill",
+   "fn": "probe:curve25519_dalek.edwards.EdwardsPoint.double_spec",
+   "path": "Curve25519Dalek/Specs/Edwards/EdwardsPoint/Double.lean",
+   "top_fn": "probe:curve25519_dalek.edwards.EdwardsPoint.double",
+   "id": "n17",
+   "deps": [
+    "n1",
+    "n2",
+    "n3",
+    "n4",
+    "n5",
+    "n6",
+    "n7",
+    "n8",
+    "n9",
+    "n10",
+    "n11",
+    "n12",
+    "n13",
+    "n14",
+    "n15",
+    "n16"
+   ],
+   "status": "blocked",
+   "refinements": 0,
+   "revisions": 0,
+   "tries": 2,
+   "history": [
+    {
+     "attempt": 17,
+     "outcome": "agent_limit",
+     "reason": "target axiom closure contains sorryAx or evidence missing",
+     "errors": [],
+     "rounds": 2
+    },
+    {
+     "attempt": 18,
+     "outcome": "rejected_statement_changed",
+     "errors": [],
+     "rounds": 1
+    }
+   ]
+  }
+ },
+ "events": [
+  {
+   "node": "n1",
+   "outcome": "accepted",
+   "sessions": [
+    "e88c5dcb-7a7e-44b4-a8a9-43e62b78b6ba"
+   ],
+   "rounds": [
+    {
+     "round": 1,
+     "outcome": "accepted",
+     "detail": {
+      "gate_build_seconds": 1.3,
+      "g1_seconds": 3.5,
+      "specs": [
+       "curve25519_dalek.backend.serial.u64.field.MulShared0FieldElement51SharedAFieldElement51FieldElement51.mul.LOW_51_BIT_MASK_spec"
+      ],
+      "g2": "skipped",
+      "verified_theorems": [
+       "curve25519_dalek.backend.serial.u64.field.MulShared0FieldElement51SharedAFieldElement51FieldElement51.mul.LOW_51_BIT_MASK_spec"
+      ]
+     },
+     "wall_seconds": 30.3,
+     "status": "ok",
+     "session_id": "e88c5dcb-7a7e-44b4-a8a9-43e62b78b6ba",
+     "fresh_session": true,
+     "transcript": "ledger/transcripts/dag_double_dynamic_01_1.r1.jsonl",
+     "provenance": {
+      "last_event_type": "result",
+      "last_result_seen": true,
+      "result_followed_by_metadata": false,
+      "parse_errors": 0,
+      "compact_recovery": {
+       "enabled": true,
+       "event": "SessionStart",
+       "matcher": "compact",
+       "settings_path": "/home/zhang-liao/auto_verify_dalek/ledger/runs/double_dynamic_01/slot0/claude_config/local_check_tool/recovery-e4546a8f02584adfa32daf9c2f042f7d/settings.json",
+       "settings_sha256": "911b30460372407f1c4eeb43a8a8d6d8ee8accd727c6709508736e82b577aed9",
+       "hook_path": "/home/zhang-liao/auto_verify_dalek/ledger/runs/double_dynamic_01/slot0/claude_config/local_check_tool/compact_reminder.py",
+       "hook_sha256": "3a4dd6560b5d7ac828fb79b1f2879d7ef6e03c315a9753a983884d61614bce64",
+       "files": {
+        "/home/zhang-liao/auto_verify_dalek/ledger/runs/double_dynamic_01/slot0/claude_config/local_check_tool/recovery-e4546a8f02584adfa32daf9c2f042f7d/workflow.md": "5f9bd9ea762da06ade4d03c659c18e3b368ae4d4bdbaa58c67e7099599f19c49",
+        "/home/zhang-liao/auto_verify_dalek/ledger/runs/double_dynamic_01/slot0/claude_config/local_check_tool/recovery-e4546a8f02584adfa32daf9c2f042f7d/round-context.md": "5f9bd9ea762da06ade4d03c659c18e3b368ae4d4bdbaa58c67e7099599f19c49",
+        "/home/zhang-liao/auto_verify_dalek/ledger/runs/double_dynamic_01/slot0/claude_config/local_check_tool/recovery-e4546a8f02584adfa32daf9c2f042f7d/lean-check.md": "6570fbe8430c9d2742fa6430ee296996f3928eda2a3db80d019380901ad29119"
+       }
+      },
+      "local_check": {
+       "enabled": true,
+       "tool_sha256": "371074cd65134a0c7abbba2406a53c4e37c08bf3f15f16b3814e1f2ef8bef371",
+       "tool_path": "/home/zhang-liao/auto_verify_dalek/ledger/runs/double_dynamic_01/slot0/claude_config/local_check_tool/lean_check.py",
+       "state_helper_sha256": "63e9df6973faf19f6fd98c794c2417b25866a0349669d54025bb3ac0864b61b0",
+       "log_dir": "/home/zhang-liao/auto_verify_dalek/ledger/runs/double_dynamic_01/slot0/claude_config/local_checks",
+       "effective_message_path": "/home/zhang-liao/auto_verify_dalek/ledger/transcripts/dag_double_dynamic_01_1.r1.jsonl.prompt.txt",
+       "allowed_tools": "Read,Grep,Glob,Edit,Write,Bash(lake build*),Bash(grep*),Bash(/usr/bin/python3 /home/zhang-liao/auto_verify_dalek/ledger/runs/double_dynamic_01/slot0/claude_config/local_check_tool/lean_check.py *)",
+       "instructions_sha256": "6570fbe8430c9d2742fa6430ee296996f3928eda2a3db80d019380901ad29119",
+       "effective_message_sha256": "5f9bd9ea762da06ade4d03c659c18e3b368ae4d4bdbaa58c67e7099599f19c49"
+      }
+     },
+     "end_reason": "COMPLETE",
+     "target_file_edited": true,
+     "edited_files": [
+      "Curve25519Dalek/Specs/Backend/Serial/U64/Field/FieldElement51/Mul.lean"
+     ],
+     "models_used": [
+      "claude-opus-5-5"
+     ],
+     "cost_usd": 0.11781720000000001,
+     "num_turns": 4,
+     "session_cache_creation_tokens": 9906,
+     "usage_totals": {
+      "input_tokens": 8,
+      "output_tokens": 1507,
+      "cache_creation_input_tokens": 9906,
+      "cache_read_input_tokens": 41986
+     },
+     "assistant_turns": 4,
+     "buckets": {
+      "productive": 562,
+      "diagnostic": 945,
+      "retrieval": 0,
+      "dead_end": 0,
+      "reingestion_input": 40841,
+      "reingestion_cache_read": 37340
+     },
+     "proof_state": "/home/zhang-liao/auto_verify_dalek/ledger/transcripts/.proof-state-dag_double_dynamic_01_1-e88c5dcb-7a7e-44b4-a8a9-43e62b78b6ba/state.json"
+    }
+   ],
+   "detail": {
+    "gate_build_seconds": 1.3,
+    "g1_seconds": 3.5,
+    "specs": [
+     "curve25519_dalek.backend.serial.u64.field.MulShared0FieldElement51SharedAFieldElement51FieldElement51.mul.LOW_51_BIT_MASK_spec"
+    ],
+    "g2": "skipped",
+    "verified_theorems": [
+     "curve25519_dalek.backend.serial.u64.field.MulShared0FieldElement51SharedAFieldElement51FieldElement51.mul.LOW_51_BIT_MASK_spec"
+    ]
+   }
+  },
+  {
+   "node": "n2",
+   "outcome": "accepted",
+   "sessions": [
+    "5284677f-cf9f-4874-90bd-ed71da2d08f6"
+   ],
+   "rounds": [
+    {
+     "round": 1,
+     "outcome": "accepted",
+     "detail": {
+      "gate_build_seconds": 1.9,
+      "g1_seconds": 3.3,
+      "specs": [
+       "curve25519_dalek.backend.serial.u64.field.MulShared0FieldElement51SharedAFieldElement51FieldElement51.mul.m_spec"
+      ],
+      "g2": "skipped",
+      "verified_theorems": [
+       "curve25519_dalek.backend.serial.u64.field.MulShared0FieldElement51SharedAFieldElement51FieldElement51.mul.m_spec"
+      ]
+     },
+     "wall_seconds": 50.0,
+     "status": "ok",
+     "session_id": "5284677f-cf9f-4874-90bd-ed71da2d08f6",
+     "fresh_session": true,
+     "transcript": "ledger/transcripts/dag_double_dynamic_01_2.r1.jsonl",
+     "provenance": {
+      "last_event_type": "result",
+      "last_result_seen": true,
+      "result_followed_by_metadata": false,
+      "parse_errors": 0,
+      "compact_recovery": {
+       "enabled": true,
+       "event": "SessionStart",
+       "matcher": "compact",
+       "settings_path": "/home/zhang-liao/auto_verify_dalek/ledger/runs/double_dynamic_01/slot0/claude_config/local_check_tool/recovery-cfe78a3bedc343dd80fae64989d505db/settings.json",
+       "settings_sha256": "69633fa23f3bbb9a2c548b4660fe075083a7a6a88713ef6538bd002dd2e133fa",
+       "hook_path": "/home/zhang-liao/auto_verify_dalek/ledger/runs/double_dynamic_01/slot0/claude_config/local_check_tool/compact_reminder.py",
+       "hook_sha256": "3a4dd6560b5d7ac828fb79b1f2879d7ef6e03c315a9753a983884d61614bce64",
+       "files": {
+        "/home/zhang-liao/auto_verify_dalek/ledger/runs/double_dynamic_01/slot0/claude_config/local_check_tool/recovery-cfe78a3bedc343dd80fae64989d505db/workflow.md": "7a674d829a6c0bbb97b23882a59f616784eaf921f1344eb7b2e1371422233b6b",
+        "/home/zhang-liao/auto_verify_dalek/ledger/runs/double_dynamic_01/slot0/claude_config/local_check_tool/recovery-cfe78a3bedc343dd80fae64989d505db/round-context.md": "7a674d829a6c0bbb97b23882a59f616784eaf921f1344eb7b2e1371422233b6b",
+        "/home/zhang-liao/auto_verify_dalek/ledger/runs/double_dynamic_01/slot0/claude_config/local_check_tool/recovery-cfe78a3bedc343dd80fae64989d505db/lean-check.md": "6570fbe8430c9d2742fa6430ee296996f3928eda2a3db80d019380901ad29119"
+       }
+      },
+      "local_check": {
+       "enabled": true,
+       "tool_sha256": "371074cd65134a0c7abbba2406a53c4e37c08bf3f15f16b3814e1f2ef8bef371",
+       "tool_path": "/home/zhang-liao/auto_verify_dalek/ledger/runs/double_dynamic_01/slot0/claude_config/local_check_tool/lean_check.py",
+       "state_helper_sha256": "63e9df6973faf19f6fd98c794c2417b25866a0349669d54025bb3ac0864b61b0",
+       "log_dir": "/home/zhang-liao/auto_verify_dalek/ledger/runs/double_dynamic_01/slot0/claude_config/local_checks",
+       "effective_message_path": "/home/zhang-liao/auto_verify_dalek/ledger/transcripts/dag_double_dynamic_01_2.r1.jsonl.prompt.txt",
+       "allowed_tools": "Read,Grep,Glob,Edit,Write,Bash(lake build*),Bash(grep*),Bash(/usr/bin/python3 /home/zhang-liao/auto_verify_dalek/ledger/runs/double_dynamic_01/slot0/claude_config/local_check_tool/lean_check.py *)",
+       "instructions_sha256": "6570fbe8430c9d2742fa6430ee296996f3928eda2a3db80d019380901ad29119",
+       "effective_message_sha256": "7a674d829a6c0bbb97b23882a59f616784eaf921f1344eb7b2e1371422233b6b"
+      }
+     },
+     "end_reason": "COMPLETE",
+     "target_file_edited": true,
+     "edited_files": [
+      "Curve25519Dalek/Specs/Backend/Serial/U64/Field/FieldElement51/Mul.lean"
+     ],
+     "models_used": [
+      "claude-opus-5-5"
+     ],
+     "cost_usd": 0.2082448,
+     "num_turns": 9,
+     "session_cache_creation_tokens": 16235,
+     "usage_totals": {
+      "input_tokens": 14,
+      "output_tokens": 2874,
+      "cache_creation_input_tokens": 16235,
+      "cache_read_input_tokens": 104144
+     },
+     "assistant_turns": 7,
+     "buckets": {
+      "productive": 1197,
+      "diagnostic": 1677,
+      "retrieval": 0,
+      "dead_end": 0,
+      "reingestion_input": 109235,
+      "reingestion_cache_read": 99373
+     },
+     "proof_state": "/home/zhang-liao/auto_verify_dalek/ledger/transcripts/.proof-state-dag_double_dynamic_01_2-5284677f-cf9f-4874-90bd-ed71da2d08f6/state.json"
+    }
+   ],
+   "detail": {
+    "gate_build_seconds": 1.9,
+    "g1_seconds": 3.3,
+    "specs": [
+     "curve25519_dalek.backend.serial.u64.field.MulShared0FieldElement51SharedAFieldElement51FieldElement51.mul.m_spec"
+    ],
+    "g2": "skipped",
+    "verified_theorems": [
+     "curve25519_dalek.backend.serial.u64.field.MulShared0FieldElement51SharedAFieldElement51FieldElement51.mul.m_spec"
+    ]
+   }
+  },
+  {
+   "node": "n3",
+   "outcome": "accepted",
+   "sessions": [
+    "14846bdf-3427-42e9-81f0-b44d20d6b922"
+   ],
+   "rounds": [
+    {
+     "round": 1,
+     "outcome": "rejected_sorry_remains",
+     "detail": {
+      "gate_build_seconds": 1.9,
+      "g1_seconds": 3.4,
+      "specs": [
+       "curve25519_dalek.Shared0FieldElement51.Insts.CoreOpsArithMulSharedAFieldElement51FieldElement51.mul_spec"
+      ],
+      "g2": "skipped",
+      "reason": "target axiom closure contains sorryAx or evidence missing"
+     },
+     "wall_seconds": 666.8,
+     "status": "ok",
+     "session_id": "14846bdf-3427-42e9-81f0-b44d20d6b922",
+     "fresh_session": true,
+     "transcript": "ledger/transcripts/dag_double_dynamic_01_3.r1.jsonl",
+     "provenance": {
+      "last_event_type": "result",
+      "last_result_seen": true,
+      "result_followed_by_metadata": false,
+      "parse_errors": 0,
+      "compact_recovery": {
+       "enabled": true,
+       "event": "SessionStart",
+       "matcher": "compact",
+       "settings_path": "/home/zhang-liao/auto_verify_dalek/ledger/runs/double_dynamic_01/slot0/claude_config/local_check_tool/recovery-41c3db3c186541a293c037f671036c7d/settings.json",
+       "settings_sha256": "7e8e244a810944b593a7f56ae90938c794348494ca7e0347360bf93af21a8863",
+       "hook_path": "/home/zhang-liao/auto_verify_dalek/ledger/runs/double_dynamic_01/slot0/claude_config/local_check_tool/compact_reminder.py",
+       "hook_sha256": "3a4dd6560b5d7ac828fb79b1f2879d7ef6e03c315a9753a983884d61614bce64",
+       "files": {
+        "/home/zhang-liao/auto_verify_dalek/ledger/runs/double_dynamic_01/slot0/claude_config/local_check_tool/recovery-41c3db3c186541a293c037f671036c7d/workflow.md": "1efe35d41126d41ccfedaca276c1cb1d2031e8542cae1237db1abbf88b7903b7",
+        "/home/zhang-liao/auto_verify_dalek/ledger/runs/double_dynamic_01/slot0/claude_config/local_check_tool/recovery-41c3db3c186541a293c037f671036c7d/round-context.md": "1efe35d41126d41ccfedaca276c1cb1d2031e8542cae1237db1abbf88b7903b7",
+        "/home/zhang-liao/auto_verify_dalek/ledger/runs/double_dynamic_01/slot0/claude_config/local_check_tool/recovery-41c3db3c186541a293c037f671036c7d/lean-check.md": "6570fbe8430c9d2742fa6430ee296996f3928eda2a3db80d019380901ad29119"
+       }
+      },
+      "local_check": {
+       "enabled": true,
+       "tool_sha256": "371074cd65134a0c7abbba2406a53c4e37c08bf3f15f16b3814e1f2ef8bef371",
+       "tool_path": "/home/zhang-liao/auto_verify_dalek/ledger/runs/double_dynamic_01/slot0/claude_config/local_check_tool/lean_check.py",
+       "state_helper_sha256": "63e9df6973faf19f6fd98c794c2417b25866a0349669d54025bb3ac0864b61b0",
+       "log_dir": "/home/zhang-liao/auto_verify_dalek/ledger/runs/double_dynamic_01/slot0/claude_config/local_checks",
+       "effective_message_path": "/home/zhang-liao/auto_verify_dalek/ledger/transcripts/dag_double_dynamic_01_3.r1.jsonl.prompt.txt",
+       "allowed_tools": "Read,Grep,Glob,Edit,Write,Bash(lake build*),Bash(grep*),Bash(/usr/bin/python3 /home/zhang-liao/auto_verify_dalek/ledger/runs/double_dynamic_01/slot0/claude_config/local_check_tool/lean_check.py *)",
+       "instructions_sha256": "6570fbe8430c9d2742fa6430ee296996f3928eda2a3db80d019380901ad29119",
+       "effective_message_sha256": "1efe35d41126d41ccfedaca276c1cb1d2031e8542cae1237db1abbf88b7903b7"
+      }
+     },
+     "end_reason": "COMPLETE",
+     "target_file_edited": true,
+     "edited_files": [
+      "Curve25519Dalek/Specs/Backend/Serial/U64/Field/FieldElement51/Mul.lean"
+     ],
+     "models_used": [
+      "claude-opus-5-5"
+     ],
+     "cost_usd": 2.1366575999999995,
+     "num_turns": 61,
+     "session_cache_creation_tokens": 97364,
+     "usage_totals": {
+      "input_tokens": 80,
+      "output_tokens": 42723,
+      "cache_creation_input_tokens": 97364,
+      "cache_read_input_tokens": 2514828
+     },
+     "assistant_turns": 40,
+     "buckets": {
+      "productive": 0,
+      "diagnostic": 0,
+      "retrieval": 0,
+      "dead_end": 42723,
+      "reingestion_input": 2600955,
+      "reingestion_cache_read": 2510057
+     },
+     "proof_state": "/home/zhang-liao/auto_verify_dalek/ledger/transcripts/.proof-state-dag_double_dynamic_01_3-14846bdf-3427-42e9-81f0-b44d20d6b922/state.json",
+     "feedback": "You declared END_REASON:COMPLETE but The harness gate rejected this round: the target file's `sorry` warning count did not decrease — the target is still unproven. Keep working on the same declaration. All original rules still apply."
+    },
+    {
+     "round": 2,
+     "outcome": "accepted",
+     "detail": {
+      "gate_build_seconds": 1.5,
+      "g1_seconds": 3.5,
+      "specs": [
+       "curve25519_dalek.Shared0FieldElement51.Insts.CoreOpsArithMulSharedAFieldElement51FieldElement51.mul_spec"
+      ],
+      "g2": "skipped",
+      "verified_theorems": [
+       "curve25519_dalek.Shared0FieldElement51.Insts.CoreOpsArithMulSharedAFieldElement51FieldElement51.mul_spec"
+      ]
+     },
+     "wall_seconds": 145.5,
+     "status": "ok",
+     "session_id": "14846bdf-3427-42e9-81f0-b44d20d6b922",
+     "fresh_session": false,
+     "transcript": "ledger/transcripts/dag_double_dynamic_01_3.r2.jsonl",
+     "provenance": {
+      "last_event_type": "result",
+      "last_result_seen": true,
+      "result_followed_by_metadata": false,
+      "parse_errors": 0,
+      "compact_recovery": {
+       "enabled": true,
+       "event": "SessionStart",
+       "matcher": "compact",
+       "settings_path": "/home/zhang-liao/auto_verify_dalek/ledger/runs/double_dynamic_01/slot0/claude_config/local_check_tool/recovery-021ee27648dc4d61b8e2fbee09df0e77/settings.json",
+       "settings_sha256": "bf3afadff8c4583c9031652ff16c1e6a2e104209b2d0883b20d89fb77996e33c",
+       "hook_path": "/home/zhang-liao/auto_verify_dalek/ledger/runs/double_dynamic_01/slot0/claude_config/local_check_tool/compact_reminder.py",
+       "hook_sha256": "3a4dd6560b5d7ac828fb79b1f2879d7ef6e03c315a9753a983884d61614bce64",
+       "files": {
+        "/home/zhang-liao/auto_verify_dalek/ledger/runs/double_dynamic_01/slot0/claude_config/local_check_tool/recovery-021ee27648dc4d61b8e2fbee09df0e77/workflow.md": "8293076b88615d94febf87f69da1e4d0e00e6e6910356e93101cc783d313bd6d",
+        "/home/zhang-liao/auto_verify_dalek/ledger/runs/double_dynamic_01/slot0/claude_config/local_check_tool/recovery-021ee27648dc4d61b8e2fbee09df0e77/round-context.md": "6d3627006869f46d6fc8f6540ace937a731ce2cdd231c48952c806425ad65ff0",
+        "/home/zhang-liao/auto_verify_dalek/ledger/runs/double_dynamic_01/slot0/claude_config/local_check_tool/recovery-021ee27648dc4d61b8e2fbee09df0e77/lean-check.md": "6570fbe8430c9d2742fa6430ee296996f3928eda2a3db80d019380901ad29119"
+       }
+      },
+      "local_check": {
+       "enabled": true,
+       "tool_sha256": "371074cd65134a0c7abbba2406a53c4e37c08bf3f15f16b3814e1f2ef8bef371",
+       "tool_path": "/home/zhang-liao/auto_verify_dalek/ledger/runs/double_dynamic_01/slot0/claude_config/local_check_tool/lean_check.py",
+       "state_helper_sha256": "63e9df6973faf19f6fd98c794c2417b25866a0349669d54025bb3ac0864b61b0",
+       "log_dir": "/home/zhang-liao/auto_verify_dalek/ledger/runs/double_dynamic_01/slot0/claude_config/local_checks",
+       "effective_message_path": "/home/zhang-liao/auto_verify_dalek/ledger/transcripts/dag_double_dynamic_01_3.r2.jsonl.prompt.txt",
+       "allowed_tools": "Read,Grep,Glob,Edit,Write,Bash(lake build*),Bash(grep*),Bash(/usr/bin/python3 /home/zhang-liao/auto_verify_dalek/ledger/runs/double_dynamic_01/slot0/claude_config/local_check_tool/lean_check.py *)",
+       "instructions_sha256": "6570fbe8430c9d2742fa6430ee296996f3928eda2a3db80d019380901ad29119",
+       "effective_message_sha256": "6d3627006869f46d6fc8f6540ace937a731ce2cdd231c48952c806425ad65ff0"
+      }
+     },
+     "end_reason": "COMPLETE",
+     "target_file_edited": true,
+     "edited_files": [
+      "Curve25519Dalek/Specs/Backend/Serial/U64/Field/FieldElement51/Mul.lean"
+     ],
+     "models_used": [
+      "claude-opus-5-5"
+     ],
+     "cost_usd": 2.6352693999999994,
+     "num_turns": 17,
+     "session_cache_creation_tokens": 112990,
+     "usage_totals": {
+      "input_tokens": 22,
+      "output_tokens": 6412,
+      "cache_creation_input_tokens": 15626,
+      "cache_read_input_tokens": 1226379
+     },
+     "assistant_turns": 11,
+     "buckets": {
+      "productive": 4236,
+      "diagnostic": 1335,
+      "retrieval": 841,
+      "dead_end": 0,
+      "reingestion_input": 1135887,
+      "reingestion_cache_read": 1124244
+     },
+     "proof_state": "/home/zhang-liao/auto_verify_dalek/ledger/transcripts/.proof-state-dag_double_dynamic_01_3-14846bdf-3427-42e9-81f0-b44d20d6b922/state.json"
+    }
+   ],
+   "detail": {
+    "gate_build_seconds": 1.5,
+    "g1_seconds": 3.5,
+    "specs": [
+     "curve25519_dalek.Shared0FieldElement51.Insts.CoreOpsArithMulSharedAFieldElement51FieldElement51.mul_spec"
+    ],
+    "g2": "skipped",
+    "verified_theorems": [
+     "curve25519_dalek.Shared0FieldElement51.Insts.CoreOpsArithMulSharedAFieldElement51FieldElement51.mul_spec"
+    ]
+   }
+  },
+  {
+   "node": "n4",
+   "outcome": "accepted",
+   "sessions": [
+    "64c43b76-e1d3-40d8-8f17-860ab7d26449"
+   ],
+   "rounds": [
+    {
+     "round": 1,
+     "outcome": "accepted",
+     "detail": {
+      "gate_build_seconds": 1.8,
+      "g1_seconds": 3.0,
+      "specs": [
+       "curve25519_dalek.backend.serial.curve_models.CompletedPoint.as_extended_spec"
+      ],
+      "g2": "skipped",
+      "verified_theorems": [
+       "curve25519_dalek.backend.serial.curve_models.CompletedPoint.as_extended_spec"
+      ]
+     },
+     "wall_seconds": 62.8,
+     "status": "ok",
+     "session_id": "64c43b76-e1d3-40d8-8f17-860ab7d26449",
+     "fresh_session": true,
+     "transcript": "ledger/transcripts/dag_double_dynamic_01_4.r1.jsonl",
+     "provenance": {
+      "last_event_type": "result",
+      "last_result_seen": true,
+      "result_followed_by_metadata": false,
+      "parse_errors": 0,
+      "compact_recovery": {
+       "enabled": true,
+       "event": "SessionStart",
+       "matcher": "compact",
+       "settings_path": "/home/zhang-liao/auto_verify_dalek/ledger/runs/double_dynamic_01/slot0/claude_config/local_check_tool/recovery-cef2ab7f1ddd4fa8a4e6a804990c9381/settings.json",
+       "settings_sha256": "5d35bf51046f5eee60a73ed6adbfac1d57005f4853ea5e838c3f4c715ddb868c",
+       "hook_path": "/home/zhang-liao/auto_verify_dalek/ledger/runs/double_dynamic_01/slot0/claude_config/local_check_tool/compact_reminder.py",
+       "hook_sha256": "3a4dd6560b5d7ac828fb79b1f2879d7ef6e03c315a9753a983884d61614bce64",
+       "files": {
+        "/home/zhang-liao/auto_verify_dalek/ledger/runs/double_dynamic_01/slot0/claude_config/local_check_tool/recovery-cef2ab7f1ddd4fa8a4e6a804990c9381/workflow.md": "c887b596cf914f82feb51245f4b84370ec11e5e941f15b301bbd7f9d1021d2f0",
+        "/home/zhang-liao/auto_verify_dalek/ledger/runs/double_dynamic_01/slot0/claude_config/local_check_tool/recovery-cef2ab7f1ddd4fa8a4e6a804990c9381/round-context.md": "c887b596cf914f82feb51245f4b84370ec11e5e941f15b301bbd7f9d1021d2f0",
+        "/home/zhang-liao/auto_verify_dalek/ledger/runs/double_dynamic_01/slot0/claude_config/local_check_tool/recovery-cef2ab7f1ddd4fa8a4e6a804990c9381/lean-check.md": "6570fbe8430c9d2742fa6430ee296996f3928eda2a3db80d019380901ad29119"
+       }
+      },
+      "local_check": {
+       "enabled": true,
+       "tool_sha256": "371074cd65134a0c7abbba2406a53c4e37c08bf3f15f16b3814e1f2ef8bef371",
+       "tool_path": "/home/zhang-liao/auto_verify_dalek/ledger/runs/double_dynamic_01/slot0/claude_config/local_check_tool/lean_check.py",
+       "state_helper_sha256": "63e9df6973faf19f6fd98c794c2417b25866a0349669d54025bb3ac0864b61b0",
+       "log_dir": "/home/zhang-liao/auto_verify_dalek/ledger/runs/double_dynamic_01/slot0/claude_config/local_checks",
+       "effective_message_path": "/home/zhang-liao/auto_verify_dalek/ledger/transcripts/dag_double_dynamic_01_4.r1.jsonl.prompt.txt",
+       "allowed_tools": "Read,Grep,Glob,Edit,Write,Bash(lake build*),Bash(grep*),Bash(/usr/bin/python3 /home/zhang-liao/auto_verify_dalek/ledger/runs/double_dynamic_01/slot0/claude_config/local_check_tool/lean_check.py *)",
+       "instructions_sha256": "6570fbe8430c9d2742fa6430ee296996f3928eda2a3db80d019380901ad29119",
+       "effective_message_sha256": "c887b596cf914f82feb51245f4b84370ec11e5e941f15b301bbd7f9d1021d2f0"
+      }
+     },
+     "end_reason": "COMPLETE",
+     "target_file_edited": true,
+     "edited_files": [
+      "Curve25519Dalek/Specs/Backend/Serial/CurveModels/CompletedPoint/AsExtended.lean"
+     ],
+     "models_used": [
+      "claude-opus-5-5"
+     ],
+     "cost_usd": 0.2612026,
+     "num_turns": 12,
+     "session_cache_creation_tokens": 16938,
+     "usage_totals": {
+      "input_tokens": 16,
+      "output_tokens": 5020,
+      "cache_creation_input_tokens": 16938,
+      "cache_read_input_tokens": 126173
+     },
+     "assistant_turns": 8,
+     "buckets": {
+      "productive": 1262,
+      "diagnostic": 3139,
+      "retrieval": 619,
+      "dead_end": 0,
+      "reingestion_input": 131835,
+      "reingestion_cache_read": 119909
+     },
+     "proof_state": "/home/zhang-liao/auto_verify_dalek/ledger/transcripts/.proof-state-dag_double_dynamic_01_4-64c43b76-e1d3-40d8-8f17-860ab7d26449/state.json"
+    }
+   ],
+   "detail": {
+    "gate_build_seconds": 1.8,
+    "g1_seconds": 3.0,
+    "specs": [
+     "curve25519_dalek.backend.serial.curve_models.CompletedPoint.as_extended_spec"
+    ],
+    "g2": "skipped",
+    "verified_theorems": [
+     "curve25519_dalek.backend.serial.curve_models.CompletedPoint.as_extended_spec"
+    ]
+   }
+  },
+  {
+   "node": "n5",
+   "outcome": "accepted",
+   "sessions": [
+    "58e2794a-4ea9-41de-a9e6-17079e8e5e32"
+   ],
+   "rounds": [
+    {
+     "round": 1,
+     "outcome": "accepted",
+     "detail": {
+      "gate_build_seconds": 1.8,
+      "g1_seconds": 3.0,
+      "specs": [
+       "curve25519_dalek.backend.serial.u64.field.FieldElement51.Insts.CoreOpsArithAddAssignSharedAFieldElement51.add_assign_loop_spec"
+      ],
+      "g2": "skipped",
+      "verified_theorems": [
+       "curve25519_dalek.backend.serial.u64.field.FieldElement51.Insts.CoreOpsArithAddAssignSharedAFieldElement51.add_assign_loop_spec"
+      ]
+     },
+     "wall_seconds": 102.0,
+     "status": "ok",
+     "session_id": "58e2794a-4ea9-41de-a9e6-17079e8e5e32",
+     "fresh_session": true,
+     "transcript": "ledger/transcripts/dag_double_dynamic_01_5.r1.jsonl",
+     "provenance": {
+      "last_event_type": "result",
+      "last_result_seen": true,
+      "result_followed_by_metadata": false,
+      "parse_errors": 0,
+      "compact_recovery": {
+       "enabled": true,
+       "event": "SessionStart",
+       "matcher": "compact",
+       "settings_path": "/home/zhang-liao/auto_verify_dalek/ledger/runs/double_dynamic_01/slot0/claude_config/local_check_tool/recovery-66c54026ae2943cd8d353cec6b18d9af/settings.json",
+       "settings_sha256": "44eb492237dfb08118f2e9811c32122bb10fc3411b1596b8479109e761a52497",
+       "hook_path": "/home/zhang-liao/auto_verify_dalek/ledger/runs/double_dynamic_01/slot0/claude_config/local_check_tool/compact_reminder.py",
+       "hook_sha256": "3a4dd6560b5d7ac828fb79b1f2879d7ef6e03c315a9753a983884d61614bce64",
+       "files": {
+        "/home/zhang-liao/auto_verify_dalek/ledger/runs/double_dynamic_01/slot0/claude_config/local_check_tool/recovery-66c54026ae2943cd8d353cec6b18d9af/workflow.md": "33e3f480c190fa3d32b5642ed1edcc52d1f9900834e8be145f09f37686082a54",
+        "/home/zhang-liao/auto_verify_dalek/ledger/runs/double_dynamic_01/slot0/claude_config/local_check_tool/recovery-66c54026ae2943cd8d353cec6b18d9af/round-context.md": "33e3f480c190fa3d32b5642ed1edcc52d1f9900834e8be145f09f37686082a54",
+        "/home/zhang-liao/auto_verify_dalek/ledger/runs/double_dynamic_01/slot0/claude_config/local_check_tool/recovery-66c54026ae2943cd8d353cec6b18d9af/lean-check.md": "6570fbe8430c9d2742fa6430ee296996f3928eda2a3db80d019380901ad29119"
+       }
+      },
+      "local_check": {
+       "enabled": true,
+       "tool_sha256": "371074cd65134a0c7abbba2406a53c4e37c08bf3f15f16b3814e1f2ef8bef371",
+       "tool_path": "/home/zhang-liao/auto_verify_dalek/ledger/runs/double_dynamic_01/slot0/claude_config/local_check_tool/lean_check.py",
+       "state_helper_sha256": "63e9df6973faf19f6fd98c794c2417b25866a0349669d54025bb3ac0864b61b0",
+       "log_dir": "/home/zhang-liao/auto_verify_dalek/ledger/runs/double_dynamic_01/slot0/claude_config/local_checks",
+       "effective_message_path": "/home/zhang-liao/auto_verify_dalek/ledger/transcripts/dag_double_dynamic_01_5.r1.jsonl.prompt.txt",
+       "allowed_tools": "Read,Grep,Glob,Edit,Write,Bash(lake build*),Bash(grep*),Bash(/usr/bin/python3 /home/zhang-liao/auto_verify_dalek/ledger/runs/double_dynamic_01/slot0/claude_config/local_check_tool/lean_check.py *)",
+       "instructions_sha256": "6570fbe8430c9d2742fa6430ee296996f3928eda2a3db80d019380901ad29119",
+       "effective_message_sha256": "33e3f480c190fa3d32b5642ed1edcc52d1f9900834e8be145f09f37686082a54"
+      }
+     },
+     "end_reason": "COMPLETE",
+     "target_file_edited": true,
+     "edited_files": [
+      "Curve25519Dalek/Specs/Backend/Serial/U64/Field/FieldElement51/AddAssign.lean"
+     ],
+     "models_used": [
+      "claude-opus-5-5"
+     ],
+     "cost_usd": 0.3758476,
+     "num_turns": 17,
+     "session_cache_creation_tokens": 22295,
+     "usage_totals": {
+      "input_tokens": 26,
+      "output_tokens": 7226,
+      "cache_creation_input_tokens": 22295,
+      "cache_read_input_tokens": 264318
+     },
+     "assistant_turns": 13,
+     "buckets": {
+      "productive": 2281,
+      "diagnostic": 3876,
+      "retrieval": 1069,
+      "dead_end": 0,
+      "reingestion_input": 275057,
+      "reingestion_cache_read": 258054
+     },
+     "proof_state": "/home/zhang-liao/auto_verify_dalek/ledger/transcripts/.proof-state-dag_double_dynamic_01_5-58e2794a-4ea9-41de-a9e6-17079e8e5e32/state.json"
+    }
+   ],
+   "detail": {
+    "gate_build_seconds": 1.8,
+    "g1_seconds": 3.0,
+    "specs": [
+     "curve25519_dalek.backend.serial.u64.field.FieldElement51.Insts.CoreOpsArithAddAssignSharedAFieldElement51.add_assign_loop_spec"
+    ],
+    "g2": "skipped",
+    "verified_theorems": [
+     "curve25519_dalek.backend.serial.u64.field.FieldElement51.Insts.CoreOpsArithAddAssignSharedAFieldElement51.add_assign_loop_spec"
+    ]
+   }
+  },
+  {
+   "node": "n6",
+   "outcome": "accepted",
+   "sessions": [
+    "daeea0f7-25e8-4fe6-b243-e00a85d76cd7"
+   ],
+   "rounds": [
+    {
+     "round": 1,
+     "outcome": "accepted",
+     "detail": {
+      "gate_build_seconds": 1.7,
+      "g1_seconds": 3.1,
+      "specs": [
+       "curve25519_dalek.backend.serial.u64.field.FieldElement51.Insts.CoreOpsArithAddAssignSharedAFieldElement51.add_assign_spec"
+      ],
+      "g2": "skipped",
+      "verified_theorems": [
+       "curve25519_dalek.backend.serial.u64.field.FieldElement51.Insts.CoreOpsArithAddAssignSharedAFieldElement51.add_assign_spec"
+      ]
+     },
+     "wall_seconds": 66.4,
+     "status": "ok",
+     "session_id": "daeea0f7-25e8-4fe6-b243-e00a85d76cd7",
+     "fresh_session": true,
+     "transcript": "ledger/transcripts/dag_double_dynamic_01_6.r1.jsonl",
+     "provenance": {
+      "last_event_type": "result",
+      "last_result_seen": true,
+      "result_followed_by_metadata": false,
+      "parse_errors": 0,
+      "compact_recovery": {
+       "enabled": true,
+       "event": "SessionStart",
+       "matcher": "compact",
+       "settings_path": "/home/zhang-liao/auto_verify_dalek/ledger/runs/double_dynamic_01/slot0/claude_config/local_check_tool/recovery-5bb88ca9b1e446aa802dd41678e2cf78/settings.json",
+       "settings_sha256": "6bae860cee0c897f9537a190fd3310bd05ce4109298a9ef48acd798288550925",
+       "hook_path": "/home/zhang-liao/auto_verify_dalek/ledger/runs/double_dynamic_01/slot0/claude_config/local_check_tool/compact_reminder.py",
+       "hook_sha256": "3a4dd6560b5d7ac828fb79b1f2879d7ef6e03c315a9753a983884d61614bce64",
+       "files": {
+        "/home/zhang-liao/auto_verify_dalek/ledger/runs/double_dynamic_01/slot0/claude_config/local_check_tool/recovery-5bb88ca9b1e446aa802dd41678e2cf78/workflow.md": "4a71798e920eb145fdb1916bd05172e48334255296635b8bc1442ecaacd632e3",
+        "/home/zhang-liao/auto_verify_dalek/ledger/runs/double_dynamic_01/slot0/claude_config/local_check_tool/recovery-5bb88ca9b1e446aa802dd41678e2cf78/round-context.md": "4a71798e920eb145fdb1916bd05172e48334255296635b8bc1442ecaacd632e3",
+        "/home/zhang-liao/auto_verify_dalek/ledger/runs/double_dynamic_01/slot0/claude_config/local_check_tool/recovery-5bb88ca9b1e446aa802dd41678e2cf78/lean-check.md": "6570fbe8430c9d2742fa6430ee296996f3928eda2a3db80d019380901ad29119"
+       }
+      },
+      "local_check": {
+       "enabled": true,
+       "tool_sha256": "371074cd65134a0c7abbba2406a53c4e37c08bf3f15f16b3814e1f2ef8bef371",
+       "tool_path": "/home/zhang-liao/auto_verify_dalek/ledger/runs/double_dynamic_01/slot0/claude_config/local_check_tool/lean_check.py",
+       "state_helper_sha256": "63e9df6973faf19f6fd98c794c2417b25866a0349669d54025bb3ac0864b61b0",
+       "log_dir": "/home/zhang-liao/auto_verify_dalek/ledger/runs/double_dynamic_01/slot0/claude_config/local_checks",
+       "effective_message_path": "/home/zhang-liao/auto_verify_dalek/ledger/transcripts/dag_double_dynamic_01_6.r1.jsonl.prompt.txt",
+       "allowed_tools": "Read,Grep,Glob,Edit,Write,Bash(lake build*),Bash(grep*),Bash(/usr/bin/python3 /home/zhang-liao/auto_verify_dalek/ledger/runs/double_dynamic_01/slot0/claude_config/local_check_tool/lean_check.py *)",
+       "instructions_sha256": "6570fbe8430c9d2742fa6430ee296996f3928eda2a3db80d019380901ad29119",
+       "effective_message_sha256": "4a71798e920eb145fdb1916bd05172e48334255296635b8bc1442ecaacd632e3"
+      }
+     },
+     "end_reason": "COMPLETE",
+     "target_file_edited": true,
+     "edited_files": [
+      "Curve25519Dalek/Specs/Backend/Serial/U64/Field/FieldElement51/AddAssign.lean"
+     ],
+     "models_used": [
+      "claude-opus-5-5"
+     ],
+     "cost_usd": 0.34221419999999997,
+     "num_turns": 14,
+     "session_cache_creation_tokens": 24853,
+     "usage_totals": {
+      "input_tokens": 22,
+      "output_tokens": 4565,
+      "cache_creation_input_tokens": 24853,
+      "cache_read_input_tokens": 260011
+     },
+     "assistant_turns": 11,
+     "buckets": {
+      "productive": 2183,
+      "diagnostic": 2013,
+      "retrieval": 370,
+      "dead_end": 0,
+      "reingestion_input": 273218,
+      "reingestion_cache_read": 253747
+     },
+     "proof_state": "/home/zhang-liao/auto_verify_dalek/ledger/transcripts/.proof-state-dag_double_dynamic_01_6-daeea0f7-25e8-4fe6-b243-e00a85d76cd7/state.json"
+    }
+   ],
+   "detail": {
+    "gate_build_seconds": 1.7,
+    "g1_seconds": 3.1,
+    "specs": [
+     "curve25519_dalek.backend.serial.u64.field.FieldElement51.Insts.CoreOpsArithAddAssignSharedAFieldElement51.add_assign_spec"
+    ],
+    "g2": "skipped",
+    "verified_theorems": [
+     "curve25519_dalek.backend.serial.u64.field.FieldElement51.Insts.CoreOpsArithAddAssignSharedAFieldElement51.add_assign_spec"
+    ]
+   }
+  },
+  {
+   "node": "n7",
+   "outcome": "accepted",
+   "sessions": [
+    "fc14329a-40d1-4e7d-9a27-7cc2598b52d2"
+   ],
+   "rounds": [
+    {
+     "round": 1,
+     "outcome": "accepted",
+     "detail": {
+      "gate_build_seconds": 1.7,
+      "g1_seconds": 3.0,
+      "specs": [
+       "curve25519_dalek.Shared0FieldElement51.Insts.CoreOpsArithAddSharedAFieldElement51FieldElement51.add_spec"
+      ],
+      "g2": "skipped",
+      "verified_theorems": [
+       "curve25519_dalek.Shared0FieldElement51.Insts.CoreOpsArithAddSharedAFieldElement51FieldElement51.add_spec"
+      ]
+     },
+     "wall_seconds": 46.9,
+     "status": "ok",
+     "session_id": "fc14329a-40d1-4e7d-9a27-7cc2598b52d2",
+     "fresh_session": true,
+     "transcript": "ledger/transcripts/dag_double_dynamic_01_7.r1.jsonl",
+     "provenance": {
+      "last_event_type": "result",
+      "last_result_seen": true,
+      "result_followed_by_metadata": false,
+      "parse_errors": 0,
+      "compact_recovery": {
+       "enabled": true,
+       "event": "SessionStart",
+       "matcher": "compact",
+       "settings_path": "/home/zhang-liao/auto_verify_dalek/ledger/runs/double_dynamic_01/slot0/claude_config/local_check_tool/recovery-51a1f73e45804c77bf48528cabc6cba7/settings.json",
+       "settings_sha256": "d347a0ca0b9f0c7dfc89c4734ed8dc097e6a9ef717c28bbb6f094adaa47b880f",
+       "hook_path": "/home/zhang-liao/auto_verify_dalek/ledger/runs/double_dynamic_01/slot0/claude_config/local_check_tool/compact_reminder.py",
+       "hook_sha256": "3a4dd6560b5d7ac828fb79b1f2879d7ef6e03c315a9753a983884d61614bce64",
+       "files": {
+        "/home/zhang-liao/auto_verify_dalek/ledger/runs/double_dynamic_01/slot0/claude_config/local_check_tool/recovery-51a1f73e45804c77bf48528cabc6cba7/workflow.md": "a8d0d24d98137e9fcd7665b39aa1f4cd28ed03c659a6676d45ed360c71d9180b",
+        "/home/zhang-liao/auto_verify_dalek/ledger/runs/double_dynamic_01/slot0/claude_config/local_check_tool/recovery-51a1f73e45804c77bf48528cabc6cba7/round-context.md": "a8d0d24d98137e9fcd7665b39aa1f4cd28ed03c659a6676d45ed360c71d9180b",
+        "/home/zhang-liao/auto_verify_dalek/ledger/runs/double_dynamic_01/slot0/claude_config/local_check_tool/recovery-51a1f73e45804c77bf48528cabc6cba7/lean-check.md": "6570fbe8430c9d2742fa6430ee296996f3928eda2a3db80d019380901ad29119"
+       }
+      },
+      "local_check": {
+       "enabled": true,
+       "tool_sha256": "371074cd65134a0c7abbba2406a53c4e37c08bf3f15f16b3814e1f2ef8bef371",
+       "tool_path": "/home/zhang-liao/auto_verify_dalek/ledger/runs/double_dynamic_01/slot0/claude_config/local_check_tool/lean_check.py",
+       "state_helper_sha256": "63e9df6973faf19f6fd98c794c2417b25866a0349669d54025bb3ac0864b61b0",
+       "log_dir": "/home/zhang-liao/auto_verify_dalek/ledger/runs/double_dynamic_01/slot0/claude_config/local_checks",
+       "effective_message_path": "/home/zhang-liao/auto_verify_dalek/ledger/transcripts/dag_double_dynamic_01_7.r1.jsonl.prompt.txt",
+       "allowed_tools": "Read,Grep,Glob,Edit,Write,Bash(lake build*),Bash(grep*),Bash(/usr/bin/python3 /home/zhang-liao/auto_verify_dalek/ledger/runs/double_dynamic_01/slot0/claude_config/local_check_tool/lean_check.py *)",
+       "instructions_sha256": "6570fbe8430c9d2742fa6430ee296996f3928eda2a3db80d019380901ad29119",
+       "effective_message_sha256": "a8d0d24d98137e9fcd7665b39aa1f4cd28ed03c659a6676d45ed360c71d9180b"
+      }
+     },
+     "end_reason": "COMPLETE",
+     "target_file_edited": true,
+     "edited_files": [
+      "Curve25519Dalek/Specs/Backend/Serial/U64/Field/FieldElement51/Add.lean"
+     ],
+     "models_used": [
+      "claude-opus-5-5"
+     ],
+     "cost_usd": 0.2286812,
+     "num_turns": 10,
+     "session_cache_creation_tokens": 16320,
+     "usage_totals": {
+      "input_tokens": 14,
+      "output_tokens": 3793,
+      "cache_creation_input_tokens": 16320,
+      "cache_read_input_tokens": 111026
+     },
+     "assistant_turns": 7,
+     "buckets": {
+      "productive": 1172,
+      "diagnostic": 2108,
+      "retrieval": 513,
+      "dead_end": 0,
+      "reingestion_input": 115666,
+      "reingestion_cache_read": 104762
+     },
+     "proof_state": "/home/zhang-liao/auto_verify_dalek/ledger/transcripts/.proof-state-dag_double_dynamic_01_7-fc14329a-40d1-4e7d-9a27-7cc2598b52d2/state.json"
+    }
+   ],
+   "detail": {
+    "gate_build_seconds": 1.7,
+    "g1_seconds": 3.0,
+    "specs": [
+     "curve25519_dalek.Shared0FieldElement51.Insts.CoreOpsArithAddSharedAFieldElement51FieldElement51.add_spec"
+    ],
+    "g2": "skipped",
+    "verified_theorems": [
+     "curve25519_dalek.Shared0FieldElement51.Insts.CoreOpsArithAddSharedAFieldElement51FieldElement51.add_spec"
+    ]
+   }
+  },
+  {
+   "node": "n8",
+   "outcome": "accepted",
+   "sessions": [
+    "170ff599-b449-48e1-970f-7d516d0f186e"
+   ],
+   "rounds": [
+    {
+     "round": 1,
+     "outcome": "accepted",
+     "detail": {
+      "gate_build_seconds": 1.6,
+      "g1_seconds": 3.0,
+      "specs": [
+       "curve25519_dalek.backend.serial.u64.field.FieldElement51.pow2k.LOW_51_BIT_MASK_spec"
+      ],
+      "g2": "skipped",
+      "verified_theorems": [
+       "curve25519_dalek.backend.serial.u64.field.FieldElement51.pow2k.LOW_51_BIT_MASK_spec"
+      ]
+     },
+     "wall_seconds": 37.2,
+     "status": "ok",
+     "session_id": "170ff599-b449-48e1-970f-7d516d0f186e",
+     "fresh_session": true,
+     "transcript": "ledger/transcripts/dag_double_dynamic_01_8.r1.jsonl",
+     "provenance": {
+      "last_event_type": "result",
+      "last_result_seen": true,
+      "result_followed_by_metadata": false,
+      "parse_errors": 0,
+      "compact_recovery": {
+       "enabled": true,
+       "event": "SessionStart",
+       "matcher": "compact",
+       "settings_path": "/home/zhang-liao/auto_verify_dalek/ledger/runs/double_dynamic_01/slot0/claude_config/local_check_tool/recovery-978f07ee3d794c3bb6270b870a267899/settings.json",
+       "settings_sha256": "c5497a2b956143a8db563b798b04935cdfc5cce8af6d758eec8a4d95938ec685",
+       "hook_path": "/home/zhang-liao/auto_verify_dalek/ledger/runs/double_dynamic_01/slot0/claude_config/local_check_tool/compact_reminder.py",
+       "hook_sha256": "3a4dd6560b5d7ac828fb79b1f2879d7ef6e03c315a9753a983884d61614bce64",
+       "files": {
+        "/home/zhang-liao/auto_verify_dalek/ledger/runs/double_dynamic_01/slot0/claude_config/local_check_tool/recovery-978f07ee3d794c3bb6270b870a267899/workflow.md": "c4f75c8fcb8ba2f04557d30fd7d310d8124c3ab19006db9a601e6d9bd163d4f9",
+        "/home/zhang-liao/auto_verify_dalek/ledger/runs/double_dynamic_01/slot0/claude_config/local_check_tool/recovery-978f07ee3d794c3bb6270b870a267899/round-context.md": "c4f75c8fcb8ba2f04557d30fd7d310d8124c3ab19006db9a601e6d9bd163d4f9",
+        "/home/zhang-liao/auto_verify_dalek/ledger/runs/double_dynamic_01/slot0/claude_config/local_check_tool/recovery-978f07ee3d794c3bb6270b870a267899/lean-check.md": "6570fbe8430c9d2742fa6430ee296996f3928eda2a3db80d019380901ad29119"
+       }
+      },
+      "local_check": {
+       "enabled": true,
+       "tool_sha256": "371074cd65134a0c7abbba2406a53c4e37c08bf3f15f16b3814e1f2ef8bef371",
+       "tool_path": "/home/zhang-liao/auto_verify_dalek/ledger/runs/double_dynamic_01/slot0/claude_config/local_check_tool/lean_check.py",
+       "state_helper_sha256": "63e9df6973faf19f6fd98c794c2417b25866a0349669d54025bb3ac0864b61b0",
+       "log_dir": "/home/zhang-liao/auto_verify_dalek/ledger/runs/double_dynamic_01/slot0/claude_config/local_checks",
+       "effective_message_path": "/home/zhang-liao/auto_verify_dalek/ledger/transcripts/dag_double_dynamic_01_8.r1.jsonl.prompt.txt",
+       "allowed_tools": "Read,Grep,Glob,Edit,Write,Bash(lake build*),Bash(grep*),Bash(/usr/bin/python3 /home/zhang-liao/auto_verify_dalek/ledger/runs/double_dynamic_01/slot0/claude_config/local_check_tool/lean_check.py *)",
+       "instructions_sha256": "6570fbe8430c9d2742fa6430ee296996f3928eda2a3db80d019380901ad29119",
+       "effective_message_sha256": "c4f75c8fcb8ba2f04557d30fd7d310d8124c3ab19006db9a601e6d9bd163d4f9"
+      }
+     },
+     "end_reason": "COMPLETE",
+     "target_file_edited": true,
+     "edited_files": [
+      "Curve25519Dalek/Specs/Backend/Serial/U64/Field/FieldElement51/Pow2K.lean"
+     ],
+     "models_used": [
+      "claude-opus-5-5"
+     ],
+     "cost_usd": 0.1441252,
+     "num_turns": 8,
+     "session_cache_creation_tokens": 10556,
+     "usage_totals": {
+      "input_tokens": 14,
+      "output_tokens": 2071,
+      "cache_creation_input_tokens": 10556,
+      "cache_read_input_tokens": 91006
+     },
+     "assistant_turns": 7,
+     "buckets": {
+      "productive": 976,
+      "diagnostic": 972,
+      "retrieval": 123,
+      "dead_end": 0,
+      "reingestion_input": 89813,
+      "reingestion_cache_read": 84742
+     },
+     "proof_state": "/home/zhang-liao/auto_verify_dalek/ledger/transcripts/.proof-state-dag_double_dynamic_01_8-170ff599-b449-48e1-970f-7d516d0f186e/state.json"
+    }
+   ],
+   "detail": {
+    "gate_build_seconds": 1.6,
+    "g1_seconds": 3.0,
+    "specs": [
+     "curve25519_dalek.backend.serial.u64.field.FieldElement51.pow2k.LOW_51_BIT_MASK_spec"
+    ],
+    "g2": "skipped",
+    "verified_theorems": [
+     "curve25519_dalek.backend.serial.u64.field.FieldElement51.pow2k.LOW_51_BIT_MASK_spec"
+    ]
+   }
+  },
+  {
+   "node": "n9",
+   "outcome": "accepted",
+   "sessions": [
+    "25786732-123f-431e-8f72-295adfae9c2c"
+   ],
+   "rounds": [
+    {
+     "round": 1,
+     "outcome": "accepted",
+     "detail": {
+      "gate_build_seconds": 1.9,
+      "g1_seconds": 3.0,
+      "specs": [
+       "curve25519_dalek.backend.serial.u64.field.FieldElement51.pow2k.m_spec"
+      ],
+      "g2": "skipped",
+      "verified_theorems": [
+       "curve25519_dalek.backend.serial.u64.field.FieldElement51.pow2k.m_spec"
+      ]
+     },
+     "wall_seconds": 38.1,
+     "status": "ok",
+     "session_id": "25786732-123f-431e-8f72-295adfae9c2c",
+     "fresh_session": true,
+     "transcript": "ledger/transcripts/dag_double_dynamic_01_9.r1.jsonl",
+     "provenance": {
+      "last_event_type": "result",
+      "last_result_seen": true,
+      "result_followed_by_metadata": false,
+      "parse_errors": 0,
+      "compact_recovery": {
+       "enabled": true,
+       "event": "SessionStart",
+       "matcher": "compact",
+       "settings_path": "/home/zhang-liao/auto_verify_dalek/ledger/runs/double_dynamic_01/slot0/claude_config/local_check_tool/recovery-a15b5eda66314016b96c1606146bac1b/settings.json",
+       "settings_sha256": "2da98f6752b0c85b6103368ed92242c5adaf569c20f91c410fe085e8c7607986",
+       "hook_path": "/home/zhang-liao/auto_verify_dalek/ledger/runs/double_dynamic_01/slot0/claude_config/local_check_tool/compact_reminder.py",
+       "hook_sha256": "3a4dd6560b5d7ac828fb79b1f2879d7ef6e03c315a9753a983884d61614bce64",
+       "files": {
+        "/home/zhang-liao/auto_verify_dalek/ledger/runs/double_dynamic_01/slot0/claude_config/local_check_tool/recovery-a15b5eda66314016b96c1606146bac1b/workflow.md": "6c0bc7512a9453d86456941a6beb1bd7e0549b393e5e9620256ecce92acab385",
+        "/home/zhang-liao/auto_verify_dalek/ledger/runs/double_dynamic_01/slot0/claude_config/local_check_tool/recovery-a15b5eda66314016b96c1606146bac1b/round-context.md": "6c0bc7512a9453d86456941a6beb1bd7e0549b393e5e9620256ecce92acab385",
+        "/home/zhang-liao/auto_verify_dalek/ledger/runs/double_dynamic_01/slot0/claude_config/local_check_tool/recovery-a15b5eda66314016b96c1606146bac1b/lean-check.md": "6570fbe8430c9d2742fa6430ee296996f3928eda2a3db80d019380901ad29119"
+       }
+      },
+      "local_check": {
+       "enabled": true,
+       "tool_sha256": "371074cd65134a0c7abbba2406a53c4e37c08bf3f15f16b3814e1f2ef8bef371",
+       "tool_path": "/home/zhang-liao/auto_verify_dalek/ledger/runs/double_dynamic_01/slot0/claude_config/local_check_tool/lean_check.py",
+       "state_helper_sha256": "63e9df6973faf19f6fd98c794c2417b25866a0349669d54025bb3ac0864b61b0",
+       "log_dir": "/home/zhang-liao/auto_verify_dalek/ledger/runs/double_dynamic_01/slot0/claude_config/local_checks",
+       "effective_message_path": "/home/zhang-liao/auto_verify_dalek/ledger/transcripts/dag_double_dynamic_01_9.r1.jsonl.prompt.txt",
+       "allowed_tools": "Read,Grep,Glob,Edit,Write,Bash(lake build*),Bash(grep*),Bash(/usr/bin/python3 /home/zhang-liao/auto_verify_dalek/ledger/runs/double_dynamic_01/slot0/claude_config/local_check_tool/lean_check.py *)",
+       "instructions_sha256": "6570fbe8430c9d2742fa6430ee296996f3928eda2a3db80d019380901ad29119",
+       "effective_message_sha256": "6c0bc7512a9453d86456941a6beb1bd7e0549b393e5e9620256ecce92acab385"
+      }
+     },
+     "end_reason": "COMPLETE",
+     "target_file_edited": true,
+     "edited_files": [
+      "Curve25519Dalek/Specs/Backend/Serial/U64/Field/FieldElement51/Pow2K.lean"
+     ],
+     "models_used": [
+      "claude-opus-5-5"
+     ],
+     "cost_usd": 0.1574074,
+     "num_turns": 8,
+     "session_cache_creation_tokens": 11435,
+     "usage_totals": {
+      "input_tokens": 12,
+      "output_tokens": 2510,
+      "cache_creation_input_tokens": 11435,
+      "cache_read_input_tokens": 78397
+     },
+     "assistant_turns": 6,
+     "buckets": {
+      "productive": 967,
+      "diagnostic": 1427,
+      "retrieval": 116,
+      "dead_end": 0,
+      "reingestion_input": 78053,
+      "reingestion_cache_read": 72133
+     },
+     "proof_state": "/home/zhang-liao/auto_verify_dalek/ledger/transcripts/.proof-state-dag_double_dynamic_01_9-25786732-123f-431e-8f72-295adfae9c2c/state.json"
+    }
+   ],
+   "detail": {
+    "gate_build_seconds": 1.9,
+    "g1_seconds": 3.0,
+    "specs": [
+     "curve25519_dalek.backend.serial.u64.field.FieldElement51.pow2k.m_spec"
+    ],
+    "g2": "skipped",
+    "verified_theorems": [
+     "curve25519_dalek.backend.serial.u64.field.FieldElement51.pow2k.m_spec"
+    ]
+   }
+  },
+  {
+   "node": "n10",
+   "outcome": "accepted",
+   "sessions": [
+    "db710a99-8c6e-4887-a2e9-cc1764b802ce"
+   ],
+   "rounds": [
+    {
+     "round": 1,
+     "outcome": "accepted",
+     "detail": {
+      "gate_build_seconds": 1.7,
+      "g1_seconds": 3.5,
+      "specs": [
+       "curve25519_dalek.backend.serial.u64.field.FieldElement51.pow2k_loop_spec"
+      ],
+      "g2": "skipped",
+      "verified_theorems": [
+       "curve25519_dalek.backend.serial.u64.field.FieldElement51.pow2k_loop_spec"
+      ]
+     },
+     "wall_seconds": 410.6,
+     "status": "ok",
+     "session_id": "db710a99-8c6e-4887-a2e9-cc1764b802ce",
+     "fresh_session": true,
+     "transcript": "ledger/transcripts/dag_double_dynamic_01_10.r1.jsonl",
+     "provenance": {
+      "last_event_type": "result",
+      "last_result_seen": true,
+      "result_followed_by_metadata": false,
+      "parse_errors": 0,
+      "compact_recovery": {
+       "enabled": true,
+       "event": "SessionStart",
+       "matcher": "compact",
+       "settings_path": "/home/zhang-liao/auto_verify_dalek/ledger/runs/double_dynamic_01/slot0/claude_config/local_check_tool/recovery-309c7df3b5f74937af7995937f84423d/settings.json",
+       "settings_sha256": "5516cc52f6bbf3acc1c7f1e18a17283e18ed033753b922456b619d4e553ee973",
+       "hook_path": "/home/zhang-liao/auto_verify_dalek/ledger/runs/double_dynamic_01/slot0/claude_config/local_check_tool/compact_reminder.py",
+       "hook_sha256": "3a4dd6560b5d7ac828fb79b1f2879d7ef6e03c315a9753a983884d61614bce64",
+       "files": {
+        "/home/zhang-liao/auto_verify_dalek/ledger/runs/double_dynamic_01/slot0/claude_config/local_check_tool/recovery-309c7df3b5f74937af7995937f84423d/workflow.md": "e50d408b61637aa3e51a1ebec24a741513505d4d2458ecf36c76c09685362e19",
+        "/home/zhang-liao/auto_verify_dalek/ledger/runs/double_dynamic_01/slot0/claude_config/local_check_tool/recovery-309c7df3b5f74937af7995937f84423d/round-context.md": "e50d408b61637aa3e51a1ebec24a741513505d4d2458ecf36c76c09685362e19",
+        "/home/zhang-liao/auto_verify_dalek/ledger/runs/double_dynamic_01/slot0/claude_config/local_check_tool/recovery-309c7df3b5f74937af7995937f84423d/lean-check.md": "6570fbe8430c9d2742fa6430ee296996f3928eda2a3db80d019380901ad29119"
+       }
+      },
+      "local_check": {
+       "enabled": true,
+       "tool_sha256": "371074cd65134a0c7abbba2406a53c4e37c08bf3f15f16b3814e1f2ef8bef371",
+       "tool_path": "/home/zhang-liao/auto_verify_dalek/ledger/runs/double_dynamic_01/slot0/claude_config/local_check_tool/lean_check.py",
+       "state_helper_sha256": "63e9df6973faf19f6fd98c794c2417b25866a0349669d54025bb3ac0864b61b0",
+       "log_dir": "/home/zhang-liao/auto_verify_dalek/ledger/runs/double_dynamic_01/slot0/claude_config/local_checks",
+       "effective_message_path": "/home/zhang-liao/auto_verify_dalek/ledger/transcripts/dag_double_dynamic_01_10.r1.jsonl.prompt.txt",
+       "allowed_tools": "Read,Grep,Glob,Edit,Write,Bash(lake build*),Bash(grep*),Bash(/usr/bin/python3 /home/zhang-liao/auto_verify_dalek/ledger/runs/double_dynamic_01/slot0/claude_config/local_check_tool/lean_check.py *)",
+       "instructions_sha256": "6570fbe8430c9d2742fa6430ee296996f3928eda2a3db80d019380901ad29119",
+       "effective_message_sha256": "e50d408b61637aa3e51a1ebec24a741513505d4d2458ecf36c76c09685362e19"
+      }
+     },
+     "end_reason": "COMPLETE",
+     "target_file_edited": true,
+     "edited_files": [
+      "Curve25519Dalek/Specs/Backend/Serial/U64/Field/FieldElement51/Pow2K.lean"
+     ],
+     "models_used": [
+      "claude-opus-5-5"
+     ],
+     "cost_usd": 1.6685521999999997,
+     "num_turns": 30,
+     "session_cache_creation_tokens": 82846,
+     "usage_totals": {
+      "input_tokens": 42,
+      "output_tokens": 38576,
+      "cache_creation_input_tokens": 82846,
+      "cache_read_input_tokens": 1170481
+     },
+     "assistant_turns": 21,
+     "buckets": {
+      "productive": 17248,
+      "diagnostic": 19954,
+      "retrieval": 1374,
+      "dead_end": 0,
+      "reingestion_input": 1241499,
+      "reingestion_cache_read": 1164217
+     },
+     "proof_state": "/home/zhang-liao/auto_verify_dalek/ledger/transcripts/.proof-state-dag_double_dynamic_01_10-db710a99-8c6e-4887-a2e9-cc1764b802ce/state.json"
+    }
+   ],
+   "detail": {
+    "gate_build_seconds": 1.7,
+    "g1_seconds": 3.5,
+    "specs": [
+     "curve25519_dalek.backend.serial.u64.field.FieldElement51.pow2k_loop_spec"
+    ],
+    "g2": "skipped",
+    "verified_theorems": [
+     "curve25519_dalek.backend.serial.u64.field.FieldElement51.pow2k_loop_spec"
+    ]
+   }
+  },
+  {
+   "node": "n11",
+   "outcome": "accepted",
+   "sessions": [
+    "f2b5e47a-6318-499c-bf1c-b64e67fdfca3"
+   ],
+   "rounds": [
+    {
+     "round": 1,
+     "outcome": "accepted",
+     "detail": {
+      "gate_build_seconds": 1.8,
+      "g1_seconds": 3.5,
+      "specs": [
+       "curve25519_dalek.backend.serial.u64.field.FieldElement51.pow2k_spec"
+      ],
+      "g2": "skipped",
+      "verified_theorems": [
+       "curve25519_dalek.backend.serial.u64.field.FieldElement51.pow2k_spec"
+      ]
+     },
+     "wall_seconds": 61.0,
+     "status": "ok",
+     "session_id": "f2b5e47a-6318-499c-bf1c-b64e67fdfca3",
+     "fresh_session": true,
+     "transcript": "ledger/transcripts/dag_double_dynamic_01_11.r1.jsonl",
+     "provenance": {
+      "last_event_type": "result",
+      "last_result_seen": true,
+      "result_followed_by_metadata": false,
+      "parse_errors": 0,
+      "compact_recovery": {
+       "enabled": true,
+       "event": "SessionStart",
+       "matcher": "compact",
+       "settings_path": "/home/zhang-liao/auto_verify_dalek/ledger/runs/double_dynamic_01/slot0/claude_config/local_check_tool/recovery-b94e7462d6984817a41b870cd995efd5/settings.json",
+       "settings_sha256": "415241b7e8ad129347ad7784cda575e08d276114e40dcfcdec2c4682a9991df3",
+       "hook_path": "/home/zhang-liao/auto_verify_dalek/ledger/runs/double_dynamic_01/slot0/claude_config/local_check_tool/compact_reminder.py",
+       "hook_sha256": "3a4dd6560b5d7ac828fb79b1f2879d7ef6e03c315a9753a983884d61614bce64",
+       "files": {
+        "/home/zhang-liao/auto_verify_dalek/ledger/runs/double_dynamic_01/slot0/claude_config/local_check_tool/recovery-b94e7462d6984817a41b870cd995efd5/workflow.md": "32fc28053f383948d9910934077d9fa8f963d555482daa4922e2cce41a09718d",
+        "/home/zhang-liao/auto_verify_dalek/ledger/runs/double_dynamic_01/slot0/claude_config/local_check_tool/recovery-b94e7462d6984817a41b870cd995efd5/round-context.md": "32fc28053f383948d9910934077d9fa8f963d555482daa4922e2cce41a09718d",
+        "/home/zhang-liao/auto_verify_dalek/ledger/runs/double_dynamic_01/slot0/claude_config/local_check_tool/recovery-b94e7462d6984817a41b870cd995efd5/lean-check.md": "6570fbe8430c9d2742fa6430ee296996f3928eda2a3db80d019380901ad29119"
+       }
+      },
+      "local_check": {
+       "enabled": true,
+       "tool_sha256": "371074cd65134a0c7abbba2406a53c4e37c08bf3f15f16b3814e1f2ef8bef371",
+       "tool_path": "/home/zhang-liao/auto_verify_dalek/ledger/runs/double_dynamic_01/slot0/claude_config/local_check_tool/lean_check.py",
+       "state_helper_sha256": "63e9df6973faf19f6fd98c794c2417b25866a0349669d54025bb3ac0864b61b0",
+       "log_dir": "/home/zhang-liao/auto_verify_dalek/ledger/runs/double_dynamic_01/slot0/claude_config/local_checks",
+       "effective_message_path": "/home/zhang-liao/auto_verify_dalek/ledger/transcripts/dag_double_dynamic_01_11.r1.jsonl.prompt.txt",
+       "allowed_tools": "Read,Grep,Glob,Edit,Write,Bash(lake build*),Bash(grep*),Bash(/usr/bin/python3 /home/zhang-liao/auto_verify_dalek/ledger/runs/double_dynamic_01/slot0/claude_config/local_check_tool/lean_check.py *)",
+       "instructions_sha256": "6570fbe8430c9d2742fa6430ee296996f3928eda2a3db80d019380901ad29119",
+       "effective_message_sha256": "32fc28053f383948d9910934077d9fa8f963d555482daa4922e2cce41a09718d"
+      }
+     },
+     "end_reason": "COMPLETE",
+     "target_file_edited": true,
+     "edited_files": [
+      "Curve25519Dalek/Specs/Backend/Serial/U64/Field/FieldElement51/Pow2K.lean"
+     ],
+     "models_used": [
+      "claude-opus-5-5"
+     ],
+     "cost_usd": 0.3170738,
+     "num_turns": 10,
+     "session_cache_creation_tokens": 27074,
+     "usage_totals": {
+      "input_tokens": 16,
+      "output_tokens": 2996,
+      "cache_creation_input_tokens": 27074,
+      "cache_read_input_tokens": 202489
+     },
+     "assistant_turns": 8,
+     "buckets": {
+      "productive": 1545,
+      "diagnostic": 1036,
+      "retrieval": 415,
+      "dead_end": 0,
+      "reingestion_input": 217626,
+      "reingestion_cache_read": 196225
+     },
+     "proof_state": "/home/zhang-liao/auto_verify_dalek/ledger/transcripts/.proof-state-dag_double_dynamic_01_11-f2b5e47a-6318-499c-bf1c-b64e67fdfca3/state.json"
+    }
+   ],
+   "detail": {
+    "gate_build_seconds": 1.8,
+    "g1_seconds": 3.5,
+    "specs": [
+     "curve25519_dalek.backend.serial.u64.field.FieldElement51.pow2k_spec"
+    ],
+    "g2": "skipped",
+    "verified_theorems": [
+     "curve25519_dalek.backend.serial.u64.field.FieldElement51.pow2k_spec"
+    ]
+   }
+  },
+  {
+   "node": "n12",
+   "outcome": "accepted",
+   "sessions": [
+    "6805aa85-7459-4820-aeff-7552d24cc779"
+   ],
+   "rounds": [
+    {
+     "round": 1,
+     "outcome": "accepted",
+     "detail": {
+      "gate_build_seconds": 1.7,
+      "g1_seconds": 3.1,
+      "specs": [
+       "curve25519_dalek.backend.serial.u64.field.FieldElement51.square_spec"
+      ],
+      "g2": "skipped",
+      "verified_theorems": [
+       "curve25519_dalek.backend.serial.u64.field.FieldElement51.square_spec"
+      ]
+     },
+     "wall_seconds": 41.2,
+     "status": "ok",
+     "session_id": "6805aa85-7459-4820-aeff-7552d24cc779",
+     "fresh_session": true,
+     "transcript": "ledger/transcripts/dag_double_dynamic_01_12.r1.jsonl",
+     "provenance": {
+      "last_event_type": "result",
+      "last_result_seen": true,
+      "result_followed_by_metadata": false,
+      "parse_errors": 0,
+      "compact_recovery": {
+       "enabled": true,
+       "event": "SessionStart",
+       "matcher": "compact",
+       "settings_path": "/home/zhang-liao/auto_verify_dalek/ledger/runs/double_dynamic_01/slot0/claude_config/local_check_tool/recovery-a57ab5e130af4225a1b96875aa6a585f/settings.json",
+       "settings_sha256": "542926fefcc6747604609375ecef6af2be9eae316d85c91974ef067b2b7f4b3a",
+       "hook_path": "/home/zhang-liao/auto_verify_dalek/ledger/runs/double_dynamic_01/slot0/claude_config/local_check_tool/compact_reminder.py",
+       "hook_sha256": "3a4dd6560b5d7ac828fb79b1f2879d7ef6e03c315a9753a983884d61614bce64",
+       "files": {
+        "/home/zhang-liao/auto_verify_dalek/ledger/runs/double_dynamic_01/slot0/claude_config/local_check_tool/recovery-a57ab5e130af4225a1b96875aa6a585f/workflow.md": "c0e1f32ff4eaa3eac9ea52dd8390b8b030add724acf4e70dd4bc946f5aac7d42",
+        "/home/zhang-liao/auto_verify_dalek/ledger/runs/double_dynamic_01/slot0/claude_config/local_check_tool/recovery-a57ab5e130af4225a1b96875aa6a585f/round-context.md": "c0e1f32ff4eaa3eac9ea52dd8390b8b030add724acf4e70dd4bc946f5aac7d42",
+        "/home/zhang-liao/auto_verify_dalek/ledger/runs/double_dynamic_01/slot0/claude_config/local_check_tool/recovery-a57ab5e130af4225a1b96875aa6a585f/lean-check.md": "6570fbe8430c9d2742fa6430ee296996f3928eda2a3db80d019380901ad29119"
+       }
+      },
+      "local_check": {
+       "enabled": true,
+       "tool_sha256": "371074cd65134a0c7abbba2406a53c4e37c08bf3f15f16b3814e1f2ef8bef371",
+       "tool_path": "/home/zhang-liao/auto_verify_dalek/ledger/runs/double_dynamic_01/slot0/claude_config/local_check_tool/lean_check.py",
+       "state_helper_sha256": "63e9df6973faf19f6fd98c794c2417b25866a0349669d54025bb3ac0864b61b0",
+       "log_dir": "/home/zhang-liao/auto_verify_dalek/ledger/runs/double_dynamic_01/slot0/claude_config/local_checks",
+       "effective_message_path": "/home/zhang-liao/auto_verify_dalek/ledger/transcripts/dag_double_dynamic_01_12.r1.jsonl.prompt.txt",
+       "allowed_tools": "Read,Grep,Glob,Edit,Write,Bash(lake build*),Bash(grep*),Bash(/usr/bin/python3 /home/zhang-liao/auto_verify_dalek/ledger/runs/double_dynamic_01/slot0/claude_config/local_check_tool/lean_check.py *)",
+       "instructions_sha256": "6570fbe8430c9d2742fa6430ee296996f3928eda2a3db80d019380901ad29119",
+       "effective_message_sha256": "c0e1f32ff4eaa3eac9ea52dd8390b8b030add724acf4e70dd4bc946f5aac7d42"
+      }
+     },
+     "end_reason": "COMPLETE",
+     "target_file_edited": true,
+     "edited_files": [
+      "Curve25519Dalek/Specs/Backend/Serial/U64/Field/FieldElement51/Square.lean"
+     ],
+     "models_used": [
+      "claude-opus-5-5"
+     ],
+     "cost_usd": 0.2008108,
+     "num_turns": 8,
+     "session_cache_creation_tokens": 16098,
+     "usage_totals": {
+      "input_tokens": 14,
+      "output_tokens": 2425,
+      "cache_creation_input_tokens": 16098,
+      "cache_read_input_tokens": 117354
+     },
+     "assistant_turns": 7,
+     "buckets": {
+      "productive": 1192,
+      "diagnostic": 1121,
+      "retrieval": 113,
+      "dead_end": 0,
+      "reingestion_input": 121488,
+      "reingestion_cache_read": 111090
+     },
+     "proof_state": "/home/zhang-liao/auto_verify_dalek/ledger/transcripts/.proof-state-dag_double_dynamic_01_12-6805aa85-7459-4820-aeff-7552d24cc779/state.json"
+    }
+   ],
+   "detail": {
+    "gate_build_seconds": 1.7,
+    "g1_seconds": 3.1,
+    "specs": [
+     "curve25519_dalek.backend.serial.u64.field.FieldElement51.square_spec"
+    ],
+    "g2": "skipped",
+    "verified_theorems": [
+     "curve25519_dalek.backend.serial.u64.field.FieldElement51.square_spec"
+    ]
+   }
+  },
+  {
+   "node": "n13",
+   "outcome": "accepted",
+   "sessions": [
+    "d58007da-6172-4202-8931-45012f57861a"
+   ],
+   "rounds": [
+    {
+     "round": 1,
+     "outcome": "accepted",
+     "detail": {
+      "gate_build_seconds": 1.8,
+      "g1_seconds": 3.0,
+      "specs": [
+       "curve25519_dalek.backend.serial.u64.field.FieldElement51.square2_loop_spec",
+       "curve25519_dalek.backend.serial.u64.field.FieldElement51.square2_loop_zero_spec"
+      ],
+      "g2": "skipped",
+      "verified_theorems": [
+       "curve25519_dalek.backend.serial.u64.field.FieldElement51.square2_loop_spec",
+       "curve25519_dalek.backend.serial.u64.field.FieldElement51.square2_loop_zero_spec"
+      ]
+     },
+     "wall_seconds": 76.5,
+     "status": "ok",
+     "session_id": "d58007da-6172-4202-8931-45012f57861a",
+     "fresh_session": true,
+     "transcript": "ledger/transcripts/dag_double_dynamic_01_13.r1.jsonl",
+     "provenance": {
+      "last_event_type": "result",
+      "last_result_seen": true,
+      "result_followed_by_metadata": false,
+      "parse_errors": 0,
+      "compact_recovery": {
+       "enabled": true,
+       "event": "SessionStart",
+       "matcher": "compact",
+       "settings_path": "/home/zhang-liao/auto_verify_dalek/ledger/runs/double_dynamic_01/slot0/claude_config/local_check_tool/recovery-21f0342b56d24ed2adccc9e335d346dc/settings.json",
+       "settings_sha256": "54d75ae639f21acc6261d6822dc0e05941b2db3f0cea8139336e6ed3343014a0",
+       "hook_path": "/home/zhang-liao/auto_verify_dalek/ledger/runs/double_dynamic_01/slot0/claude_config/local_check_tool/compact_reminder.py",
+       "hook_sha256": "3a4dd6560b5d7ac828fb79b1f2879d7ef6e03c315a9753a983884d61614bce64",
+       "files": {
+        "/home/zhang-liao/auto_verify_dalek/ledger/runs/double_dynamic_01/slot0/claude_config/local_check_tool/recovery-21f0342b56d24ed2adccc9e335d346dc/workflow.md": "2c97c8a7bf3a014e21730d3a90d80013d5e1b2f9356adef02007cd2fd0d76620",
+        "/home/zhang-liao/auto_verify_dalek/ledger/runs/double_dynamic_01/slot0/claude_config/local_check_tool/recovery-21f0342b56d24ed2adccc9e335d346dc/round-context.md": "2c97c8a7bf3a014e21730d3a90d80013d5e1b2f9356adef02007cd2fd0d76620",
+        "/home/zhang-liao/auto_verify_dalek/ledger/runs/double_dynamic_01/slot0/claude_config/local_check_tool/recovery-21f0342b56d24ed2adccc9e335d346dc/lean-check.md": "6570fbe8430c9d2742fa6430ee296996f3928eda2a3db80d019380901ad29119"
+       }
+      },
+      "local_check": {
+       "enabled": true,
+       "tool_sha256": "371074cd65134a0c7abbba2406a53c4e37c08bf3f15f16b3814e1f2ef8bef371",
+       "tool_path": "/home/zhang-liao/auto_verify_dalek/ledger/runs/double_dynamic_01/slot0/claude_config/local_check_tool/lean_check.py",
+       "state_helper_sha256": "63e9df6973faf19f6fd98c794c2417b25866a0349669d54025bb3ac0864b61b0",
+       "log_dir": "/home/zhang-liao/auto_verify_dalek/ledger/runs/double_dynamic_01/slot0/claude_config/local_checks",
+       "effective_message_path": "/home/zhang-liao/auto_verify_dalek/ledger/transcripts/dag_double_dynamic_01_13.r1.jsonl.prompt.txt",
+       "allowed_tools": "Read,Grep,Glob,Edit,Write,Bash(lake build*),Bash(grep*),Bash(/usr/bin/python3 /home/zhang-liao/auto_verify_dalek/ledger/runs/double_dynamic_01/slot0/claude_config/local_check_tool/lean_check.py *)",
+       "instructions_sha256": "6570fbe8430c9d2742fa6430ee296996f3928eda2a3db80d019380901ad29119",
+       "effective_message_sha256": "2c97c8a7bf3a014e21730d3a90d80013d5e1b2f9356adef02007cd2fd0d76620"
+      }
+     },
+     "end_reason": "COMPLETE",
+     "target_file_edited": true,
+     "edited_files": [
+      "Curve25519Dalek/Specs/Backend/Serial/U64/Field/FieldElement51/Square2.lean"
+     ],
+     "models_used": [
+      "claude-opus-5-5"
+     ],
+     "cost_usd": 0.3020504,
+     "num_turns": 12,
+     "session_cache_creation_tokens": 19258,
+     "usage_totals": {
+      "input_tokens": 14,
+      "output_tokens": 6162,
+      "cache_creation_input_tokens": 19258,
+      "cache_read_input_tokens": 123452
+     },
+     "assistant_turns": 7,
+     "buckets": {
+      "productive": 1851,
+      "diagnostic": 3493,
+      "retrieval": 818,
+      "dead_end": 0,
+      "reingestion_input": 130650,
+      "reingestion_cache_read": 117188
+     },
+     "proof_state": "/home/zhang-liao/auto_verify_dalek/ledger/transcripts/.proof-state-dag_double_dynamic_01_13-d58007da-6172-4202-8931-45012f57861a/state.json"
+    }
+   ],
+   "detail": {
+    "gate_build_seconds": 1.8,
+    "g1_seconds": 3.0,
+    "specs": [
+     "curve25519_dalek.backend.serial.u64.field.FieldElement51.square2_loop_spec",
+     "curve25519_dalek.backend.serial.u64.field.FieldElement51.square2_loop_zero_spec"
+    ],
+    "g2": "skipped",
+    "verified_theorems": [
+     "curve25519_dalek.backend.serial.u64.field.FieldElement51.square2_loop_spec",
+     "curve25519_dalek.backend.serial.u64.field.FieldElement51.square2_loop_zero_spec"
+    ]
+   }
+  },
+  {
+   "node": "n14",
+   "outcome": "accepted",
+   "sessions": [
+    "ff06e499-5d4e-4db4-bb37-4cd8d51a31bb"
+   ],
+   "rounds": [
+    {
+     "round": 1,
+     "outcome": "accepted",
+     "detail": {
+      "gate_build_seconds": 1.4,
+      "g1_seconds": 3.2,
+      "specs": [
+       "curve25519_dalek.backend.serial.u64.field.FieldElement51.square2_spec"
+      ],
+      "g2": "skipped",
+      "verified_theorems": [
+       "curve25519_dalek.backend.serial.u64.field.FieldElement51.square2_spec"
+      ]
+     },
+     "wall_seconds": 52.4,
+     "status": "ok",
+     "session_id": "ff06e499-5d4e-4db4-bb37-4cd8d51a31bb",
+     "fresh_session": true,
+     "transcript": "ledger/transcripts/dag_double_dynamic_01_14.r1.jsonl",
+     "provenance": {
+      "last_event_type": "result",
+      "last_result_seen": true,
+      "result_followed_by_metadata": false,
+      "parse_errors": 0,
+      "compact_recovery": {
+       "enabled": true,
+       "event": "SessionStart",
+       "matcher": "compact",
+       "settings_path": "/home/zhang-liao/auto_verify_dalek/ledger/runs/double_dynamic_01/slot0/claude_config/local_check_tool/recovery-e8b27b40b7884aba8b1457d4537c7300/settings.json",
+       "settings_sha256": "08b0410fdc9e1439c059ae6c2b4ee54727e066e5aaeb6d9e002fc5ee509028bb",
+       "hook_path": "/home/zhang-liao/auto_verify_dalek/ledger/runs/double_dynamic_01/slot0/claude_config/local_check_tool/compact_reminder.py",
+       "hook_sha256": "3a4dd6560b5d7ac828fb79b1f2879d7ef6e03c315a9753a983884d61614bce64",
+       "files": {
+        "/home/zhang-liao/auto_verify_dalek/ledger/runs/double_dynamic_01/slot0/claude_config/local_check_tool/recovery-e8b27b40b7884aba8b1457d4537c7300/workflow.md": "a70cd46e8da603dda27b1151d78270700beb8217c26b88061151816dd712748e",
+        "/home/zhang-liao/auto_verify_dalek/ledger/runs/double_dynamic_01/slot0/claude_config/local_check_tool/recovery-e8b27b40b7884aba8b1457d4537c7300/round-context.md": "a70cd46e8da603dda27b1151d78270700beb8217c26b88061151816dd712748e",
+        "/home/zhang-liao/auto_verify_dalek/ledger/runs/double_dynamic_01/slot0/claude_config/local_check_tool/recovery-e8b27b40b7884aba8b1457d4537c7300/lean-check.md": "6570fbe8430c9d2742fa6430ee296996f3928eda2a3db80d019380901ad29119"
+       }
+      },
+      "local_check": {
+       "enabled": true,
+       "tool_sha256": "371074cd65134a0c7abbba2406a53c4e37c08bf3f15f16b3814e1f2ef8bef371",
+       "tool_path": "/home/zhang-liao/auto_verify_dalek/ledger/runs/double_dynamic_01/slot0/claude_config/local_check_tool/lean_check.py",
+       "state_helper_sha256": "63e9df6973faf19f6fd98c794c2417b25866a0349669d54025bb3ac0864b61b0",
+       "log_dir": "/home/zhang-liao/auto_verify_dalek/ledger/runs/double_dynamic_01/slot0/claude_config/local_checks",
+       "effective_message_path": "/home/zhang-liao/auto_verify_dalek/ledger/transcripts/dag_double_dynamic_01_14.r1.jsonl.prompt.txt",
+       "allowed_tools": "Read,Grep,Glob,Edit,Write,Bash(lake build*),Bash(grep*),Bash(/usr/bin/python3 /home/zhang-liao/auto_verify_dalek/ledger/runs/double_dynamic_01/slot0/claude_config/local_check_tool/lean_check.py *)",
+       "instructions_sha256": "6570fbe8430c9d2742fa6430ee296996f3928eda2a3db80d019380901ad29119",
+       "effective_message_sha256": "a70cd46e8da603dda27b1151d78270700beb8217c26b88061151816dd712748e"
+      }
+     },
+     "end_reason": "COMPLETE",
+     "target_file_edited": true,
+     "edited_files": [
+      "Curve25519Dalek/Specs/Backend/Serial/U64/Field/FieldElement51/Square2.lean"
+     ],
+     "models_used": [
+      "claude-opus-5-5"
+     ],
+     "cost_usd": 0.2243688,
+     "num_turns": 11,
+     "session_cache_creation_tokens": 15368,
+     "usage_totals": {
+      "input_tokens": 14,
+      "output_tokens": 3935,
+      "cache_creation_input_tokens": 15368,
+      "cache_read_input_tokens": 113344
+     },
+     "assistant_turns": 7,
+     "buckets": {
+      "productive": 1300,
+      "diagnostic": 2096,
+      "retrieval": 539,
+      "dead_end": 0,
+      "reingestion_input": 116578,
+      "reingestion_cache_read": 107080
+     },
+     "proof_state": "/home/zhang-liao/auto_verify_dalek/ledger/transcripts/.proof-state-dag_double_dynamic_01_14-ff06e499-5d4e-4db4-bb37-4cd8d51a31bb/state.json"
+    }
+   ],
+   "detail": {
+    "gate_build_seconds": 1.4,
+    "g1_seconds": 3.2,
+    "specs": [
+     "curve25519_dalek.backend.serial.u64.field.FieldElement51.square2_spec"
+    ],
+    "g2": "skipped",
+    "verified_theorems": [
+     "curve25519_dalek.backend.serial.u64.field.FieldElement51.square2_spec"
+    ]
+   }
+  },
+  {
+   "node": "n15",
+   "outcome": "accepted",
+   "sessions": [
+    "f1ec1bf0-19d8-462a-b68f-655bfbc7debf"
+   ],
+   "rounds": [
+    {
+     "round": 1,
+     "outcome": "rejected_sorry_remains",
+     "detail": {
+      "gate_build_seconds": 1.8,
+      "g1_seconds": 3.1,
+      "specs": [
+       "curve25519_dalek.backend.serial.curve_models.ProjectivePoint.double_spec"
+      ],
+      "g2": "skipped",
+      "reason": "target axiom closure contains sorryAx or evidence missing"
+     },
+     "wall_seconds": 117.0,
+     "status": "ok",
+     "session_id": "f1ec1bf0-19d8-462a-b68f-655bfbc7debf",
+     "fresh_session": true,
+     "transcript": "ledger/transcripts/dag_double_dynamic_01_15.r1.jsonl",
+     "provenance": {
+      "last_event_type": "result",
+      "last_result_seen": true,
+      "result_followed_by_metadata": false,
+      "parse_errors": 0,
+      "compact_recovery": {
+       "enabled": true,
+       "event": "SessionStart",
+       "matcher": "compact",
+       "settings_path": "/home/zhang-liao/auto_verify_dalek/ledger/runs/double_dynamic_01/slot0/claude_config/local_check_tool/recovery-a57f38ceb55a437592e6ab29af589e7d/settings.json",
+       "settings_sha256": "d3bcd45bcca792a15b014a614022acb344735f8b7eef11c8af81905d347c2630",
+       "hook_path": "/home/zhang-liao/auto_verify_dalek/ledger/runs/double_dynamic_01/slot0/claude_config/local_check_tool/compact_reminder.py",
+       "hook_sha256": "3a4dd6560b5d7ac828fb79b1f2879d7ef6e03c315a9753a983884d61614bce64",
+       "files": {
+        "/home/zhang-liao/auto_verify_dalek/ledger/runs/double_dynamic_01/slot0/claude_config/local_check_tool/recovery-a57f38ceb55a437592e6ab29af589e7d/workflow.md": "a1ad5d1d8576370dc6e72771082c065c0fd44679dc5a3ddfdde12517e247444a",
+        "/home/zhang-liao/auto_verify_dalek/ledger/runs/double_dynamic_01/slot0/claude_config/local_check_tool/recovery-a57f38ceb55a437592e6ab29af589e7d/round-context.md": "a1ad5d1d8576370dc6e72771082c065c0fd44679dc5a3ddfdde12517e247444a",
+        "/home/zhang-liao/auto_verify_dalek/ledger/runs/double_dynamic_01/slot0/claude_config/local_check_tool/recovery-a57f38ceb55a437592e6ab29af589e7d/lean-check.md": "6570fbe8430c9d2742fa6430ee296996f3928eda2a3db80d019380901ad29119"
+       }
+      },
+      "local_check": {
+       "enabled": true,
+       "tool_sha256": "371074cd65134a0c7abbba2406a53c4e37c08bf3f15f16b3814e1f2ef8bef371",
+       "tool_path": "/home/zhang-liao/auto_verify_dalek/ledger/runs/double_dynamic_01/slot0/claude_config/local_check_tool/lean_check.py",
+       "state_helper_sha256": "63e9df6973faf19f6fd98c794c2417b25866a0349669d54025bb3ac0864b61b0",
+       "log_dir": "/home/zhang-liao/auto_verify_dalek/ledger/runs/double_dynamic_01/slot0/claude_config/local_checks",
+       "effective_message_path": "/home/zhang-liao/auto_verify_dalek/ledger/transcripts/dag_double_dynamic_01_15.r1.jsonl.prompt.txt",
+       "allowed_tools": "Read,Grep,Glob,Edit,Write,Bash(lake build*),Bash(grep*),Bash(/usr/bin/python3 /home/zhang-liao/auto_verify_dalek/ledger/runs/double_dynamic_01/slot0/claude_config/local_check_tool/lean_check.py *)",
+       "instructions_sha256": "6570fbe8430c9d2742fa6430ee296996f3928eda2a3db80d019380901ad29119",
+       "effective_message_sha256": "a1ad5d1d8576370dc6e72771082c065c0fd44679dc5a3ddfdde12517e247444a"
+      }
+     },
+     "end_reason": "COMPLETE",
+     "target_file_edited": true,
+     "edited_files": [
+      "Curve25519Dalek/Specs/Backend/Serial/CurveModels/ProjectivePoint/Double.lean"
+     ],
+     "models_used": [
+      "claude-opus-5-5"
+     ],
+     "cost_usd": 0.4652314,
+     "num_turns": 14,
+     "session_cache_creation_tokens": 30379,
+     "usage_totals": {
+      "input_tokens": 22,
+      "output_tokens": 8591,
+      "cache_creation_input_tokens": 30379,
+      "cache_read_input_tokens": 251457
+     },
+     "assistant_turns": 11,
+     "buckets": {
+      "productive": 0,
+      "diagnostic": 0,
+      "retrieval": 0,
+      "dead_end": 8591,
+      "reingestion_input": 269637,
+      "reingestion_cache_read": 245193
+     },
+     "proof_state": "/home/zhang-liao/auto_verify_dalek/ledger/transcripts/.proof-state-dag_double_dynamic_01_15-f1ec1bf0-19d8-462a-b68f-655bfbc7debf/state.json",
+     "feedback": "You declared END_REASON:COMPLETE but The harness gate rejected this round: the target file's `sorry` warning count did not decrease — the target is still unproven. Keep working on the same declaration. All original rules still apply."
+    },
+    {
+     "round": 2,
+     "outcome": "accepted",
+     "detail": {
+      "gate_build_seconds": 1.8,
+      "g1_seconds": 3.3,
+      "specs": [
+       "curve25519_dalek.backend.serial.curve_models.ProjectivePoint.double_spec"
+      ],
+      "g2": "skipped",
+      "verified_theorems": [
+       "curve25519_dalek.backend.serial.curve_models.ProjectivePoint.double_spec"
+      ]
+     },
+     "wall_seconds": 743.5,
+     "status": "ok",
+     "session_id": "f1ec1bf0-19d8-462a-b68f-655bfbc7debf",
+     "fresh_session": false,
+     "transcript": "ledger/transcripts/dag_double_dynamic_01_15.r2.jsonl",
+     "provenance": {
+      "last_event_type": "result",
+      "last_result_seen": true,
+      "result_followed_by_metadata": false,
+      "parse_errors": 0,
+      "compact_recovery": {
+       "enabled": true,
+       "event": "SessionStart",
+       "matcher": "compact",
+       "settings_path": "/home/zhang-liao/auto_verify_dalek/ledger/runs/double_dynamic_01/slot0/claude_config/local_check_tool/recovery-5a8fdfbb9f5d4c29bd83eef637a29996/settings.json",
+       "settings_sha256": "0a854c925de6c47f247d175180ec3228523f36ecf03b6c2f86669bc7f64ed5f7",
+       "hook_path": "/home/zhang-liao/auto_verify_dalek/ledger/runs/double_dynamic_01/slot0/claude_config/local_check_tool/compact_reminder.py",
+       "hook_sha256": "3a4dd6560b5d7ac828fb79b1f2879d7ef6e03c315a9753a983884d61614bce64",
+       "files": {
+        "/home/zhang-liao/auto_verify_dalek/ledger/runs/double_dynamic_01/slot0/claude_config/local_check_tool/recovery-5a8fdfbb9f5d4c29bd83eef637a29996/workflow.md": "5e9d7f7214bed60c056e8bb15c0d929ee2933ac8938b3fae05ed38da7f7c70fd",
+        "/home/zhang-liao/auto_verify_dalek/ledger/runs/double_dynamic_01/slot0/claude_config/local_check_tool/recovery-5a8fdfbb9f5d4c29bd83eef637a29996/round-context.md": "17bb56d7ca334a7c933933f6b7fefffbcd5a91d779f4ece1abe2a88c023e7a46",
+        "/home/zhang-liao/auto_verify_dalek/ledger/runs/double_dynamic_01/slot0/claude_config/local_check_tool/recovery-5a8fdfbb9f5d4c29bd83eef637a29996/lean-check.md": "6570fbe8430c9d2742fa6430ee296996f3928eda2a3db80d019380901ad29119"
+       }
+      },
+      "local_check": {
+       "enabled": true,
+       "tool_sha256": "371074cd65134a0c7abbba2406a53c4e37c08bf3f15f16b3814e1f2ef8bef371",
+       "tool_path": "/home/zhang-liao/auto_verify_dalek/ledger/runs/double_dynamic_01/slot0/claude_config/local_check_tool/lean_check.py",
+       "state_helper_sha256": "63e9df6973faf19f6fd98c794c2417b25866a0349669d54025bb3ac0864b61b0",
+       "log_dir": "/home/zhang-liao/auto_verify_dalek/ledger/runs/double_dynamic_01/slot0/claude_config/local_checks",
+       "effective_message_path": "/home/zhang-liao/auto_verify_dalek/ledger/transcripts/dag_double_dynamic_01_15.r2.jsonl.prompt.txt",
+       "allowed_tools": "Read,Grep,Glob,Edit,Write,Bash(lake build*),Bash(grep*),Bash(/usr/bin/python3 /home/zhang-liao/auto_verify_dalek/ledger/runs/double_dynamic_01/slot0/claude_config/local_check_tool/lean_check.py *)",
+       "instructions_sha256": "6570fbe8430c9d2742fa6430ee296996f3928eda2a3db80d019380901ad29119",
+       "effective_message_sha256": "17bb56d7ca334a7c933933f6b7fefffbcd5a91d779f4ece1abe2a88c023e7a46"
+      }
+     },
+     "end_reason": "COMPLETE",
+     "target_file_edited": true,
+     "edited_files": [
+      "Curve25519Dalek/Specs/Backend/Serial/CurveModels/ProjectivePoint/Double.lean"
+     ],
+     "models_used": [
+      "claude-opus-5-5"
+     ],
+     "cost_usd": 1.7650080000000001,
+     "num_turns": 47,
+     "session_cache_creation_tokens": 85950,
+     "usage_totals": {
+      "input_tokens": 62,
+      "output_tokens": 22086,
+      "cache_creation_input_tokens": 55571,
+      "cache_read_input_tokens": 2066203
+     },
+     "assistant_turns": 31,
+     "buckets": {
+      "productive": 9414,
+      "diagnostic": 9570,
+      "retrieval": 3102,
+      "dead_end": 0,
+      "reingestion_input": 2082332,
+      "reingestion_cache_read": 2029560
+     },
+     "proof_state": "/home/zhang-liao/auto_verify_dalek/ledger/transcripts/.proof-state-dag_double_dynamic_01_15-f1ec1bf0-19d8-462a-b68f-655bfbc7debf/state.json"
+    }
+   ],
+   "detail": {
+    "gate_build_seconds": 1.8,
+    "g1_seconds": 3.3,
+    "specs": [
+     "curve25519_dalek.backend.serial.curve_models.ProjectivePoint.double_spec"
+    ],
+    "g2": "skipped",
+    "verified_theorems": [
+     "curve25519_dalek.backend.serial.curve_models.ProjectivePoint.double_spec"
+    ]
+   }
+  },
+  {
+   "node": "n16",
+   "outcome": "accepted",
+   "sessions": [
+    "9a0a4e0d-888d-4d75-b163-6087afa2afdf"
+   ],
+   "rounds": [
+    {
+     "round": 1,
+     "outcome": "accepted",
+     "detail": {
+      "gate_build_seconds": 1.8,
+      "g1_seconds": 3.0,
+      "specs": [
+       "curve25519_dalek.edwards.EdwardsPoint.as_projective_spec"
+      ],
+      "g2": "skipped",
+      "verified_theorems": [
+       "curve25519_dalek.edwards.EdwardsPoint.as_projective_spec"
+      ]
+     },
+     "wall_seconds": 39.2,
+     "status": "ok",
+     "session_id": "9a0a4e0d-888d-4d75-b163-6087afa2afdf",
+     "fresh_session": true,
+     "transcript": "ledger/transcripts/dag_double_dynamic_01_16.r1.jsonl",
+     "provenance": {
+      "last_event_type": "result",
+      "last_result_seen": true,
+      "result_followed_by_metadata": false,
+      "parse_errors": 0,
+      "compact_recovery": {
+       "enabled": true,
+       "event": "SessionStart",
+       "matcher": "compact",
+       "settings_path": "/home/zhang-liao/auto_verify_dalek/ledger/runs/double_dynamic_01/slot0/claude_config/local_check_tool/recovery-44aaf11734b84b8488ce9ecabad64c65/settings.json",
+       "settings_sha256": "54cc8115df2ad36bff3b5952bdb3e2102eaba82f863546541f4250c71987480d",
+       "hook_path": "/home/zhang-liao/auto_verify_dalek/ledger/runs/double_dynamic_01/slot0/claude_config/local_check_tool/compact_reminder.py",
+       "hook_sha256": "3a4dd6560b5d7ac828fb79b1f2879d7ef6e03c315a9753a983884d61614bce64",
+       "files": {
+        "/home/zhang-liao/auto_verify_dalek/ledger/runs/double_dynamic_01/slot0/claude_config/local_check_tool/recovery-44aaf11734b84b8488ce9ecabad64c65/workflow.md": "b068f3f99ec6c95288cc0ca2a0ebc784aa6ca16428f88b1bbf5d517a558587df",
+        "/home/zhang-liao/auto_verify_dalek/ledger/runs/double_dynamic_01/slot0/claude_config/local_check_tool/recovery-44aaf11734b84b8488ce9ecabad64c65/round-context.md": "b068f3f99ec6c95288cc0ca2a0ebc784aa6ca16428f88b1bbf5d517a558587df",
+        "/home/zhang-liao/auto_verify_dalek/ledger/runs/double_dynamic_01/slot0/claude_config/local_check_tool/recovery-44aaf11734b84b8488ce9ecabad64c65/lean-check.md": "6570fbe8430c9d2742fa6430ee296996f3928eda2a3db80d019380901ad29119"
+       }
+      },
+      "local_check": {
+       "enabled": true,
+       "tool_sha256": "371074cd65134a0c7abbba2406a53c4e37c08bf3f15f16b3814e1f2ef8bef371",
+       "tool_path": "/home/zhang-liao/auto_verify_dalek/ledger/runs/double_dynamic_01/slot0/claude_config/local_check_tool/lean_check.py",
+       "state_helper_sha256": "63e9df6973faf19f6fd98c794c2417b25866a0349669d54025bb3ac0864b61b0",
+       "log_dir": "/home/zhang-liao/auto_verify_dalek/ledger/runs/double_dynamic_01/slot0/claude_config/local_checks",
+       "effective_message_path": "/home/zhang-liao/auto_verify_dalek/ledger/transcripts/dag_double_dynamic_01_16.r1.jsonl.prompt.txt",
+       "allowed_tools": "Read,Grep,Glob,Edit,Write,Bash(lake build*),Bash(grep*),Bash(/usr/bin/python3 /home/zhang-liao/auto_verify_dalek/ledger/runs/double_dynamic_01/slot0/claude_config/local_check_tool/lean_check.py *)",
+       "instructions_sha256": "6570fbe8430c9d2742fa6430ee296996f3928eda2a3db80d019380901ad29119",
+       "effective_message_sha256": "b068f3f99ec6c95288cc0ca2a0ebc784aa6ca16428f88b1bbf5d517a558587df"
+      }
+     },
+     "end_reason": "COMPLETE",
+     "target_file_edited": true,
+     "edited_files": [
+      "Curve25519Dalek/Specs/Edwards/EdwardsPoint/AsProjective.lean"
+     ],
+     "models_used": [
+      "claude-opus-5-5"
+     ],
+     "cost_usd": 0.1842088,
+     "num_turns": 9,
+     "session_cache_creation_tokens": 13583,
+     "usage_totals": {
+      "input_tokens": 12,
+      "output_tokens": 2909,
+      "cache_creation_input_tokens": 13583,
+      "cache_read_input_tokens": 86584
+     },
+     "assistant_turns": 6,
+     "buckets": {
+      "productive": 1013,
+      "diagnostic": 1508,
+      "retrieval": 387,
+      "dead_end": 0,
+      "reingestion_input": 87939,
+      "reingestion_cache_read": 80320
+     },
+     "proof_state": "/home/zhang-liao/auto_verify_dalek/ledger/transcripts/.proof-state-dag_double_dynamic_01_16-9a0a4e0d-888d-4d75-b163-6087afa2afdf/state.json"
+    }
+   ],
+   "detail": {
+    "gate_build_seconds": 1.8,
+    "g1_seconds": 3.0,
+    "specs": [
+     "curve25519_dalek.edwards.EdwardsPoint.as_projective_spec"
+    ],
+    "g2": "skipped",
+    "verified_theorems": [
+     "curve25519_dalek.edwards.EdwardsPoint.as_projective_spec"
+    ]
+   }
+  },
+  {
+   "node": "n17",
+   "outcome": "agent_limit",
+   "sessions": [
+    "3846f0ff-4c6b-4c7d-98ed-60377e91f08f"
+   ],
+   "rounds": [
+    {
+     "round": 1,
+     "outcome": "rejected_sorry_remains",
+     "detail": {
+      "gate_build_seconds": 1.8,
+      "g1_seconds": 5.0,
+      "g2": "skipped",
+      "reason": "target axiom closure contains sorryAx or evidence missing"
+     },
+     "wall_seconds": 164.8,
+     "status": "ok",
+     "session_id": "3846f0ff-4c6b-4c7d-98ed-60377e91f08f",
+     "fresh_session": true,
+     "transcript": "ledger/transcripts/dag_double_dynamic_01_17.r1.jsonl",
+     "provenance": {
+      "last_event_type": "result",
+      "last_result_seen": true,
+      "result_followed_by_metadata": false,
+      "parse_errors": 0,
+      "compact_recovery": {
+       "enabled": true,
+       "event": "SessionStart",
+       "matcher": "compact",
+       "settings_path": "/home/zhang-liao/auto_verify_dalek/ledger/runs/double_dynamic_01/slot0/claude_config/local_check_tool/recovery-aaf6e193663d465fb6d993a99b502282/settings.json",
+       "settings_sha256": "1a7a19299dc8c7b84c3fbd81afc3d1cc63f3e31a056ad5321a9b4d669ffe1a11",
+       "hook_path": "/home/zhang-liao/auto_verify_dalek/ledger/runs/double_dynamic_01/slot0/claude_config/local_check_tool/compact_reminder.py",
+       "hook_sha256": "3a4dd6560b5d7ac828fb79b1f2879d7ef6e03c315a9753a983884d61614bce64",
+       "files": {
+        "/home/zhang-liao/auto_verify_dalek/ledger/runs/double_dynamic_01/slot0/claude_config/local_check_tool/recovery-aaf6e193663d465fb6d993a99b502282/workflow.md": "229ed8f0ff297e8141556f033162ac0b75415fb2af8962253fa9b28fd9ca5155",
+        "/home/zhang-liao/auto_verify_dalek/ledger/runs/double_dynamic_01/slot0/claude_config/local_check_tool/recovery-aaf6e193663d465fb6d993a99b502282/round-context.md": "229ed8f0ff297e8141556f033162ac0b75415fb2af8962253fa9b28fd9ca5155",
+        "/home/zhang-liao/auto_verify_dalek/ledger/runs/double_dynamic_01/slot0/claude_config/local_check_tool/recovery-aaf6e193663d465fb6d993a99b502282/lean-check.md": "6570fbe8430c9d2742fa6430ee296996f3928eda2a3db80d019380901ad29119"
+       }
+      },
+      "local_check": {
+       "enabled": true,
+       "tool_sha256": "371074cd65134a0c7abbba2406a53c4e37c08bf3f15f16b3814e1f2ef8bef371",
+       "tool_path": "/home/zhang-liao/auto_verify_dalek/ledger/runs/double_dynamic_01/slot0/claude_config/local_check_tool/lean_check.py",
+       "state_helper_sha256": "63e9df6973faf19f6fd98c794c2417b25866a0349669d54025bb3ac0864b61b0",
+       "log_dir": "/home/zhang-liao/auto_verify_dalek/ledger/runs/double_dynamic_01/slot0/claude_config/local_checks",
+       "effective_message_path": "/home/zhang-liao/auto_verify_dalek/ledger/transcripts/dag_double_dynamic_01_17.r1.jsonl.prompt.txt",
+       "allowed_tools": "Read,Grep,Glob,Edit,Write,Bash(lake build*),Bash(grep*),Bash(/usr/bin/python3 /home/zhang-liao/auto_verify_dalek/ledger/runs/double_dynamic_01/slot0/claude_config/local_check_tool/lean_check.py *)",
+       "instructions_sha256": "6570fbe8430c9d2742fa6430ee296996f3928eda2a3db80d019380901ad29119",
+       "effective_message_sha256": "229ed8f0ff297e8141556f033162ac0b75415fb2af8962253fa9b28fd9ca5155"
+      }
+     },
+     "end_reason": "COMPLETE",
+     "target_file_edited": true,
+     "edited_files": [
+      "Curve25519Dalek/Specs/Edwards/EdwardsPoint/Double.lean"
+     ],
+     "models_used": [
+      "claude-opus-5-5"
+     ],
+     "cost_usd": 0.8115484000000002,
+     "num_turns": 25,
+     "session_cache_creation_tokens": 50828,
+     "usage_totals": {
+      "input_tokens": 26,
+      "output_tokens": 15817,
+      "cache_creation_input_tokens": 50828,
+      "cache_read_input_tokens": 442402
+     },
+     "assistant_turns": 13,
+     "buckets": {
+      "productive": 0,
+      "diagnostic": 0,
+      "retrieval": 0,
+      "dead_end": 15817,
+      "reingestion_input": 481553,
+      "reingestion_cache_read": 436138
+     },
+     "proof_state": "/home/zhang-liao/auto_verify_dalek/ledger/transcripts/.proof-state-dag_double_dynamic_01_17-3846f0ff-4c6b-4c7d-98ed-60377e91f08f/state.json",
+     "feedback": "You declared END_REASON:COMPLETE but The harness gate rejected this round: the target file's `sorry` warning count did not decrease — the target is still unproven. Keep working on the same declaration. All original rules still apply."
+    },
+    {
+     "round": 2,
+     "outcome": "rejected_sorry_remains",
+     "detail": {
+      "gate_build_seconds": 1.8,
+      "g1_seconds": 5.8,
+      "g2": "skipped",
+      "reason": "target axiom closure contains sorryAx or evidence missing"
+     },
+     "wall_seconds": 131.4,
+     "status": "ok",
+     "session_id": "3846f0ff-4c6b-4c7d-98ed-60377e91f08f",
+     "fresh_session": false,
+     "transcript": "ledger/transcripts/dag_double_dynamic_01_17.r2.jsonl",
+     "provenance": {
+      "last_event_type": "result",
+      "last_result_seen": true,
+      "result_followed_by_metadata": false,
+      "parse_errors": 0,
+      "compact_recovery": {
+       "enabled": true,
+       "event": "SessionStart",
+       "matcher": "compact",
+       "settings_path": "/home/zhang-liao/auto_verify_dalek/ledger/runs/double_dynamic_01/slot0/claude_config/local_check_tool/recovery-4677b76968f149799ccbd2f6a70fc32d/settings.json",
+       "settings_sha256": "d9b4d3c4f4ad0d95a1dfa645f9412589f25165c686692881bd3871cbeee19589",
+       "hook_path": "/home/zhang-liao/auto_verify_dalek/ledger/runs/double_dynamic_01/slot0/claude_config/local_check_tool/compact_reminder.py",
+       "hook_sha256": "3a4dd6560b5d7ac828fb79b1f2879d7ef6e03c315a9753a983884d61614bce64",
+       "files": {
+        "/home/zhang-liao/auto_verify_dalek/ledger/runs/double_dynamic_01/slot0/claude_config/local_check_tool/recovery-4677b76968f149799ccbd2f6a70fc32d/workflow.md": "c2c591b17555931f4251825c99724589adbc0d743c05b510996bf6bbcb84a163",
+        "/home/zhang-liao/auto_verify_dalek/ledger/runs/double_dynamic_01/slot0/claude_config/local_check_tool/recovery-4677b76968f149799ccbd2f6a70fc32d/round-context.md": "098101e3eb44223bd45a964dcfeae1aa14ce0ccae475c42d690b8ef5f3a1f997",
+        "/home/zhang-liao/auto_verify_dalek/ledger/runs/double_dynamic_01/slot0/claude_config/local_check_tool/recovery-4677b76968f149799ccbd2f6a70fc32d/lean-check.md": "6570fbe8430c9d2742fa6430ee296996f3928eda2a3db80d019380901ad29119"
+       }
+      },
+      "local_check": {
+       "enabled": true,
+       "tool_sha256": "371074cd65134a0c7abbba2406a53c4e37c08bf3f15f16b3814e1f2ef8bef371",
+       "tool_path": "/home/zhang-liao/auto_verify_dalek/ledger/runs/double_dynamic_01/slot0/claude_config/local_check_tool/lean_check.py",
+       "state_helper_sha256": "63e9df6973faf19f6fd98c794c2417b25866a0349669d54025bb3ac0864b61b0",
+       "log_dir": "/home/zhang-liao/auto_verify_dalek/ledger/runs/double_dynamic_01/slot0/claude_config/local_checks",
+       "effective_message_path": "/home/zhang-liao/auto_verify_dalek/ledger/transcripts/dag_double_dynamic_01_17.r2.jsonl.prompt.txt",
+       "allowed_tools": "Read,Grep,Glob,Edit,Write,Bash(lake build*),Bash(grep*),Bash(/usr/bin/python3 /home/zhang-liao/auto_verify_dalek/ledger/runs/double_dynamic_01/slot0/claude_config/local_check_tool/lean_check.py *)",
+       "instructions_sha256": "6570fbe8430c9d2742fa6430ee296996f3928eda2a3db80d019380901ad29119",
+       "effective_message_sha256": "098101e3eb44223bd45a964dcfeae1aa14ce0ccae475c42d690b8ef5f3a1f997"
+      }
+     },
+     "end_reason": "LIMIT",
+     "target_file_edited": true,
+     "edited_files": [
+      "Curve25519Dalek/Specs/Edwards/EdwardsPoint/Double.lean"
+     ],
+     "models_used": [
+      "claude-opus-5-5"
+     ],
+     "cost_usd": 1.2917982000000001,
+     "num_turns": 20,
+     "session_cache_creation_tokens": 66313,
+     "usage_totals": {
+      "input_tokens": 24,
+      "output_tokens": 9936,
+      "cache_creation_input_tokens": 15485,
+      "cache_read_input_tokens": 787769
+     },
+     "assistant_turns": 12,
+     "buckets": {
+      "productive": 0,
+      "diagnostic": 0,
+      "retrieval": 0,
+      "dead_end": 9936,
+      "reingestion_input": 743833,
+      "reingestion_cache_read": 730677
+     },
+     "proof_state": "/home/zhang-liao/auto_verify_dalek/ledger/transcripts/.proof-state-dag_double_dynamic_01_17-3846f0ff-4c6b-4c7d-98ed-60377e91f08f/state.json"
+    }
+   ],
+   "detail": {
+    "gate_outcome": "rejected_sorry_remains",
+    "gate_detail": {
+     "gate_build_seconds": 1.8,
+     "g1_seconds": 5.8,
+     "g2": "skipped",
+     "reason": "target axiom closure contains sorryAx or evidence missing"
+    }
+   },
+   "partial_manifest": "ledger/runs/double_dynamic_01/partials/attempt-17/manifest.json",
+   "retry": true
+  },
+  {
+   "node": "n17",
+   "outcome": "rejected_statement_changed",
+   "sessions": [
+    "71f130cd-957b-40cb-8cd8-3546645685d0"
+   ],
+   "rounds": [
+    {
+     "round": 1,
+     "outcome": "rejected_statement_changed",
+     "detail": {
+      "gate_build_seconds": 1.9,
+      "g1_seconds": 4.4,
+      "missing": {
+       "Curve25519Dalek.Specs.Edwards.EdwardsPoint.Double": [
+        "curve25519_dalek.edwards.EdwardsPoint.double_denoms_ne_zero",
+        "curve25519_dalek.edwards.EdwardsPoint.double_field_math",
+        "curve25519_dalek.edwards.EdwardsPoint.double_toField_eq",
+        "curve25519_dalek.edwards.EdwardsPoint.double_toField_eq'"
+       ]
+      },
+      "changed": {}
+     },
+     "wall_seconds": 285.5,
+     "status": "ok",
+     "session_id": "71f130cd-957b-40cb-8cd8-3546645685d0",
+     "fresh_session": true,
+     "transcript": "ledger/transcripts/dag_double_dynamic_01_18.r1.jsonl",
+     "provenance": {
+      "last_event_type": "result",
+      "last_result_seen": true,
+      "result_followed_by_metadata": false,
+      "parse_errors": 0,
+      "compact_recovery": {
+       "enabled": true,
+       "event": "SessionStart",
+       "matcher": "compact",
+       "settings_path": "/home/zhang-liao/auto_verify_dalek/ledger/runs/double_dynamic_01/slot0/claude_config/local_check_tool/recovery-d60f86c341e34445b53b4b8f03e40955/settings.json",
+       "settings_sha256": "f03f26f8c01eff5e7660883041b47fd7610156e9ce26ace3b672e093e92f60b1",
+       "hook_path": "/home/zhang-liao/auto_verify_dalek/ledger/runs/double_dynamic_01/slot0/claude_config/local_check_tool/compact_reminder.py",
+       "hook_sha256": "3a4dd6560b5d7ac828fb79b1f2879d7ef6e03c315a9753a983884d61614bce64",
+       "files": {
+        "/home/zhang-liao/auto_verify_dalek/ledger/runs/double_dynamic_01/slot0/claude_config/local_check_tool/recovery-d60f86c341e34445b53b4b8f03e40955/workflow.md": "e8479c7189fb8108349e574d505437dae1958daeb0776f8dee3001c0dd445ad0",
+        "/home/zhang-liao/auto_verify_dalek/ledger/runs/double_dynamic_01/slot0/claude_config/local_check_tool/recovery-d60f86c341e34445b53b4b8f03e40955/round-context.md": "e8479c7189fb8108349e574d505437dae1958daeb0776f8dee3001c0dd445ad0",
+        "/home/zhang-liao/auto_verify_dalek/ledger/runs/double_dynamic_01/slot0/claude_config/local_check_tool/recovery-d60f86c341e34445b53b4b8f03e40955/lean-check.md": "6570fbe8430c9d2742fa6430ee296996f3928eda2a3db80d019380901ad29119"
+       }
+      },
+      "local_check": {
+       "enabled": true,
+       "tool_sha256": "371074cd65134a0c7abbba2406a53c4e37c08bf3f15f16b3814e1f2ef8bef371",
+       "tool_path": "/home/zhang-liao/auto_verify_dalek/ledger/runs/double_dynamic_01/slot0/claude_config/local_check_tool/lean_check.py",
+       "state_helper_sha256": "63e9df6973faf19f6fd98c794c2417b25866a0349669d54025bb3ac0864b61b0",
+       "log_dir": "/home/zhang-liao/auto_verify_dalek/ledger/runs/double_dynamic_01/slot0/claude_config/local_checks",
+       "effective_message_path": "/home/zhang-liao/auto_verify_dalek/ledger/transcripts/dag_double_dynamic_01_18.r1.jsonl.prompt.txt",
+       "allowed_tools": "Read,Grep,Glob,Edit,Write,Bash(lake build*),Bash(grep*),Bash(/usr/bin/python3 /home/zhang-liao/auto_verify_dalek/ledger/runs/double_dynamic_01/slot0/claude_config/local_check_tool/lean_check.py *)",
+       "instructions_sha256": "6570fbe8430c9d2742fa6430ee296996f3928eda2a3db80d019380901ad29119",
+       "effective_message_sha256": "e8479c7189fb8108349e574d505437dae1958daeb0776f8dee3001c0dd445ad0"
+      }
+     },
+     "end_reason": "COMPLETE",
+     "target_file_edited": true,
+     "edited_files": [
+      "Curve25519Dalek/Specs/Edwards/EdwardsPoint/Double.lean"
+     ],
+     "models_used": [
+      "claude-opus-5-5"
+     ],
+     "cost_usd": 1.1494501999999995,
+     "num_turns": 49,
+     "session_cache_creation_tokens": 58765,
+     "usage_totals": {
+      "input_tokens": 58,
+      "output_tokens": 21067,
+      "cache_creation_input_tokens": 58765,
+      "cache_read_input_tokens": 1288791
+     },
+     "assistant_turns": 29,
+     "buckets": {
+      "productive": 0,
+      "diagnostic": 0,
+      "retrieval": 0,
+      "dead_end": 21067,
+      "reingestion_input": 1335803,
+      "reingestion_cache_read": 1282527
+     },
+     "proof_state": "/home/zhang-liao/auto_verify_dalek/ledger/transcripts/.proof-state-dag_double_dynamic_01_18-71f130cd-957b-40cb-8cd8-3546645685d0/state.json"
+    }
+   ],
+   "detail": {
+    "gate_build_seconds": 1.9,
+    "g1_seconds": 4.4,
+    "missing": {
+     "Curve25519Dalek.Specs.Edwards.EdwardsPoint.Double": [
+      "curve25519_dalek.edwards.EdwardsPoint.double_denoms_ne_zero",
+      "curve25519_dalek.edwards.EdwardsPoint.double_field_math",
+      "curve25519_dalek.edwards.EdwardsPoint.double_toField_eq",
+      "curve25519_dalek.edwards.EdwardsPoint.double_toField_eq'"
+     ]
+    },
+    "changed": {}
+   },
+   "partial_manifest": "ledger/runs/double_dynamic_01/partials/attempt-18/manifest.json"
+  }
+ ],
+ "commits": [
+  {
+   "sha": "1debfebfdb2c041ed972515efa4109df27706133",
+   "kind": "accept",
+   "node": "n1"
+  },
+  {
+   "sha": "c9a0451d0cb434822100f18ee25af007a93f0b59",
+   "kind": "accept",
+   "node": "n2"
+  },
+  {
+   "sha": "3c7b853226e9366ba2a863009331a5e616d03802",
+   "kind": "accept",
+   "node": "n3"
+  },
+  {
+   "sha": "debb27f1e3cdaedf6bccd61f902e492226fc20dd",
+   "kind": "accept",
+   "node": "n4"
+  },
+  {
+   "sha": "ffd5a471750c0bfcbec20fca311ff673598f3263",
+   "kind": "accept",
+   "node": "n5"
+  },
+  {
+   "sha": "332249727a4f4755aaf610e4d50b192183575fbc",
+   "kind": "accept",
+   "node": "n6"
+  },
+  {
+   "sha": "4714a19c335f78240482f7e9ae1db09c5443a61e",
+   "kind": "accept",
+   "node": "n7"
+  },
+  {
+   "sha": "b97a91b7d5f0384b0e1844b426359a68bfa8b9f1",
+   "kind": "accept",
+   "node": "n8"
+  },
+  {
+   "sha": "887b02fab75b3fa176d67be1ad66e48ed701967c",
+   "kind": "accept",
+   "node": "n9"
+  },
+  {
+   "sha": "a94eaad9af0daab2e9de119b01d6c72d7705a30c",
+   "kind": "accept",
+   "node": "n10"
+  },
+  {
+   "sha": "2cda874af80ac397a99b5221d4e80979c1577e35",
+   "kind": "accept",
+   "node": "n11"
+  },
+  {
+   "sha": "bcb3dd53532d3c7b4a33e85c8d34a7bab7457b65",
+   "kind": "accept",
+   "node": "n12"
+  },
+  {
+   "sha": "2a0ae5f4b0a627ccb54f9c9f63343d52452b2742",
+   "kind": "accept",
+   "node": "n13"
+  },
+  {
+   "sha": "a1d097ebf664b5ac7d33bc86b7ce689db56ca685",
+   "kind": "accept",
+   "node": "n14"
+  },
+  {
+   "sha": "8dddf68429f8784d6992e37861f8a76e0ca07949",
+   "kind": "accept",
+   "node": "n15"
+  },
+  {
+   "sha": "d87826ef43fe285f1740f7a174b7dfdbd70f83ac",
+   "kind": "accept",
+   "node": "n16"
+  }
+ ],
+ "attempts": 18,
+ "initial": {
+  "Curve25519Dalek.Specs.Backend.Serial.U64.Field.FieldElement51.Mul": {},
+  "Curve25519Dalek.Specs.Backend.Serial.CurveModels.CompletedPoint.AsExtended": {},
+  "Curve25519Dalek.Specs.Backend.Serial.U64.Field.FieldElement51.AddAssign": {},
+  "Curve25519Dalek.Specs.Backend.Serial.U64.Field.FieldElement51.Add": {},
+  "Curve25519Dalek.Specs.Backend.Serial.U64.Field.FieldElement51.Pow2K": {},
+  "Curve25519Dalek.Specs.Backend.Serial.U64.Field.FieldElement51.Square": {},
+  "Curve25519Dalek.Specs.Backend.Serial.U64.Field.FieldElement51.Square2": {},
+  "Curve25519Dalek.Specs.Backend.Serial.CurveModels.ProjectivePoint.Double": {},
+  "Curve25519Dalek.Specs.Edwards.EdwardsPoint.AsProjective": {},
+  "Curve25519Dalek.Specs.Edwards.EdwardsPoint.Double": {
+   "curve25519_dalek.edwards.EdwardsPoint.double_spec": {
+    "kind": "theorem",
+    "canon": "(p (c curve25519_dalek.edwards.EdwardsPoint []) (p (a (c curve25519_dalek.edwards.EdwardsPoint.IsValid []) (b0)) (a (a (a (c Aeneas.Std.WP.spec [0]) (c curve25519_dalek.edwards.EdwardsPoint [])) (a (c curve25519_dalek.edwards.EdwardsPoint.double []) (b1))) (l (c curve25519_dalek.edwards.EdwardsPoint []) (a (a (c And []) (a (c curve25519_dalek.edwards.EdwardsPoint.IsValid []) (b0))) (a (a (a (c Eq [1]) (a (a (a (a (a (a (c Edwards.Point []) (c Edwards.CurveField [])) (a (a (c Distrib.toMul [0]) (c Edwards.CurveField [])) (a (a (c NonUnitalNonAssocSemiring.toDistrib [0]) (c Edwards.CurveField [])) (a (a (c NonUnitalNonAssocRing.toNonUnitalNonAssocSemiring [0]) (c Edwards.CurveField [])) (a (a (c NonUnitalNonAssocCommRing.toNonUnitalNonAssocRing [0]) (c Edwards.CurveField [])) (a (a (c NonUnitalCommRing.toNonUnitalNonAssocCommRing [0]) (c Edwards.CurveField [])) (a (a (c CommRing.toNonUnitalCommRing [0]) (c Edwards.CurveField [])) (a (c ZMod.commRing []) (c p []))))))))) (a (a (c Distrib.toAdd [0]) (c Edwards.CurveField [])) (a (a (c NonUnitalNonAssocSemiring.toDistrib [0]) (c Edwards.CurveField [])) (a (a (c NonUnitalNonAssocRing.toNonUnitalNonAssocSemiring [0]) (c Edwards.CurveField [])) (a (a (c NonUnitalNonAssocCommRing.toNonUnitalNonAssocRing [0]) (c Edwards.CurveField [])) (a (a (c NonUnitalCommRing.toNonUnitalNonAssocCommRing [0]) (c Edwards.CurveField [])) (a (a (c CommRing.toNonUnitalCommRing [0]) (c Edwards.CurveField [])) (a (c ZMod.commRing []) (c p []))))))))) (a (a (c Monoid.toNatPow [0]) (c Edwards.CurveField [])) (a (a (c MonoidWithZero.toMonoid [0]) (c Edwards.CurveField [])) (a (a (c Semiring.toMonoidWithZero [0]) (c Edwards.CurveField [])) (a (a (c DivisionSemiring.toSemiring [0]) (c Edwards.CurveField [])) (a (a (c Semifield.toDivisionSemiring [0]) (c Edwards.CurveField [])) (a (a (c Field.toSemifield [0]) (c Edwards.CurveField [])) (a (a (c ZMod.instField []) (c p [])) (c instFactPrimeP []))))))))) (a (a (c AddMonoidWithOne.toOne [0]) (c Edwards.CurveField [])) (a (a (c AddGroupWithOne.toAddMonoidWithOne [0]) (c Edwards.CurveField [])) (a (a (c Ring.toAddGroupWithOne [0]) (c Edwards.CurveField [])) (a (a (c DivisionRing.toRing [0]) (c Edwards.CurveField [])) (a (a (c Field.toDivisionRing [0]) (c Edwards.CurveField [])) (a (a (c ZMod.instField []) (c p [])) (c instFactPrimeP [])))))))) (c Edwards.Ed25519 []))) (a (c curve25519_dalek.edwards.EdwardsPoint.toPoint []) (b0))) (a (a (a (a (a (a (c HAdd.hAdd [0, 0, 0]) (a (a (a (a (a (a (c Edwards.Point []) (c Edwards.CurveField [])) (a (a (c Distrib.toMul [0]) (c Edwards.CurveField [])) (a (a (c NonUnitalNonAssocSemiring.toDistrib [0]) (c Edwards.CurveField [])) (a (a (c NonUnitalNonAssocRing.toNonUnitalNonAssocSemiring [0]) (c Edwards.CurveField [])) (a (a (c NonUnitalNonAssocCommRing.toNonUnitalNonAssocRing [0]) (c Edwards.CurveField [])) (a (a (c NonUnitalCommRing.toNonUnitalNonAssocCommRing [0]) (c Edwards.CurveField [])) (a (a (c CommRing.toNonUnitalCommRing [0]) (c Edwards.CurveField [])) (a (c ZMod.commRing []) (c p []))))))))) (a (a (c Distrib.toAdd [0]) (c Edwards.CurveField [])) (a (a (c NonUnitalNonAssocSemiring.toDistrib [0]) (c Edwards.CurveField [])) (a (a (c NonUnitalNonAssocRing.toNonUnitalNonAssocSemiring [0]) (c Edwards.CurveField [])) (a (a (c NonUnitalNonAssocCommRing.toNonUnitalNonAssocRing [0]) (c Edwards.CurveField [])) (a (a (c NonUnitalCommRing.toNonUnitalNonAssocCommRing [0]) (c Edwards.CurveField [])) (a (a (c CommRing.toNonUnitalCommRing [0]) (c Edwards.CurveField [])) (a (c ZMod.commRing []) (c p []))))))))) (a (a (c Monoid.toNatPow [0]) (c Edwards.CurveField [])) (a (a (c MonoidWithZero.toMonoid [0]) (c Edwards.CurveField [])) (a (a (c Semiring.toMonoidWithZero [0]) (c Edwards.CurveField [])) (a (a (c DivisionSemiring.toSemiring [0]) (c Edwards.CurveField [])) (a (a (c Semifield.toDivisionSemiring [0]) (c Edwards.CurveField [])) (a (a (c Field.toSemifield [0]) (c Edwards.CurveField [])) (a (a (c ZMod.instField []) (c p [])) (c instFactPrimeP []))))))))) (a (a (c AddMonoidWithOne.toOne [0]) (c Edwards.CurveField [])) (a (a (c AddGroupWithOne.toAddMonoidWithOne [0]) (c Edwards.CurveField [])) (a (a (c Ring.toAddGroupWithOne [0]) (c Edwards.CurveField [])) (a (a (c DivisionRing.toRing [0]) (c Edwards.CurveField [])) (a (a (c Field.toDivisionRing [0]) (c Edwards.CurveField [])) (a (a (c ZMod.instField []) (c p [])) (c instFactPrimeP [])))))))) (c Edwards.Ed25519 []))) (a (a (a (a (a (a (c Edwards.Point []) (c Edwards.CurveField [])) (a (a (c Distrib.toMul [0]) (c Edwards.CurveField [])) (a (a (c NonUnitalNonAssocSemiring.toDistrib [0]) (c Edwards.CurveField [])) (a (a (c NonUnitalNonAssocRing.toNonUnitalNonAssocSemiring [0]) (c Edwards.CurveField [])) (a (a (c NonUnitalNonAssocCommRing.toNonUnitalNonAssocRing [0]) (c Edwards.CurveField [])) (a (a (c NonUnitalCommRing.toNonUnitalNonAssocCommRing [0]) (c Edwards.CurveField [])) (a (a (c CommRing.toNonUnitalCommRing [0]) (c Edwards.CurveField [])) (a (c ZMod.commRing []) (c p []))))))))) (a (a (c Distrib.toAdd [0]) (c Edwards.CurveField [])) (a (a (c NonUnitalNonAssocSemiring.toDistrib [0]) (c Edwards.CurveField [])) (a (a (c NonUnitalNonAssocRing.toNonUnitalNonAssocSemiring [0]) (c Edwards.CurveField [])) (a (a (c NonUnitalNonAssocCommRing.toNonUnitalNonAssocRing [0]) (c Edwards.CurveField [])) (a (a (c NonUnitalCommRing.toNonUnitalNonAssocCommRing [0]) (c Edwards.CurveField [])) (a (a (c CommRing.toNonUnitalCommRing [0]) (c Edwards.CurveField [])) (a (c ZMod.commRing []) (c p []))))))))) (a (a (c Monoid.toNatPow [0]) (c Edwards.CurveField [])) (a (a (c MonoidWithZero.toMonoid [0]) (c Edwards.CurveField [])) (a (a (c Semiring.toMonoidWithZero [0]) (c Edwards.CurveField [])) (a (a (c DivisionSemiring.toSemiring [0]) (c Edwards.CurveField [])) (a (a (c Semifield.toDivisionSemiring [0]) (c Edwards.CurveField [])) (a (a (c Field.toSemifield [0]) (c Edwards.CurveField [])) (a (a (c ZMod.instField []) (c p [])) (c instFactPrimeP []))))))))) (a (a (c AddMonoidWithOne.toOne [0]) (c Edwards.CurveField [])) (a (a (c AddGroupWithOne.toAddMonoidWithOne [0]) (c Edwards.CurveField [])) (a (a (c Ring.toAddGroupWithOne [0]) (c Edwards.CurveField [])) (a (a (c DivisionRing.toRing [0]) (c Edwards.CurveField [])) (a (a (c Field.toDivisionRing [0]) (c Edwards.CurveField [])) (a (a (c ZMod.instField []) (c p [])) (c instFactPrimeP [])))))))) (c Edwards.Ed25519 []))) (a (a (a (a (a (a (c Edwards.Point []) (c Edwards.CurveField [])) (a (a (c Distrib.toMul [0]) (c Edwards.CurveField [])) (a (a (c NonUnitalNonAssocSemiring.toDistrib [0]) (c Edwards.CurveField [])) (a (a (c NonUnitalNonAssocRing.toNonUnitalNonAssocSemiring [0]) (c Edwards.CurveField [])) (a (a (c NonUnitalNonAssocCommRing.toNonUnitalNonAssocRing [0]) (c Edwards.CurveField [])) (a (a (c NonUnitalCommRing.toNonUnitalNonAssocCommRing [0]) (c Edwards.CurveField [])) (a (a (c CommRing.toNonUnitalCommRing [0]) (c Edwards.CurveField [])) (a (c ZMod.commRing []) (c p []))))))))) (a (a (c Distrib.toAdd [0]) (c Edwards.CurveField [])) (a (a (c NonUnitalNonAssocSemiring.toDistrib [0]) (c Edwards.CurveField [])) (a (a (c NonUnitalNonAssocRing.toNonUnitalNonAssocSemiring [0]) (c Edwards.CurveField [])) (a (a (c NonUnitalNonAssocCommRing.toNonUnitalNonAssocRing [0]) (c Edwards.CurveField [])) (a (a (c NonUnitalCommRing.toNonUnitalNonAssocCommRing [0]) (c Edwards.CurveField [])) (a (a (c CommRing.toNonUnitalCommRing [0]) (c Edwards.CurveField [])) (a (c ZMod.commRing []) (c p []))))))))) (a (a (c Monoid.toNatPow [0]) (c Edwards.CurveField [])) (a (a (c MonoidWithZero.toMonoid [0]) (c Edwards.CurveField [])) (a (a (c Semiring.toMonoidWithZero [0]) (c Edwards.CurveField [])) (a (a (c DivisionSemiring.toSemiring [0]) (c Edwards.CurveField [])) (a (a (c Semifield.toDivisionSemiring [0]) (c Edwards.CurveField [])) (a (a (c Field.toSemifield [0]) (c Edwards.CurveField [])) (a (a (c ZMod.instField []) (c p [])) (c instFactPrimeP []))))))))) (a (a (c AddMonoidWithOne.toOne [0]) (c Edwards.CurveField [])) (a (a (c AddGroupWithOne.toAddMonoidWithOne [0]) (c Edwards.CurveField [])) (a (a (c Ring.toAddGroupWithOne [0]) (c Edwards.CurveField [])) (a (a (c DivisionRing.toRing [0]) (c Edwards.CurveField [])) (a (a (c Field.toDivisionRing [0]) (c Edwards.CurveField [])) (a (a (c ZMod.instField []) (c p [])) (c instFactPrimeP [])))))))) (c Edwards.Ed25519 []))) (a (a (c instHAdd [0]) (a (a (a (a (a (a (c Edwards.Point []) (c Edwards.CurveField [])) (a (a (c Distrib.toMul [0]) (c Edwards.CurveField [])) (a (a (c NonUnitalNonAssocSemiring.toDistrib [0]) (c Edwards.CurveField [])) (a (a (c NonUnitalNonAssocRing.toNonUnitalNonAssocSemiring [0]) (c Edwards.CurveField [])) (a (a (c NonUnitalNonAssocCommRing.toNonUnitalNonAssocRing [0]) (c Edwards.CurveField [])) (a (a (c NonUnitalCommRing.toNonUnitalNonAssocCommRing [0]) (c Edwards.CurveField [])) (a (a (c CommRing.toNonUnitalCommRing [0]) (c Edwards.CurveField [])) (a (c ZMod.commRing []) (c p []))))))))) (a (a (c Distrib.toAdd [0]) (c Edwards.CurveField [])) (a (a (c NonUnitalNonAssocSemiring.toDistrib [0]) (c Edwards.CurveField [])) (a (a (c NonUnitalNonAssocRing.toNonUnitalNonAssocSemiring [0]) (c Edwards.CurveField [])) (a (a (c NonUnitalNonAssocCommRing.toNonUnitalNonAssocRing [0]) (c Edwards.CurveField [])) (a (a (c NonUnitalCommRing.toNonUnitalNonAssocCommRing [0]) (c Edwards.CurveField [])) (a (a (c CommRing.toNonUnitalCommRing [0]) (c Edwards.CurveField [])) (a (c ZMod.commRing []) (c p []))))))))) (a (a (c Monoid.toNatPow [0]) (c Edwards.CurveField [])) (a (a (c MonoidWithZero.toMonoid [0]) (c Edwards.CurveField [])) (a (a (c Semiring.toMonoidWithZero [0]) (c Edwards.CurveField [])) (a (a (c DivisionSemiring.toSemiring [0]) (c Edwards.CurveField [])) (a (a (c Semifield.toDivisionSemiring [0]) (c Edwards.CurveField [])) (a (a (c Field.toSemifield [0]) (c Edwards.CurveField [])) (a (a (c ZMod.instField []) (c p [])) (c instFactPrimeP []))))))))) (a (a (c AddMonoidWithOne.toOne [0]) (c Edwards.CurveField [])) (a (a (c AddGroupWithOne.toAddMonoidWithOne [0]) (c Edwards.CurveField [])) (a (a (c Ring.toAddGroupWithOne [0]) (c Edwards.CurveField [])) (a (a (c DivisionRing.toRing [0]) (c Edwards.CurveField [])) (a (a (c Field.toDivisionRing [0]) (c Edwards.CurveField [])) (a (a (c ZMod.instField []) (c p [])) (c instFactPrimeP [])))))))) (c Edwards.Ed25519 []))) (c Edwards.instAddPointCurveFieldEd25519 []))) (a (c curve25519_dalek.edwards.EdwardsPoint.toPoint []) (b2))) (a (c curve25519_dalek.edwards.EdwardsPoint.toPoint []) (b2)))))))))",
+    "pp": "∀ (e : curve25519_dalek.edwards.EdwardsPoint),\n  e.IsValid →\n    Aeneas.Std.WP.spec e.double fun result => And result.IsValid (Eq result.toPoint (instHAdd.hAdd e.toPoint e.toPoint))",
+    "axioms": [
+     "propext",
+     "Classical.choice",
+     "Quot.sound",
+     "sorryAx"
+    ],
+    "consts": [
+     "curve25519_dalek.edwards.EdwardsPoint",
+     "curve25519_dalek.edwards.EdwardsPoint.IsValid",
+     "Aeneas.Std.WP.spec",
+     "curve25519_dalek.edwards.EdwardsPoint.double",
+     "And",
+     "Eq",
+     "Edwards.Point",
+     "Edwards.CurveField",
+     "Distrib.toMul",
+     "NonUnitalNonAssocSemiring.toDistrib",
+     "NonUnitalNonAssocRing.toNonUnitalNonAssocSemiring",
+     "NonUnitalNonAssocCommRing.toNonUnitalNonAssocRing",
+     "NonUnitalCommRing.toNonUnitalNonAssocCommRing",
+     "CommRing.toNonUnitalCommRing",
+     "ZMod.commRing",
+     "p",
+     "Distrib.toAdd",
+     "Monoid.toNatPow",
+     "MonoidWithZero.toMonoid",
+     "Semiring.toMonoidWithZero",
+     "DivisionSemiring.toSemiring",
+     "Semifield.toDivisionSemiring",
+     "Field.toSemifield",
+     "ZMod.instField",
+     "instFactPrimeP",
+     "AddMonoidWithOne.toOne",
+     "AddGroupWithOne.toAddMonoidWithOne",
+     "Ring.toAddGroupWithOne",
+     "DivisionRing.toRing",
+     "Field.toDivisionRing",
+     "Edwards.Ed25519",
+     "curve25519_dalek.edwards.EdwardsPoint.toPoint",
+     "HAdd.hAdd",
+     "instHAdd",
+     "Edwards.instAddPointCurveFieldEd25519"
+    ]
+   }
+  }
+ },
+ "initial_counts": {
+  "Aeneas/Std/Slice.lean": 2,
+  "Aeneas/Std/String.lean": 1,
+  "Aeneas/Std/Core/Iter.lean": 5,
+  "Aeneas/Std/SliceIter.lean": 3,
+  "Aeneas/Std/StringIter.lean": 2,
+  "Aeneas/Std/VecIter.lean": 4,
+  "Curve25519Dalek/Math/Basic.lean": 2,
+  "Curve25519Dalek/Aux.lean": 27,
+  "Curve25519Dalek/FunsExternal.lean": 36,
+  "Curve25519Dalek/Math/Edwards/Curve.lean": 1,
+  "Curve25519Dalek/Math/Ristretto/Representation.lean": 2,
+  "Curve25519Dalek/Specs/Backend/Serial/CurveModels/AffineNielsPoint/Add.lean": 1,
+  "Curve25519Dalek/Specs/Backend/Serial/CurveModels/AffineNielsPoint/AssertReceiverIsTotalEq.lean": 1,
+  "Curve25519Dalek/Specs/Backend/Serial/CurveModels/AffineNielsPoint/ConditionalAssign.lean": 1,
+  "Curve25519Dalek/Specs/Backend/Serial/CurveModels/AffineNielsPoint/ConditionalSelect.lean": 1,
+  "Curve25519Dalek/Specs/Backend/Serial/U64/Field/FieldElement51/ToBytes.lean": 1,
+  "Curve25519Dalek/Specs/Backend/Serial/CurveModels/AffineNielsPoint/Eq.lean": 1,
+  "Curve25519Dalek/Specs/Backend/Serial/CurveModels/AffineNielsPoint/Sub.lean": 1,
+  "Curve25519Dalek/Specs/Backend/Serial/CurveModels/ProjectivePoint/AsExtended.lean": 1,
+  "Curve25519Dalek/Specs/Backend/Serial/U64/Field/FieldElement51/AsBytes.lean": 1,
+  "Curve25519Dalek/Specs/Backend/Serial/U64/Scalar/Scalar52/Square.lean": 1,
+  "Curve25519Dalek/Specs/Edwards/Affine/AffinePoint/ConditionalSelect.lean": 1,
+  "Curve25519Dalek/Specs/Edwards/Affine/AffinePoint/Eq.lean": 1,
+  "Curve25519Dalek/Specs/Edwards/CompressedEdwardsY/CtEq.lean": 1,
+  "Curve25519Dalek/Specs/Edwards/EdwardsPoint/AsAffineNiels.lean": 1,
+  "Curve25519Dalek/Specs/Edwards/EdwardsPoint/Compress.lean": 1,
+  "Curve25519Dalek/Specs/Edwards/EdwardsPoint/Double.lean": 1,
+  "Curve25519Dalek/Specs/Edwards/EdwardsPoint/Eq.lean": 1,
+  "Curve25519Dalek/Specs/Edwards/EdwardsPoint/IsSmallOrder.lean": 1,
+  "Curve25519Dalek/Specs/Edwards/EdwardsPoint/IsTorsionFree.lean": 1,
+  "Curve25519Dalek/Specs/Edwards/EdwardsPoint/MulBaseClamped.lean": 1,
+  "Curve25519Dalek/Specs/Edwards/EdwardsPoint/MulClamped.lean": 1,
+  "Curve25519Dalek/Specs/Montgomery/MontgomeryPoint/AsBytes.lean": 1,
+  "Curve25519Dalek/Specs/Montgomery/MontgomeryPoint/ConditionalSelect.lean": 1,
+  "Curve25519Dalek/Specs/Montgomery/MontgomeryPoint/ElligatorEncode.lean": 1,
+  "Curve25519Dalek/Specs/Montgomery/MontgomeryPoint/Eq.lean": 1,
+  "Curve25519Dalek/Specs/Montgomery/MontgomeryPoint/Identity.lean": 1,
+  "Curve25519Dalek/Specs/Montgomery/MontgomeryPoint/Mul.lean": 1,
+  "Curve25519Dalek/Specs/Montgomery/MontgomeryPoint/MulBaseClamped.lean": 1,
+  "Curve25519Dalek/Specs/Montgomery/MontgomeryPoint/MulClamped.lean": 1,
+  "Curve25519Dalek/Specs/Montgomery/MontgomeryPoint/ToBytes.lean": 1,
+  "Curve25519Dalek/Specs/Montgomery/MontgomeryPoint/ToEdwards.lean": 1,
+  "Curve25519Dalek/Specs/Montgomery/ProjectivePoint/ConditionalSelect.lean": 1,
+  "Curve25519Dalek/Specs/Ristretto/CompressedRistretto/CtEq.lean": 1,
+  "Curve25519Dalek/Specs/Ristretto/CompressedRistretto/Decompress.lean": 1,
+  "Curve25519Dalek/Specs/Ristretto/CompressedRistretto/ToBytes.lean": 1,
+  "Curve25519Dalek/Specs/Ristretto/RistrettoPoint/Compress.lean": 1,
+  "Curve25519Dalek/Specs/Ristretto/RistrettoPoint/ConditionalSelect.lean": 1,
+  "Curve25519Dalek/Specs/Ristretto/RistrettoPoint/Eq.lean": 1,
+  "Curve25519Dalek/Specs/Ristretto/RistrettoPoint/FromUniformBytes.lean": 1,
+  "Curve25519Dalek/Specs/Ristretto/RistrettoPoint/Mul_Base.lean": 1,
+  "Curve25519Dalek/Specs/Scalar/Scalar/Eq.lean": 1,
+  "Curve25519Dalek/Specs/Scalar/Scalar/FromBytesModOrder.lean": 1,
+  "Curve25519Dalek/Specs/Scalar/Scalar/FromBytesModOrderWide.lean": 1,
+  "Curve25519Dalek/Specs/Scalar/Scalar/FromCanonicalBytes.lean": 1,
+  "Curve25519Dalek/Specs/Scalar/Scalar/FromU128.lean": 1,
+  "Curve25519Dalek/Specs/Scalar/Scalar/FromU16.lean": 1,
+  "Curve25519Dalek/Specs/Scalar/Scalar/FromU32.lean": 1,
+  "Curve25519Dalek/Specs/Scalar/Scalar/FromU64.lean": 1,
+  "Curve25519Dalek/Specs/Scalar/Scalar/FromU8.lean": 1,
+  "Curve25519Dalek/TypesAux.lean": 2,
+  "Curve25519Dalek/Specs/Scalar/Scalar/Invert.lean": 1,
+  "Curve25519Dalek/Specs/Scalar/Scalar/Mul.lean": 3,
+  "Curve25519Dalek/Specs/Scalar/Scalar/MulAssign.lean": 1,
+  "Curve25519Dalek/Specs/Scalar/Scalar/Neg.lean": 1,
+  "Curve25519Dalek/Specs/Scalar/Scalar/ToBytes.lean": 1
+ },
+ "source_sha256": {
+  "Curve25519Dalek/Specs/Backend/Serial/U64/Field/FieldElement51/Pow2K.lean": "e6c269fd2857a35f0931581436928533fe49473cc8aa8c3e73eb35b7e08282d7",
+  "Curve25519Dalek/Specs/Backend/Serial/U64/Field/FieldElement51/Mul.lean": "2d65da2b8ec1cc41dfde50207c342a504eee242a70e4928d38b1fe91cf612bd7",
+  "Curve25519Dalek/Specs/Backend/Serial/U64/Field/FieldElement51/Add.lean": "a649731ce59d77416da715efec3aa5cb0404ada0f8a6e531bee822c3d92c3643",
+  "Curve25519Dalek/Specs/Edwards/EdwardsPoint/AsProjective.lean": "c0d5f9c89e96bfcd40b821f00000aa58c1b53ebe0fa75aba07d541e6977da018",
+  "Curve25519Dalek/Specs/Edwards/EdwardsPoint/Double.lean": "92a3f37f08aff23223e3974ac07f8cbe49dfa151efc782a035ad1eba9f4542bf",
+  "Curve25519Dalek/Specs/Backend/Serial/U64/Field/FieldElement51/AddAssign.lean": "914c55af31561023f9811ed0549a3ae6b55b199d9f3681ed15e1c1d331c9042e",
+  "Curve25519Dalek/Specs/Backend/Serial/CurveModels/ProjectivePoint/Double.lean": "ad29c3937b80167b942dc3c316bd11ed1ffb4cda992f6a07c8fbbad8b5d2e76d",
+  "Curve25519Dalek/Specs/Backend/Serial/CurveModels/CompletedPoint/AsExtended.lean": "27bfaae882a4ac616fc1542eb27de8628b3080f8dd8e1827656a9222206b6647",
+  "Curve25519Dalek/Specs/Backend/Serial/U64/Field/FieldElement51/Square2.lean": "455bc415e335d73f65fb65dcea1024a5f540e4e83e49f91c41623680ec41dd09",
+  "Curve25519Dalek/Specs/Backend/Serial/U64/Field/FieldElement51/Square.lean": "8b19c3da6042948b10befd6ab27efbf2054169ec5a0aec840f60b54443719dd2"
+ }
+}

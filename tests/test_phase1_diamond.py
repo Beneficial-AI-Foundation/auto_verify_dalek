@@ -604,7 +604,7 @@ class VerifierRuntimeTests(unittest.TestCase):
             stderr=b"instance unavailable\n",
         )
         with (
-            mock.patch.object(subprocess, "run", return_value=failed),
+            mock.patch.object(verifier, "_bounded_run", return_value=failed),
             mock.patch.object(worker, "export_accepted") as export,
             self.assertRaisesRegex(
                 verifier.VerifierInfrastructureError,

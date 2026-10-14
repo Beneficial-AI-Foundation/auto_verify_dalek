@@ -105,7 +105,8 @@ class PreflightCliTests(unittest.TestCase):
             "--preparation-manifest", "/manifest", "--preparation-evidence", "/probes",
             "--preparation-cache", "/cache", "--public-rust-root", "/rust", "--verifier-reference", "/fake-reference"]
         with mock.patch.object(sys, "argv", argv), mock.patch.object(experiment, "run_experiment",
-                return_value={"outcome": "success"}) as call, mock.patch("builtins.print"):
+                return_value={"outcome": "success"}) as call, mock.patch("builtins.print"), \
+             mock.patch.object(experiment, "validate_run_config", return_value=(Path('/config'), {'max_wall_seconds':5400})):
             experiment.main()
         self.assertTrue(call.call_args.kwargs["fresh_pair_preflight"])
         self.assertEqual(call.call_args.kwargs["execution_mode"], "proof_only")

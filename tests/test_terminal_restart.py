@@ -124,7 +124,9 @@ class TerminalFinalizationTests(unittest.TestCase):
                 )
 
     def test_terminal_clean_verify_uses_reserved_budget_after_search_exhaustion(self):
-        state = _checkpoint_state(Path("/private/tmp"))
+        temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(temporary.cleanup)
+        state = _checkpoint_state(Path(temporary.name))
         terminal = _terminal_state(incomplete=True)
         state.update(
             {

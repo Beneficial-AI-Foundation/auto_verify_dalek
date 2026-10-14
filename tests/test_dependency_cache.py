@@ -85,7 +85,10 @@ class DependencyCacheTests(unittest.TestCase):
             path = Path(tmp) / "cache.tar.zst"
             path.write_bytes(compressed)
             digest = hashlib.sha256(compressed).hexdigest()
-            with dependency_cache.validated_archive(path, digest, len(compressed)) as staged:
+            # This byte-preservation test uses a tiny fixture. The independent
+            # low-space test below exercises the production multi-GB reserve.
+            with mock.patch.object(dependency_cache, '_MIN_FREE_AFTER_STAGE', 0), \
+                 dependency_cache.validated_archive(path, digest, len(compressed)) as staged:
                 self.assertNotEqual(staged, path)
                 self.assertEqual(staged.read_bytes(), compressed)
                 path.write_bytes(b"corrupted outside staged input")

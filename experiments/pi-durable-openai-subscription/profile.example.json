@@ -1,0 +1,26 @@
+{
+  "schema": "autofv-pi-openai-only-spike/v1",
+  "runId": "unapproved-example",
+  "mode": "live",
+  "roleModels": {
+    "scout": "gpt-6.1-sol",
+    "dependency_planner": "gpt-6.1-sol",
+    "specifier": "gpt-6.1-sol",
+    "spec_reviewer": "gpt-6.1-sol",
+    "prover": "gpt-6.1-sol",
+    "proof_reviewer": "gpt-6.1-sol",
+    "repair": "gpt-6.1-sol",
+    "verification_adviser": "gpt-6.1-sol"
+  },
+  "startedAtMs": 1,
+  "deadlineMs": 5400001,
+  "maxInvocations": 1,
+  "requestTimeoutMs": 120000,
+  "serverOutputCap": 16384,
+  "approvalId": null,
+  "acceptsUnknownCost": false,
+  "acceptsBestEffortCancellation": false,
+  "entitlementValidated": false,
+  "isolationEvidenceSha256": null,
+  "callbackLifecycleEvidenceSha256": null
+}

@@ -74,6 +74,114 @@ def config() -> dict:
             "max_wall_seconds": 600, "max_cost_usd": "5.000000"}
 
 
+class FvsReviewFormatTests(unittest.TestCase):
+    def review_template(self):
+        guide = fvs_adapter.contracts()["review_contract"]
+        self.assertEqual(guide.count("```markdown\n"), 1, "review contract must disclose one complete Markdown template")
+        return guide.split("```markdown\n", 1)[1].split("\n```", 1)[0]
+
+    def synthetic_review(self, verdict="APPROVE-WITH-EDITS"):
+        # Format fixtures only: this Nat-only review makes no Rust/proof acceptance claim.
+        values = {
+            "<positive integer>": "1", "<severity>": "MINOR", "<class>": "CONTENT",
+            "<claim>": "The theorem doc omits its Nat-only scope, inviting a machine-word reading.",
+            "<finding evidence>": "Arithmetic.lean:3 uses Nat, which has no machine-word wraparound.",
+            "<suggested change>": "Optional clarity edit, not a soundness defect: document the Nat-only scope.",
+            "<content coverage>": "Synthetic Nat-only review of Arithmetic.lean:3 and the equation increment n = n + 1; no Rust correspondence or proof certification claimed.",
+            "<source fidelity analysis>": "Arithmetic.lean:3 adds one over Nat: no finite widths, overflow/wrapping, casts, shifts, mutation or panics.",
+            "<preconditions analysis>": "All Nat inputs reach the return at Arithmetic.lean:3; n = 0 is allowed and no extra bound is needed.",
+            "<postconditions analysis>": "The result at Arithmetic.lean:3 is n + 1, hence strictly greater than n; no state update or canonical residue is promised.",
+            "<interpretation analysis>": "The equation quantifies every n : Nat; equality means natural/integer equality, not a modular relation.",
+            "<vacuity analysis>": "The equation constrains the actual result without assumptions; at n = 0 it requires 1, ruling out a constant-zero implementation.",
+            "<dependencies analysis>": "Arithmetic.lean:1 imports Types.lean:1 (Word := Nat); this fixture needs no external arithmetic model.",
+            "<helper reuse analysis>": "The synthetic grounding inventory cites only Arithmetic.lean:3; it contains no successor theorem or direct callers to reuse.",
+            "<review evidence>": "Arithmetic.lean:1-4; Types.lean:1; n = 0 and n = 1 compute 1 and 2. No Lean diagnostic is claimed.",
+            "<verdict>": verdict,
+        }
+        if verdict == "BLOCKED":
+            values["<dependencies analysis>"] = "Types.lean:1 is missing, so the import and any hidden assumptions cannot be checked."
+            values["<review evidence>"] = "Arithmetic.lean:1 imports Types; missing Types.lean:1 prevents checking that dependency."
+        raw = self.review_template()
+        for placeholder, value in values.items():
+            self.assertIn(placeholder, raw)
+            raw = raw.replace(placeholder, value)
+        if verdict in {"PASS", "BLOCKED"}:
+            raw = "## Findings\nNone.\n## Content coverage statement" + raw.split("## Content coverage statement", 1)[1]
+        self.assertNotRegex(raw, r"<[^>]+>")
+        self.assertLessEqual(len(raw), 4096)
+        return raw
+
+    def test_review_contract_discloses_complete_parser_format(self):
+        template = self.review_template()
+        self.assertEqual([line for line in template.splitlines() if line.startswith("## ")],
+                         ["## Findings", "## Content coverage statement", "## Coverage", "## Evidence"])
+        self.assertIn("### F-<positive integer> — <severity>\nClass: <class>\nClaim: <claim>\nEvidence: <finding evidence>\nSuggested change: <suggested change>", template)
+        coverage = template.split("## Coverage\n", 1)[1].split("## Evidence", 1)[0]
+        self.assertEqual([line.split(":", 1)[0] for line in coverage.splitlines()],
+                         ["source fidelity", "preconditions", "postconditions", "interpretation", "vacuity", "dependencies", "helper reuse"])
+        self.assertEqual(template.count("VERDICT:"), 1)
+        guide = fvs_adapter.contracts()["review_contract"]
+        for rule in ("one report of at most 4096 characters", "each on its own line",
+                     "Qualifications belong in values, never labels", "Placeholders are not valid review evidence",
+                     "Missing analysis requires BLOCKED, never default PASS", "PASS only with no findings",
+                     "REVISE and APPROVE-WITH-EDITS need findings", "BLOCKED must name missing evidence"):
+            with self.subTest(rule=rule):
+                self.assertIn(rule, guide)
+
+    def test_review_contract_template_parses_all_verdicts_without_rewriting(self):
+        for verdict in ("PASS", "APPROVE-WITH-EDITS", "REVISE", "BLOCKED"):
+            with self.subTest(verdict=verdict):
+                raw = self.synthetic_review(verdict)
+                review = fvs_adapter.parse_review(raw)
+                self.assertEqual(review["verdict"], verdict)
+                self.assertEqual(review["raw"], raw)
+                self.assertEqual(review["raw_sha256"], hashlib.sha256(raw.encode()).hexdigest())
+                self.assertEqual(len(review["findings"]), int(verdict in {"APPROVE-WITH-EDITS", "REVISE"}))
+                if review["findings"]:
+                    self.assertEqual(review["findings"][0]["Class"], "CONTENT")
+                    self.assertTrue(review["findings"][0]["Suggested change"].startswith("Optional clarity edit"))
+
+    def test_parse_review_rejects_observed_coverage_aliases(self):
+        raw = self.synthetic_review()
+        aliases = {"source fidelity": "Widths and casts", "preconditions": "Callers",
+                   "postconditions": "Postcondition", "interpretation": "Quantifiers",
+                   "vacuity": "Style", "dependencies": "Trust", "helper reuse": "Helper scope"}
+        combined = raw
+        for label, alias in aliases.items():
+            with self.subTest(label=label), self.assertRaisesRegex(contracts.ContractError, "omits applicable review surfaces"):
+                fvs_adapter.parse_review(raw.replace(label + ":", alias + ":"))
+            combined = combined.replace(label + ":", alias + ":")
+        with self.assertRaisesRegex(contracts.ContractError, "omits applicable review surfaces"):
+            fvs_adapter.parse_review(combined)
+
+    def test_parse_review_rejects_observed_combined_header_and_renamed_field(self):
+        raw = self.synthetic_review()
+        with self.assertRaisesRegex(contracts.ContractError, "malformed finding header"):
+            fvs_adapter.parse_review(raw.replace("### F-1 — MINOR\nClass: CONTENT", "### F-1 — MINOR, Class: CONTENT"))
+        with self.assertRaisesRegex(contracts.ContractError, "lacks substantive fields"):
+            fvs_adapter.parse_review(raw.replace("Suggested change:", "Suggested change (optional, not a soundness defect):"))
+
+    def test_parse_review_template_preserves_sections_verdict_and_findings_rules(self):
+        raw = self.synthetic_review()
+        invalid = [raw + "\nVERDICT: PASS", raw.replace("VERDICT: APPROVE-WITH-EDITS", "VERDICT: PASS"),
+                   self.synthetic_review("PASS").replace("VERDICT: PASS", "VERDICT: REVISE"),
+                   self.synthetic_review("PASS").replace("VERDICT: PASS", "VERDICT: APPROVE-WITH-EDITS"),
+                   self.synthetic_review("PASS").replace("VERDICT: PASS", "VERDICT: BLOCKED")]
+        invalid += [raw.replace(heading, "## Omitted") for heading in
+                    ("## Findings", "## Content coverage statement", "## Coverage", "## Evidence")]
+        for index, malformed in enumerate(invalid):
+            with self.subTest(case=index), self.assertRaises(contracts.ContractError):
+                fvs_adapter.parse_review(malformed)
+
+    def test_parse_review_template_keeps_4096_character_bound(self):
+        raw = self.synthetic_review()
+        bounded = raw.replace("\nVERDICT:", " " * (4096 - len(raw)) + "\nVERDICT:")
+        self.assertEqual(len(bounded), 4096)
+        self.assertEqual(fvs_adapter.parse_review(bounded)["raw"], bounded)
+        with self.assertRaisesRegex(contracts.ContractError, "empty/oversized"):
+            fvs_adapter.parse_review(bounded + "\n")
+
+
 class FvsOfflineTests(unittest.TestCase):
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory()

@@ -162,7 +162,7 @@ class AgentLaneBoundaryTests(unittest.TestCase):
                 agent_lane.role_conversation_spec({**fvs_job, "role": role})[
                     "max_output_tokens"
                 ],
-                8192,
+                16384,
             )
         with self.assertRaises(worker.WorkerError):
             agent_lane.validate_role_job({**fvs_job, "methodology": "unknown"})
@@ -170,6 +170,28 @@ class AgentLaneBoundaryTests(unittest.TestCase):
             agent_lane.validate_role_job(
                 {**fvs_job, "role_context": {"source_evidence": "x" * 262144}}
             )
+
+    def test_fvs_review_guidance_requires_one_complete_bounded_report(self):
+        for role in ("spec_reviewer", "proof_reviewer"):
+            with self.subTest(role=role):
+                job = {
+                    **_job(), "schema": "autofv-role-job/v2",
+                    "methodology": "fvs-fc/v1", "role": role,
+                }
+                prompt = agent_lane.initial_role_messages(
+                    agent_lane.role_conversation_spec(job)
+                )[0]["content"]
+                for guidance in (
+                    "exactly one evidence item",
+                    "at most 4096 Unicode characters (not UTF-8 bytes)",
+                    "Do not split the review across evidence items",
+                    "Preserve every required section and check",
+                    "never truncate or omit requirements to fit",
+                    "If a complete, justified review cannot fit, report BLOCKED",
+                    "An incomplete review cannot justify PASS",
+                    "submit the identical proposed patch",
+                ):
+                    self.assertIn(guidance, prompt)
 
     def test_fvs_candidate_cannot_replay_as_a_legacy_context(self):
         legacy = _job()
@@ -295,7 +317,7 @@ class AgentLaneBoundaryTests(unittest.TestCase):
                             },
                             "evidence": {
                                 "type": "array",
-                                "items": {"type": "string"},
+                                "items": {"type": "string", "maxLength": 4096},
                                 "maxItems": 32,
                             },
                         },
@@ -347,6 +369,40 @@ class AgentLaneBoundaryTests(unittest.TestCase):
                 (canonical / "Diamond" / "Left.lean").read_text(), "original\n"
             )
             self.assertEqual((lane / "Diamond" / "Left.lean").read_text(), "original\n")
+
+    def test_evidence_bounds_count_unicode_characters_and_preserve_items(self):
+        evidence = ["\U0001f50d" * 4096] * 32
+        self.assertGreater(len(evidence[0].encode("utf-8")), 4096)
+        self.assertEqual(agent_lane._validate_evidence(evidence), evidence)
+        with self.assertRaisesRegex(worker.WorkerError, "candidate evidence is invalid"):
+            agent_lane._validate_evidence(evidence + ["extra"])
+        with self.assertRaisesRegex(worker.WorkerError, "candidate evidence item exceeds its bound"):
+            agent_lane._validate_evidence([evidence[0] + "x"])
+
+    def test_complete_bounded_review_is_preserved_not_semantically_accepted(self):
+        from autofv import fvs_adapter
+        from autofv.contracts import ContractError
+
+        report = (
+            "## Findings\n"
+            "## Content coverage statement\n"
+            "Synthetic format fixture, not an actual source review.\n"
+            "## Coverage\n"
+            "source fidelity; preconditions; postconditions; interpretation; "
+            "vacuity; dependencies; helper reuse: all unverified in this fixture.\n"
+            "## Evidence\n"
+            "Missing source evidence: this fixture cannot justify approval.\n"
+            "VERDICT: BLOCKED\n"
+        )
+        report += "\U0001f50d" * (4096 - len(report))
+        self.assertEqual(agent_lane._validate_evidence([report]), [report])
+        parsed = fvs_adapter.parse_review(report)
+        self.assertEqual(parsed["raw"], report)
+        self.assertEqual(parsed["verdict"], "BLOCKED")
+        with self.assertRaisesRegex(worker.WorkerError, "candidate evidence item exceeds its bound"):
+            agent_lane._validate_evidence([report + "x"])
+        with self.assertRaisesRegex(ContractError, "FVS review is empty/oversized"):
+            fvs_adapter.parse_review(report + "x")
 
     def test_submission_is_bound_untrusted_candidate_not_acceptance(self):
         job = _job()

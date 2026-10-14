@@ -250,6 +250,9 @@ def validate_messages(value: Any, binding: ProviderBinding | None = None) -> lis
     content_limit = 65_536
     if binding is not None and binding.public["schema"] == "autofv-provider-binding/v2":
         content_limit = fvs_profile.validate_profile(binding.public["role_profile"])["context_bytes"]
+    if binding is not None and binding.public["schema"] == "autofv-provider-binding/v3":
+        from . import runtime_profile
+        content_limit = runtime_profile.validate_profile(binding.public["role_profile"])["context_bytes"]
     if not isinstance(value, list) or not 2 <= len(value) <= 64:
         raise ProviderError("provider messages are not a bounded array")
     messages: list[dict[str, Any]] = []

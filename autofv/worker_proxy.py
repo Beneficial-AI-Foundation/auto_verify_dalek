@@ -250,9 +250,11 @@ def _validate_proxy_request(run: dict[str, Any], request: Any) -> str:
         raise WorkerError("fixed proxy policy changed during the run")
     if route.get("method") != "POST" or not isinstance(route.get("path"), str):
         raise WorkerError("fixed proxy policy is invalid")
-    if not isinstance(request, dict) or set(request) != PROXY_REQUEST_FIELDS:
+    pi = (run.get("provider_binding") or {}).get("schema") == "autofv-provider-binding/v3"
+    fields = PROXY_REQUEST_FIELDS | ({"conversation_id", "history_sha256"} if pi else set())
+    if not isinstance(request, dict) or set(request) != fields:
         raise WorkerError("fixed proxy request fields mismatch")
-    if request["schema"] != "autofv-model-request/v1" or request["run_id"] != run.get(
+    if request["schema"] != ("autofv-model-request/v2" if pi else "autofv-model-request/v1") or request["run_id"] != run.get(
         "run_id"
     ):
         raise WorkerError("fixed proxy request identity mismatch")
@@ -266,7 +268,7 @@ def _validate_proxy_request(run: dict[str, Any], request: Any) -> str:
         if not isinstance(request[field], str) or not request[field]:
             raise WorkerError(f"fixed proxy request {field} is invalid")
     model_id = run.get("proxy_model_id")
-    if (run.get("provider_binding") or {}).get("schema") == "autofv-provider-binding/v2":
+    if (run.get("provider_binding") or {}).get("schema") in {"autofv-provider-binding/v2", "autofv-provider-binding/v3"}:
         from . import fvs_profile
         model_id = fvs_profile.binding_model(run["provider_binding"], request["role"])
         if (run["provider_binding"]["role_profile_sha256"] not in request.get("input_hashes", [])
@@ -308,7 +310,11 @@ def _record_proxy_policy(run: dict[str, Any]) -> dict[str, Any]:
     if isinstance(provider_binding, dict):
         endpoint_sha256 = _sha256(run["proxy_base"].encode("utf-8"))
         client_identity_sha256 = run.get("proxy_client_identity_sha256")
-        receipt_schema = provider_transport.PROVIDER_RECEIPT_SCHEMA
+        if provider_binding.get("schema") == "autofv-provider-binding/v3":
+            from . import subscription_receipts
+            receipt_schema = subscription_receipts.RECEIPT_SCHEMA
+        else:
+            receipt_schema = provider_transport.PROVIDER_RECEIPT_SCHEMA
     else:
         endpoint_sha256 = _sha256(run["proxy_base"].encode("utf-8"))
         client_identity_sha256 = run["proxy_client_identity_sha256"]

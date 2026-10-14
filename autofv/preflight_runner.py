@@ -470,7 +470,13 @@ def run_preflight(
     target, manifest = validate_target(repo)
     prepare_dalek._scan_prepared(target)
     _, config = validate_run_config(run_config)
-    if config["schema"] == "autofv-run/v2":
+    if config["schema"] == "autofv-run/v3":
+        from . import pi_backend
+        if (env_file is not None or _prepared_run is None or not pi_backend.is_pi(_prepared_run)
+            or _prepared_run["provider_binding"]["grant"]["config_sha256"]
+                != hashlib.sha256(canonical_json_bytes(config)).hexdigest()):
+            raise ContractError("Pi subscription qualification requires its distinct runtime record; API preflight is not authorization")
+    if config["schema"] in {"autofv-run/v2", "autofv-run/v3"}:
         if _prepared_run is None or not isinstance(_prepared_run.get("preparation_manifest"), dict):
             raise ContractError("FVS preflight requires a provenance-bound prepared run")
         from . import fvs_packet
@@ -815,8 +821,8 @@ def run_fvs_preflight(
     target, manifest = validate_target(repo)
     prepare_dalek._scan_prepared(target)
     _, config = validate_run_config(run_config)
-    if not fvs_profile.enabled(config):
-        raise ContractError("prepared FVS preflight requires run/v2")
+    if config["schema"] != "autofv-run/v2":
+        raise ContractError("prepared FVS API preflight requires run/v2; Pi needs separate qualification")
     if type(check_model_accessibility) is not bool or any(value is None for value in
         (env_file, preparation_manifest, probe_rust_evidence, probe_aeneas_evidence,
          dependency_cache, public_rust_root)):
@@ -1031,7 +1037,7 @@ def prepare_helper_handoff(state: dict[str, Any], bundle_path: Path) -> Path:
     from .run_state import _check_budget, _checkpoint_value, _external_call
 
     run, config = state["run"], state["config"]
-    if (not fvs_profile.enabled(config) or run.get("fresh_pair_preflight") is not True
+    if (config.get("schema") != "autofv-run/v2" or run.get("fresh_pair_preflight") is not True
         or run.get("execution_mode") != "proof_only"
         or config["max_cost_usd"] > Decimal("10.000000") or config["max_wall_seconds"] > MAX_HELPER_WALL_SECONDS
         or state["cost"] != 0 or state["receipts"] or state["model_exchanges"]

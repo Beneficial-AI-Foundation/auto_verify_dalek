@@ -15,7 +15,7 @@ from decimal import Decimal
 from pathlib import Path
 from typing import Any, TypedDict
 
-from . import evidence, provider_config, provider_receipts, results, worker, worker_proxy, worker_runtime
+from . import evidence, provider_config, provider_receipts, results, worker, worker_proxy, worker_runtime, runtime_profile
 from .contracts import (
     BudgetExhausted,
     ContractError,
@@ -60,6 +60,12 @@ CHECKPOINT_RUN_FIELDS = (
     "provider_binding_sha256",
     "role_profile",
     "source_packet_sha256",
+    "runtime_identity_sha256",
+    "subscription_journal",
+    "subscription_journal_sha256",
+    "runtime_record_sha256",
+    "pi_admission_stopped",
+    "pi_allocation_sha256",
     "fvs_lane_generations",
     "provider_selection",
     "provider_selection_sha256",
@@ -284,9 +290,25 @@ def _finalization_reserve(config: dict[str, Any]) -> Decimal:
     return min(Decimal("5.000000"), Decimal(config["max_wall_seconds"]) / 10)
 
 
+def _wall_limit(state: dict[str, Any]) -> Decimal:
+    """Pi's original approval can shorten, never extend, the configured clock."""
+    limit = Decimal(state["config"]["max_wall_seconds"])
+    if runtime_profile.is_pi(state["config"]):
+        grant = (state.get("run", {}).get("provider_binding") or {}).get("grant")
+        if isinstance(grant, dict):
+            duration = Decimal(grant["original_deadline_epoch_ms"] - grant["original_started_epoch_ms"]) / 1000
+            limit = min(limit, duration)
+    return limit
+
+
 def helper_reserve(state: dict[str, Any], stage: str) -> int:
     defaults = {"first_specification": 2100, "distinct_verification": 1200,
                 "terminal_audit": 300, "finalization": 5}
+    if (runtime_profile.is_pi(state["config"]) and "helper_reserves" not in state["config"]
+        and state.get("run", {}).get("execution_mode") != "proof_only"):
+        # Full FVS runs historically did not inherit the prepared-helper's
+        # 2100/1200/300-second stage reservations. Keep their ordinary finalizer.
+        return defaults["finalization"] if stage == "finalization" else 0
     return state["config"].get("helper_reserves", defaults)[stage]
 
 
@@ -300,7 +322,7 @@ def helper_work_budget(state: dict[str, Any], reserve_seconds: int, *, finalizin
     """
     from . import fvs_profile
     run = state["run"]
-    if (run.get("execution_mode") != "proof_only"
+    if not runtime_profile.is_pi(state.get("config", {})) and (run.get("execution_mode") != "proof_only"
             or not isinstance(run.get("preparation_manifest"), dict)
             or not fvs_profile.enabled(state["config"])):
         yield
@@ -308,7 +330,7 @@ def helper_work_budget(state: dict[str, Any], reserve_seconds: int, *, finalizin
     used = _charge_wall(state)
     reserve = max(Decimal(reserve_seconds),
                   Decimal(0 if finalizing else state.get("finalization_reserve_seconds", 0)))
-    limit = max(Decimal(0), Decimal(state["config"]["max_wall_seconds"]) - reserve)
+    limit = max(Decimal(0), _wall_limit(state) - reserve)
     if used >= limit:
         raise BudgetExhausted("wall_seconds", limit, used)
     with worker_runtime.work_deadline(float(limit - used), wall_limit=limit,
@@ -341,7 +363,7 @@ def _check_wall_budget(state: _RunState) -> None:
     config = state.get("config", {})
     if "max_wall_seconds" not in config:
         return
-    limit = Decimal(config["max_wall_seconds"])
+    limit = _wall_limit(state)
     reserve = Decimal(
         state.get("finalization_reserve_seconds", _finalization_reserve(config))
     )
@@ -353,7 +375,7 @@ def _check_wall_budget(state: _RunState) -> None:
 def _check_budget(state: _RunState) -> None:
     _check_wall_budget(state)
     config = state.get("config", {})
-    if "max_cost_usd" not in config:
+    if "max_cost_usd" not in config or runtime_profile.is_pi(config):
         return
     cost = Decimal(state.get("cost", Decimal("0.000000")))
     limit = Decimal(config["max_cost_usd"])
@@ -413,7 +435,8 @@ def _checkpoint_identities(run: dict[str, Any]) -> dict[str, Any]:
     journal = run.get("provider_journal")
     if isinstance(journal, dict):
         identities["provider_journal_sha256"] = _canonical_sha256(journal)
-    for name in ("probe_rust_sha256", "probe_aeneas_sha256", "graph_sha256"):
+    for name in ("runtime_identity_sha256", "subscription_journal_sha256", "runtime_record_sha256", "pi_allocation_sha256",
+                 "probe_rust_sha256", "probe_aeneas_sha256", "graph_sha256"):
         if name in run:
             identities[name] = run[name]
     preparation = run.get("preparation_manifest")
@@ -455,7 +478,7 @@ def _checkpoint_payload(state: _RunState, transition: str, sequence: int) -> dic
         if name in graph:
             identities[name] = graph[name]
     body = {
-        "schema": CHECKPOINT_SCHEMA,
+        "schema": "autofv-checkpoint/v2" if runtime_profile.is_pi(state["config"]) else CHECKPOINT_SCHEMA,
         "complete": True,
         "checkpoint_sequence": sequence,
         "event_sequence": sequence,
@@ -472,7 +495,7 @@ def _checkpoint_payload(state: _RunState, transition: str, sequence: int) -> dic
             for name in CHECKPOINT_STATE_FIELDS
             if name in state
         },
-        "cost_usd_used": f"{state.get('cost', Decimal('0.000000')):.6f}",
+        "cost_usd_used": None if runtime_profile.is_pi(state["config"]) else f"{state.get('cost', Decimal('0.000000')):.6f}",
     }
     return {**body, "content_sha256": _canonical_sha256(body)}
 
@@ -522,7 +545,7 @@ def _valid_checkpoint(
     content_hash = value.get("content_sha256")
     body = {key: item for key, item in value.items() if key != "content_sha256"}
     if (
-        value.get("schema") != CHECKPOINT_SCHEMA
+        value.get("schema") not in {CHECKPOINT_SCHEMA, "autofv-checkpoint/v2"}
         or value.get("complete") is not True
         or type(value.get("checkpoint_sequence")) is not int
         or value["checkpoint_sequence"] <= 0
@@ -534,8 +557,12 @@ def _valid_checkpoint(
         or not isinstance(value.get("identities"), dict)
         or not isinstance(value.get("run"), dict)
         or not isinstance(value.get("state"), dict)
-        or not isinstance(value.get("cost_usd_used"), str)
-        or DECIMAL_USD.fullmatch(value["cost_usd_used"]) is None
+        or (value.get("schema") == CHECKPOINT_SCHEMA and (
+            not isinstance(value.get("cost_usd_used"), str)
+            or DECIMAL_USD.fullmatch(value["cost_usd_used"]) is None))
+        or (value.get("schema") == "autofv-checkpoint/v2" and (
+            value.get("cost_usd_used") is not None
+            or (value.get("run", {}).get("provider_binding") or {}).get("schema") != "autofv-provider-binding/v3"))
     ):
         return None
     identities, run = value["identities"], value["run"]
@@ -856,7 +883,11 @@ def _validate_provider_recovery(
             raise provider_config.ProviderConfigError(
                 "provider binding is not process-pinned"
             )
-        provider_receipts.validate_recovery_artifacts(run, state, binding=pinned)
+        if public.get("schema") == "autofv-provider-binding/v3":
+            from . import subscription_journal
+            subscription_journal.validate_recovery_artifacts(run, state, binding=pinned)
+        else:
+            provider_receipts.validate_recovery_artifacts(run, state, binding=pinned)
     except (KeyError, TypeError, provider_config.ProviderConfigError) as exc:
         raise ContractError(f"provider binding recovery failed: {exc}") from exc
     return True
@@ -883,7 +914,7 @@ def _restore_checkpoint(
             "manifest": manifest,
             "config": config,
             "run_round": run_round,
-            "cost": Decimal(checkpoint["cost_usd_used"]),
+            "cost": None if runtime_profile.is_pi(config) else Decimal(checkpoint["cost_usd_used"]),
             "wall_seconds_used": Decimal(
                 state.get("wall_seconds_used", "0.000000")
             ),
@@ -902,6 +933,8 @@ def _restore_checkpoint(
     if isinstance(state.get("result"), dict):
         state["recovery_source"] = "terminal"
         return state
+    if runtime_profile.is_pi(config):
+        _check_budget(state)
     rebind_transport = (
         provider_recovery and worker_proxy.has_retained_provider_transport(run)
     )
@@ -1004,7 +1037,11 @@ def _external_call(state: _RunState, transition: str, call) -> Any:
     _check_budget(state)
     _checkpoint_if_enabled(state, f"{transition}:before")
     try:
-        value = call()
+        if runtime_profile.is_pi(state.get("config", {})):
+            with helper_work_budget(state, 0):
+                value = call()
+        else:
+            value = call()
     except Exception:
         _charge_wall(state)
         _checkpoint_if_enabled(state, f"{transition}:failed")

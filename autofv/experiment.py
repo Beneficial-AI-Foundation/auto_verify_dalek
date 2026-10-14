@@ -10,9 +10,11 @@ import argparse
 import hashlib
 import os
 import secrets
+import signal
+import threading
 import tempfile
 import time
-from contextlib import nullcontext
+from contextlib import contextmanager, nullcontext
 from decimal import Decimal
 from pathlib import Path
 from typing import Any
@@ -22,6 +24,8 @@ from langgraph.graph import END, START, StateGraph
 from . import (
     fvs_packet,
     fvs_profile,
+    runtime_profile,
+    pi_backend,
     provider_receipts,
     preflight_runner,
     probes,
@@ -122,6 +126,29 @@ def _clean_verify(state: _RunState) -> dict[str, Any]:
 
 def _final_terminal_audit(state: _RunState) -> None:
     terminal_run.final_terminal_audit(state, verify=_clean_verify)
+
+
+
+@contextmanager
+def _pi_interrupt_boundary(run: dict[str, Any]):
+    """Do not let asyncio turn first Ctrl-C into deferred task cancellation.
+
+    The role adapter intentionally retains its synchronous controller exchange.
+    An explicit owner interrupts that blocking exchange and reaps Node before
+    asyncio cleanup or terminal verification. API profiles retain their behavior.
+    """
+    if not pi_backend.is_pi(run) or threading.current_thread() is not threading.main_thread():
+        yield
+        return
+    previous = signal.getsignal(signal.SIGINT)
+    def interrupted(_signum, _frame):
+        pi_backend.stop(run)
+        raise KeyboardInterrupt
+    signal.signal(signal.SIGINT, interrupted)
+    try:
+        yield
+    finally:
+        signal.signal(signal.SIGINT, previous)
 
 
 def _build_graph():
@@ -542,11 +569,16 @@ def run_experiment(
     execution_mode: str | None = None,
     env_file: str | Path | None = None,
     provider_selection: str | Path | None = None,
+    runtime_record: str | Path | None = None,
     public_rust_root: str | Path | None = None,
     fresh_pair_preflight: bool = False,
     budget_started_epoch_ns: int | None = None,
 ) -> dict[str, Any]:
     """Run the bounded sealed tracer and persist every attempted run."""
+    if runtime_record is not None and any(value is not None for value in (env_file, provider_selection)):
+        raise ContractError("Pi runtime record cannot be combined with API environment/selection")
+    if runtime_record is not None and fresh_pair_preflight:
+        raise ContractError("Pi runtime record cannot use API fresh-pair preflight")
     if type(fresh_pair_preflight) is not bool or (fresh_pair_preflight and (
         env_file is None or provider_selection is not None or resume_from is not None
         or execution_mode != "proof_only"
@@ -600,6 +632,7 @@ def run_experiment(
          "provider env file", False, "invalid_config", "provider_inputs_invalid"),
         (provider_selection, "provider selection", False, "invalid_config",
          "provider_inputs_invalid"),
+        (runtime_record, "Pi runtime record", False, "invalid_config", "provider_inputs_invalid"),
     )
     for value, label, directory, outcome, reason in path_arguments:
         if value is None:
@@ -677,6 +710,16 @@ def run_experiment(
             budget_started_epoch_ns=budget_started_epoch_ns,
         )
 
+    # Refuse private controller state beneath the host source before even the
+    # failure path snapshots that source. The worker's guest project_dir is not
+    # an authority for this boundary.
+    if runtime_record is not None:
+        try:
+            early_record = pi_backend.read_runtime_record(runtime_record)
+            pi_backend.validate_private_boundaries(early_record, target,
+                record_path=runtime_record, run_root=resume_from)
+        except (ContractError, OSError, worker.WorkerError) as exc:
+            return persist_unallocated("invalid_config", "provider_inputs_invalid", exc)
     try:
         target_path, manifest = validate_target(target)
     except KeyboardInterrupt:
@@ -689,6 +732,17 @@ def run_experiment(
         return persist_unallocated("invalid_target", "target_invalid", exc)
     try:
         _, config = validate_run_config(run_config)
+        if runtime_profile.is_pi(config) != (runtime_record is not None):
+            raise ContractError("run/v3 requires an explicit Pi runtime record; API runs cannot use one")
+        if runtime_record is not None:
+            pi_record = pi_backend.read_runtime_record(runtime_record, config=config)
+            pi_backend.validate_private_boundaries(pi_record, target_path, record_path=runtime_record, run_root=resume_from)
+            origin = pi_record["grant"]["original_started_epoch_ms"] * 1_000_000
+            if origin > time.time_ns():
+                raise ContractError("Pi original grant has not started")
+            if resume_from is None and time.time_ns() // 1_000_000 >= pi_record["grant"]["original_deadline_epoch_ms"]:
+                raise ContractError("Pi original grant expired")
+            wall_started_epoch = origin
     except KeyboardInterrupt:
         return persist_unallocated(
             "infrastructure_failed",
@@ -764,13 +818,19 @@ def run_experiment(
         "finalization_reserve_seconds": _finalization_reserve(config),
     }
 
+    if runtime_record is not None:
+        preparation_budget["run"]["provider_binding"] = {"grant": pi_record["grant"]}
+
     def preparation_window():
-        return (helper_work_budget(preparation_budget, helper_reserve(preparation_budget, "first_specification"))
-                if "helper_reserves" in config else nullcontext())
+        if "helper_reserves" in config:
+            return helper_work_budget(preparation_budget, helper_reserve(preparation_budget, "first_specification"))
+        return helper_work_budget(preparation_budget, 0) if runtime_record is not None else nullcontext()
 
     def prepare_provider(prepared: dict[str, Any]) -> None:
         nonlocal durable_run
         durable_run = prepared
+        if runtime_record is not None:
+            prepared["input_root"] = str(target_path)
         if budget_started_epoch_ns is not None:
             prepared["budget_started_epoch_ns"] = budget_started_epoch_ns
         if fresh_pair_preflight:
@@ -779,9 +839,13 @@ def run_experiment(
             prepared["role_profile"] = config["role_profile"]
             prepared["source_packet_sha256"] = config["source_packet"]["packet_sha256"]
         try:
-            preflight_runner.configure_prepared_provider(
-                prepared, target_path, env_file=env_file
-            )
+            if runtime_record is not None:
+                from .agent_lane import _TOOL_SCHEMAS
+                pi_backend.configure(prepared, config, runtime_record, tool_schemas=list(_TOOL_SCHEMAS))
+            else:
+                preflight_runner.configure_prepared_provider(
+                    prepared, target_path, env_file=env_file
+                )
             provider_service.start(prepared)
         except BaseException:
             provider_service.release(prepared)
@@ -804,6 +868,10 @@ def run_experiment(
             )
             if any(name in checkpoint["run"] for name in ("fresh_pair_preflight", "helper_handoff")):
                 raise ContractError("same-worker handoff cannot be resumed as a new allocation")
+            if runtime_record is not None:
+                from .agent_lane import _TOOL_SCHEMAS
+                restored_run = {**checkpoint["run"], "lock": lock}
+                pi_backend.configure(restored_run, config, runtime_record, tool_schemas=list(_TOOL_SCHEMAS))
             state = _restore_checkpoint(
                 checkpoint,
                 manifest=manifest,
@@ -830,7 +898,7 @@ def run_experiment(
                     worker.prepare_run(
                         target_path, manifest, lock, before_worker=prepare_provider
                     )
-                    if env_file is not None
+                    if env_file is not None or runtime_record is not None
                     else worker.prepare_run(target_path, manifest, lock)
                 )
         except KeyboardInterrupt:
@@ -883,6 +951,8 @@ def run_experiment(
                 )
                 results.snapshot_input(allocation, target_path)
                 run = results.bind_prepared_run(allocation, run)
+                if runtime_record is not None:
+                    pi_backend.finalize_allocation(run)
                 durable_run = run
             except results.ResultError as exc:
                 detail: Exception = exc
@@ -945,7 +1015,7 @@ def run_experiment(
             "config": config,
             "run_round": run_round,
             "receipts": [],
-            "cost": Decimal("0.000000"),
+            "cost": None if runtime_profile.is_pi(config) else Decimal("0.000000"),
             "accepted": accepted,
             "working": dict(accepted),
             "pending_model_exchanges": {},
@@ -1046,6 +1116,11 @@ def run_experiment(
         _charge_wall(state)
         if preparation_failure is not None:
             raise preparation_failure
+        if runtime_record is not None:
+            with helper_work_budget(state, 0):
+                pi_backend.authorize_prepared(run, repo=target_path, run_config=run_config,
+                    public_rust_root=public_rust_root)
+            provider_service.start(run)
         if env_file is not None:
             preflight_runner.authorize_prepared_run(
                 run,
@@ -1073,9 +1148,10 @@ def run_experiment(
             worker.verify_egress(run)
         if resume_from is None:
             _checkpoint_if_enabled(state, "run:prepared")
-        for update in _EXPERIMENT_GRAPH.stream(state, stream_mode="updates"):
-            for values in update.values():
-                state.update(values)
+        with _pi_interrupt_boundary(run):
+            for update in _EXPERIMENT_GRAPH.stream(state, stream_mode="updates"):
+                for values in update.values():
+                    state.update(values)
         terminal = state.get("verifier_report", {}).get("terminal_status")
         if terminal == "unverified":
             outcome, reason = "unverified", "proof_search_incomplete"
@@ -1084,6 +1160,7 @@ def run_experiment(
         else:
             outcome, reason = "success", "all_targets_verified"
     except KeyboardInterrupt:
+        pi_backend.stop(run)
         state["termination_detail"] = "controller interrupted"
         outcome, reason = "infrastructure_failed", "interrupted"
     except BudgetExhausted as exc:
@@ -1131,6 +1208,7 @@ def run_experiment(
         outcome, reason = "infrastructure_failed", "controller_failed"
     try:
         if outcome != "success":
+            pi_backend.stop(run)
             _final_terminal_audit(state)
         return _finish_attempt(run, state, outcome=outcome, reason=reason)
     except (Exception, KeyboardInterrupt) as exc:
@@ -1213,6 +1291,8 @@ def _parser() -> argparse.ArgumentParser:
     run.add_argument("--output-root")
     run.add_argument("--env-file")
     run.add_argument("--selection-record")
+    run.add_argument("--runtime-record", help="Explicit Pi/OpenAI subscription runtime and original grant")
+    run.add_argument("--resume-from", help="Resume a retained run without renewing its grant")
     run.add_argument("--fresh-pair-preflight", action="store_true",
                      help="Prepared helper only: check the pair on the same worker within the shared budget")
     run.add_argument("--budget-started-epoch-ns", type=int,
@@ -1225,6 +1305,8 @@ def _parser() -> argparse.ArgumentParser:
     run.add_argument("--execution-mode", choices=("full", "proof-only"))
     run.add_argument("--target", dest="target_alias")
     run.add_argument("--run-config", dest="config_alias")
+    doctor = commands.add_parser("doctor", help="Inspect pinned Pi runtime metadata without authentication or inference")
+    doctor.add_argument("--runtime-record", required=True)
     preflight_command = commands.add_parser("preflight")
     preflight_command.add_argument("repo")
     preflight_command.add_argument("--config", required=True)
@@ -1255,6 +1337,13 @@ def main() -> None:
     entered_epoch = time.time_ns()
     parser = _parser()
     args = parser.parse_args()
+    if args.command == "doctor":
+        try:
+            report = pi_backend.diagnostic(args.runtime_record)
+        except (ContractError, OSError, worker.WorkerError) as exc:
+            parser.error(str(exc))
+        print(canonical_json_bytes(report).decode("utf-8"))
+        return
     if args.command == "inspect":
         try:
             inspect_repository(args.repo, args.output)
@@ -1287,6 +1376,8 @@ def main() -> None:
         return
     target, run_config = _run_arguments(parser, args)
     try:
+        if args.runtime_record is not None and (args.env_file is not None or args.selection_record is not None or args.fresh_pair_preflight):
+            parser.error("--runtime-record cannot be combined with --env-file, --selection-record, or --fresh-pair-preflight")
         if args.fresh_pair_preflight:
             if args.env_file is None or args.selection_record is not None or args.execution_mode != "proof-only":
                 parser.error("--fresh-pair-preflight requires --env-file and prepared --execution-mode proof-only, without --selection-record")
@@ -1295,6 +1386,10 @@ def main() -> None:
                 "--env-file and --selection-record must be supplied together"
             )
         options = {"output_root": args.output_root}
+        if args.runtime_record is not None:
+            options["runtime_record"] = args.runtime_record
+        if args.resume_from is not None:
+            options["resume_from"] = args.resume_from
         if args.fresh_pair_preflight:
             options["fresh_pair_preflight"] = True
         if args.budget_started_epoch_ns is not None:
@@ -1335,6 +1430,15 @@ def main() -> None:
                 else None,
             )
         deadline = nullcontext()
+        if args.runtime_record is not None:
+            record = pi_backend.read_runtime_record(args.runtime_record)
+            grant = record["grant"]
+            remaining = grant["original_deadline_epoch_ms"] / 1000 - time.time()
+            if remaining > 0:
+                duration = Decimal(grant["original_deadline_epoch_ms"] - grant["original_started_epoch_ms"]) / 1000
+                deadline = worker_runtime.work_deadline(remaining, wall_limit=duration)
+            # Expired terminal replay is read-only; ordinary work/recovery checks
+            # the original clock before worker allocation or new callbacks.
         if args.fresh_pair_preflight:
             _, config = validate_run_config(run_config)
             origin = options.setdefault("budget_started_epoch_ns", entered_epoch)

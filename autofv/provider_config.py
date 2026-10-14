@@ -493,6 +493,12 @@ def abort_configuration(run: dict[str, Any]) -> None:
 
 
 def validate_public_binding(value: Any) -> dict[str, Any]:
+    if isinstance(value, dict) and value.get("schema") == "autofv-provider-binding/v3":
+        from . import pi_backend
+        try:
+            return pi_backend.validate_public_binding(value)
+        except (ValueError, TypeError, KeyError) as exc:
+            raise ProviderConfigError("Pi provider binding validation failed") from exc
     fvs = isinstance(value, dict) and value.get("schema") == "autofv-provider-binding/v2"
     extra = {"role_profile", "role_profile_sha256", "source_packet_sha256"} if fvs else set()
     binding = exact_dict(

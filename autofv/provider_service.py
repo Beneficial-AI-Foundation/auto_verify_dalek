@@ -342,6 +342,10 @@ _write_preflight = provider_receipts.write_preflight
 
 
 def validate_pinned_receipt(receipt: Any, *, run: dict[str, Any], **bindings: Any):
+    from . import pi_backend, subscription_receipts
+    if pi_backend.is_pi(run):
+        return subscription_receipts.validate_receipt(
+            receipt, binding=provider_transport.pinned_public_binding(run), **bindings)
     return provider_receipts.validate_receipt(
         receipt, binding=provider_transport.pinned_public_binding(run), **bindings
     )
@@ -670,6 +674,12 @@ def dispatch(
             "provider service authentication failed", classification="authentication_error"
         )
     provider_transport.validate_dispatch_request(binding, request)
+    if binding.public["schema"] == "autofv-provider-binding/v3":
+        from . import pi_backend
+        try:
+            return pi_backend.dispatch(run, request)
+        except ContractError as exc:
+            raise provider_transport.ProviderError("Pi subscription dispatch rejected") from exc
     path = _journal_path(run, request["request_id"])
     with binding.lock:
         existing = _load(path, binding, request)
@@ -782,7 +792,11 @@ def release(run: dict[str, Any]) -> None:
                     _SERVICES.pop(digest)
     finally:
         # A failed/interrupted stop remains discoverable, but cannot retain dispatch authority.
-        provider_config.release_provider(run)
+        from . import pi_backend
+        try:
+            pi_backend.release(run)
+        finally:
+            provider_config.release_provider(run)
 
 
 def is_running(digest: str) -> bool:

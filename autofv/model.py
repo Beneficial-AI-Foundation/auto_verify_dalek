@@ -13,7 +13,7 @@ from decimal import Decimal
 from types import SimpleNamespace
 from typing import Any
 
-from . import fvs_profile, preflight, worker, worker_proxy, worker_runtime
+from . import fvs_profile, preflight, worker, worker_proxy, worker_runtime, runtime_profile
 from .contracts import (
     BudgetExhausted,
     ContractError,
@@ -74,10 +74,22 @@ def _model_envelope(
     input_hashes: list[str],
     batch_id: str | None = None,
     sequence: int | None = None,
+    history_sha256: str | None = None,
+    conversation_id: str | None = None,
 ) -> dict[str, Any]:
     run, config = state["run"], state["config"]
+    extra = {}
+    if runtime_profile.is_pi(config):
+        import re
+        match = re.fullmatch(r"lane-([0-9a-f]{16})-[0-9]{3}", request_id)
+        if (match is None or not isinstance(history_sha256, str)
+            or not isinstance(conversation_id, str) or re.fullmatch(r"[0-9a-f]{64}", conversation_id) is None
+            or match.group(1) != conversation_id[:16]):
+            raise ContractError("Pi requires a canonical conversation and history identity")
+        extra = {"conversation_id": conversation_id, "history_sha256": _sha256(history_sha256, "Pi history hash")}
     return {
-        "schema": "autofv-model-request/v1",
+        **extra,
+        "schema": "autofv-model-request/v2" if extra else "autofv-model-request/v1",
         "run_id": run["run_id"],
         "sequence": sequence if sequence is not None else _next_model_sequence(state),
         "batch_id": batch_id,
@@ -85,7 +97,8 @@ def _model_envelope(
         "role": role,
         "model_id": fvs_profile.model_for(config, role),
         "input_hashes": sorted(set(input_hashes) | (
-            {fvs_profile.digest(fvs_profile.profile()), config["source_packet"]["packet_sha256"]}
+            {runtime_profile.profile_sha256(config), config["source_packet"]["packet_sha256"]}
+            | ({run["runtime_identity_sha256"]} if runtime_profile.is_pi(config) else set())
             if fvs_profile.enabled(config) else set()
         )),
         "prompt_sha256": _prompt_sha256(run["run_id"], request_id, role),
@@ -213,6 +226,20 @@ def _reserve_provider_calls(
     if not provider_bound:
         return
     pending = state.setdefault("pending_model_exchanges", {})
+    if runtime_profile.is_pi(state["config"]):
+        if state["cost"] is not None:
+            raise ContractError("subscription cost must remain unknown")
+        current = set(state.get("model_exchanges", {})) | set(pending)
+        new_ids = {request["request_id"] for request, _messages, _kind in calls} - current
+        if len(current) + len(new_ids) > state["config"]["max_invocations"]:
+            raise BudgetExhausted("invocations", Decimal(state["config"]["max_invocations"]), Decimal(len(current) + len(new_ids)))
+        for request, _messages, kind in calls:
+            existing = pending.get(request["request_id"])
+            if existing is not None and (existing.get("request") != request or existing.get("call_kind") != kind):
+                raise ContractError("Pi reservation identity changed")
+            pending.setdefault(request["request_id"], {"request": request, "call_kind": kind,
+                "reservation_usd": None, "dispatch_state": "reserved"})
+        return
     amounts: dict[str, Decimal] = {}
     try:
         for request, messages, _kind in calls:
@@ -285,7 +312,8 @@ def _invoke_model(
 ) -> tuple[dict[str, Any], dict[str, Any]]:
     provider_bound = isinstance(state["run"].get("provider_binding"), dict)
     if provider_bound:
-        preflight.authorize_external_action(state["run"])
+        if not runtime_profile.is_pi(state.get("config", {})):
+            preflight.authorize_external_action(state["run"])
     with _state_lock(state):
         if checkpoint:
             _check_budget(state)
@@ -325,6 +353,8 @@ def _invoke_model(
         else:
             exchange = runner(request)
     except asyncio.CancelledError:
+        from . import pi_backend
+        pi_backend.stop(state["run"])
         with _state_lock(state):
             reservation["dispatch_state"] = "ambiguous"
         raise
@@ -399,7 +429,12 @@ def _accept_model_exchange(
     call_kind = pending.get("call_kind", "explicit")
     if call_kind not in _MODEL_CALL_KINDS:
         raise ContractError("stored model call kind is invalid")
-    new_cost = state["cost"] + amount
+    if runtime_profile.is_pi(config):
+        if amount is not None or state["cost"] is not None:
+            raise ContractError("subscription accounting fabricated a monetary amount")
+        new_cost = None
+    else:
+        new_cost = state["cost"] + amount
     state["cost"] = new_cost
     state["receipts"].append(receipt)
     state["receipts"].sort(key=lambda item: item["sequence"])
@@ -412,7 +447,7 @@ def _accept_model_exchange(
     state.setdefault("model_exchanges", {})[request["request_id"]] = exchange
     state.setdefault("pending_model_exchanges", {}).pop(request["request_id"], None)
     _event_once(run, f"proxy:{request['request_id']}")
-    if enforce_budget and new_cost > config["max_cost_usd"]:
+    if enforce_budget and new_cost is not None and new_cost > config["max_cost_usd"]:
         _checkpoint_if_enabled(state, "budget:cost_usd")
         raise BudgetExhausted("cost_usd", config["max_cost_usd"], new_cost)
     if receipt["status"] != "ok":
@@ -470,6 +505,7 @@ def _model_request(
     batch_id: str | None = None,
     call_kind: str | None = None,
     messages: Any = None,
+    conversation_id: str | None = None,
 ) -> tuple[dict[str, Any], dict[str, Any]]:
     """Run/replay one call; live lanes must deterministically reconstruct messages.
 
@@ -490,19 +526,32 @@ def _model_request(
             request = _model_envelope(
                 state, request_id=request_id, role=role,
                 input_hashes=_message_bound_hashes(input_hashes, messages, run=state["run"]),
-                batch_id=batch_id, sequence=sequence,
+                batch_id=batch_id, sequence=sequence, conversation_id=conversation_id,
+                history_sha256=(worker_proxy.provider_messages_sha256(messages, run=state["run"])
+                    if runtime_profile.is_pi(state["config"]) else None),
             )
             if stored is not None and stored.get("request") != request:
                 raise ContractError(f"resumed model request changed: {request_id}")
             _bind_model_call_kind(state, request_id, classified_kind, stored,
                                   record_event=call_kind is not None)
             if completed is not None:
+                if runtime_profile.is_pi(state["config"]):
+                    from . import subscription_journal
+                    subscription_journal.validate_completed(state["run"], request,
+                        completed["response"], completed["receipt"])
                 return completed["response"], completed["receipt"]
             if pending is not None and isinstance(pending.get("response"), dict) and isinstance(pending.get("receipt"), dict):
                 return _accept_model_exchange(
                     state, request, pending["response"], pending["receipt"],
                     allow_out_of_order=True,
                 )
+            if runtime_profile.is_pi(state["config"]):
+                from . import provider_config, subscription_journal
+                recovered = subscription_journal.completed_exchange(state["run"],
+                    provider_config.provider_binding(state["run"]), request, messages)
+                if recovered is not None:
+                    return _accept_model_exchange(state, request, *recovered,
+                        enforce_budget=False, allow_out_of_order=True)
             # Allocate sequence and budget atomically before allowing another
             # lane to reserve; transport itself runs without this lock.
             _check_budget(state)
@@ -521,6 +570,8 @@ def _model_request(
             allow_out_of_order=True,
         )
     except asyncio.CancelledError:
+        from . import pi_backend
+        pi_backend.stop(state["run"])
         with _state_lock(state):
             incomplete = state.setdefault("pending_model_exchanges", {}).get(request_id)
             if isinstance(incomplete, dict) and incomplete.get("dispatch_state") in {

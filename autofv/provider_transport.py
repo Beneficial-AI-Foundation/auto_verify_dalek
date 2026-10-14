@@ -216,10 +216,12 @@ def _take_messages(
 
 def validate_dispatch_request(binding: ProviderBinding, request: Any) -> dict[str, Any]:
     """Validate a relay dispatch against independently pinned process state."""
-    if not isinstance(request, dict) or set(request) != _REQUEST_FIELDS:
+    pi = binding.public["schema"] == "autofv-provider-binding/v3"
+    fields = _REQUEST_FIELDS | ({"conversation_id", "history_sha256"} if pi else set())
+    if not isinstance(request, dict) or set(request) != fields:
         raise ProviderError("provider dispatch fields mismatch")
     if (
-        request.get("schema") != "autofv-model-request/v1"
+        request.get("schema") != ("autofv-model-request/v2" if pi else "autofv-model-request/v1")
         or request.get("run_id") != binding.public["run_id"]
         or request.get("model_id") != fvs_profile.binding_model(binding.public, request.get("role"))
         or type(request.get("sequence")) is not int
@@ -240,11 +242,19 @@ def validate_dispatch_request(binding: ProviderBinding, request: Any) -> dict[st
         or _SHA256.fullmatch(request["prompt_sha256"]) is None
     ):
         raise ProviderError("provider dispatch identity mismatch")
-    if binding.public["schema"] == "autofv-provider-binding/v2" and (
+    if binding.public["schema"] in {"autofv-provider-binding/v2", "autofv-provider-binding/v3"} and (
         binding.public["role_profile_sha256"] not in request["input_hashes"]
         or binding.public["source_packet_sha256"] not in request["input_hashes"]
     ):
         raise ProviderError("FVS dispatch lacks profile/source packet hashes")
+    if pi and (binding.public["runtime_identity_sha256"] not in request["input_hashes"]
+        or not isinstance(request["conversation_id"], str)
+        or re.fullmatch(r"[0-9a-f]{64}", request["conversation_id"]) is None
+        or not isinstance(request["history_sha256"], str)
+        or _SHA256.fullmatch(request["history_sha256"]) is None
+        or request["history_sha256"] not in request["input_hashes"]
+        or re.fullmatch(r"lane-" + request["conversation_id"][:16] + r"-[0-9]{3}", request["request_id"]) is None):
+        raise ProviderError("Pi dispatch lacks exact runtime/conversation/history identity")
     return request
 
 

@@ -252,6 +252,16 @@ class AgentLaneBoundaryTests(unittest.TestCase):
                 {**job, "input_hashes": list(reversed(job["input_hashes"]))}
             )
 
+    def test_tool_schemas_pass_actual_sealed_preflight_equality(self):
+        from autofv import preflight_runner
+
+        source = Path(agent_lane.__file__).read_text()
+        with mock.patch.object(preflight_runner, "Path") as sealed_path:
+            sealed_path.return_value.read_text.return_value = source
+            preflight_runner._tool_schema_equality()
+        sealed_path.assert_called_once_with("/volume/autofv-control/autofv/agent_lane.py")
+        sealed_path.return_value.read_text.assert_called_once_with()
+
     def test_effective_tool_surface_is_exactly_five_bounded_capabilities(self):
         tools = agent_lane.build_lane_tools(
             _job(),

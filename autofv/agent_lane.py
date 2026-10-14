@@ -129,7 +129,7 @@ _TOOL_SCHEMAS = (
                 },
                 "evidence": {
                     "type": "array",
-                    "items": {"type": "string", "maxLength": _MAX_EVIDENCE_CHARS},
+                    "items": {"type": "string", "maxLength": 4096},
                     "maxItems": 32,
                 },
             },

@@ -184,6 +184,9 @@ def validate_model_exchanges(
 def reduce_accounting(
     run: dict[str, Any], state: dict[str, Any]
 ) -> dict[str, Any]:
+    if (run.get("provider_binding") or {}).get("schema") == "autofv-provider-binding/v3":
+        from . import subscription_receipts
+        return subscription_receipts.reduce_accounting(run, state, binding=run["provider_binding"])
     classification = _cost_classification(run)
     receipts = state.get("receipts")
     receipts = receipts if isinstance(receipts, list) else []

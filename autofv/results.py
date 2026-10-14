@@ -21,6 +21,7 @@ from . import (
     provider_receipts,
     result_audit,
     result_summary,
+    subscription_receipts,
     terminal_verifier,
     worker,
 )
@@ -79,10 +80,13 @@ def _reduce_accounting(
     )
     if provider_evidence is not None:
         # A retried provider failure leaves a signed, bounded liability pending.
+        receipt_module = (subscription_receipts if
+            provider_evidence["provider_binding"].get("schema") == "autofv-provider-binding/v3"
+            else provider_receipts)
         reducer = (
-            provider_receipts.reduce_incomplete_accounting
+            receipt_module.reduce_incomplete_accounting
             if incomplete or state.get("pending_model_exchanges")
-            else provider_receipts.reduce_accounting
+            else receipt_module.reduce_accounting
         )
         accounting_binding = provider_evidence["provider_binding"]
         if (
@@ -500,7 +504,26 @@ def render_attempt(
     supplied_ids = list(target_ids)
     l0_raw = _json_file_bytes(receipt)
     result = {
-        "schema": "autofv-result/v1",
+        "schema": ("autofv-result/v3" if
+                   (run.get("provider_binding") or {}).get("schema") == "autofv-provider-binding/v3"
+                   else "autofv-result/v1"),
+        **({
+            "dispatch_accounting_complete": reduced_accounting["dispatch_accounting_complete"],
+            "monetary_cost_known": False,
+            "accounting_schema": "autofv-subscription-accounting/v1",
+            "subscription_journal": copy.deepcopy(reduced_accounting["subscription_journal"]),
+            "subscription_journal_sha256": reduced_accounting["subscription_journal_sha256"],
+            "invocation_limit": reduced_accounting["invocation_limit"],
+            "invocations_used": reduced_accounting["invocations_used"],
+            "invocations_remaining": reduced_accounting["invocations_remaining"],
+            "reported_spend_known": False,
+            "fvs_adapter": "autofv-bounded-fc/v1",
+            "fvs_stage_evidence_sha256": provider_config.canonical_sha256(state.get("fvs_evidence", {})),
+            "fvs_role_profile_sha256": run["provider_binding"]["role_profile_sha256"],
+            "fvs_source_packet_sha256": run["provider_binding"]["source_packet_sha256"],
+            "runtime_identity_sha256": run["provider_binding"]["runtime_identity_sha256"],
+            "deterministic_preflight_sha256": run.get("deterministic_preflight_sha256"),
+        } if (run.get("provider_binding") or {}).get("schema") == "autofv-provider-binding/v3" else {}),
         **({"pricing_verification": reduced_accounting.get("pricing_verification", "bounded"),
             "reported_spend_known": not reduced_accounting.get("unknown_provider_spend", False),
             "price_reconstruction_exact": False,
@@ -637,7 +660,7 @@ def render_attempt(
         "prompt_sha256": model_summary["prompt_sha256"],
         "proxy_requests": reduced_accounting["requests"],
         "tokens": tokens,
-        "cost_usd": f"{cost:.6f}",
+        "cost_usd": None if cost is None else f"{cost:.6f}",
         "wall_seconds": f"{Decimal(state.get('wall_seconds_used', 0)):.6f}",
         "finalization_reserve_seconds": (
             f"{Decimal(state.get('finalization_reserve_seconds', 0)):.6f}"
@@ -663,11 +686,11 @@ def render_attempt(
         "toolchain_lock_sha256": (
             _sha(canonical_json_bytes(run["lock"])) if tool_evidence else None
         ),
-        "fixed_proxy_sha256": network_evidence.get("fixed_proxy_sha256"),
-        "proxy_policy_sha256": network_evidence.get("proxy_policy_sha256"),
+        "fixed_proxy_sha256": (run.get("fixed_proxy_sha256") if (run.get("provider_binding") or {}).get("schema") == "autofv-provider-binding/v3" else network_evidence.get("fixed_proxy_sha256")),
+        "proxy_policy_sha256": (run.get("proxy_policy_sha256") if (run.get("provider_binding") or {}).get("schema") == "autofv-provider-binding/v3" else network_evidence.get("proxy_policy_sha256")),
         "upstream_policy_sha256": network_policy.get("upstream_policy_sha256"),
         "egress_policy_sha256": network_policy.get("policy_sha256"),
-        "worker_inventory_sha256": runtime_evidence.get("inventory_sha256"),
+        "worker_inventory_sha256": (run.get("worker_inventory_sha256") if (run.get("provider_binding") or {}).get("schema") == "autofv-provider-binding/v3" else runtime_evidence.get("inventory_sha256")),
         "accepted_commit": (
             verifier_evidence.get("accepted_commit")
             if verifier_bound

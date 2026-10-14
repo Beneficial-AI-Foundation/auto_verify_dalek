@@ -14,6 +14,7 @@ from . import (
     provider_config,
     provider_receipts,
     result_summary,
+    subscription_receipts,
     terminal_verifier,
     verifier as report_verifier,
 )
@@ -178,7 +179,7 @@ def _validate_counts(
 def _validate_accounting(
     result: dict[str, Any], evidence: Any, run_root: Path
 ) -> None:
-    if not isinstance(evidence, list) or not evidence:
+    if not isinstance(evidence, list) or (not evidence and result.get("schema") != "autofv-result/v3"):
         raise AuditError("retained accounting provenance mismatch")
     exchanges = {}
     receipts = []
@@ -206,7 +207,10 @@ def _validate_accounting(
         "provider_binding": result.get("provider_binding"),
         "provider_binding_sha256": result.get("provider_binding_sha256"),
         "provider_preflight_sha256": result.get("provider_preflight_sha256"),
+        "deterministic_preflight_sha256": result.get("deterministic_preflight_sha256"),
         "provider_journal": result.get("provider_journal"),
+        "subscription_journal": result.get("subscription_journal"),
+        "subscription_journal_sha256": result.get("subscription_journal_sha256"),
         "image_digest": result.get("image_digest"),
         "control_bundle_sha256": result.get("control_bundle_sha256"),
         "native_decide_policy_sha256": result.get(
@@ -241,13 +245,16 @@ def _validate_accounting(
                 != provider_evidence["provider_journal_sha256"]
             ):
                 raise AuditError("retained provider evidence summary mismatch")
+            subscription = provider_evidence["provider_binding"].get("schema") == "autofv-provider-binding/v3"
+            receipt_module = subscription_receipts if subscription else provider_receipts
             reducer = (
-                provider_receipts.reduce_incomplete_accounting
+                receipt_module.reduce_incomplete_accounting
                 if result.get("accounting_complete") is False
-                else provider_receipts.reduce_accounting
+                else receipt_module.reduce_accounting
             )
             reduced = reducer(
-                run, state, binding=provider_evidence["provider_binding"]
+                run, state, binding=provider_evidence["provider_binding"],
+                **({"require_private": False} if subscription else {}),
             )
         else:
             if any(
@@ -282,6 +289,37 @@ def _validate_accounting(
         "unknown_provider_spend", False if legacy_synthetic else None
     )
     observed_bounded = result.get("accounting_bounded", False)
+    if (run.get("provider_binding") or {}).get("schema") == "autofv-provider-binding/v3":
+        from . import fvs_adapter, fvs_profile
+        stages_path = run_root / "evidence" / "fvs-stages.json"
+        stages = _read(stages_path, "FVS stage evidence")[0] if stages_path.exists() else {}
+        try:
+            fvs_adapter.validate_evidence(stages, binding=run["provider_binding"], exchanges=exchanges)
+        except (ContractError, provider_config.ProviderConfigError, KeyError, TypeError) as exc:
+            raise AuditError("retained Pi FVS stage authentication failed") from exc
+        expected_subscription = {
+            "schema": "autofv-result/v3", "accounting_schema": "autofv-subscription-accounting/v1",
+            "dispatch_accounting_complete": reduced["dispatch_accounting_complete"],
+            "monetary_cost_known": False, "reported_spend_known": False,
+            "subscription_journal": reduced["subscription_journal"],
+            "subscription_journal_sha256": reduced["subscription_journal_sha256"],
+            "invocation_limit": reduced["invocation_limit"],
+            "invocations_used": reduced["invocations_used"],
+            "invocations_remaining": reduced["invocations_remaining"],
+            "fvs_adapter": "autofv-bounded-fc/v1",
+            "fvs_stage_evidence_sha256": fvs_profile.digest(stages),
+            "fvs_role_profile_sha256": run["provider_binding"]["role_profile_sha256"],
+            "fvs_source_packet_sha256": run["provider_binding"]["source_packet_sha256"],
+            "runtime_identity_sha256": run["provider_binding"]["runtime_identity_sha256"],
+        }
+        if any(result.get(key) != value for key, value in expected_subscription.items()):
+            raise AuditError("retained subscription accounting or stage identity mismatch")
+        if result.get("monetary_cost_known") is not False or result.get("reported_spend_known") is not False:
+            raise AuditError("subscription monetary cost cannot be claimed known")
+        if type(result.get("dispatch_accounting_complete")) is not bool:
+            raise AuditError("subscription dispatch completion flag is invalid")
+    elif result.get("schema") == "autofv-result/v3":
+        raise AuditError("subscription result requires its distinct provider binding")
     if (run.get("provider_binding") or {}).get("schema") == "autofv-provider-binding/v2":
         from . import fvs_adapter, fvs_profile
         stages_path = run_root / "evidence" / "fvs-stages.json"
@@ -308,7 +346,7 @@ def _validate_accounting(
         or observed_unknown != reduced.get("unknown_provider_spend", False)
         or observed_bounded != reduced.get("accounting_bounded", False)
         or result.get("tokens") != reduced["tokens"]
-        or result.get("cost_usd") != f"{reduced['cost']:.6f}"
+        or result.get("cost_usd") != (None if reduced["cost"] is None else f"{reduced['cost']:.6f}")
         or result.get("proxy_requests") != reduced["requests"]
     ):
         raise AuditError("retained accounting totals mismatch")
@@ -478,7 +516,7 @@ def _validate_retained(
     validate_l0: Callable[[Any], Any],
 ) -> dict[str, Any]:
     result, retained_raw = _read(Path(path), "retained result")
-    if not isinstance(result, dict) or result.get("schema") != "autofv-result/v1":
+    if not isinstance(result, dict) or result.get("schema") not in {"autofv-result/v1", "autofv-result/v3"}:
         raise AuditError("retained result schema mismatch")
     _terminal_and_groups(result, smoke=smoke)
     run_root = Path(result.get("run_root", ""))

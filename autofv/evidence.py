@@ -237,8 +237,9 @@ def validate_retained_provider_policy(
     policy_body = {
         key: value for key, value in policy.items() if key != "policy_sha256"
     }
+    from . import pi_backend, subscription_receipts
     receipt_schema = (
-        provider_receipts.PROVIDER_RECEIPT_SCHEMA
+        (subscription_receipts.RECEIPT_SCHEMA if pi_backend.is_pi(run) else provider_receipts.PROVIDER_RECEIPT_SCHEMA)
         if has_provider_content
         else route.get("receipt_schema")
     )
@@ -286,7 +287,7 @@ def validate_retained_provider_policy(
         or policy.get("proxy_client_identity_sha256")
         != binding.get("client_identity_sha256")
         or policy.get("provider_receipt_schema")
-        != provider_receipts.PROVIDER_RECEIPT_SCHEMA
+        != receipt_schema
     ):
         raise provider_config.ProviderConfigError(
             "provider fixed proxy policy binding mismatch"
@@ -320,6 +321,22 @@ def authenticate_provider_evidence(
     policy, policy_raw = validated_policy
     binding = provider_config.validate_public_binding(run.get("provider_binding"))
     binding_sha256 = run.get("provider_binding_sha256")
+
+    if binding.get("schema") == "autofv-provider-binding/v3":
+        from . import subscription_journal
+        retained = subscription_journal.validate_recovery_artifacts(run, {}, binding=binding, require_private=False)
+        summary = retained["summary"]
+        summary_raw = canonical_json_bytes(summary) + b"\n"
+        return {"schema": "autofv-provider-evidence/v2", "provider_binding": binding,
+            "provider_binding_sha256": binding_sha256,
+            "provider_preflight_sha256": run.get("deterministic_preflight_sha256"),
+            "provider_journal": summary, "provider_journal_sha256": retained["journal_sha256"],
+            "proxy_policy_sha256": policy["policy_sha256"], "route_id": binding["route_id"],
+            "model_id": binding["model_id"], "files": {
+                "policy": {"path": "evidence/fixed-proxy-policy.json", "sha256": _sha(policy_raw),
+                    "size": len(policy_raw), "type": "application/json"},
+                "subscription": {"path": "evidence/subscription-journal.json", "sha256": _sha(summary_raw),
+                    "size": len(summary_raw), "type": "application/json"}}}
 
     expected_preflight_sha256 = run.get("provider_preflight_sha256")
     if allow_missing_preflight and expected_preflight_sha256 is None:

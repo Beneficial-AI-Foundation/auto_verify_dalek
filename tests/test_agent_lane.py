@@ -7,7 +7,8 @@ import unittest
 from pathlib import Path
 from unittest import mock
 
-from autofv import agent_lane, model, provider_messages, worker
+from autofv import agent_lane, fvs_packet, model, provider_messages, worker
+from autofv.contracts import ContractError
 
 
 HASHES = {
@@ -34,6 +35,312 @@ def _job() -> dict:
             "diagnostics": ["declaration uses the immediate consumer contract"],
         },
     }
+
+
+class FvsAuthorEditTests(unittest.TestCase):
+    def setUp(self):
+        from tests.test_fvs_offline import ORIGINAL, PATH, SPEC, packet, patch
+
+        self.path, self.original, self.spec = PATH, ORIGINAL, SPEC
+        self.packet, self.patch = packet(), patch
+        self.job = {
+            **_job(), "schema": "autofv-role-job/v2", "methodology": "fvs-fc/v1",
+            "role": "specifier", "assigned_path": PATH,
+            "allowed_read_paths": sorted(s["path"] for s in self.packet["sources"]),
+            "role_context": {"source_packet": self.packet},
+        }
+
+    def tools(self, read, edit, job=None):
+        return agent_lane.build_lane_tools(
+            self.job if job is None else job, read_file=read,
+            search_files=mock.Mock(side_effect=AssertionError("no mutable search")),
+            edit_assigned=edit, check_lean=mock.Mock(),
+        )
+
+    def edit(self, tools, patch=None):
+        return agent_lane.invoke_lane_tool(
+            tools, "edit_assigned", {"patch": self.patch(self.spec) if patch is None else patch}
+        )
+
+    def test_multiple_real_edits_expose_exact_cumulative_patch_and_require_submission(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            source = root / self.path
+            source.write_bytes(self.original.encode("utf-8"))
+            subprocess.run(("git", "init", "-q"), cwd=root, check=True)
+            lane = {"lane_id": "author", "assigned_path": self.path, "worktree_path": tmp}
+            run = {"execution_tier": "simulation"}
+            read = mock.Mock(side_effect=lambda path: worker.read_lane_file(
+                run, lane, path, self.job["allowed_read_paths"]
+            ))
+            tools = self.tools(read, lambda patch: worker.edit_lane_file(run, lane, patch))
+            previous = self.original
+            targets = [self.spec, self.spec.replace("  sorry\n", "  exact rfl\n"),
+                       "-- synthetic candidate ∃\n" + self.spec.replace("  sorry\n", "  exact rfl\n")]
+            for current in targets:
+                data = json.loads(self.edit(tools, self.patch(current, previous)))
+                self.assertEqual(data["kind"], "fvs-candidate-diff-data")
+                self.assertEqual(data["assigned_path"], self.path)
+                self.assertTrue(data["edit_result"].startswith("applied:"))
+                self.assertEqual(data["canonical_candidate_patch"], self.patch(current))
+                self.assertEqual(fvs_packet.apply_patch(
+                    self.original, self.path, data["canonical_candidate_patch"]
+                ).encode("utf-8"), source.read_bytes())
+                previous = current
+            self.assertEqual(read.call_args_list, [mock.call(self.path)] * len(targets))
+            self.assertEqual(agent_lane.invoke_lane_tool(
+                tools, "read_allowed", {"path": self.path}
+            ), self.original)
+            self.assertNotIn("exact rfl", agent_lane.invoke_lane_tool(
+                tools, "search_allowed", {"query": "exact rfl"}
+            ))
+            self.assertEqual(read.call_count, len(targets))
+            canonical = data["canonical_candidate_patch"]
+            candidate = agent_lane.invoke_lane_tool(tools, "submit_candidate", {
+                "patch": canonical, "claimed_status": "candidate", "evidence": [],
+            })
+            self.assertEqual(candidate["patch"], canonical)
+            self.assertNotIn("accepted", candidate)
+            # Submission is never repaired from the latest mutable file. The
+            # controller's exact parser must still reject a misplaced old hunk.
+            bad = self.patch(self.spec).replace("@@ -1,4 +1,7 @@", "@@ -2,4 +2,7 @@")
+            self.assertNotEqual(bad, self.patch(self.spec))
+            submitted = agent_lane.invoke_lane_tool(tools, "submit_candidate", {
+                "patch": bad, "claimed_status": "candidate", "evidence": [],
+            })
+            self.assertEqual(submitted["patch"], bad)
+            with self.assertRaisesRegex(ContractError, "source drift"):
+                fvs_packet.apply_patch(self.original, self.path, submitted["patch"])
+            self.assertEqual(read.call_count, len(targets))
+
+    def dependency_baseline(self):
+        from autofv import fvs_profile
+
+        overlay = fvs_packet.source(self.path, "lean", "-- accepted dependency\n" + self.original)
+        sources = {s["path"]: s for s in self.packet["sources"]}
+        sources[self.path] = overlay
+        binding = {
+            "schema": "autofv-fvs-lane-generation/v1", "run_id": "run-001", "node": "helper",
+            "graph_sha256": "1" * 64, "original_base_commit": "a" * 40,
+            "original_packet_sha256": self.packet["packet_sha256"],
+            "dependencies": ["dependency"], "accepted_nodes": ["dependency"],
+            "accepted_commit": "b" * 40, "accepted_tree_sha256": "2" * 64,
+            "frozen_contracts_sha256": "3" * 64, "dependency_report_hashes": {"dependency": "4" * 64},
+            "source_hashes": {p: s["sha256"] for p, s in sources.items() if s["surface"] != "rust"},
+        }
+        binding["generation_sha256"] = fvs_profile.digest(binding)
+        return fvs_packet.dependency_snapshot(self.packet, binding, [overlay])
+
+    def test_cumulative_diff_uses_submission_baseline_in_revision_prover_and_repair(self):
+        from autofv import fvs_adapter
+        from tests.test_fvs_offline import CANON, PASS, REVISE
+
+        for dependencies in (False, True):
+            for phase in ("revision", "proof"):
+                with self.subTest(dependencies=dependencies, phase=phase), tempfile.TemporaryDirectory() as tmp:
+                    baseline = self.dependency_baseline() if dependencies else self.packet
+                    base = fvs_packet.validate_view(baseline)[self.path]["content"]
+                    spec = ("-- accepted dependency\n" if dependencies else "") + self.spec
+                    source = Path(tmp) / self.path
+                    source.write_bytes(spec.encode())
+                    subprocess.run(("git", "init", "-q"), cwd=tmp, check=True)
+                    lane = {"lane_id": "author", "node": "helper", "assigned_path": self.path,
+                            "worktree_path": tmp}
+                    state = {"run": {"execution_tier": "simulation"}, "config": {"source_packet": self.packet}}
+                    if dependencies:
+                        binding = baseline["dependency_generation"]
+                        lane["generation_sha256"] = binding["generation_sha256"]
+                        state["fvs_lane_generations"] = {"helper": {
+                            "phase": "ready", "binding": binding, "packet": baseline,
+                        }}
+                    stages = fvs_adapter.Stages(state, {}, lane, mock.Mock(), lambda *args: None)
+                    initial = {"patch": self.patch(spec, base), "evidence": ["statement:" + CANON]}
+                    targets = ([spec.replace("@[step]", "-- revised specification\n@[step]")]
+                               if phase == "revision" else [spec.replace("sorry", "rfl"), spec.replace("sorry", "exact rfl")])
+                    pending = iter(targets)
+                    read = lambda path: worker.read_lane_file(state["run"], lane, path, [self.path])
+                    invoked_roles = []
+
+                    def evidence(findings):
+                        return ["statement:" + CANON, "triage:" + json.dumps({
+                            "findings": findings, "summary": "Synthetic author-owned test triage.",
+                        })]
+
+                    def invoke(role, key, *, candidate=None, **kwargs):
+                        if key in {"implementation-research", "spec-author:0"}:
+                            return initial
+                        if "pass-triage" in key:
+                            return {**candidate, "evidence": evidence([])}
+                        # Match Stages.invoke's incoming immutable review view;
+                        # let the actual specification/proof methods replay the submission.
+                        view = fvs_packet.review_snapshot(baseline, path=self.path, patch=candidate["patch"])
+                        job = {**self.job, "role": role, "role_context": {"source_packet": view}}
+                        tools = self.tools(read, lambda patch: worker.edit_lane_file(state["run"], lane, patch), job)
+                        self.assertEqual(agent_lane.invoke_lane_tool(
+                            tools, "read_allowed", {"path": self.path}
+                        ), read(self.path))
+                        current = next(pending)
+                        data = json.loads(self.edit(tools, self.patch(current, read(self.path))))
+                        invoked_roles.append(role)
+                        return agent_lane.invoke_lane_tool(tools, "submit_candidate", {
+                            "patch": data["canonical_candidate_patch"], "claimed_status": "candidate",
+                            "evidence": evidence([{"id": "F-1", "disposition": "FIX",
+                                                   "evidence": "Synthetic bounded revision applied in the owned file."}]),
+                        })
+
+                    def gates(candidate, *args, **kwargs):
+                        # Diagnostics are synthetic; source replay and proof_scope are real.
+                        text = fvs_packet.review_snapshot(baseline, path=self.path, patch=candidate["patch"])["overlay"]["content"]
+                        self.assertEqual(text.encode(), source.read_bytes())
+                        return text, "sealed_runtime:exit=0:synthetic"
+
+                    reviews = ([REVISE.replace("VERDICT: REVISE", "VERDICT: APPROVE-WITH-EDITS")]
+                               if phase == "revision" else [REVISE, PASS])
+                    with mock.patch.object(stages, "invoke", side_effect=invoke), \
+                         mock.patch.object(stages, "gate_author", side_effect=gates), \
+                         mock.patch.object(stages, "review", side_effect=[fvs_adapter.parse_review(r) for r in reviews]):
+                        result = (stages.specification("e" * 64, {}) if phase == "revision"
+                                  else stages.proof(initial, "e" * 64, {}))
+                    self.assertEqual(invoked_roles, ["specifier"] if phase == "revision" else ["prover", "repair"])
+                    self.assertEqual(result["patch"], self.patch(targets[-1], base))
+                    self.assertEqual(source.read_bytes(), targets[-1].encode())
+
+    def test_review_packet_is_fully_validated_before_discarding_own_overlay(self):
+        for baseline in (self.packet, self.dependency_baseline()):
+            base = fvs_packet.validate_view(baseline)[self.path]["content"]
+            view = fvs_packet.review_snapshot(baseline, path=self.path, patch=self.patch(base + "-- candidate\n", base))
+            view["patch_sha256"] = "0" * 64
+            read, edit = mock.Mock(), mock.Mock()
+            job = {**self.job, "role_context": {"source_packet": view}}
+            with self.assertRaisesRegex(ContractError, "candidate source overlay drift"):
+                self.edit(self.tools(read, edit, job))
+            read.assert_not_called()
+            edit.assert_not_called()
+
+    def test_read_only_roles_and_other_paths_gain_no_mutable_reads(self):
+        for role in ("scout", "dependency_planner", "spec_reviewer", "proof_reviewer", "verification_adviser"):
+            with self.subTest(role=role):
+                read, edit = mock.Mock(), mock.Mock()
+                tools = self.tools(read, edit, {**self.job, "role": role})
+                self.assertIn("read_only_role", self.edit(tools))
+                self.assertEqual(agent_lane.invoke_lane_tool(
+                    tools, "read_allowed", {"path": self.path}
+                ), self.original)
+                read.assert_not_called()
+                edit.assert_not_called()
+        read, edit = mock.Mock(), mock.Mock()
+        tools = self.tools(read, edit)
+        self.assertIn("patch_rejected", self.edit(tools, self.patch(self.spec).replace(self.path, "Types.lean")))
+        self.assertIn("read_denied", agent_lane.invoke_lane_tool(
+            tools, "read_allowed", {"path": "Other.lean"}
+        ))
+        read.assert_not_called()
+        edit.assert_not_called()
+
+    def test_refused_edits_and_missing_packet_source_do_not_read_current_file(self):
+        read = mock.Mock()
+        edit = mock.Mock(side_effect=worker.PatchRejected("synthetic refusal"))
+        tools = self.tools(read, edit)
+        self.assertEqual(self.edit(tools), "patch_rejected: synthetic refusal")
+        read.assert_not_called()
+        edit.reset_mock()
+        job = {**self.job, "assigned_path": "Missing.lean",
+               "allowed_read_paths": sorted([*self.job["allowed_read_paths"], "Missing.lean"])}
+        with self.assertRaisesRegex(worker.WorkerError, "immutable packet source"):
+            self.edit(self.tools(read, edit, job), self.patch(self.spec).replace(self.path, "Missing.lean"))
+        read.assert_not_called()
+        edit.assert_not_called()
+
+    def test_unsupported_or_empty_cumulative_diff_is_explicitly_refused(self):
+        cases = [self.original, self.spec.replace("\n", "\r\n"), self.spec + "\x00"]
+        for current in cases:
+            with self.subTest(current=repr(current[-25:])):
+                result = self.edit(self.tools(mock.Mock(return_value=current), mock.Mock(return_value="applied")))
+                self.assertIn("candidate_patch_unavailable: edit applied;", result)
+                self.assertNotIn("diff --git", result)
+        # A changed unterminated old line cannot be represented by the strict
+        # parser: do not invent a final newline or output difflib's joined lines.
+        from autofv import fvs_profile
+        packet = copy.deepcopy(self.packet)
+        packet["sources"][0] = fvs_packet.source(self.path, "lean", self.original.rstrip("\n"))
+        packet["packet_sha256"] = fvs_profile.digest({k: v for k, v in packet.items() if k != "packet_sha256"})
+        job = {**self.job, "role_context": {"source_packet": packet}}
+        current = self.original.replace("end Arithmetic\n", "end Changed")
+        result = self.edit(self.tools(mock.Mock(return_value=current), mock.Mock(return_value="applied"), job))
+        self.assertIn("candidate_patch_unavailable: edit applied;", result)
+        self.assertNotIn("diff --git", result)
+
+    def test_unterminated_new_hunk_line_is_refused_after_real_git_edit(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            source = Path(tmp) / self.path
+            source.write_bytes(self.original.encode())
+            subprocess.run(("git", "init", "-q"), cwd=tmp, check=True)
+            lane = {"lane_id": "author", "assigned_path": self.path, "worktree_path": tmp}
+            run = {"execution_tier": "simulation"}
+            current = self.original + "-- unterminated new line"
+            unterminated = self.patch(current)
+            # The strict Python replayer alone misses this Git incompatibility.
+            self.assertEqual(fvs_packet.apply_patch(self.original, self.path, unterminated), current)
+            checked = subprocess.run(("git", "apply", "--check", "-"), cwd=tmp,
+                                     input=unterminated.encode(), capture_output=True)
+            self.assertNotEqual(checked.returncode, 0)
+            valid_git_patch = unterminated + "\n\\ No newline at end of file\n"
+            tools = self.tools(
+                lambda path: worker.read_lane_file(run, lane, path, [self.path]),
+                lambda patch: worker.edit_lane_file(run, lane, patch),
+            )
+            result = self.edit(tools, valid_git_patch)
+            self.assertEqual(source.read_bytes(), current.encode())
+            self.assertIn("candidate_patch_unavailable: edit applied;", result)
+            self.assertIn("unterminated", result)
+            self.assertNotIn("diff --git", result)
+
+    def test_complete_output_bound_includes_utf8_and_json_overhead(self):
+        current = self.spec + "-- ∃\\\"\n"
+        tools = self.tools(mock.Mock(return_value=current), mock.Mock(return_value="applied"))
+        complete = self.edit(tools)
+        json.loads(complete)
+        size = len(complete.encode("utf-8"))
+        with mock.patch.object(agent_lane, "_MAX_TOOL_OUTPUT_BYTES", size):
+            self.assertEqual(self.edit(tools), complete)
+        with mock.patch.object(agent_lane, "_MAX_TOOL_OUTPUT_BYTES", size - 1):
+            refused = self.edit(tools)
+            self.assertIn("candidate_patch_unavailable: edit applied;", refused)
+            self.assertNotIn("diff --git", refused)
+            self.assertLessEqual(len(refused.encode()), size - 1)
+        oversized = self.spec + "-- " + "∃" * 6000 + "\n"
+        refused = self.edit(self.tools(mock.Mock(return_value=oversized), mock.Mock(return_value="applied")))
+        self.assertIn("exceeds tool output bound", refused)
+        self.assertNotIn("diff --git", refused)
+        self.assertLessEqual(len(refused.encode()), agent_lane._MAX_TOOL_OUTPUT_BYTES)
+
+    def test_simulation_reader_preserves_crlf_and_candidate_output_refuses_it(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            current = self.spec.replace("\n", "\r\n").encode("utf-8")
+            (Path(tmp) / self.path).write_bytes(current)
+            run = {"execution_tier": "simulation"}
+            lane = {"lane_id": "author", "assigned_path": self.path, "worktree_path": tmp}
+            read = lambda path: worker.read_lane_file(run, lane, path, [self.path])
+            self.assertEqual(read(self.path).encode("utf-8"), current)
+            result = self.edit(self.tools(read, mock.Mock(return_value="applied")))
+            self.assertIn("candidate_patch_unavailable: edit applied;", result)
+            self.assertNotIn("diff --git", result)
+
+    def test_legacy_edit_result_and_reads_are_unchanged(self):
+        read = mock.Mock()
+        tools = self.tools(read, mock.Mock(return_value="applied:legacy"), _job())
+        patch = "diff --git a/Diamond/Left.lean b/Diamond/Left.lean\n"
+        self.assertEqual(self.edit(tools, patch), "applied:legacy")
+        read.assert_not_called()
+
+    def test_only_fvs_authors_get_canonical_patch_guidance(self):
+        for role in ("specifier", "prover", "repair"):
+            prompt = agent_lane.role_conversation_spec({**self.job, "role": role})["system_prompt"]
+            self.assertIn("canonical_candidate_patch", prompt)
+            self.assertIn("instead of reconstructing hunk positions", prompt)
+            self.assertIn("not original source or acceptance", prompt)
+        for job in (_job(), {**self.job, "role": "spec_reviewer"}):
+            self.assertNotIn("canonical_candidate_patch", agent_lane.role_conversation_spec(job)["system_prompt"])
 
 
 class AgentLaneBoundaryTests(unittest.TestCase):

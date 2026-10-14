@@ -469,7 +469,7 @@ def read_lane_file(
     """Read one allowlisted private-lane file through the worker boundary."""
     root, _ = _lane_path(lane, relative, set(allowed_paths))
     if run.get("execution_tier") == "simulation":
-        return _local_lane_file(run, lane, relative).read_text(encoding="utf-8")
+        return _local_lane_file(run, lane, relative).read_bytes().decode("utf-8")
     root = _sealed_lane_root(lane)
     completed = _runtime._docker(
         *_runtime._runtime_argv(

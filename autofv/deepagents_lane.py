@@ -28,7 +28,7 @@ from langgraph.errors import NodeCancelledError
 from pydantic import PrivateAttr
 
 from . import agent_lane as lane
-from . import model, worker
+from . import model, provider_messages, runtime_profile, worker
 from .contracts import canonical_json_bytes
 from .role_journal import tool_outcome
 from .run_state import _state_lock
@@ -139,7 +139,7 @@ class _RoutedRoleModel(BaseChatModel):
 
     model_name: str = _MODEL_NAME
     profile: dict[str, Any] = {"max_input_tokens": 65_536}
-    max_tokens: int = 8_192
+    max_tokens: int | None = 8_192
     _state: dict[str, Any] = PrivateAttr()
     _job: dict[str, Any] = PrivateAttr()
     _spec: dict[str, Any] = PrivateAttr()
@@ -231,6 +231,23 @@ class _RoutedRoleModel(BaseChatModel):
 
     def _invoke(self, messages: Any, run_manager: Any) -> ChatResult:
         normalized = _normalize_messages(messages)
+        if self._job["schema"] == "autofv-role-job/v3":
+            # LangChain emits valid JSON with formatting whitespace. Canonicalize
+            # only the typed tool arguments before hashing native continuation.
+            # Duplicate keys and non-object values must fail before dispatch.
+            try:
+                for item in normalized:
+                    if item["role"] == "assistant":
+                        for call in item["tool_calls"]:
+                            raw = call["function"]["arguments"]
+                            if not isinstance(raw, str):
+                                raise worker.WorkerError("Pi tool arguments must be JSON text")
+                            arguments = provider_messages.strict_json(raw.encode("utf-8"), "Pi tool arguments")
+                            if not isinstance(arguments, dict):
+                                raise worker.WorkerError("Pi tool arguments must be an object")
+                            call["function"]["arguments"] = canonical_json_bytes(arguments).decode("utf-8")
+            except (KeyError, TypeError, ValueError, provider_messages.ProviderError) as exc:
+                raise worker.WorkerError("Pi history contains invalid tool arguments") from exc
         call_kind = self._call_kind(normalized, run_manager)
         fvs = self._job.get("methodology") == lane._FVS_METHODOLOGY
         if fvs and call_kind != "explicit":
@@ -262,6 +279,8 @@ class _RoutedRoleModel(BaseChatModel):
                     input_hashes=self._context_hashes,
                     call_kind=call_kind,
                     messages=copy.deepcopy(normalized),
+                    **({"conversation_id": self._spec["conversation_id"]}
+                       if self._job["schema"] == "autofv-role-job/v3" else {}),
                 )
             except worker.TransientProviderError:
                 if fvs:
@@ -297,6 +316,10 @@ class _RoutedRoleModel(BaseChatModel):
                     raise worker.WorkerError("lane tool is not allowlisted")
                 lane._validate_tool_arguments(expected[name], arguments)
             except worker.WorkerError:
+                if self._job["schema"] == "autofv-role-job/v3":
+                    # A completed invalid native response is never resent with an
+                    # incomplete continuation or silently repaired history.
+                    raise
                 if corrections >= 2:
                     raise worker.WorkerError("invalid_agent_output") from None
                 corrections += 1
@@ -444,6 +467,13 @@ async def run_role_conversation(
     """Run one role through the exact receipted Deep Agents lane."""
     runtime_compatibility()
     trusted_job = lane.validate_role_job(job)
+    if trusted_job["schema"] == "autofv-role-job/v3":
+        runtime_profile.resolve(state["config"])
+        expected = runtime_profile.role_identity(trusted_job["role"], state["run"].get("runtime_identity_sha256"))
+        if trusted_job["runtime_profile"] != expected:
+            raise worker.WorkerError("Pi role runtime changed before dispatch")
+    elif runtime_profile.is_pi(state.get("config", {})):
+        raise worker.WorkerError("Pi run requires its explicit role runtime identity")
     schemas = lane.capture_tool_schemas(tools)
     spec = lane.role_conversation_spec(trusted_job)
     identity = spec["conversation_id"]
@@ -456,6 +486,8 @@ async def run_role_conversation(
         "job_sha256": _sha256(trusted_job),
         "role": trusted_job["role"],
         "declaration": trusted_job["declaration"],
+        **({"runtime_profile": copy.deepcopy(trusted_job["runtime_profile"])}
+           if trusted_job["schema"] == "autofv-role-job/v3" else {}),
     }
     if isinstance(prior_progress, dict) and any(
         prior_progress.get(key) != value for key, value in progress_identity.items()

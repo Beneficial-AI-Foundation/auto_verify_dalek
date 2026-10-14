@@ -72,10 +72,14 @@ def validate_profile(value: Any) -> dict[str, Any]:
 
 
 def enabled(config: dict[str, Any]) -> bool:
-    return config.get("schema") == "autofv-run/v2"
+    # Methodology is shared; billing/provider policy still has a separate identity.
+    return config.get("schema") in {"autofv-run/v2", "autofv-run/v3"}
 
 
 def model_for(config: dict[str, Any], role: str) -> str:
+    if config.get("schema") == "autofv-run/v3":
+        from . import runtime_profile
+        return runtime_profile.model_for(config, role)
     if not enabled(config):
         return config["model"]
     if config.get("role_profile") != PROFILE_ID or config.get("model") != AUTHOR:
@@ -87,12 +91,21 @@ def model_for(config: dict[str, Any], role: str) -> str:
 
 
 def request_timeout_seconds(binding: dict[str, Any]) -> int:
+    if binding.get("schema") == "autofv-provider-binding/v3":
+        from . import runtime_profile
+        return runtime_profile.validate_binding_profile(binding)["parameters"]["timeout_seconds"]
     if binding.get("schema") != "autofv-provider-binding/v2":
         return 30
     return validate_profile(binding["role_profile"])["parameters"]["timeout_seconds"]
 
 
 def binding_model(binding: dict[str, Any], role: str) -> str:
+    if binding.get("schema") == "autofv-provider-binding/v3":
+        from . import runtime_profile
+        selected = runtime_profile.validate_binding_profile(binding)
+        if role not in selected["role_models"]:
+            raise ContractError("Pi provider request role mismatch")
+        return selected["role_models"][role]
     if binding.get("schema") != "autofv-provider-binding/v2":
         return binding["model_id"]
     validate_profile(binding["role_profile"])

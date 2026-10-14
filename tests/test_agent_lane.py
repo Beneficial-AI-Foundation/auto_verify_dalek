@@ -162,7 +162,7 @@ class AgentLaneBoundaryTests(unittest.TestCase):
                 agent_lane.role_conversation_spec({**fvs_job, "role": role})[
                     "max_output_tokens"
                 ],
-                8192,
+                16384,
             )
         with self.assertRaises(worker.WorkerError):
             agent_lane.validate_role_job({**fvs_job, "methodology": "unknown"})

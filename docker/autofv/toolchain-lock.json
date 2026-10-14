@@ -697,6 +697,7 @@
       "autofv/result_summary.py",
       "autofv/results.py",
       "autofv/run_state.py",
+      "autofv/runtime_profile.py",
       "autofv/worker_runtime.py",
       "docker/autofv/toolchain-lock.json",
       "harness/agentproc.py",

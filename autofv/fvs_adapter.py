@@ -14,7 +14,7 @@ from pathlib import Path
 from typing import Any, Callable
 
 from .contracts import ContractError, ContractInconclusive, canonical_json_bytes
-from . import fvs_packet, fvs_profile
+from . import fvs_packet, fvs_profile, runtime_profile
 
 
 def contracts() -> dict[str, Any]:
@@ -168,6 +168,9 @@ def validate_evidence(entries: Any, *, binding: dict[str, Any], exchanges: dict[
     from . import agent_lane
     if not isinstance(entries, dict):
         raise ContractError("FVS stage inventory invalid")
+    pi = binding.get("schema") == runtime_profile.PI_BINDING_SCHEMA
+    if pi:
+        runtime_profile.validate_binding_profile(binding)
     receipts = {e["receipt"]["receipt_sha256"]: e for e in exchanges.values()}
     contract_hash = fvs_profile.digest(contracts())
     for key, entry in entries.items():
@@ -180,6 +183,8 @@ def validate_evidence(entries: Any, *, binding: dict[str, Any], exchanges: dict[
             or entry.get("role_profile_sha256") != binding["role_profile_sha256"]
             or entry.get("original_packet_sha256") != binding["source_packet_sha256"]):
             raise ContractError("FVS retained stage hash/profile/source drift")
+        if pi and entry.get("runtime_identity_sha256") != binding["runtime_identity_sha256"]:
+            raise ContractError("Pi retained stage runtime identity drift")
         if "invocation_receipts" not in entry:
             continue
         packet = entry["packet"]
@@ -199,6 +204,11 @@ def validate_evidence(entries: Any, *, binding: dict[str, Any], exchanges: dict[
                "allowed_read_paths": sorted(s["path"] for s in original["sources"]),
                **{k: candidate[k] for k in ("run_id", "declaration", "role", "assigned_path", "graph_sha256",
                   "statement_sha256", "contract_fingerprint", "input_hashes", "accepted_commit")}}
+        if pi:
+            identity = runtime_profile.role_identity(candidate["role"], binding["runtime_identity_sha256"])
+            if entry.get("runtime_profile") != identity:
+                raise ContractError("Pi retained stage role runtime drift")
+            job.update(schema="autofv-role-job/v3", runtime_profile=identity)
         agent_lane.validate_candidate(candidate, job)
         if entry["fresh_conversation"] != context_hash or entry["role"] != candidate["role"]:
             raise ContractError("FVS retained conversation identity drift")
@@ -208,6 +218,21 @@ def validate_evidence(entries: Any, *, binding: dict[str, Any], exchanges: dict[
         selected = [receipts[i] for i in ids]
         if any(e["request"]["role"] != candidate["role"] or context_hash not in e["request"]["input_hashes"] for e in selected):
             raise ContractError("FVS retained role/context not authenticated")
+        if pi:
+            from . import subscription_receipts
+            conversation_id = agent_lane.role_conversation_spec(job)["conversation_id"]
+            for exchange in selected:
+                request, response, receipt = (exchange[k] for k in ("request", "response", "receipt"))
+                if (request["model_id"] != runtime_profile.PI_MODEL
+                        or receipt.get("conversation_id") != conversation_id
+                        or not runtime_profile.identity_hashes(identity) <= set(request["input_hashes"])):
+                    raise ContractError("Pi retained model/profile/runtime is not authenticated")
+                subscription_receipts.validate_attestation(receipt, binding=binding, run_id=request["run_id"],
+                    sequence=request["sequence"], request_id=request["request_id"], model_id=request["model_id"],
+                    request_sha256=fvs_profile.digest(request), response_sha256=fvs_profile.digest(response),
+                    seen_receipt_sha256=set(), request=request)
+            if entry.get("effort_observations") != _effort_observations(selected):
+                raise ContractError("Pi retained requested/observed effort drift")
         submitted = {k: candidate[k] for k in ("patch", "claimed_status", "evidence")}
         if not any(e["response"].get("payload", {}).get("name") == "submit_candidate"
                    and e["response"]["payload"].get("arguments") == submitted for e in selected):
@@ -222,12 +247,30 @@ def validate_evidence(entries: Any, *, binding: dict[str, Any], exchanges: dict[
                     raise ContractError("FVS retained verdict/raw response drift")
 
 
+def _effort_observations(exchanges: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Keep requested policy distinct from independently observed provider facts."""
+    return [{"receipt_sha256": e["receipt"]["receipt_sha256"],
+             "requested_effort": e["receipt"]["provider"]["requested_effort"],
+             "observed_effort": e["receipt"]["provider"]["observed_effort"],
+             "parameter_observation": e["receipt"]["provider"]["parameter_observation"]}
+            for e in exchanges]
+
+
 class Stages:
     def __init__(self, state: dict[str, Any], graph: dict[str, Any], lane: dict[str, Any],
                  role_runner: Callable[..., dict[str, Any]], checkpoint: Callable[..., Any]):
         self.state, self.graph, self.lane = state, graph, lane
+        self.pi = runtime_profile.is_pi(state["config"])
+        if self.pi:
+            runtime_profile.resolve(state["config"])
+            binding = state["run"].get("provider_binding", {})
+            runtime_profile.validate_binding_profile(binding)
+            if binding["runtime_identity_sha256"] != state["run"].get("runtime_identity_sha256"):
+                raise ContractError("Pi stage runtime identity drift")
         self.runner, self.checkpoint = role_runner, checkpoint
         self.original = fvs_packet.validate_packet(state["config"]["source_packet"])
+        if self.pi and binding["source_packet_sha256"] != self.original["packet_sha256"]:
+            raise ContractError("Pi stage source packet binding drift")
         self.path, self.node = lane["assigned_path"], lane["node"]
         generation = state.get("fvs_lane_generations", {}).get(self.node)
         self.baseline = generation["packet"] if "generation_sha256" in lane else self.original
@@ -244,7 +287,8 @@ class Stages:
     def record(self, key: str, value: dict[str, Any]) -> dict[str, Any]:
         identity = self.node + ":" + key
         body = {"adapter": "autofv-bounded-fc/v1", "contracts_sha256": fvs_profile.digest(self.contracts),
-                "role_profile_sha256": fvs_profile.digest(fvs_profile.profile()),
+                "role_profile_sha256": runtime_profile.profile_sha256(self.state["config"]) if self.pi else fvs_profile.digest(fvs_profile.profile()),
+                **({"runtime_identity_sha256": self.state["run"]["runtime_identity_sha256"]} if self.pi else {}),
                 "original_packet_sha256": self.original["packet_sha256"],
                 **({"generation_sha256": self.lane["generation_sha256"]} if "generation_sha256" in self.lane else {}),
                 **copy.deepcopy(value)}
@@ -278,7 +322,20 @@ class Stages:
                     if fvs_profile.digest(role_context) in e.get("request", {}).get("input_hashes", [])]})
             raise
         binding = self.state["run"].get("provider_binding")
-        if not isinstance(binding, dict) or binding.get("schema") != "autofv-provider-binding/v2":
+        if self.pi:
+            if not isinstance(binding, dict):
+                raise ContractError("Pi stage requires authenticated subscription binding")
+            runtime_profile.validate_binding_profile(binding)
+            identity = runtime_profile.role_identity(role, binding["runtime_identity_sha256"])
+            from . import agent_lane
+            job = {"schema": "autofv-role-job/v3", "methodology": agent_lane._FVS_METHODOLOGY,
+                   "runtime_profile": identity, "role_context": role_context,
+                   "allowed_read_paths": sorted(s["path"] for s in self.original["sources"]),
+                   **{k: result[k] for k in ("run_id", "declaration", "role", "assigned_path", "graph_sha256",
+                      "statement_sha256", "contract_fingerprint", "input_hashes", "accepted_commit")}}
+            agent_lane.validate_candidate(result, job)
+            conversation_id = agent_lane.role_conversation_spec(job)["conversation_id"]
+        elif not isinstance(binding, dict) or binding.get("schema") != "autofv-provider-binding/v2":
             raise ContractError("FVS stage requires authenticated frozen pair binding")
         from . import provider_receipts
         exchanges = sorted([e for e in self.state.get("model_exchanges", {}).values()
@@ -290,15 +347,24 @@ class Stages:
         receipts = []
         for exchange in exchanges:
             request, response, receipt = (exchange[k] for k in ("request", "response", "receipt"))
-            if (request["model_id"] != fvs_profile.ROLE_MODELS[role]
-                or receipt.get("provider", {}).get("role") != role
+            if (request["model_id"] != runtime_profile.model_for(self.state["config"], role)
+                or (receipt.get("role") if self.pi else receipt.get("provider", {}).get("role")) != role
                 or binding["role_profile_sha256"] not in request["input_hashes"]
                 or binding["source_packet_sha256"] not in request["input_hashes"]):
                 raise ContractError("FVS stage receipt role/profile/source mismatch")
-            provider_receipts.validate_receipt(receipt, binding=binding, run_id=request["run_id"],
+            validator = provider_receipts.validate_receipt
+            extra = {}
+            if self.pi:
+                from . import subscription_receipts
+                if (receipt.get("conversation_id") != conversation_id
+                        or not runtime_profile.identity_hashes(identity) <= set(request["input_hashes"])):
+                    raise ContractError("Pi stage request runtime identity mismatch")
+                validator = subscription_receipts.validate_attestation
+                extra = {"request": request}
+            validator(receipt, binding=binding, run_id=request["run_id"],
                 sequence=request["sequence"], request_id=request["request_id"], model_id=request["model_id"],
                 request_sha256=fvs_profile.digest(request), response_sha256=fvs_profile.digest(response),
-                seen_receipt_sha256=set())
+                seen_receipt_sha256=set(), **extra)
             receipts.append(receipt["receipt_sha256"])
         submitted = {"patch": result["patch"], "claimed_status": result["claimed_status"], "evidence": result["evidence"]}
         if not any(e["response"].get("payload", {}).get("name") == "submit_candidate"
@@ -308,7 +374,10 @@ class Stages:
                           "stage_context": {k: v for k, v in role_context.items() if k != "source_packet"},
                           "invocation_receipts": receipts, "fresh_conversation": fvs_profile.digest(role_context),
                           "read_only_tools": role in fvs_profile.REVIEW_ROLES,
-                          "effort_provenance": "signed requested xhigh; required routing support; not independently reported"})
+                          "effort_provenance": ("controller attests requested xhigh; independent effort observations recorded separately"
+                              if self.pi else "signed requested xhigh; required routing support; not independently reported"),
+                          **({"runtime_profile": identity, "effort_observations": _effort_observations(exchanges)}
+                             if self.pi else {})})
         if result["claimed_status"] != "candidate":
             raise ContractInconclusive("FVS role blocked: " + role)
         return result

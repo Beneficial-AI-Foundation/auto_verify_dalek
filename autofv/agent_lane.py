@@ -9,7 +9,7 @@ from collections.abc import Callable, Mapping
 from pathlib import PurePosixPath
 from typing import Any
 
-from . import fvs_profile, worker
+from . import fvs_profile, runtime_profile, worker
 from .contracts import canonical_json_bytes
 from .run_state import _checkpoint_if_enabled
 
@@ -177,8 +177,9 @@ def validate_role_job(job: Any) -> dict[str, Any]:
     """Validate and copy the complete immutable identity for one role job."""
     if not isinstance(job, dict):
         raise worker.WorkerError("role job fields mismatch")
-    fvs = job.get("schema") == "autofv-role-job/v2"
-    fields = _JOB_FIELDS | {"methodology"} if fvs else _JOB_FIELDS
+    pi = job.get("schema") == "autofv-role-job/v3"
+    fvs = job.get("schema") in {"autofv-role-job/v2", "autofv-role-job/v3"}
+    fields = (_JOB_FIELDS | {"methodology"} if fvs else _JOB_FIELDS) | ({"runtime_profile"} if pi else set())
     if set(job) != fields:
         raise worker.WorkerError("role job fields mismatch")
     if fvs:
@@ -204,16 +205,25 @@ def validate_role_job(job: Any) -> dict[str, Any]:
         if not isinstance(job[field], str) or _HEX_SHA256.fullmatch(job[field]) is None:
             raise worker.WorkerError(f"role job {field} is invalid")
     _hashes(job["input_hashes"], "role job input hashes")
+    if pi:
+        try:
+            identity = runtime_profile.validate_role_identity(job["runtime_profile"], job["role"])
+        except ValueError as exc:
+            raise worker.WorkerError(str(exc)) from exc
+        if not runtime_profile.identity_hashes(identity) <= set(job["input_hashes"]):
+            raise worker.WorkerError("Pi role job is not bound to the exact runtime/profile")
     if (
         not isinstance(job["accepted_commit"], str)
         or _GIT_COMMIT.fullmatch(job["accepted_commit"]) is None
     ):
         raise worker.WorkerError("role job accepted commit is invalid")
-    role_context_sha256(job["role_context"], methodology=job.get("methodology"))
+    role_context_sha256(job["role_context"], methodology=job.get("methodology"),
+                        role_runtime_identity=job.get("runtime_profile"))
     return copy.deepcopy(job)
 
 
-def role_context_sha256(value: Any, *, methodology: str | None = None) -> str:
+def role_context_sha256(value: Any, *, methodology: str | None = None,
+                        role_runtime_identity: dict[str, Any] | None = None) -> str:
     """Validate and identify bounded, actual role input without retaining prose elsewhere."""
     if not isinstance(value, dict) or not value:
         raise worker.WorkerError("role context is invalid")
@@ -221,6 +231,10 @@ def role_context_sha256(value: Any, *, methodology: str | None = None) -> str:
         raise worker.WorkerError("role context methodology is invalid")
     try:
         body = value if methodology is None else {"methodology": methodology, "context": value}
+        if role_runtime_identity is not None:
+            if methodology != _FVS_METHODOLOGY:
+                raise worker.WorkerError("Pi role context methodology is invalid")
+            body = {**body, "runtime_profile": role_runtime_identity}
         raw = canonical_json_bytes(body)
     except Exception as exc:
         raise worker.WorkerError("role context is invalid") from exc
@@ -259,7 +273,8 @@ def validate_candidate(candidate: Any, job: Any) -> dict[str, Any]:
         if candidate[field] != trusted_job[field]:
             raise worker.WorkerError(f"lane candidate {field} mismatch")
     if candidate["role_context_sha256"] != role_context_sha256(
-        trusted_job["role_context"], methodology=trusted_job.get("methodology")
+        trusted_job["role_context"], methodology=trusted_job.get("methodology"),
+        role_runtime_identity=trusted_job.get("runtime_profile")
     ):
         raise worker.WorkerError("lane candidate role context mismatch")
     patch = _text(candidate["patch"], "lane candidate patch")
@@ -313,7 +328,8 @@ def _candidate(job: dict[str, Any], arguments: dict[str, Any]) -> dict[str, Any]
             )
         },
         "role_context_sha256": role_context_sha256(
-            job["role_context"], methodology=job.get("methodology")
+            job["role_context"], methodology=job.get("methodology"),
+            role_runtime_identity=job.get("runtime_profile")
         ),
         "patch": patch,
         "claimed_status": arguments["claimed_status"],
@@ -543,6 +559,9 @@ def role_conversation_spec(job: Any) -> dict[str, Any]:
     identity = hashlib.sha256(canonical_json_bytes(trusted_job)).hexdigest()
     role = trusted_job["role"]
     fvs = trusted_job.get("methodology") == _FVS_METHODOLOGY
+    pi = trusted_job["schema"] == "autofv-role-job/v3"
+    if pi:
+        context_fields = (*context_fields, "runtime_profile")
     if fvs:
         context_fields = (*context_fields, "methodology")
     if fvs:
@@ -558,12 +577,13 @@ def role_conversation_spec(job: Any) -> dict[str, Any]:
             + _ROLE_GUIDANCE[role] + " " + _GRAPH_AND_TOOL_GUIDE
         )
     return {
-        "schema": "autofv-role-conversation/v2" if fvs else "autofv-role-conversation/v1",
+        "schema": "autofv-role-conversation/v3" if pi else ("autofv-role-conversation/v2" if fvs else "autofv-role-conversation/v1"),
         "conversation_id": identity,
         "role": role,
-        "max_output_tokens": (
+        "max_output_tokens": None if pi else (
             fvs_profile.profile()["models"][fvs_profile.ROLE_MODELS[role]]["max_output_tokens"]
         ) if fvs else (4096 if role in review_roles else 8192),
+        **({"runtime_profile": copy.deepcopy(trusted_job["runtime_profile"])} if pi else {}),
         "system_prompt": system_prompt,
         "context": {
             field: copy.deepcopy(trusted_job[field]) for field in context_fields
@@ -574,16 +594,25 @@ def role_conversation_spec(job: Any) -> dict[str, Any]:
 def initial_role_messages(spec: Any) -> list[dict[str, str]]:
     """Construct the bounded system/user transcript visible to every role."""
     if not isinstance(spec, dict) or spec.get("schema") not in {
-        "autofv-role-conversation/v1", "autofv-role-conversation/v2"
+        "autofv-role-conversation/v1", "autofv-role-conversation/v2", "autofv-role-conversation/v3"
     }:
         raise worker.WorkerError("role conversation spec is invalid")
-    fvs = spec["schema"] == "autofv-role-conversation/v2"
+    pi = spec["schema"] == "autofv-role-conversation/v3"
+    fvs = spec["schema"] in {"autofv-role-conversation/v2", "autofv-role-conversation/v3"}
     context = spec.get("context")
     if fvs and (
         not isinstance(context, dict)
         or context.get("methodology") != _FVS_METHODOLOGY
     ):
         raise worker.WorkerError("role conversation methodology mismatch")
+    if pi:
+        try:
+            identity = runtime_profile.validate_role_identity(spec.get("runtime_profile"), spec.get("role"))
+        except ValueError as exc:
+            raise worker.WorkerError(str(exc)) from exc
+        if (context.get("runtime_profile") != identity or spec.get("max_output_tokens") is not None
+                or not runtime_profile.identity_hashes(identity) <= set(context.get("input_hashes", []))):
+            raise worker.WorkerError("Pi conversation runtime identity/output policy mismatch")
     messages = [
         {"role": "system", "content": _text(spec.get("system_prompt"), "system prompt")},
         {

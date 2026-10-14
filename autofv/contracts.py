@@ -120,23 +120,28 @@ def _read_json(path: Path, label: str) -> Any:
 def validate_run_config(path: str | Path) -> tuple[Path, dict[str, Any]]:
     config_path = _absolute_path(path, "run config", directory=False)
     value = _read_json(config_path, "run config")
-    fvs = isinstance(value, dict) and value.get("schema") == "autofv-run/v2"
+    pi = isinstance(value, dict) and value.get("schema") == "autofv-run/v3"
+    fvs = isinstance(value, dict) and value.get("schema") in {"autofv-run/v2", "autofv-run/v3"}
     config = _exact_dict(
         value,
         {"schema", "model", "max_wall_seconds", "max_cost_usd"} |
         ({"role_profile", "source_packet"} if fvs else set()) |
+        ({"max_invocations"} if pi else set()) |
         ({"helper_reserves"} if fvs and "helper_reserves" in value else set()),
         "run config",
     )
     if fvs:
         from . import fvs_packet, fvs_profile
-        if config["role_profile"] != fvs_profile.PROFILE_ID or config["model"] != fvs_profile.AUTHOR:
+        if pi:
+            from . import runtime_profile
+            runtime_profile.resolve(config)
+        elif config["role_profile"] != fvs_profile.PROFILE_ID or config["model"] != fvs_profile.AUTHOR:
             raise ContractError("FVS run role/model profile mismatch")
         fvs_packet.validate_packet(config["source_packet"])
         if config_path.read_bytes() != canonical_json_bytes(value) + b"\n":
             raise ContractError("FVS run config must be canonical JSON")
     elif config["schema"] != "autofv-run/v1":
-        raise ContractError("run config schema must be autofv-run/v1 or opt-in autofv-run/v2")
+        raise ContractError("run config schema must be autofv-run/v1, opt-in autofv-run/v2 or autofv-run/v3")
     _text(config["model"], "model")
     if type(config["max_wall_seconds"]) is not int or config["max_wall_seconds"] <= 0:
         raise ContractError("max_wall_seconds must be a positive integer")
@@ -147,6 +152,12 @@ def validate_run_config(path: str | Path) -> tuple[Path, dict[str, Any]]:
         if (any(type(value) is not int or value <= 0 for value in values)
                 or any(a <= b for a, b in zip(values, values[1:]))):
             raise ContractError("helper reserves must be positive decreasing seconds within the total")
+    if pi:
+        if config["max_cost_usd"] is not None:
+            raise ContractError("Pi subscription max_cost_usd must be null; API dollar approval is not subscription authority")
+        if type(config["max_invocations"]) is not int or config["max_invocations"] <= 0:
+            raise ContractError("Pi max_invocations must be a positive integer")
+        return config_path, config
     cost = config["max_cost_usd"]
     if (
         isinstance(cost, bool)

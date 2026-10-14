@@ -7,7 +7,7 @@ import hashlib
 from copy import deepcopy
 from typing import Any
 
-from . import agent_lane, fvs_packet, fvs_profile, role_journal, terminal_run, worker
+from . import agent_lane, fvs_packet, fvs_profile, runtime_profile, role_journal, terminal_run, worker
 from .contracts import ContractError, ContractInconclusive
 from .diamond import (
     _candidate_record,
@@ -51,12 +51,19 @@ def _role_job(
     role_context: dict[str, Any],
 ) -> dict[str, Any]:
     fvs = fvs_profile.enabled(state.get("config", {}))
+    pi = runtime_profile.is_pi(state.get("config", {}))
+    identity = None
+    if pi:
+        runtime_profile.resolve(state["config"])
+        identity = runtime_profile.role_identity(role, state["run"].get("runtime_identity_sha256"))
+        input_hashes = sorted(set(input_hashes) | runtime_profile.identity_hashes(identity))
     if fvs and "source_packet" not in role_context:
         generation = state.get("fvs_lane_generations", {}).get(lane["node"])
         packet = generation["packet"] if "generation_sha256" in lane else state["config"]["source_packet"]
         role_context = {**role_context, "source_packet": packet}
     return {
-        "schema": "autofv-role-job/v2" if fvs else "autofv-role-job/v1",
+        "schema": "autofv-role-job/v3" if pi else ("autofv-role-job/v2" if fvs else "autofv-role-job/v1"),
+        **({"runtime_profile": identity} if pi else {}),
         **({"methodology": agent_lane._FVS_METHODOLOGY} if fvs else {}),
         "run_id": state["run"]["run_id"],
         "declaration": lane["node"],

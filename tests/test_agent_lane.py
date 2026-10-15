@@ -478,6 +478,32 @@ class AgentLaneBoundaryTests(unittest.TestCase):
                 {**fvs_job, "role_context": {"source_evidence": "x" * 262144}}
             )
 
+    def test_binding_annex_is_optional_user_data_and_does_not_change_job_or_legacy_context(self):
+        legacy = _job()
+        self.assertNotIn("binding_domains", agent_lane.role_conversation_spec(legacy)["context"])
+        for role in agent_lane._ROLES:
+            with self.subTest(role=role):
+                job = {**_job(), "schema": "autofv-role-job/v2", "methodology": "fvs-fc/v1", "role": role}
+                before = copy.deepcopy(job)
+                spec = agent_lane.role_conversation_spec(job)
+                messages = agent_lane.initial_role_messages(spec)
+                context = json.loads(messages[1]["content"])["context"]
+                self.assertEqual(job, before)
+                self.assertEqual(context["role_context"], job["role_context"])
+                self.assertEqual(context["binding_domains"]["source_packet_check"], "not_verified")
+                self.assertEqual(context["binding_domains"]["job_bindings"]["input_hashes_check"], "not_verified")
+                self.assertNotIn("binding_domains", messages[0]["content"])
+                self.assertEqual(agent_lane.role_conversation_spec(job), spec)
+
+    def test_binding_annex_keeps_message_bound_fail_closed_without_truncation(self):
+        job = {**_job(), "schema": "autofv-role-job/v2", "methodology": "fvs-fc/v1",
+               "role_context": {"public_source": "x" * 262_000}}
+        self.assertEqual(agent_lane.validate_role_job(job), job)
+        spec = agent_lane.role_conversation_spec(job)
+        self.assertEqual(spec["context"]["role_context"], job["role_context"])
+        with self.assertRaisesRegex(worker.WorkerError, "role messages exceed their bound"):
+            agent_lane.initial_role_messages(spec)
+
     def test_fvs_review_guidance_requires_one_complete_bounded_report(self):
         for role in ("spec_reviewer", "proof_reviewer"):
             with self.subTest(role=role):

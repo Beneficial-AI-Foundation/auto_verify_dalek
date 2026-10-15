@@ -74,6 +74,94 @@ def config() -> dict:
             "max_wall_seconds": 600, "max_cost_usd": "5.000000"}
 
 
+class FvsBindingDomainTests(unittest.TestCase):
+    def job(self, role="specifier", *, canon=CANON, candidate=None):
+        view = packet() if candidate is None else fvs_packet.review_snapshot(
+            packet(), path=PATH, patch=candidate["patch"])
+        context = {"stage": "spec-author:0" if candidate is None else "spec-review:0",
+                   "contracts_sha256": fvs_profile.digest(fvs_adapter.contracts()),
+                   "task_brief": {"final_goal": {"canon": "theorem Arithmetic.root_spec : True"}},
+                   "source_packet": view}
+        if candidate is not None:
+            context["reviewed_candidate"] = candidate
+        fingerprint = fvs_adapter._raw_sha256(context["task_brief"]["final_goal"]["canon"] if role == "specifier" else canon)
+        return generic_role_runtime._role_job(
+            {"config": config(), "run": {"run_id": "binding-fixture"}},
+            {"graph_sha256": "d" * 64},
+            {"node": "helper", "assigned_path": PATH, "base_commit": "c" * 40}, role,
+            statement_sha256=fingerprint, contract_fingerprint=fingerprint,
+            input_hashes=[packet()["packet_sha256"], fvs_profile.digest(view), fvs_profile.digest(context)],
+            role_context=context)
+
+    def candidate(self, job, canon=CANON):
+        return agent_lane._candidate(job, {"patch": patch(SPEC), "claimed_status": "candidate",
+                                          "evidence": ["statement:" + canon]})
+
+    def annex(self, job):
+        messages = agent_lane.initial_role_messages(agent_lane.role_conversation_spec(job))
+        self.assertNotIn("binding_domains", messages[0]["content"])
+        return json.loads(messages[1]["content"])["context"]["binding_domains"]
+
+    def test_binding_domains_separate_raw_statements_packets_and_role_contexts(self):
+        author = self.job()
+        candidate = self.candidate(author)
+        before = copy.deepcopy(candidate)
+        review = self.job("spec_reviewer", candidate=candidate)
+        a, r = self.annex(author), self.annex(review)
+        self.assertEqual(a["job_bindings"]["fingerprint_domain"], "supplied_root_goal")
+        self.assertEqual(r["job_bindings"]["fingerprint_domain"], "reviewed_statement")
+        self.assertNotEqual(a["job_bindings"]["statement_sha256"], r["job_bindings"]["statement_sha256"])
+        for summary in (a, r):
+            for field in ("statement_sha256_check", "contract_fingerprint_check", "input_hashes_check"):
+                self.assertEqual(summary["job_bindings"][field], "verified")
+        domains = r["json_sha256"]
+        self.assertEqual(domains["original_packet_body"], packet()["packet_sha256"])
+        self.assertEqual(domains["full_stage_packet"], fvs_profile.digest(review["role_context"]["source_packet"]))
+        self.assertEqual(domains["role_context"], fvs_profile.digest(review["role_context"]))
+        self.assertEqual(domains["methodology_role_context"], agent_lane.role_context_sha256(
+            review["role_context"], methodology=agent_lane._FVS_METHODOLOGY))
+        self.assertEqual(len(set(domains.values())), 4)
+        self.assertNotIn("binding_domains", review["role_context"])
+        self.assertEqual(candidate, before)
+        spaced = CANON.replace(" (n", "  (n")
+        spaced_candidate = self.candidate(author, spaced)
+        spaced_review = self.job("spec_reviewer", canon=spaced, candidate=spaced_candidate)
+        spaced_annex = self.annex(spaced_review)
+        self.assertNotEqual(r["reviewed_statement"]["sha256"], spaced_annex["reviewed_statement"]["sha256"])
+        self.assertEqual(spaced_annex["reviewed_statement"]["normalized_source_check"], "verified")
+        self.assertNotEqual(r["candidate_patch"]["sha256"], r["assigned_source"]["sha256"])
+
+    def test_direct_root_role_job_keeps_non_stage_inputs_without_inventing_the_triplet(self):
+        state = {"config": config(), "run": {"run_id": "binding-fixture"}}
+        graph = {"graph_sha256": "d" * 64}
+        lane = {"node": "probe:Arithmetic.root_spec", "assigned_path": "Root.lean", "base_commit": "c" * 40}
+        root = "theorem Arithmetic.root_spec : True"
+        for role in ("scout", "prover", "proof_reviewer", "repair"):
+            job = generic_role_runtime._role_job(state, graph, lane, role,
+                statement_sha256=fvs_adapter._raw_sha256(root), contract_fingerprint=fvs_adapter._raw_sha256(root),
+                input_hashes=[graph["graph_sha256"]], role_context={"contract": {"canon": root}})
+            before = copy.deepcopy(job)
+            annex = self.annex(job)
+            self.assertEqual(job, before)
+            self.assertEqual(job["role_context"]["source_packet"], packet())
+            self.assertEqual(annex["source_packet_check"], "verified")
+            self.assertEqual(annex["job_bindings"]["input_hashes_check"], "not_verified")
+            self.assertNotIn("input_hashes_construction", annex["job_bindings"])
+
+    def test_binding_domains_do_not_bless_mutated_same_domain_or_missing_context(self):
+        job = self.job("spec_reviewer", candidate=self.candidate(self.job()))
+        for field in ("statement_sha256", "contract_fingerprint", "input_hashes"):
+            bad = copy.deepcopy(job)
+            bad[field] = ["0" * 64] if field == "input_hashes" else "0" * 64
+            summary = self.annex(bad)["job_bindings"]
+            self.assertEqual(summary[field + "_check"], "mismatch")
+        minimal = {**self.job(), "role_context": {"source_packet": packet()}}
+        summary = self.annex(minimal)
+        self.assertEqual(summary["job_bindings"]["fingerprint_domain"], "not_verified")
+        self.assertEqual(summary["job_bindings"]["input_hashes_check"], "not_verified")
+        self.assertNotIn("supplied_root_goal", summary)
+
+
 class FvsReviewFormatTests(unittest.TestCase):
     def review_template(self):
         guide = fvs_adapter.contracts()["review_contract"]
@@ -1258,6 +1346,109 @@ class FvsOfflineTests(unittest.TestCase):
         original["sources"][0]["content"] += "-- drift\n"
         with self.assertRaises(contracts.ContractError):
             fvs_packet.navigation(original, {"probe:Arithmetic.increment": PATH})
+
+    def test_binding_annex_tracks_producer_revision_reviewer_and_prover_without_rewriting_history(self):
+        graph, lane, actual, calls = self.stage_fixture(review_overrides={"spec-review:0": REVISE})
+        jobs, visible = {}, {}
+        def runner(state, graph, lane, role, **kwargs):
+            job = generic_role_runtime._role_job(state, graph, lane, role, **kwargs)
+            key = job["role_context"]["stage"]
+            jobs[key] = copy.deepcopy(job)
+            messages = agent_lane.initial_role_messages(agent_lane.role_conversation_spec(job))
+            visible[key] = json.loads(messages[1]["content"])["context"]
+            self.assertEqual(visible[key]["role_context"], job["role_context"])
+            self.assertLess(len(contracts.canonical_json_bytes(messages)), agent_lane._MAX_FVS_CONTEXT_BYTES)
+            return generic_role_runtime._run_role_lane(state, graph, lane, role, **kwargs)
+        stages = fvs_adapter.Stages(self.state, graph, lane, runner, lambda *a: None)
+        root = "theorem Arithmetic.root_spec : True"
+        capture = "Built Arithmetic (1 job)\n"
+        diagnostic = "sealed_runtime:exit=0:diagnostic_sha256=" + fvs_adapter._raw_sha256(capture) + ":" + capture
+        with mock.patch.object(worker, "check_lane", return_value=diagnostic):
+            candidate = stages.specification(fvs_adapter._raw_sha256(root), {"task_brief": {"final_goal": {"canon": root}}})
+            retained = copy.deepcopy(stages.entries)
+            stages.proof(candidate, fvs_adapter._raw_sha256(CANON), {})
+        for key, entry in retained.items():
+            self.assertEqual(stages.entries[key], entry)
+        self.assertEqual(stages.entries["helper:spec-review:0:verdict"]["raw"], REVISE)
+        self.assertEqual(stages.entries["helper:spec-review:1:verdict"]["raw"], PASS)
+        for current, producer in (("spec-review:0", "spec-author:0"), ("spec-author:1", "spec-author:0"),
+                                  ("spec-review:1", "spec-author:1"), ("proof-review:0", "proof-author:0")):
+            with self.subTest(stage=current):
+                inner = jobs[current]["role_context"]
+                summary = inner["controller_binding_data"]["producer"]
+                self.assertEqual(summary["record_check"], "verified")
+                self.assertEqual(summary["json_sha256"]["role_context"], fvs_profile.digest(jobs[producer]["role_context"]))
+                self.assertEqual(summary["job_bindings"]["input_hashes"], jobs[producer]["input_hashes"])
+                current_summary = visible[current]["binding_domains"]
+                self.assertEqual(current_summary["job_bindings"]["input_hashes_check"], "verified")
+                self.assertNotEqual(summary["json_sha256"]["role_context"], current_summary["json_sha256"]["role_context"])
+                self.assertEqual(current_summary["json_sha256"]["role_context"], fvs_profile.digest(inner))
+                self.assertEqual(current_summary["packet_patch_text"]["sha256"], fvs_adapter._raw_sha256(inner["source_packet"]["patch"]))
+                self.assertNotIn(current_summary["json_sha256"]["role_context"], json.dumps(inner))
+                gate = inner["controller_binding_data"]["gate_capture"]
+                self.assertEqual(gate["capture_bytes_check"], "verified")
+                self.assertEqual(gate["candidate_identity_check"], "not_verified")
+                self.assertEqual(gate["snapshot_inventory_check"], "not_verified")
+        author = stages.entries["helper:spec-author:0"]["candidate"]
+        reviewer_job = jobs["spec-review:0"]
+        self.assertEqual(reviewer_job["role_context"]["reviewed_candidate"], author)
+        self.assertNotEqual(author["statement_sha256"], reviewer_job["statement_sha256"])
+        for key in ("proof-author:0", "proof-pass-triage:0"):
+            self.assertEqual(visible[key]["binding_domains"]["job_bindings"]["fingerprint_domain"], "frozen_statement")
+            self.assertEqual(visible[key]["binding_domains"]["job_bindings"]["statement_sha256_check"], "verified")
+        fvs_adapter.validate_evidence(stages.entries, binding=self.binding.public, exchanges=self.state["model_exchanges"])
+
+    def test_gate_capture_annex_checks_scoped_records_not_claimed_hashes_or_snapshot_equivalence(self):
+        graph, lane, actual, calls = self.stage_fixture()
+        stages = fvs_adapter.Stages(self.state, graph, lane, generic_role_runtime._run_role_lane, lambda *a: None)
+        candidate = stages.invoke("specifier", "spec-author:0", fingerprint="e" * 64)
+        view = fvs_packet.review_snapshot(packet(), path=PATH, patch=candidate["patch"])
+        inventory = [{k: source[k] for k in ("path", "sha256")} for source in fvs_packet.validate_view(view).values()]
+        captures = ["Built Arithmetic (1 job)\n", "Replayed Arithmetic (0 jobs)\n"]
+        diagnostics = ["sealed_runtime:exit=0:diagnostic_sha256=" + fvs_adapter._raw_sha256(text) + ":" + text for text in captures]
+        with mock.patch.object(worker, "check_lane", side_effect=diagnostics), \
+             mock.patch.object(worker, "save_lane_snapshot", side_effect=[{"sequence": i, "files": inventory} for i in (1, 2)]):
+            for i in range(2):
+                stages.gate_author(candidate, f"spec-gates:{i}", specification=True)
+        before = copy.deepcopy(stages.entries)
+        summaries = [stages._controller_binding_data(candidate, view, d)["gate_capture"] for d in diagnostics]
+        self.assertNotEqual(summaries[0]["diagnostic_sha256"], summaries[1]["diagnostic_sha256"])
+        self.assertNotEqual(summaries[0]["record"], summaries[1]["record"])
+        self.assertEqual(summaries[0]["assigned_source_sha256"], summaries[1]["assigned_source_sha256"])
+        for summary in summaries:
+            self.assertEqual(summary["diagnostic_sha256"], summary["captured_text_sha256"])
+            self.assertEqual(summary["capture_bytes_check"], "verified")
+            self.assertEqual(summary["snapshot_inventory_check"], "not_verified")
+        unknown = "sealed_runtime:exit=0:diagnostic_sha256=" + "1" * 64 + ":model claim only"
+        self.assertEqual(stages._controller_binding_data(candidate, view, unknown)["gate_capture"]["status"], "not_verified")
+        self.assertEqual(stages.entries, before)
+        for field, value in (("source_sha256", "0" * 64), ("original_packet_sha256", "0" * 64),
+                             ("diagnostic", diagnostics[0] + "altered suffix")):
+            with self.subTest(field=field):
+                stages.entries = copy.deepcopy(before)
+                gate = stages.entries["helper:spec-gates:0"]
+                gate[field] = value
+                gate["record_sha256"] = fvs_profile.digest({k: v for k, v in gate.items() if k != "record_sha256"})
+                checked = stages._controller_binding_data(candidate, view, gate["diagnostic"])["gate_capture"]
+                self.assertEqual(checked["capture_bytes_check"], "mismatch")
+        stages.entries = {"other-helper:spec-gates:0": before["helper:spec-gates:0"]}
+        self.assertEqual(stages._controller_binding_data(candidate, view, diagnostics[0])["gate_capture"]["status"], "not_verified")
+
+    def test_producer_annex_does_not_bless_changed_input_binding(self):
+        graph, lane, actual, calls = self.stage_fixture()
+        stages = fvs_adapter.Stages(self.state, graph, lane, generic_role_runtime._run_role_lane, lambda *a: None)
+        candidate = stages.invoke("specifier", "spec-author:0", fingerprint="e" * 64)
+        view = fvs_packet.review_snapshot(packet(), path=PATH, patch=candidate["patch"])
+        before = copy.deepcopy(stages.entries)
+        changed = {**candidate, "input_hashes": ["0" * 64]}
+        self.assertEqual(stages._controller_binding_data(changed, view, None)["producer"]["status"], "not_verified")
+        self.assertEqual(stages.entries, before)
+        # Even a self-consistent local record hash cannot make the wrong input domain match.
+        entry = stages.entries["helper:spec-author:0"]
+        entry["candidate"] = changed
+        entry["record_sha256"] = fvs_profile.digest({k: v for k, v in entry.items() if k != "record_sha256"})
+        checked = stages._controller_binding_data(changed, view, None)["producer"]
+        self.assertEqual(checked["job_bindings"]["input_hashes_check"], "mismatch")
 
     def test_integrated_fc_stages_preserve_raw_review_triage_and_frozen_statement(self):
         graph, lane, actual, calls = self.stage_fixture()

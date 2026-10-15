@@ -101,6 +101,103 @@ def validate_statement_source(canon: str, text: str) -> None:
         raise StatementBindingError("FVS claimed statement does not match the reviewed source")
 
 
+def binding_domains(job: dict[str, Any]) -> dict[str, Any]:
+    """Describe available byte domains, outside the role_context being hashed.
+
+    These are local recomputations/comparisons, not authentication or acceptance.
+    Producer summaries deliberately do not recurse into earlier summaries.
+    """
+    from . import agent_lane
+    context = job["role_context"]
+    hashes = {"role_context": fvs_profile.digest(context),
+              "methodology_role_context": agent_lane.role_context_sha256(
+                  context, methodology=job.get("methodology"))}
+    bindings = {k: copy.deepcopy(job[k]) for k in
+                ("role", "statement_sha256", "contract_fingerprint", "input_hashes")}
+    bindings.update(fingerprint_domain="not_verified", statement_sha256_check="not_verified",
+                    contract_fingerprint_check="not_verified", input_hashes_check="not_verified")
+    result = {"kind": "controller binding-domain DATA", "json_sha256": hashes, "job_bindings": bindings,
+              "scope": "Local byte checks only, not semantic/proof acceptance or a mismatch waiver. "
+                       "Producer bindings in role_context.controller_binding_data belong to an immutable earlier job, "
+                       "not this job. Missing evidence is not invalid evidence.",
+              "hashing": "Text hashes use exact UTF-8, without whitespace normalization. JSON hashes use canonical_json_bytes. "
+                         "original_packet_body excludes packet_sha256; full_stage_packet includes all fields; "
+                         "role_context hashes the inner role_context only; methodology_role_context hashes "
+                         "{methodology, context: role_context} (candidate.role_context_sha256). "
+                         "This annex is outside those objects. Supplied root bytes come from task_brief.final_goal.canon; "
+                         "source extraction and semantic adequacy are not checked here. packet_patch_text is unified diff text; "
+                         "assigned_source is complete file bytes after overlays. normalized_source_check uses "
+                         "validate_statement_source (whitespace and theorem-name qualification), not byte equality.",
+              "diagnostic_limits": "Only explicitly checked scoped gate records are verified here. "
+                                   "diagnostic_sha256 identifies the suffix after the sealed_runtime wrapper, not source/snapshot. "
+                                   "captured_text_sha256 re-encodes the available suffix as UTF-8; lossy decoding may prevent a match. "
+                                   "Role-tool/model-claimed captures and full snapshot/inventory equivalence are NOT VERIFIED "
+                                   "by this annex. Different checked capture hashes identify different captured bytes, "
+                                   "not source identity or conflict."}
+    brief = context.get("task_brief")
+    goal = brief.get("final_goal") if isinstance(brief, dict) else None
+    root = goal.get("canon") if isinstance(goal, dict) else None
+    target = None
+    if isinstance(root, str) and root:
+        result["supplied_root_goal"] = {"sha256": _raw_sha256(root), "utf8_bytes": len(root.encode("utf-8"))}
+        if job["role"] in {"specifier", "scout", "dependency_planner"}:
+            target, bindings["fingerprint_domain"] = root, "supplied_root_goal"
+    frozen = context.get("frozen_statement")
+    if isinstance(frozen, str) and frozen:
+        result["frozen_statement"] = {"sha256": _raw_sha256(frozen), "utf8_bytes": len(frozen.encode("utf-8"))}
+        target, bindings["fingerprint_domain"] = frozen, "frozen_statement"
+    candidate = context.get("reviewed_candidate")
+    canon = None
+    if isinstance(candidate, dict):
+        try:
+            canon = statement(candidate)
+        except (StatementBindingError, AttributeError, TypeError):
+            result["reviewed_statement"] = {"status": "not_verified"}
+        else:
+            result["reviewed_statement"] = {"sha256": _raw_sha256(canon), "utf8_bytes": len(canon.encode("utf-8")),
+                                            "normalized_source_check": "not_verified"}
+            if job["role"] in fvs_profile.REVIEW_ROLES:
+                target, bindings["fingerprint_domain"] = canon, "reviewed_statement"
+    if target is not None:
+        for field in ("statement_sha256", "contract_fingerprint"):
+            bindings[field + "_check"] = "verified" if job[field] == _raw_sha256(target) else "mismatch"
+    packet = context.get("source_packet")
+    if not isinstance(packet, dict):
+        result["source_packet_check"] = "not_verified"
+        return result
+    try:
+        sources = fvs_packet.validate_view(packet)
+    except (ContractError, KeyError, TypeError, AttributeError):
+        result["source_packet_check"] = "mismatch"
+        return result
+    result["source_packet_check"] = "verified"
+    original = packet.get("original_packet", packet)
+    hashes.update(original_packet_body=fvs_profile.digest({k: v for k, v in original.items() if k != "packet_sha256"}),
+                  full_stage_packet=fvs_profile.digest(packet))
+    if "stage" in context and "contracts_sha256" in context:
+        expected = sorted({hashes[k] for k in ("original_packet_body", "full_stage_packet", "role_context")})
+        bindings["input_hashes_check"] = "verified" if job["input_hashes"] == expected else "mismatch"
+        bindings["input_hashes_construction"] = "Stages.invoke: sorted unique original_packet_body, full_stage_packet, role_context"
+    source = sources.get(job["assigned_path"])
+    if source is not None:
+        result["assigned_source"] = {"path": job["assigned_path"], "sha256": _raw_sha256(source["content"]),
+                                     "utf8_bytes": len(source["content"].encode("utf-8"))}
+        if canon is not None:
+            try:
+                validate_statement_source(canon, source["content"])
+            except StatementBindingError:
+                result["reviewed_statement"]["normalized_source_check"] = "mismatch"
+            else:
+                result["reviewed_statement"]["normalized_source_check"] = "verified"
+    if isinstance(packet.get("patch"), str):
+        result["packet_patch_text"] = {"sha256": _raw_sha256(packet["patch"]), "utf8_bytes": len(packet["patch"].encode("utf-8"))}
+    if isinstance(candidate, dict) and isinstance(candidate.get("patch"), str):
+        result["candidate_patch"] = {"sha256": _raw_sha256(candidate["patch"]),
+                                     "utf8_bytes": len(candidate["patch"].encode("utf-8")),
+                                     "packet_patch_check": "verified" if packet.get("patch") == candidate["patch"] else "mismatch"}
+    return result
+
+
 def triage(candidate: dict[str, Any], review: dict[str, Any]) -> dict[str, Any]:
     values = [s.removeprefix("triage:") for s in candidate.get("evidence", []) if s.startswith("triage:")]
     if len(values) != 1:
@@ -257,6 +354,66 @@ class Stages:
         self.checkpoint(self.state, "fvs:" + identity)
         return copy.deepcopy(entry)
 
+    def _controller_binding_data(self, candidate: dict[str, Any], packet: dict[str, Any],
+                                 diagnostic: str | None) -> dict[str, Any]:
+        """Compact evidence for the annex; never alter a producer or raw history."""
+        from . import agent_lane, worker
+        candidate_hash = fvs_profile.digest(candidate)
+        data = {"producer": {"status": "not_verified", "candidate_sha256": candidate_hash},
+                "gate_capture": {"status": "not_verified"}}
+        # Only the exact candidate's retained invocation can explain producer inputs.
+        for key, entry in self.entries.items():
+            if not key.startswith(self.node + ":") or entry.get("candidate") != candidate or "stage_context" not in entry:
+                continue
+            try:
+                expected_scope = {"run_id": self.state["run"]["run_id"], "declaration": self.node,
+                                  "assigned_path": self.path, "graph_sha256": self.graph["graph_sha256"],
+                                  "accepted_commit": self.lane["base_commit"]}
+                if any(candidate.get(k) != value for k, value in expected_scope.items()):
+                    raise ContractError("FVS producer scope mismatch")
+                validate_evidence({key: entry}, binding=self.state["run"]["provider_binding"],
+                                  exchanges=self.state.get("model_exchanges", {}))
+                producer_context = {**entry["stage_context"], "source_packet": entry["packet"]}
+                job = {"schema": "autofv-role-job/v2", "methodology": agent_lane._FVS_METHODOLOGY,
+                       "role_context": producer_context,
+                       "allowed_read_paths": sorted(s["path"] for s in self.original["sources"]),
+                       **{k: candidate[k] for k in ("run_id", "declaration", "role", "assigned_path", "graph_sha256",
+                          "statement_sha256", "contract_fingerprint", "input_hashes", "accepted_commit")}}
+                summary = binding_domains(agent_lane.validate_role_job(job))
+            except (ContractError, worker.WorkerError, KeyError, TypeError):
+                data["producer"]["status"] = "mismatch"
+            else:
+                data["producer"] = {"record": key, "record_sha256": entry["record_sha256"],
+                                    "record_check": "verified", "candidate_sha256": candidate_hash,
+                                    **{k: v for k, v in summary.items() if k not in {"kind", "scope", "hashing", "diagnostic_limits"}}}
+            break
+        source_hash = fvs_packet.validate_view(packet)[self.path]["sha256"]
+        for key, entry in sorted(self.entries.items(), key=lambda item: (item[1].get("source_sha256") != source_hash, item[0])):
+            if (diagnostic is None or not key.startswith(self.node + ":") or entry.get("diagnostic") != diagnostic
+                or "source_sha256" not in entry or "snapshot" not in entry):
+                continue
+            match = re.fullmatch(r"sealed_runtime:exit=(-?\d+):diagnostic_sha256=([0-9a-f]{64}):(.*)", diagnostic, re.S)
+            record_ok = (entry.get("record_sha256") == fvs_profile.digest({k: v for k, v in entry.items() if k != "record_sha256"})
+                         and entry.get("adapter") == "autofv-bounded-fc/v1"
+                         and entry.get("contracts_sha256") == fvs_profile.digest(self.contracts)
+                         and entry.get("role_profile_sha256") == fvs_profile.digest(fvs_profile.profile()))
+            source_ok = (entry.get("original_packet_sha256") == self.original["packet_sha256"]
+                         and entry.get("generation_sha256") == self.lane.get("generation_sha256")
+                         and entry.get("source_sha256") == source_hash)
+            data["gate_capture"] = {"record": key, "record_sha256": entry.get("record_sha256"),
+                                    "overlay_candidate_sha256": candidate_hash, "assigned_source_sha256": source_hash,
+                                    "record_and_assigned_source_check": "verified" if record_ok and source_ok else "mismatch",
+                                    "capture_bytes_check": "not_verified", "snapshot_inventory_check": "not_verified",
+                                    "candidate_identity_check": "not_verified",
+                                    "scope": "Checks compare the gate record to the candidate overlay's assigned source only; "
+                                             "gate candidate identity and other snapshot files are not checked."}
+            if match is not None:
+                data["gate_capture"].update(diagnostic_sha256=match[2], exit_code=int(match[1]),
+                    captured_text_sha256=_raw_sha256(match[3]), utf8_bytes=len(match[3].encode("utf-8")),
+                    capture_bytes_check="verified" if record_ok and source_ok and _raw_sha256(match[3]) == match[2] else "mismatch")
+            break
+        return data
+
     def invoke(self, role: str, key: str, *, candidate: dict[str, Any] | None = None,
                context: dict[str, Any] | None = None, fingerprint: str) -> dict[str, Any]:
         packet = (fvs_packet.review_snapshot(self.baseline, path=self.path, patch=candidate["patch"])
@@ -273,6 +430,9 @@ class Stages:
             role_context["readonly_research_patch"] = research_patch
         if role in fvs_profile.REVIEW_ROLES:
             role_context["reviewed_candidate"] = candidate
+        if candidate is not None:
+            role_context["controller_binding_data"] = self._controller_binding_data(
+                candidate, packet, role_context.get("captured_diagnostic"))
         from . import worker
         try:
             result = self.runner(self.state, self.graph, self.lane, role,
@@ -429,7 +589,7 @@ class Stages:
                 if not diagnostic.startswith("sealed_runtime:exit=0:"):
                     raise ContractInconclusive("FVS statement local gates are not green")
                 author = self.invoke("specifier", f"spec-pass-triage:{round_index}", candidate=candidate,
-                    fingerprint=fingerprint, context={"review": review,
+                    fingerprint=fingerprint, context={"review": review, "captured_diagnostic": diagnostic,
                         "task": "author-owned triage only; preserve statement and patch exactly"})
                 if author["patch"] != candidate["patch"] or statement(author) != canon:
                     raise ContractError("FVS PASS triage changed reviewed sources/statement")
@@ -446,6 +606,7 @@ class Stages:
                 raise ContractInconclusive("FVS specification reviewer/revision cap exhausted")
             revision = self.invoke("specifier", f"spec-author:{round_index+1}", candidate=candidate,
                 fingerprint=fingerprint, context={"review": review, "untrusted_history": history,
+                                                 "captured_diagnostic": diagnostic,
                                                  "task": "author triage and revision; preserve exact raw history"})
             disposition = triage(revision, review)
             new_text = fvs_packet.review_snapshot(self.baseline, path=self.path, patch=revision["patch"])["overlay"]["content"]
@@ -500,7 +661,7 @@ class Stages:
                 # The authoritative acceptance/verifier still checks proof holes
                 # and axioms; unrelated baseline placeholders are not this proof.
                 author = self.invoke("repair", f"proof-pass-triage:{attempt}", candidate=proposed,
-                    fingerprint=fingerprint, context={"review": review,
+                    fingerprint=fingerprint, context={"review": review, "captured_diagnostic": diagnostic, "frozen_statement": canon,
                         "task": "author-owned proof triage only; preserve reviewed statement and patch exactly"})
                 if author["patch"] != proposed["patch"] or statement(author) != canon:
                     raise ContractError("FVS proof PASS triage changed reviewed candidate")

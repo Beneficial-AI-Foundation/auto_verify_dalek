@@ -1036,6 +1036,173 @@ class FvsOfflineTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             experiment._bind_provider_selection(self.run, path)
 
+    def test_readonly_research_missing_git_header_still_refused_after_eight_reads(self):
+        # Replay cb21bda9's syntax failure with synthetic, genuinely unchanged source.
+        original = "-- synthetic padding\n" * 80 + "-- synthetic context\n" * 6
+        missing_header = (f"--- a/{PATH}\n+++ b/{PATH}\n@@ -81,6 +81,6 @@\n"
+                          + " -- synthetic context\n" * 6)
+        complete = f"diff --git a/{PATH} b/{PATH}\n" + missing_header
+        self.assertEqual(fvs_packet.apply_patch(original, PATH, complete), original)
+        source_packet = packet()
+        source_packet["sources"][0] = fvs_packet.source(PATH, "lean", original)
+        source_packet["packet_sha256"] = fvs_profile.digest({
+            k: v for k, v in source_packet.items() if k != "packet_sha256"})
+        job = generic_role_runtime._role_job(self.state,
+            {"source_paths": {"helper": PATH}, "graph_sha256": "d" * 64},
+            {"node": "helper", "assigned_path": PATH, "base_commit": "c" * 40}, "scout",
+            statement_sha256="e" * 64, contract_fingerprint="f" * 64, input_hashes=[source_packet["packet_sha256"]],
+            role_context={"source_packet": source_packet})
+        forbidden = mock.Mock(side_effect=AssertionError("research must not access mutable source"))
+        tools = agent_lane.build_lane_tools(job, read_file=forbidden, search_files=forbidden,
+                                           edit_assigned=forbidden, check_lean=forbidden)
+        for _ in range(4):
+            self.assertEqual(agent_lane.invoke_lane_tool(tools, "read_allowed", {"path": PATH}), original)
+            self.assertIn("synthetic context", agent_lane.invoke_lane_tool(
+                tools, "search_allowed", {"query": "synthetic context"}))
+        with self.assertRaisesRegex(worker.PatchRejected, "candidate must modify exactly its assigned file"):
+            agent_lane.invoke_lane_tool(tools, "submit_candidate", {
+                "patch": missing_header, "claimed_status": "candidate", "evidence": ["Synthetic research only."]})
+        forbidden.assert_not_called()
+
+    def test_readonly_research_patch_replays_frozen_views_and_is_role_scoped(self):
+        graph = {"source_paths": {"helper": PATH}, "graph_sha256": "d" * 64}
+        lane = {"node": "helper", "assigned_path": PATH, "base_commit": "c" * 40}
+        original = packet()
+        overlay = fvs_packet.source(PATH, "lean", ORIGINAL + "-- accepted synthetic dependency ∃\n")
+        binding = {"schema": "autofv-fvs-lane-generation/v1", "run_id": self.run["run_id"],
+            "node": "helper", "graph_sha256": graph["graph_sha256"], "original_base_commit": "c" * 40,
+            "original_packet_sha256": original["packet_sha256"], "dependencies": ["dependency"],
+            "accepted_nodes": ["dependency"], "accepted_commit": "a" * 40, "accepted_tree_sha256": "b" * 64,
+            "frozen_contracts_sha256": "e" * 64, "dependency_report_hashes": {"dependency": "f" * 64},
+            "source_hashes": {s["path"]: (overlay if s["path"] == PATH else s)["sha256"]
+                              for s in original["sources"] if s["surface"] != "rust"}}
+        binding["generation_sha256"] = fvs_profile.digest(binding)
+        dependency = fvs_packet.dependency_snapshot(original, binding, [overlay])
+        research_roles = {"scout", "dependency_planner", "verification_adviser"}
+        for baseline in (original, dependency):
+            active_lane = dict(lane)
+            if baseline is dependency:
+                active_lane.update(generation_sha256=binding["generation_sha256"], base_commit=binding["accepted_commit"])
+                self.state["fvs_lane_generations"] = {"helper": {
+                    "phase": "ready", "binding": binding, "packet": dependency}}
+            source = fvs_packet.validate_view(baseline)[PATH]["content"]
+            for reviewed in (None, {"patch": patch(source + "-- reviewed synthetic candidate\n", source)}):
+                for role in fvs_profile.ROLE_MODELS:
+                    with self.subTest(view=baseline["schema"], review=reviewed is not None, role=role):
+                        jobs = []
+                        def capture(state, graph, lane, role, **kwargs):
+                            jobs.append(agent_lane.validate_role_job(
+                                generic_role_runtime._role_job(state, graph, lane, role, **kwargs)))
+                            raise RuntimeError("captured before dispatch")
+                        stages = fvs_adapter.Stages(self.state, graph, active_lane, capture, lambda *a: None)
+                        before = copy.deepcopy(baseline)
+                        # Reserved DATA is assigned after caller context, never copied from it.
+                        context = {"readonly_research_patch": patch(SPEC)} if role in research_roles else {}
+                        with self.assertRaisesRegex(RuntimeError, "captured before dispatch"):
+                            stages.invoke(role, "synthetic-context", candidate=reviewed,
+                                          context=context, fingerprint="e" * 64)
+                        job = jobs[0]
+                        role_context = job["role_context"]
+                        self.assertEqual(baseline, before)
+                        if role not in research_roles:
+                            self.assertNotIn("readonly_research_patch", role_context)
+                            if role in fvs_profile.REVIEW_ROLES:
+                                self.assertEqual(role_context["reviewed_candidate"], reviewed)
+                            continue
+                        offered = role_context["readonly_research_patch"]
+                        self.assertEqual(offered, f"diff --git a/{PATH} b/{PATH}\n--- a/{PATH}\n+++ b/{PATH}\n@@ -0,0 +0,0 @@\n")
+                        frozen = fvs_packet.validate_view(role_context["source_packet"])[PATH]["content"]
+                        self.assertEqual(fvs_packet.apply_patch(frozen, PATH, offered).encode(), frozen.encode())
+                        forbidden = mock.Mock(side_effect=AssertionError("research has no mutable tools"))
+                        tools = agent_lane.build_lane_tools(job, read_file=forbidden, search_files=forbidden,
+                                                           edit_assigned=forbidden, check_lean=forbidden)
+                        self.assertEqual(len(agent_lane.capture_tool_schemas(tools)), 5)
+                        self.assertEqual(agent_lane.invoke_lane_tool(tools, "read_allowed", {"path": PATH}), frozen)
+                        for tool, args in (("edit_assigned", {"patch": patch(SPEC)}), ("check_lean", {})):
+                            self.assertTrue(agent_lane.invoke_lane_tool(tools, tool, args).startswith("read_only_role:"))
+                        submitted = agent_lane.invoke_lane_tool(tools, "submit_candidate", {
+                            "patch": offered, "claimed_status": "candidate", "evidence": ["Synthetic inventory."]})
+                        self.assertEqual(agent_lane.validate_candidate(submitted, job), submitted)
+                        rerouted = copy.deepcopy(submitted)
+                        rerouted["patch"] = offered.replace(PATH, "Other.lean")
+                        with self.assertRaises(worker.PatchRejected):
+                            agent_lane.validate_candidate(rerouted, job)
+                        for invalid in ("", offered.split("@@")[0]):
+                            with self.assertRaises((contracts.ContractError, worker.WorkerError)):
+                                fvs_packet.apply_patch(frozen, PATH, invalid)
+                        changed_job = copy.deepcopy(job)
+                        changed_job["role_context"]["readonly_research_patch"] += "\n"
+                        with self.assertRaisesRegex(worker.WorkerError, "role context mismatch"):
+                            agent_lane.validate_candidate(submitted, changed_job)
+                        messages = agent_lane.initial_role_messages(agent_lane.role_conversation_spec(job))
+                        self.assertNotIn(offered, messages[0]["content"])
+                        self.assertIn("copy readonly_research_patch unchanged", messages[0]["content"])
+                        self.assertEqual(json.loads(messages[1]["content"])["context"]["role_context"]["readonly_research_patch"], offered)
+                        forbidden.assert_not_called()
+        generic = copy.deepcopy(self.state)
+        generic["config"] = {}
+        job = generic_role_runtime._role_job(generic, graph, lane, "scout",
+            statement_sha256="e" * 64, contract_fingerprint="f" * 64, input_hashes=["a" * 64],
+            role_context={"stage": "synthetic-generic"})
+        self.assertNotIn("readonly_research_patch", job["role_context"])
+        self.assertNotIn("readonly_research_patch", agent_lane.role_conversation_spec(job)["system_prompt"])
+
+    def test_readonly_research_patch_survives_authenticated_stages_and_explicit_submission(self):
+        graph = {"source_paths": {"helper": PATH}, "graph_sha256": "d" * 64}
+        lane = {"node": "helper", "assigned_path": PATH, "base_commit": "c" * 40}
+        jobs = []
+        def run_role(state, graph, lane, role, **kwargs):
+            jobs.append(generic_role_runtime._role_job(state, graph, lane, role, **kwargs))
+            return generic_role_runtime._run_role_lane(state, graph, lane, role, **kwargs)
+        stages = fvs_adapter.Stages(self.state, graph, lane, run_role, lambda *a: None)
+        original = copy.deepcopy(self.state["config"]["source_packet"])
+        turns = {}
+        def synthetic_round(state, **kwargs):
+            role = kwargs["role"]
+            turn = turns[role] = turns.get(role, 0) + 1
+            visible = json.loads(kwargs["messages"][1]["content"])["context"]["role_context"]
+            offered = visible["readonly_research_patch"]
+            self.assertEqual(visible, jobs[-1]["role_context"])
+            self.assertIn(fvs_profile.digest(visible), kwargs["input_hashes"])
+            if role == "scout" and turn <= 8:
+                name, arguments = ("read_allowed", {"path": PATH}) if turn % 2 else ("search_allowed", {"query": "increment"})
+                self.assertNotIn("helper:synthetic-" + role, self.state["fvs_evidence"])
+            else:
+                name, arguments = "submit_candidate", {"patch": offered, "claimed_status": "candidate",
+                                                       "evidence": ["Synthetic research inventory; no acceptance."]}
+            def respond(reply):
+                reply["choices"][0]["message"]["tool_calls"][0]["function"] = {
+                    "name": name, "arguments": json.dumps(arguments)}
+            e = self.exchange(role, input_hashes=kwargs["input_hashes"], response_overrides=respond)
+            self.remember(e)
+            return e["response"], e["receipt"]
+        forbidden = mock.Mock(side_effect=AssertionError("research cannot read/write/check/accept mutable sources"))
+        with (mock.patch("autofv.model._model_request", side_effect=synthetic_round),
+              mock.patch.multiple(worker, read_lane_file=forbidden, search_lane_files=forbidden,
+                                  edit_lane_file=forbidden, check_lane=forbidden,
+                                  save_lane_snapshot=forbidden, accept_candidate=forbidden)):
+            for role in ("scout", "dependency_planner", "verification_adviser"):
+                result = stages.invoke(role, "synthetic-" + role, fingerprint="e" * 64)
+                job = jobs[-1]
+                self.assertEqual(agent_lane.validate_candidate(result, job), result)
+                self.assertEqual(result["patch"], job["role_context"]["readonly_research_patch"])
+                self.assertEqual(fvs_packet.apply_patch(ORIGINAL, PATH, result["patch"]), ORIGINAL)
+                entry = stages.entries["helper:synthetic-" + role]
+                self.assertEqual(entry["stage_context"]["readonly_research_patch"], result["patch"])
+                self.assertEqual(entry["fresh_conversation"], fvs_profile.digest(job["role_context"]))
+                self.assertEqual(len(entry["invocation_receipts"]), 9 if role == "scout" else 1)
+            # Merely providing DATA is not a submission and cannot finish a stage.
+            with mock.patch("autofv.model._model_request", side_effect=worker.TransientProviderError("synthetic no submission")):
+                with self.assertRaisesRegex(worker.TransientProviderError, "synthetic no submission"):
+                    stages.invoke("scout", "synthetic-not-submitted", fingerprint="e" * 64)
+            self.assertNotIn("helper:synthetic-not-submitted", stages.entries)
+        forbidden.assert_not_called()
+        self.assertEqual(self.state["config"]["source_packet"], original)
+        self.assertEqual(self.state["accepted"], {"accepted_commit": "c" * 40})
+        self.assertEqual(turns, {"scout": 9, "dependency_planner": 1, "verification_adviser": 1})
+        fvs_adapter.validate_evidence(stages.entries, binding=self.run["provider_binding"],
+                                      exchanges=self.state["model_exchanges"])
+
     def stage_fixture(self, verdict=PASS, *, statement_overrides=None, review_overrides=None, patch_overrides=None):
         graph = {"source_paths": {"helper": PATH}, "graph_sha256": "d" * 64}
         lane = {"node": "helper", "assigned_path": PATH, "base_commit": "c" * 40,
@@ -1450,6 +1617,59 @@ class FvsOfflineTests(unittest.TestCase):
                     generic_role_runtime.run_generic_role_path(state)
                 self.assertEqual([call.args[3] for call in role.call_args_list], ["scout", "dependency_planner"])
                 self.assertEqual(progressive.call_args.args[4], {"planner": "data"})
+
+    def test_full_fvs_direct_root_research_has_conditional_patch_fallback(self):
+        state = {**self.state, "run": {**self.run, "execution_mode": "full", "preparation_manifest": {}},
+            "graph": {"frozen_targets": ["root"], "selected_nodes": ["helper", "root"],
+                "supplied_specs": {"root": "root_spec"}, "term_dependencies": [["root", "helper"]],
+                "graph_sha256": "d" * 64, "source_paths": {"helper": PATH, "root": "Root.lean"}}}
+        lanes = [{"schema": "autofv-proof-lane/v1", "node": node, "lane_id": node,
+            "request_id": node, "base_commit": "c" * 40,
+            "assigned_path": state["graph"]["source_paths"][node],
+            "worktree_path": "/synthetic/work", "cache_path": "/synthetic/cache", "result_path": "/synthetic/result"}
+            for node in ("helper", "root")]
+        submissions = []
+        async def conversation(state, job, tools):
+            self.assertEqual(job["declaration"], "root")
+            self.assertEqual(job["methodology"], "fvs-fc/v1")
+            self.assertNotIn("readonly_research_patch", job["role_context"])
+            self.assertEqual(job["role_context"]["source_packet"], state["config"]["source_packet"])
+            messages = agent_lane.initial_role_messages(agent_lane.role_conversation_spec(job))
+            guidance = messages[0]["content"]
+            self.assertIn("when readonly_research_patch is supplied in role_context DATA, "
+                          "copy readonly_research_patch unchanged into an explicit submit_candidate call", guidance)
+            self.assertIn("otherwise explicitly submit an unchanged-source one-file Git diff with a context-only hunk", guidance)
+            for header in ("diff --git a/<assigned_path> b/<assigned_path>", "--- a/<assigned_path>", "+++ b/<assigned_path>"):
+                self.assertIn(header, guidance)
+            self.assertIn("never edit source", guidance)
+            self.assertIn("that no-change diff is never accepted or applied", guidance)
+            path = job["assigned_path"]
+            frozen = fvs_packet.validate_view(job["role_context"]["source_packet"])[path]["content"]
+            lines = frozen.splitlines(keepends=True)
+            fallback = (f"diff --git a/{path} b/{path}\n--- a/{path}\n+++ b/{path}\n"
+                        f"@@ -1,{len(lines)} +1,{len(lines)} @@\n" + "".join(" " + line for line in lines))
+            self.assertEqual(fvs_packet.apply_patch(frozen, path, fallback).encode(), frozen.encode())
+            self.assertTrue(agent_lane.invoke_lane_tool(tools, "edit_assigned", {"patch": fallback}).startswith("read_only_role:"))
+            result = agent_lane.invoke_lane_tool(tools, "submit_candidate", {
+                "patch": fallback, "claimed_status": "candidate", "evidence": ["Synthetic root research only."]})
+            self.assertEqual(agent_lane.validate_candidate(result, job), result)
+            submissions.append(result)
+            return result
+        forbidden = mock.Mock(side_effect=AssertionError("direct research must not mutate or use Stages"))
+        with (mock.patch.object(generic_role_runtime, "_supplied_statement", return_value={
+                  "canon": "theorem root_spec : True", "model_fingerprint": "e" * 64}),
+              mock.patch.object(generic_role_runtime, "_lane_descriptors", return_value=lanes),
+              mock.patch.object(worker, "prepare_lanes"),
+              mock.patch.object(worker, "save_lane_snapshot", return_value={"sequence": 1, "synthetic": True}),
+              mock.patch.object(agent_lane, "run_role_conversation", side_effect=conversation),
+              mock.patch.object(fvs_adapter.Stages, "invoke", forbidden),
+              mock.patch.multiple(worker, read_lane_file=forbidden, search_lane_files=forbidden,
+                                  edit_lane_file=forbidden, check_lane=forbidden, accept_candidate=forbidden),
+              mock.patch.object(generic_role_runtime, "_run_prepared_progressive", return_value={"synthetic": True}) as progressive):
+            generic_role_runtime.run_generic_role_path(state)
+        self.assertEqual([result["role"] for result in submissions], ["scout", "dependency_planner"])
+        self.assertEqual(progressive.call_args.args[4], submissions[-1])
+        forbidden.assert_not_called()
 
     def test_retained_raw_review_audit_rejects_forgery_and_gate_replay_does_not_build(self):
         graph, lane, actual, calls = self.stage_fixture()

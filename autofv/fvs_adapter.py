@@ -263,6 +263,14 @@ class Stages:
                   if candidate is not None else self.baseline)
         role_context = {"stage": key, "target_theorem": self.theorem, "source_packet": packet, "contracts_sha256": fvs_profile.digest(self.contracts),
                         "task_brief": copy.deepcopy(self.task_brief), **(context or {})}
+        if fvs_profile.enabled(self.state["config"]) and role in {"scout", "dependency_planner", "verification_adviser"}:
+            # Controller DATA, after caller context; never a filesystem edit or submission.
+            research_patch = (f"diff --git a/{self.path} b/{self.path}\n"
+                              f"--- a/{self.path}\n+++ b/{self.path}\n@@ -0,0 +0,0 @@\n")
+            frozen = fvs_packet.validate_view(packet)[self.path]["content"]
+            if fvs_packet.apply_patch(frozen, self.path, research_patch).encode("utf-8") != frozen.encode("utf-8"):
+                raise ContractError("FVS read-only research patch changed frozen source")
+            role_context["readonly_research_patch"] = research_patch
         if role in fvs_profile.REVIEW_ROLES:
             role_context["reviewed_candidate"] = candidate
         from . import worker

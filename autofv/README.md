@@ -1,16 +1,43 @@
-# AutoFV
+# AutoFV implementation reference
 
-AutoFV is the trusted host-side controller for experiments that ask an agent
-to recover Lean specifications and proofs inside a sealed Linux worker.
+AutoFV is intended to run bounded agent experiments on user-provided Lean
+repositories with prepared top-level specifications. See the [root README](../README.md)
+and [usage guide](USAGE.md) for that product goal and an explicit account of what
+is not implemented yet. Dalek is the current test case, not the intended input
+restriction.
 
-The Phase 1 fixture diamond is complete. Later code adds prepared Dalek inputs,
-role-based lanes, provider dispatch, and scoped helper verification; those paths
-have separate evidence boundaries. Keep this file and [README.html](README.html)
-in sync.
+This page documents the existing controller, operator setup and retained evidence.
+The [development recipe](DEVELOPMENT-RUN.md) preserves the current prepared
+benchmark launch procedure; it is not the normal user interface we intend to ship.
+
+## Current integration limits
+
+| Boundary | Implementation evidence |
+| --- | --- |
+| Target discovery | `run_probes` in [probes.py](probes.py) invokes Rust/Aeneas extraction. `parse_probe_bytes` freezes targets already listed in `autofv.json`; there is no direct `probe-lean count` integration or auto-generated run manifest. |
+| First-use bootstrap | `_create_worker` in [worker_runtime.py](worker_runtime.py) fails if the stopped template is missing. It clones/starts the disposable worker, not a Linux template from scratch. |
+| Verifier startup | `_check_quiet_verifier_vm` in [verifier.py](verifier.py) requires an existing running verifier with 2 CPUs/8 GiB. Verification creates an isolated volume, not a new verifier VM. |
+| Multiple roots | `run_generic_role_path` in [generic_role_runtime.py](generic_role_runtime.py) rejects any target count other than one. A parsed full-mode flag does not remove this check. |
+| Project-specific preparation | [prepare_dalek.py](prepare_dalek.py) hardcodes Dalek paths and its small root. [fvs_packet.py](fvs_packet.py) binds Rust input to the `curve25519-dalek/src` subtree. These are obstacles to the general FVS repo path. |
+| Private references | Prepared runs in [experiment.py](experiment.py) require an external verifier reference. The ordinary supplied-spec workflow still needs to be separated from this benchmark requirement. |
+| Internet-enabled agents | The CLI/config have no such switch. [worker_proxy.py](worker_proxy.py) and [worker_runtime.py](worker_runtime.py) enforce fixed egress; role tools also lack general web access. The verifier stays on a no-network runtime. |
+
+These limits must be addressed in implementation, not hidden behind more setup
+instructions for the end user.
 
 ## Status
 
-The current launcher completed one full sealed diamond under `runsc` and passed
+As of 2026-10-15, live provider-backed small-helper runs have exercised the
+public CLI, fresh specification reviews and proof attempts. The latest run on
+`7a9bdff` reached specification PASS and statement freeze, then stopped with
+`FVS role blocked: prover` after three failing Lean checks. It retained 39
+completed calls and USD2.4554997 in receipt observations, with no new unresolved
+requests and verified worker disposal. It accepted no helper spec/proof pair;
+root verification and the successful smoke audit remain unmet. These development
+artifacts are retained by the operator, not checked into this repository;
+receipt observations are not invoices.
+
+The historical fixture launcher completed one full sealed diamond under `runsc` and passed
 on the separate verifier VM. The two leaf requests overlapped, all three source
 changes were accepted serially, and the final result reached complete L4. That
 fixture run made no provider call; this repository has no retained real-provider
@@ -23,20 +50,22 @@ run with a clean-verifier success claim.
 | Local upstream boundary | macOS Seatbelt limits the Lima host agent to the exact VM sockets, its loopback SSH port, and the fixed proxy port; the egress matrix proves this layer separately from the worker and container rules |
 | Pinned probe output | Captured from the toolchain image and checked byte-for-byte |
 | Result and evidence contract | Fourteen local tests cover complete L4, receipt/file mismatch, missing or symlinked evidence, typed pre-worker failures, finalization failure, and append-only attempt records |
-| End-to-end diamond on the current launcher | `success`, `sealed_runsc`, complete L4, one sorry removed, eight signed fixture receipts, `$0.022350` synthetic cost, and a distinct clean-verifier `PASS` |
+| Retained end-to-end diamond fixture | `success`, `sealed_runsc`, complete L4, one sorry removed, eight signed fixture receipts, `$0.022350` synthetic cost, and a distinct clean-verifier `PASS` |
 | Prepared Dalek and role paths | Local tests cover deterministic preparation, restartable role lanes, one accepted helper's scoped clean verification, and the distinct terminal verifier; test-double outcomes are not sealed-provider results |
-| Provider model call and billed usage | Local provider service and transport are implemented and locally tested; no retained real-provider billing/success trace is documented here |
+| Provider model calls and accounting | Live helper attempts retain provider receipts and failure records; the latest observation is above. A provider-backed accepted pair or clean-verifier success has not been established. |
 
-The current `$0.022350` result is fixture data: eight handwritten receipts for
+The retained `$0.022350` result is fixture data: eight handwritten receipts for
 2,235 invented tokens at `$0.000010` per token. The fixture uses
 `fixture-model-v1`; no API key, provider response, or billing record takes part
 in that test. The values live in
 [`tests/fixtures/model-proxy/diamond-responses.json`](../tests/fixtures/model-proxy/diamond-responses.json)
 and are repeated as expectations in the proxy fixture test.
 
-`cost_usd` is never guessed from terminal activity. It changes only after the
-controller validates a signed proxy receipt containing usage and cost for the
-current run, request, response, model, route, and sequence. The trusted host now includes a fixed-route provider service
+Completed usage is accepted only after the controller validates a signed proxy
+receipt for the current run, request, response, model, route and sequence.
+Outstanding reservations and unresolved dispatched requests are tracked
+separately; terminal activity cannot establish a provider charge. The trusted
+host includes a fixed-route provider service
 ([`provider_service.py`](provider_service.py)) that dispatches through
 [`provider_transport.py`](provider_transport.py) and signs accounting receipts.
 The fixture receipt path and provider-authenticated path have different cost
@@ -49,7 +78,7 @@ The repository contains only the public verification key. The signing key
 stays in the trusted proxy. This signature protects the accounting record; it
 is unrelated to the curve25519-dalek code being verified by the experiment.
 
-The successful current run recorded `execution_tier: sealed_runsc` and
+The successful fixture run recorded `execution_tier: sealed_runsc` and
 `cost_classification: synthetic_fixture`. It created separate worktrees, caches,
 and result paths for the two leaves, overlapped their proxy calls, then accepted
 the left, stale right, and stale top patches one at a time. Stale patches were
@@ -69,16 +98,20 @@ and links that scan from the append-only attempt record. An unfinished resume
 validates the export before recreating the project in a new disposable VM and
 volume.
 
-`max_wall_seconds` uses monotonic controller time and keeps up to five seconds,
-or ten percent of a smaller budget, for final result persistence.
-`max_cost_usd` changes only when a unique signed proxy receipt matches the
-current run, request, response, model, route, currency, and sequence. A limit
-produces `budget_exhausted` with partial counts and retained state. Rejected
-receipts leave cost unchanged and appear as hash-only evidence.
-Probe and allocated-worker launch failures write a non-success result and L0
-receipt before exit, without making a model request. Invalid targets and run
-configurations also write typed, unscored attempts before worker allocation.
-All non-success outcomes return a non-zero CLI status.
+`max_wall_seconds` bounds shared controller work and reserves time for
+finalization. Fresh-helper runs also carry an original preparation epoch via
+`--budget-started-epoch-ns`; earlier operational work counts against the same
+limit. Model dispatch reserves a conservative cost ceiling before sending a
+request, then reconciles authenticated usage. Unresolved dispatched requests
+remain liabilities rather than becoming free because the connection failed.
+Read the accounting fields alongside `cost_usd`; budget usage and invoice totals
+are not interchangeable. A budget limit stops new work and retains partial
+counts and the failure outcome.
+The controller retains typed non-success records for probe, worker-preparation
+and input failures where result persistence is possible. Invalid target/run
+contracts can produce unscored attempts before worker allocation; command-line
+syntax and filesystem failures can precede those records. Non-success outcomes
+return a nonzero CLI status.
 
 ## Phase 1 fixture run
 
@@ -140,7 +173,7 @@ UV_CACHE_DIR=/private/tmp/autofv-uv-cache uv sync
 Sealed runs currently require:
 
 - Lima and two prepared VMs: the stopped `autofv-agent-template` and the
-  separate `autofv-verifier`;
+  separate, already running `autofv-verifier`;
 - Docker Engine 29.7.2 and gVisor `runsc` release `20260817.0` in both VMs;
 - the exact image digest recorded in
   [`docker/autofv/toolchain-lock.json`](../docker/autofv/toolchain-lock.json)
@@ -153,21 +186,32 @@ agent, contains extra Docker resources or images, or differs from the locked
 kernel/runtime/image inventory. The clean verifier also checks its exact Docker
 version and `runsc` path, version, and arguments before reading the bundle.
 
-Run the fast local contracts:
+Run this focused host-only subset (not the entire regression suite):
 
 ```bash
-.venv/bin/python -m unittest -v \
-  tests.test_cli_snapshot \
-  tests.test_probe_graph \
-  tests.test_contract_and_acceptance \
-  tests.test_parallel_lanes \
-  tests.test_restart_budget \
-  tests.test_phase1_diamond.TracerTests
+.venv/bin/python -B - <<'PY'
+import unittest
+from tests import host_regression
+host_regression.install_guard()
+names = [
+    'tests.test_cli_snapshot', 'tests.test_agent_lane', 'tests.test_fvs_offline',
+]
+result = unittest.TextTestRunner().run(unittest.defaultTestLoader.loadTestsFromNames(names))
+raise SystemExit(not result.wasSuccessful() or bool(host_regression.blocked))
+PY
 ```
 
 The native-policy launch test replaces worker preparation, graph execution,
 and result persistence. It checks policy binding without contacting Lima; it
 is not VM or full-run evidence.
+
+A broader 220-test host-guarded check during the 2026-10-15 documentation audit
+reported three failures and one error: a placeholder `/config` in
+`tests.test_preflight_cli`, two outdated file-read expectations in
+`tests.test_fvs_operational_path`, and an unmocked Lima call in
+`tests.test_probe_graph`. The guard blocked the external command. These checks
+still need follow-up; the focused command above is not a full-suite green claim.
+Do not remove the guard or run test discovery to work around them.
 
 Run the real boundary and full vertical-slice checks only when the prepared VMs
 are available:
@@ -194,32 +238,40 @@ supplied explicitly, outside the prepared target. `autofv inspect REPO
 --output REPORT` writes a target report but not probe identities or a hidden
 verifier reference.
 
-For an already prepared target, `autofv preflight REPO --config RUN_JSON
---output NEW_DIR --env-file PRIVATE_ENV` runs a sealed fixed suite and validates
-a separate verifier identity. It **starts Lima VMs**; do not use it as an
-offline unit check. The output includes `preflight-result.json`, sealed check
-receipts, and provider authorization. A configured provider run uses `autofv
-run REPO --config RUN_JSON --env-file PRIVATE_ENV --selection-record
-SELECTION_JSON` (both flags are required together). The canonical selection
-record must match the pinned provider binding; selecting a model alone does not
-authorize a provider request or spending. The run rechecks sealed preflight
-against its own prepared worker before dispatch.
+`autofv preflight` **starts a worker VM**; it is not an offline dry run. FVS
+preflight additionally needs all preparation/public-Rust flags, and
+`--check-model-accessibility` can make paid requests. Its outputs include
+`preflight-result.json` and sealed/provider evidence.
+
+The current small-helper route uses `autofv run REPO --config RUN_JSON
+--env-file PRIVATE_ENV --fresh-pair-preflight --execution-mode proof-only`,
+plus the preparation/cache/public-Rust/reference flags shown in the
+[development recipe](DEVELOPMENT-RUN.md#4-launch-one-approved-small-helper-attempt).
+It performs pair accessibility and sealed checks on the same worker within the
+shared budget, without a separately supplied `--selection-record` or an extra
+preliminary experiment. A fresh run token is still required.
+
+Without `--fresh-pair-preflight`, the provider route requires both `--env-file`
+and `--selection-record`. That canonical record must match the pinned provider
+binding; model selection alone does not authorize requests or spending.
+Same-worker helper selections cannot be reused in another invocation.
 
 Prepared runs additionally require `--preparation-manifest`,
 `--preparation-evidence` (with `probe-rust.json` and `probe-aeneas.json`),
 `--preparation-cache`, `--verifier-reference`, and `--execution-mode full` or
-`proof-only`. The `proof-only` mode needs one prepared small target. The generic
-role path uses private lanes for scouting, dependency planning, specification
+`proof-only`. The `proof-only` mode needs one prepared small target. Full mode
+also remains subject to the generic scheduler's single-root restriction; it is
+not an implemented arbitrary multi-root campaign. The generic role path uses private lanes for scouting, dependency planning, specification
 review/repair, and proofs; a helper's accepted patch must receive a separate
 `SCOPED_PASS` bound to its dependency closure before a dependent is released.
 The current scoped audit still imports/builds the project's full module set;
 an unrelated unfinished module can block a helper. Only the terminal clean
-verifier can pass the root. Local tests use doubles and fixtures; no
-provider-backed result is claimed here.
+verifier can pass the root. Local scoped-verifier tests use doubles and
+fixtures; the live attempts described above have not accepted a helper pair.
 
-## Experiment command
+## Fixture experiment command
 
-The current CLI form is:
+This is the synthetic diamond fixture, not the Dalek provider recipe:
 
 ```bash
 .venv/bin/python -m autofv.experiment run \
@@ -271,13 +323,17 @@ identity is what `clean verifier` means in results and receipts.
 The provider credential belongs in the proxy service. Do not put it in this
 repository, either VM, the container, or either environment variable above.
 The fixture command uses the locked synthetic proxy, not the new local
-provider service. The provider path requires a private environment file,
-selection record, and sealed preflight authorization; it has no retained
-real-provider billing or clean-verifier success trace here. Keep provider keys
-and the receipt signing key outside the repository and worker.
+provider service. The provider path requires a private environment file and sealed preflight
+authorization. The fresh-helper path constructs its run-bound selection during
+that preflight; the other provider path takes an explicit selection record.
+Live calls and accounting have been observed, but clean-verifier success has
+not. Keep provider keys and the receipt signing key outside the repository and
+worker.
 
-The CLI prints the result JSON. Every attempt writes `result.json` and
-`evidence/l0.json` in a host run directory. An allocated sealed run
+The CLI prints result JSON and normally persists `result.json` and
+`evidence/l0.json` in a host run directory. Argument or persistence failures can
+occur before those artifacts exist; inspect retained files rather than assuming
+that exit alone proves finalization. An allocated sealed run
 also writes checkpoints, proxy and egress evidence, an `export/` tree,
 `disposal.json`, `evidence/final-result-scan.json`, and
 `evidence/verifier.json` when verification ran. Read `run_root` in the printed
@@ -313,7 +369,8 @@ Network evidence is complete only when the receipt binds the container and
 worker firewall checks to a separate upstream default-deny policy; the fixed
 proxy policy by itself is not enough.
 
-Restart is currently a Python controller seam, not a CLI flag:
+Restart is a Python controller seam, not a CLI flag. It is not supported for
+fresh-pair helper handoffs; a consumed attempt is not retry permission:
 
 ```python
 from autofv.experiment import run_experiment
@@ -329,7 +386,7 @@ recreates the accepted and working state in a fresh clone and volume.
 
 ## What the result fields mean today
 
-| Field | Meaning in the current diamond run |
+| Field | Meaning (fixture counts are labelled) |
 | --- | --- |
 | `outcome` | One of `success`, `budget_exhausted`, `verification_failed`, `infrastructure_failed`, `invalid_target`, `invalid_config`, or `contract_inconclusive`; `termination_reason` carries the narrower cause |
 | `attempt_id`, `run_root`, `attempt_ledger` | Immutable attempt identity, artifact directory, and append-only ledger path |
@@ -341,7 +398,9 @@ recreates the accepted and working state in a fresh clone and volume.
 | `internal_proofs_accepted` | Fixture-specific value: `2` on success |
 | `proxy_requests` | Number of accepted signed receipts |
 | `model_attempts`, `model_retries`, `prompt_sha256` | Attempt counts and content identities derived from retained model exchanges and rejected receipts |
-| `cost_usd` | Sum of `cost.amount` from accepted receipts; synthetic for fixture receipts |
+| `cost_usd` | Retained run cost/budget usage, synthetic for fixture runs; inspect `accounting` and unresolved liabilities before treating it as observed provider spend. It is not an invoice. |
+| `accounting_complete`, `accounting_bounded`, `unresolved_provider_requests`, `unknown_provider_spend` | Distinguish complete receipt accounting, bounded uncertainty and unresolved dispatched requests; cleanup does not settle unknown upstream charges. |
+| `helper_verification`, `termination_detail` | Scoped helper evidence and detailed failure cause. A secondary final-audit error does not replace the first role or proof failure. |
 | `wall_seconds` and `finalization_reserve_seconds` | Monotonic controller time charged to the run and the portion held back for writing its final records |
 | `receipt_rejections` | Request identity, sequence, rejection reason, and hash of a rejected receipt payload; never the raw rejected receipt |
 | proxy identity hashes | Bind the locked route, firewall policy, run-scoped client token, and disposable worker inventory without recording the raw token |
@@ -365,7 +424,8 @@ verdict or a complete L4 claim.
 
 | Change | File | Notes |
 | --- | --- | --- |
-| Model name, wall-clock limit, cost ceiling | [`tests/fixtures/diamond/run.json`](../tests/fixtures/diamond/run.json) | Per-run input. `max_cost_usd` stops on authenticated receipt totals; `max_wall_seconds` stops new model and gate work while reserving finalization time. |
+| Run budgets and FVS source packet | [`contracts.py`](contracts.py), [`fvs_packet.py`](fvs_packet.py) | Per-run v2 JSON must be canonical and match the prepared target. Budget/condition changes need approval; pending reservations also constrain dispatch. The diamond run.json is only a v1 fixture. |
+| FVS role models, output limits and routes | [`fvs_profile.py`](fvs_profile.py) | Fixed Sol/Sonnet profile, fresh reviewers and no provider fallback. Changing the profile is a reviewed condition change, not an arbitrary model flag. |
 | Target function, supplied specification, verifier command | [`tests/fixtures/diamond/autofv.json`](../tests/fixtures/diamond/autofv.json) | Per-target input. The verifier command is an argv array, not shell text. |
 | Image digest, tool versions, fixed proxy route, receipt schema, verifier identity, control-bundle allowlist | [`docker/autofv/toolchain-lock.json`](../docker/autofv/toolchain-lock.json) | Trust contract. Update its hashes and contract tests with every change. |
 | Proxy address and run token | `AUTOFV_PROXY_BASE` and `AUTOFV_RUN_TOKEN` in the trusted host environment | The address selects one literal-IP proxy endpoint. The token must be unique to the experiment and accepted by that proxy; neither value belongs in target files. |
@@ -377,7 +437,7 @@ verdict or a complete L4 claim.
 | Result fields and the attempt ledger | [`results.py`](results.py) | Builds and immutably writes each canonical result/L0 pair and refuses attempt replacement. |
 | L0 sources, levels, and claims | [`evidence.py`](evidence.py) | Binds retained evidence bytes to trusted receipts and withholds recovery below complete L4. |
 | Worker preparation, probe runs, proof lanes, and candidate acceptance | [`worker.py`](worker.py) | Stable entry point for the controller's worker calls. |
-| Lima, Docker, `runsc`, local Seatbelt policy, resource labels, and container limits | [`worker_runtime.py`](worker_runtime.py) | Current agent containers use 2 CPUs, 2 GiB, 256 PIDs, two 64 MiB temporary filesystems, and offline Cargo. Real runs report `sealed_runsc`. |
+| Lima, Docker, `runsc`, local Seatbelt policy, resource labels, and container limits | [`worker_runtime.py`](worker_runtime.py), [`candidate_lane.py`](candidate_lane.py) | Locked base limits and phase-specific check/warmup overrides; do not infer all role resources from the fixture's base container. Real runs report `sealed_runsc`. |
 | Fixed relay, client identity, proxy policy, and egress checks | [`worker_proxy.py`](worker_proxy.py) | Owns the only model-network path visible to the agent worker and records separate upstream, worker, and container denial results. |
 | Retained-state scan, export, disposal, and resume restoration | [`worker_artifacts.py`](worker_artifacts.py) | Verifies retained bytes before deleting or rebuilding the disposable worker. |
 | Candidate scope and acceptance checks | `accept_candidate(...)` in [`worker.py`](worker.py) | It checks one-file scope, base and patch hashes, patch application, forbidden source markers, and the configured build. A failed post-apply check reverses and restages the patch before returning. |
@@ -412,7 +472,6 @@ not the sealed AutoFV execution path.
 
 ## Rules for updating this guide
 
-- Update `README.md` and `README.html` in the same commit.
 - State whether a check used test doubles, a local fixture service, a real VM,
   or a provider call.
 - Call fixture usage and cost synthetic.
@@ -421,6 +480,7 @@ not the sealed AutoFV execution path.
 - Do not call a run successful until the accepted tree passes on the separate
   clean verifier and every bound identity matches.
 
-Phase 1 has local sealed-run evidence with synthetic fixture usage. Provider
-service code and a selectable output parent now exist, but a real-provider
-retained run and cloud host/VPC policy remain unverified here.
+The fixture has local sealed-run evidence with synthetic usage. Live provider
+helper attempts have retained accounting and failure evidence, but an accepted
+Dalek pair, a provider-backed full-run success and cloud host/VPC enforcement
+remain unestablished.

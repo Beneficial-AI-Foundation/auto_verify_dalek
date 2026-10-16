@@ -1,158 +1,119 @@
-<p align="center">
-<img
- alt="dalek-cryptography logo"
- width="160px"
- src="https://cdn.jsdelivr.net/gh/dalek-cryptography/curve25519-dalek/docs/assets/dalek-logo-clear.png"/>
-</p>
+# AutoFV
 
-> AutoFV pipeline work is documented in
-> [`autofv/README.md`](autofv/README.md). A matching
-> [`autofv/README.html`](autofv/README.html) is available for HTML preview.
+AutoFV is a CLI for bounded agent-driven Lean specification and proof
+experiments. The intended input is a user-provided repository whose top-level
+specifications are already prepared. AutoFV should discover those targets,
+freeze their statements, create the sandbox, run the agents, independently
+verify accepted changes and export a reproducible result.
 
-# dalek-lean benchmark — no-proofs snapshot
+**That repo-first workflow is not complete in this branch.** The current CLI
+runs operator-prepared experiments on an already provisioned machine. Installing
+Lima and pointing it at an arbitrary Lean repository is not sufficient yet.
+The current local backend is macOS/Lima with a macOS Seatbelt egress policy.
+Dalek is our development test case, not the intended product boundary.
 
-This repository is a **benchmark snapshot** of the
-[curve25519-dalek-lean-verify](https://github.com/Beneficial-AI-Foundation/curve25519-dalek-lean-verify)
-project in which **every proof has been replaced by `sorry`**.
+- [Usage: intended workflow and what works today](autofv/USAGE.md)
+- [Implementation and evidence reference](autofv/README.md)
+- [Current prepared experiment recipe](autofv/DEVELOPMENT-RUN.md)
+- [Dalek benchmark snapshot and provenance](docs/DALEK-BENCHMARK.md)
 
-It is a complete, self-contained Lake project: the formal statements (theorem
-signatures, definitions, the Aeneas-generated Rust translation, and all
-supporting math) are preserved exactly, while each proof body is stubbed out.
-The task for a model or human is to **fill the proofs back in** so the project
-builds with no `sorry` and no errors.
+## The intended user experience
 
----
+Apart from installing AutoFV and Lima, the user should provide:
 
-## What this is
+- a supported Lean project with top-level specs already written;
+- model access and an explicit experiment budget;
+- the network policy appropriate for the experiment.
 
-The underlying project formally verifies
-[curve25519-dalek](https://github.com/dalek-cryptography/curve25519-dalek) — a
-widely-used Rust implementation of elliptic curve cryptography — in Lean 4. Rust
-is translated to Lean with [Aeneas](https://github.com/AeneasVerif/aeneas), and
-specifications are proven against that translation.
+AutoFV should handle the rest: provision its Linux runtime and tools, inspect
+the repository with the pinned probes, discover and record the target/spec
+identities, prepare caches and isolated workspaces, execute the experiment,
+verify results and clean up. Users should not have to handcraft probe reports,
+source packets, preparation manifests or VM templates for the normal workflow.
+Those are currently exposed implementation details that still need automation.
 
-This snapshot was taken from the upstream project and then mechanically
-processed so that all theorem and lemma proofs are `sorry`. Everything else —
-the formal statements themselves — is left intact, so the benchmark measures
-exactly one thing: **can the proofs be recovered?**
+“Any repository” means a project supported by the probe, Lean toolchain and
+build adapter. It does not mean an arbitrary Rust crate with no Lean translation
+or specifications. Missing or ambiguous top-level specs should produce an
+explicit diagnostic rather than silently selecting a different target.
 
-| Field | Value |
-|---|---|
-| Source repo | https://github.com/Beneficial-AI-Foundation/curve25519-dalek-lean-verify |
-| Source commit | `313600244d62b31bad4f08abb2a9705fe75d5585` (`master`) |
-| Lean toolchain | `leanprover/lean4:v4.28.0-rc1` |
-| Total `sorry`s | 1062 |
-| Unique goal states | 349 |
-| Files containing `sorry` | 138 |
+## What the implementation actually supports
 
-(See `source_metadata.json` for provenance and `sorries_summary.json` for the
-full per-file breakdown.)
+| Capability | Current state |
+| --- | --- |
+| Repository path as input | Yes, but `run` also requires a run config and root `autofv.json` with explicit targets. |
+| Automatic top-level spec discovery | Partial. `inspect` builds a candidate-root report from `probe-rust` and `probe-aeneas`; `run` does not automatically turn it into a target manifest. There is no `probe-lean count` integration. |
+| Fresh sandbox for each attempt | Yes: clone/start an existing stopped template, create the Docker/gVisor sandbox and enforce its boundaries. Users do not manually create the run VM. |
+| First-use setup from Lima alone | No. The template, pinned image/runtime and separate running verifier must already exist. |
+| Agent specification/proof loop | Implemented for supported graphs. The generic role scheduler currently requires **one selected root**, not all roots in an arbitrary repository. |
+| Multiple top-level specs / arbitrary crates | Not an end-to-end supported workflow yet. The current prepared FVS route also contains Dalek-specific preparation and Rust-source assumptions. |
+| Verification and artifact export | Implemented. The separate verifier uses a fresh no-network volume; accepted changes, failures, accounting and disposal evidence are retained. A local build or reviewer PASS is not acceptance. |
+| General internet access for agents | Not implemented. The current worker permits the fixed model-proxy route, not arbitrary internet access. There is no network-policy toggle. |
+| Successful live-provider example | Live experiments have run, but the current Dalek helper experiment has not produced an accepted spec/proof pair. The successful sealed diamond fixture uses synthetic model responses. |
 
----
+The `--execution-mode full` flag exists, but it does **not** remove the
+single-root scheduler restriction or make arbitrary multi-target projects work.
 
-## How a proof is stubbed
+## Try the current CLI without starting an experiment
 
-Each proof body is replaced with `sorry`; the statement is untouched:
-
-```lean
--- original
-theorem add_comm (a b : Nat) : a + b = b + a := by
-  induction a with ...
-
--- in this snapshot
-theorem add_comm (a b : Nat) : a + b = b + a := by
-  sorry
-```
-
-The goal is to replace every `sorry` with a real proof while keeping the
-statements exactly as written.
-
----
-
-## Repository layout
-
-```
-.
-├── Curve25519Dalek/
-│   ├── Funs.lean            # Auto-generated Lean translation of Rust (Aeneas output)
-│   ├── Types.lean           # Auto-generated type definitions
-│   ├── Specs/               # Formal specifications (one subtree per Rust module)
-│   ├── Math/                # Supporting math: Edwards, Montgomery, Ristretto, BitList
-│   ├── Aux.lean             # Shared auxiliary lemmas
-│   └── Tactics.lean         # Custom Lean tactics
-├── Utils/                   # Build/status tooling (listfuns, syncstatus, ...)
-├── lakefile.toml            # Lake project (deps: aeneas, PrimeCert, mathlib)
-├── lean-toolchain           # Pinned Lean version
-├── lake-manifest.json       # Pinned dependency revisions
-├── sorries.jsonl            # One record per sorry (elaborated goal state + location)
-├── sorries_summary.json     # Total count, unique goal hashes, per-file breakdown
-└── source_metadata.json     # Upstream commit / branch / remote provenance
-```
-
----
-
-## `sorries.jsonl` schema
-
-Each line records one `sorry`, including the **elaborated goal state** as Lean
-sees it (not just the source text). Each sorry has a stable content-based id:
-the first 16 hex chars of `sha256(goal_string)`, so the same goal keeps the same
-id across refactors.
-
-```jsonc
-{
-  "id":           "a3f1b2c4d5e6f789",   // first 16 hex chars of sha256(goal)
-  "file":         "Curve25519Dalek/Aux.lean",
-  "lean_version": "v4.28.0-rc1",
-  "location": {
-    "start_line": 42, "start_column": 4,
-    "end_line":   42, "end_column":   9
-  },
-  "goal": "⊢ a + b = b + a"
-}
-```
-
----
-
-## Quick start
+Development installation requires Python 3.12 and `uv`:
 
 ```bash
-# Lean 4 / Lake (version pinned in lean-toolchain)
-curl https://raw.githubusercontent.com/leanprover/elan/master/elan-init.sh -sSf | sh
-
-# Build all dependencies (mathlib, aeneas, PrimeCert) — slow on first run
-lake build
+uv sync --frozen
+.venv/bin/autofv --help
+.venv/bin/autofv run --help
 ```
 
-A fresh checkout builds successfully because `sorry` is accepted (with warnings).
-The benchmark is "solved" when `lake build` reports **no `sorry` warnings and no
-errors**.
+These help commands do not start a VM or contact a provider. There is no
+first-use VM installer, `autofv init`, internet-enable flag or CLI resume flag.
+`autofv preflight` is an operational command that starts a worker VM; it is not a
+harmless dry run.
 
----
+For an already provisioned development environment, the
+[current experiment recipe](autofv/DEVELOPMENT-RUN.md) documents the actual
+required inputs and launch flags. That recipe is not the desired onboarding
+contract for ordinary users.
 
-## Dependencies
+## Network access is an experiment choice
 
-| Dependency | Role |
-|---|---|
-| Lean 4 (`lean-toolchain`) | Proof checker and build system |
-| [Aeneas](https://github.com/AeneasVerif/aeneas) | Rust → Lean extraction (Lean package) |
-| [Mathlib](https://github.com/leanprover-community/mathlib4) | Mathematical library |
-| [PrimeCert](https://github.com/oliver-butterley/PrimeCert) | Cryptographic certificates |
+The current Dalek benchmark must remain restricted because internet access
+could expose known solutions. Future projects may permit internet access from
+inside the sandbox, for example to retrieve documentation or dependencies.
+That is a feasible extension, but not an existing option.
 
----
+An internet-enabled policy must change the declared egress/tool permissions
+and result evidence, not remove the VM, filesystem isolation, credential
+separation or verification checks. The independent verifier should remain
+offline. Restricted-benchmark and internet-enabled results must report their
+different assumptions. See [network policies](autofv/USAGE.md#network-policies).
 
-## Underlying verification project
+## Work needed to deliver the repo-first CLI
 
-This benchmark is built on top of the
-[curve25519-dalek Lean verification project](https://github.com/Beneficial-AI-Foundation/curve25519-dalek-lean-verify),
-maintained by Oliver Butterley and
-[The Beneficial AI Foundation](https://www.beneficialaifoundation.org/). That
-project uses Aeneas to translate Rust to Lean 4 and follows the Aeneas WP
-(weakest-precondition) style for specifications.
+1. Connect probe-based top-level spec discovery directly to `run`; generate the
+   internal target manifest and freeze exact declaration/statement identities.
+2. Automate first-use worker and verifier provisioning, including the matching
+   Lean/probe toolchain and dependency preparation. Lima should be the host
+   infrastructure prerequisite, not a request to build VMs by hand.
+3. Internalize run artifacts and remove Dalek-specific assumptions from the
+   normal prepared-spec path. A hidden solved reference must not be a universal
+   requirement for proving the user's supplied specs.
+4. Support multiple selected roots and validate the complete workflow on another
+   repository, not just the Dalek fixture.
+5. Add an explicit internet-enabled experiment policy without weakening the
+   restricted benchmark or independent verification.
 
----
+These are implementation tasks, not features that a README update can make
+available. The separate current proof blocker and outstanding regression-test
+issues are described in the [implementation reference](autofv/README.md).
 
-## License
+## Repository contents
 
-The Lean verification code is licensed under the Apache License 2.0.
+`autofv/` contains the controller; `tests/` contains its contracts and fixtures;
+`docker/autofv/` pins the runtime. The Lean/Rust files at this repository's root
+are a [Dalek benchmark snapshot](docs/DALEK-BENCHMARK.md), not the required layout
+for every future target. The older `harness/` tools are research code, not a
+substitute for the sealed CLI.
 
-The `curve25519-dalek` Rust source is dual-licensed under Apache 2.0 or MIT.
+See the [documentation index](docs/README.md) for design history and experiment
+methodology. Older Dalek preparation documents describe the development
+benchmark; they are not the intended general-purpose user interface.

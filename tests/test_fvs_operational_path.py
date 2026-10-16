@@ -130,7 +130,8 @@ class OperationalPath(unittest.TestCase):
             'completion_tokens_details': {'reasoning_tokens': 5}, 'cost': 0.0003}
         return fixture._ProviderReply(reply)
 
-    def run_role(self, role, actions, *, note_bytes=150_625, packet=None, task_brief=None):
+    def run_role(self, role, actions, *, note_bytes=150_625, packet=None, task_brief=None,
+                 submission_check=None):
         self.synthetic_actions = actions
         graph = {'source_paths': {'helper': fixture.PATH}, 'graph_sha256': 'd' * 64}
         lane = {'node': 'helper', 'assigned_path': fixture.PATH, 'base_commit': 'c' * 40}
@@ -161,7 +162,8 @@ class OperationalPath(unittest.TestCase):
             search_files=lambda query: self.fail('FVS search must use immutable packet'),
             edit_assigned=edit_owned,
             check_lean=lambda: self.effects.append('check') or 'synthetic check only; NOT Lean verification')
-        candidate = asyncio.run(agent_lane.run_role_conversation(self.state, job, tools))
+        candidate = asyncio.run(agent_lane.run_role_conversation(
+            self.state, job, tools, submission_check=submission_check))
         self.assertEqual(len(owned_reads), self.effects.count('edit'))
         return candidate
 
@@ -257,11 +259,81 @@ class OperationalPath(unittest.TestCase):
         self.assertTrue(any('x' * 205_000 in m.get('content', '') for m in self.sent[0]['messages']),
             'Allowed complete FVS initial context was removed before provider dispatch')
 
-    def test_role_turn_limit_stops_before_an_extra_dispatch(self):
-        with self.assertRaisesRegex(Exception, 'role turn limit exhausted'):
-            self.run_role('scout', [('search_allowed', {'query': 'no-synthetic-match'})] * 17)
-        self.assertEqual(len(self.sent), 16)
+    def test_role_can_continue_beyond_sixteen_turns_within_budget(self):
+        self.run_role('scout', [('search_allowed', {'query': 'no-synthetic-match'})] * 17 + [self.submit()])
+        self.verify_completed(18)
+
+    def test_submission_feedback_continues_the_same_receipted_conversation(self):
+        feedback = mock.Mock(side_effect=['synthetic red diagnostic'] * 4 + [None])
+        candidate = self.run_role('prover', [self.submit()] * 5, submission_check=feedback)
+        self.verify_completed(5)
+        self.assertEqual(feedback.call_count, 5)
+        self.assertEqual(candidate['role'], 'prover')
+        self.assertEqual(len(self.state['role_progress']), 1)
+        self.assertIn('controller_submission_feedback_DATA', json.dumps(self.sent[-1]['messages']))
+        self.assertEqual(len([m for m in self.sent[-1]['messages'] if m['role'] == 'tool']), 4)
+        # Reconstruct the same feedback/history without another provider dispatch.
+        again = self.run_role('prover', [self.submit()] * 5,
+            submission_check=mock.Mock(side_effect=['synthetic red diagnostic'] * 4 + [None]))
+        self.assertEqual(again, candidate)
+        self.verify_completed(5)
+
+    def test_stages_use_one_prover_until_local_checks_pass_without_model_review(self):
+        from autofv import worker
+        graph = {'source_paths': {'helper': fixture.PATH}, 'graph_sha256': 'd' * 64}
+        lane = {'node': 'helper', 'assigned_path': fixture.PATH, 'base_commit': 'c' * 40}
+        self.state['fvs_lane_sources'] = {'helper': fixture.SPEC}
+        actual = [fixture.SPEC]
+        self.synthetic_actions = [('submit_candidate', {
+            'patch': fixture.patch(fixture.PROOF), 'claimed_status': 'candidate',
+            'evidence': ['statement:' + fixture.CANON]})] * 5
+        def edit(run, lane, patch):
+            actual[0] = fvs_packet.apply_patch(actual[0], fixture.PATH, patch)
+            return 'synthetic applied'
+        stages = fixture.fvs_adapter.Stages(self.state, graph, lane,
+            generic_role_runtime._run_role_lane, lambda *args: None)
+        with (mock.patch.object(worker, 'read_lane_file', side_effect=lambda *a: actual[0]),
+              mock.patch.object(worker, 'edit_lane_file', side_effect=edit),
+              mock.patch.object(worker, 'check_lane', side_effect=[
+                  'sealed_runtime:exit=1:synthetic red'] * 4 + ['sealed_runtime:exit=0:synthetic green']) as check,
+              mock.patch.object(worker, 'save_lane_snapshot', return_value={}),
+              mock.patch.object(stages, 'review', side_effect=AssertionError('no model proof review'))):
+            frozen = {'patch': fixture.patch(fixture.SPEC), 'evidence': ['statement:' + fixture.CANON]}
+            candidate = stages.proof(frozen, 'e' * 64, {})
+            self.assertEqual(stages.proof(frozen, 'e' * 64, {}), candidate)
+        self.assertEqual(candidate['patch'], fixture.patch(fixture.PROOF))
+        self.assertEqual(check.call_count, 5)
+        self.assertEqual(len(self.sent), 5)
+        self.assertEqual(len(self.state['role_progress']), 1)
+        self.assertEqual({e['request']['role'] for e in self.state['model_exchanges'].values()}, {'prover'})
+        self.assertEqual(stages.entries['helper:proof-checked']['model_proof_review'], 'not_requested')
+        self.assertFalse(self.state.get('accepted_nodes'))
+        fixture.fvs_adapter.validate_evidence(stages.entries, binding=self.binding.public,
+            exchanges=self.state['model_exchanges'])
+
+    def test_autonomous_role_refuses_missing_resource_budget_before_dispatch(self):
+        self.state['config'].pop('max_cost_usd')
+        with self.assertRaisesRegex(Exception, 'requires wall and cost budgets'):
+            self.run_role('prover', [self.submit()])
+        self.assertFalse(self.sent)
+
+    def assert_continuation_budget_stops(self, field, limit):
+        def stop_after_submission(candidate):
+            self.state[field] = Decimal(self.state['config'][limit])
+            return 'synthetic red diagnostic; still no acceptance'
+        with self.assertRaises(contracts.BudgetExhausted):
+            self.run_role('prover', [self.submit(), self.submit()], submission_check=stop_after_submission)
+        self.assertEqual(len(self.sent), 1)
+        with self.assertRaises(contracts.BudgetExhausted):
+            self.run_role('prover', [self.submit()], submission_check=stop_after_submission)
+        self.assertEqual(len(self.sent), 1)
         self.assertFalse(self.state['pending_model_exchanges'])
+
+    def test_continued_submission_cannot_restart_wall_budget(self):
+        self.assert_continuation_budget_stops('wall_seconds_used', 'max_wall_seconds')
+
+    def test_continued_submission_cannot_restart_cost_budget(self):
+        self.assert_continuation_budget_stops('cost', 'max_cost_usd')
 
     def test_deadline_exhaustion_stops_without_retry_and_retains_liability(self):
         self.expire_at = 2

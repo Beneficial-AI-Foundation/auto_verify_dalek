@@ -293,7 +293,7 @@ def _validate_accounting(
         expected_fvs = {
             "pricing_verification": "bounded",
             "reported_spend_known": not reduced.get("unknown_provider_spend", False),
-            "price_reconstruction_exact": False, "fvs_adapter": "autofv-bounded-fc/v1",
+            "price_reconstruction_exact": False, "fvs_adapter": fvs_profile.ADAPTER_ID,
             "fvs_stage_evidence_sha256": fvs_profile.digest(stages),
             "fvs_role_profile_sha256": run["provider_binding"]["role_profile_sha256"],
             "fvs_source_packet_sha256": run["provider_binding"]["source_packet_sha256"],

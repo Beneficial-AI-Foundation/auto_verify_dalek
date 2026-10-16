@@ -111,7 +111,7 @@ class FvsBindingDomainTests(unittest.TestCase):
                 self.assertIn("exactly one evidence item", spec["system_prompt"])
                 self.assertIn("statement:theorem ", spec["system_prompt"])
                 self.assertIn("'statement:' + frozen_statement", spec["system_prompt"])
-                self.assertIn("proof PASS triage", spec["system_prompt"])
+                self.assertIn("No model proof-review or pure PASS-acknowledgement", spec["system_prompt"])
                 self.assertEqual(spec["context"]["role_context"]["frozen_statement"], CANON)
                 self.assertEqual(fvs_adapter.statement({"evidence": ["statement:" + CANON]}), CANON)
                 for evidence in (["Proof compiled successfully"],
@@ -1087,13 +1087,13 @@ class FvsOfflineTests(unittest.TestCase):
             with self.subTest(raw=raw[:40]), self.assertRaises(ValueError):
                 fvs_adapter.parse_review(raw)
         self.assertEqual(fvs_adapter.parse_review(PASS)["verdict"], "PASS")
-        fvs_adapter.proof_scope(SPEC, PROOF, SPEC, canon=CANON)
+        fvs_adapter.proof_scope(SPEC, PROOF, canon=CANON)
         with self.assertRaises(ValueError):
-            fvs_adapter.proof_scope(SPEC, PROOF.replace("increment n", "n"), SPEC, canon=CANON)
+            fvs_adapter.proof_scope(SPEC, PROOF.replace("increment n", "n"), canon=CANON)
         with self.assertRaises(ValueError):
-            fvs_adapter.proof_scope(SPEC, SPEC, SPEC, canon=CANON)
-        with self.assertRaises(ValueError):
-            fvs_adapter.proof_scope(SPEC, SPEC.replace("sorry", "first\n  second\n  third\n  fourth"), SPEC, canon=CANON)
+            fvs_adapter.proof_scope(SPEC, SPEC, canon=CANON)
+        longer = SPEC.replace("sorry", "first\n  second\n  third\n  fourth")
+        fvs_adapter.proof_scope(SPEC, longer, canon=CANON)
 
     def test_selection_requires_both_models_and_rejects_old_single_model_record(self):
         fields = {"model_id", "endpoint", "endpoint_sha256", "parameters", "pricing", "pricing_sha256",
@@ -1316,7 +1316,9 @@ class FvsOfflineTests(unittest.TestCase):
                 "cache_path": "/synthetic/cache", "result_path": "/synthetic/result"}
         actual = {"text": ORIGINAL}
         calls = []
-        async def conversation(state, job, tools):
+        async def conversation(state, job, tools, *, submission_check=None):
+            # This synthetic role returns once; Stages still checks submissions
+            # if a runner does not execute its continuation callback.
             stage = job["role_context"]["stage"]
             calls.append(stage)
             evidence = ["statement:" + (statement_overrides or {}).get(stage, CANON)]
@@ -1369,7 +1371,8 @@ class FvsOfflineTests(unittest.TestCase):
         graph, lane, actual, calls = self.stage_fixture(review_overrides={"spec-review:0": REVISE})
         jobs, visible = {}, {}
         def runner(state, graph, lane, role, **kwargs):
-            job = generic_role_runtime._role_job(state, graph, lane, role, **kwargs)
+            job = generic_role_runtime._role_job(state, graph, lane, role,
+                **{k: v for k, v in kwargs.items() if k != "submission_check"})
             key = job["role_context"]["stage"]
             jobs[key] = copy.deepcopy(job)
             messages = agent_lane.initial_role_messages(agent_lane.role_conversation_spec(job))
@@ -1390,7 +1393,7 @@ class FvsOfflineTests(unittest.TestCase):
         self.assertEqual(stages.entries["helper:spec-review:0:verdict"]["raw"], REVISE)
         self.assertEqual(stages.entries["helper:spec-review:1:verdict"]["raw"], PASS)
         for current, producer in (("spec-review:0", "spec-author:0"), ("spec-author:1", "spec-author:0"),
-                                  ("spec-review:1", "spec-author:1"), ("proof-review:0", "proof-author:0")):
+                                  ("spec-review:1", "spec-author:1")):
             with self.subTest(stage=current):
                 inner = jobs[current]["role_context"]
                 summary = inner["controller_binding_data"]["producer"]
@@ -1411,7 +1414,7 @@ class FvsOfflineTests(unittest.TestCase):
         reviewer_job = jobs["spec-review:0"]
         self.assertEqual(reviewer_job["role_context"]["reviewed_candidate"], author)
         self.assertNotEqual(author["statement_sha256"], reviewer_job["statement_sha256"])
-        for key in ("proof-author:0", "proof-pass-triage:0"):
+        for key in ("proof-author:0",):
             self.assertEqual(visible[key]["binding_domains"]["job_bindings"]["fingerprint_domain"], "frozen_statement")
             self.assertEqual(visible[key]["binding_domains"]["job_bindings"]["statement_sha256_check"], "verified")
         fvs_adapter.validate_evidence(stages.entries, binding=self.binding.public, exchanges=self.state["model_exchanges"])
@@ -1475,15 +1478,38 @@ class FvsOfflineTests(unittest.TestCase):
         proved = stages.proof(candidate, "e" * 64, {})
         self.assertEqual(actual["text"], PROOF)
         self.assertEqual(proved["patch"], patch(PROOF))
-        self.assertEqual(calls, ["implementation-research", "spec-author:0", "spec-review:0", "spec-pass-triage:0",
-                                 "proof-author:0", "proof-review:0", "proof-pass-triage:0"])
+        self.assertEqual(calls, ["implementation-research", "spec-author:0", "spec-review:0", "proof-author:0"])
         evidence = self.state["fvs_evidence"]
         self.assertEqual(evidence["helper:spec-review:0:verdict"]["raw"], PASS)
-        self.assertIn("raw", evidence["helper:spec-triage:0"]["triage"])
+        self.assertNotIn("helper:spec-triage:0", evidence)
+        self.assertEqual(evidence["helper:proof-checked"]["model_proof_review"], "not_requested")
         self.assertEqual(evidence["helper:frozen-statement"]["statement"], CANON)
         self.assertTrue(evidence["helper:spec-review:0"]["invocation_receipts"])
         with self.assertRaises(ValueError):
             stages.record("frozen-statement", {"candidate": proved, "statement": "changed"})
+
+    def test_specification_can_correct_beyond_three_rounds_with_budget_remaining(self):
+        bad = CANON.replace("increment n", "Arithmetic.increment n")
+        graph, lane, _, calls = self.stage_fixture(
+            statement_overrides={f"spec-author:{i}": bad for i in range(4)})
+        stages = fvs_adapter.Stages(self.state, graph, lane, generic_role_runtime._run_role_lane, lambda *a: None)
+        candidate = stages.specification("e" * 64, {})
+        self.assertEqual(fvs_adapter.statement(candidate), CANON)
+        self.assertEqual(calls, ["implementation-research", *[f"spec-author:{i}" for i in range(5)], "spec-review:4"])
+        self.assertEqual(stages.entries["helper:frozen-statement"]["disposition"], "fresh semantic PASS")
+
+    def test_approve_with_edits_requires_fresh_semantic_review_of_changed_statement(self):
+        revised = CANON + " ∧ True"
+        graph, lane, _, calls = self.stage_fixture(
+            statement_overrides={"spec-author:1": revised},
+            patch_overrides={"spec-author:1": patch(SPEC.replace("increment n = ok result", "increment n = ok result ∧ True"))},
+            review_overrides={"spec-review:0": REVISE.replace("VERDICT: REVISE", "VERDICT: APPROVE-WITH-EDITS")})
+        stages = fvs_adapter.Stages(self.state, graph, lane, generic_role_runtime._run_role_lane, lambda *a: None)
+        result = stages.specification("e" * 64, {})
+        self.assertEqual(fvs_adapter.statement(result), revised)
+        self.assertEqual(calls, ["implementation-research", "spec-author:0", "spec-review:0", "spec-author:1", "spec-review:1"])
+        self.assertEqual(stages.entries["helper:frozen-statement"]["review_sha256"], fvs_adapter.parse_review(PASS)["raw_sha256"])
+        self.assertEqual(stages.entries["helper:spec-review:1"]["candidate"]["patch"], result["patch"])
 
     def test_statement_binding_feedback_corrects_before_any_review(self):
         bad = CANON.replace("increment n", "Arithmetic.increment n")
@@ -1491,7 +1517,7 @@ class FvsOfflineTests(unittest.TestCase):
         stages = fvs_adapter.Stages(self.state, graph, lane, generic_role_runtime._run_role_lane, lambda *a: None)
         candidate = stages.specification("e" * 64, {"intent": "successor"})
         self.assertEqual(fvs_adapter.statement(candidate), CANON)
-        self.assertEqual(calls, ["implementation-research", "spec-author:0", "spec-author:1", "spec-review:1", "spec-pass-triage:1"])
+        self.assertEqual(calls, ["implementation-research", "spec-author:0", "spec-author:1", "spec-review:1"])
         entries = self.state["fvs_evidence"]
         rejection = entries["helper:spec-binding-error:0"]
         self.assertEqual(rejection["candidate_sha256"], fvs_profile.digest(entries["helper:spec-author:0"]["candidate"]))
@@ -1512,7 +1538,7 @@ class FvsOfflineTests(unittest.TestCase):
         stages = fvs_adapter.Stages(self.state, graph, lane, generic_role_runtime._run_role_lane, lambda *a: None)
         candidate = stages.specification("e" * 64, {"intent": "successor"})
         self.assertEqual(fvs_adapter.statement(candidate), CANON)
-        self.assertEqual(calls, ["implementation-research", "spec-author:0", "spec-author:1", "spec-review:1", "spec-pass-triage:1"])
+        self.assertEqual(calls, ["implementation-research", "spec-author:0", "spec-author:1", "spec-review:1"])
         entries = self.state["fvs_evidence"]
         rejection = entries["helper:spec-shape-error:0"]
         self.assertEqual(rejection["candidate_sha256"], fvs_profile.digest(entries["helper:spec-author:0"]["candidate"]))
@@ -1529,20 +1555,21 @@ class FvsOfflineTests(unittest.TestCase):
             patch_overrides={"spec-author:0": patch(SPEC.replace("ok result", "result"))})
         stages = fvs_adapter.Stages(self.state, graph, lane, generic_role_runtime._run_role_lane, lambda *a: None)
         self.assertEqual(fvs_adapter.statement(stages.specification("e" * 64, {})), CANON)
-        self.assertEqual(calls, ["implementation-research", "spec-author:0", "spec-author:1", "spec-review:1", "spec-pass-triage:1"])
+        self.assertEqual(calls, ["implementation-research", "spec-author:0", "spec-author:1", "spec-review:1"])
         self.assertNotIn("helper:spec-review:0", self.state["fvs_evidence"])
         fvs_adapter.validate_evidence(self.state["fvs_evidence"], binding=self.binding.public, exchanges=self.state["model_exchanges"])
 
-    def test_statement_shape_feedback_exhausts_existing_rounds(self):
+    def test_statement_shape_feedback_stops_at_the_cost_budget(self):
+        self.state["config"]["max_cost_usd"] = Decimal("0.0012")
         graph, lane, _, calls = self.stage_fixture(
             statement_overrides={f"spec-author:{i}": CANON.replace("∃", "∀") for i in range(3)},
             patch_overrides={f"spec-author:{i}": patch(SPEC.replace("∃", "∀")) for i in range(3)})
         stages = fvs_adapter.Stages(self.state, graph, lane, generic_role_runtime._run_role_lane, lambda *a: None)
-        with self.assertRaisesRegex(contracts.ContractInconclusive, "shape correction cap exhausted"):
+        with self.assertRaises(contracts.BudgetExhausted):
             stages.specification("e" * 64, {})
         self.assertEqual(calls, ["implementation-research", "spec-author:0", "spec-author:1", "spec-author:2"])
         entries = self.state["fvs_evidence"]
-        self.assertEqual(sum(":spec-shape-error:" in key for key in entries), 3)
+        self.assertEqual(sum(":spec-shape-error:" in key for key in entries), 2)
         self.assertNotIn("helper:frozen-statement", entries)
         self.assertFalse(any(":spec-review:" in key for key in entries))
         fvs_adapter.validate_evidence(entries, binding=self.binding.public, exchanges=self.state["model_exchanges"])
@@ -1554,7 +1581,7 @@ class FvsOfflineTests(unittest.TestCase):
             patch_overrides={"spec-author:0": patch(SPEC.replace("∃", "∀"))})
         stages = fvs_adapter.Stages(self.state, graph, lane, generic_role_runtime._run_role_lane, lambda *a: None)
         stages.specification("e" * 64, {})
-        self.assertEqual(calls, ["implementation-research", "spec-author:0", "spec-author:1", "spec-author:2", "spec-review:2", "spec-pass-triage:2"])
+        self.assertEqual(calls, ["implementation-research", "spec-author:0", "spec-author:1", "spec-author:2", "spec-review:2"])
         self.assertIn("helper:spec-shape-error:0", self.state["fvs_evidence"])
         self.assertIn("helper:spec-binding-error:1", self.state["fvs_evidence"])
         self.assertNotIn("helper:spec-author:3", self.state["fvs_evidence"])
@@ -1567,7 +1594,7 @@ class FvsOfflineTests(unittest.TestCase):
             review_overrides={"spec-review:0": REVISE})
         stages = fvs_adapter.Stages(self.state, graph, lane, generic_role_runtime._run_role_lane, lambda *a: None)
         stages.specification("e" * 64, {})
-        self.assertEqual(calls, ["implementation-research", "spec-author:0", "spec-review:0", "spec-author:1", "spec-author:2", "spec-review:2", "spec-pass-triage:2"])
+        self.assertEqual(calls, ["implementation-research", "spec-author:0", "spec-review:0", "spec-author:1", "spec-author:2", "spec-review:2"])
         self.assertNotIn("helper:spec-review:1", self.state["fvs_evidence"])
         self.assertNotIn("helper:spec-author:3", self.state["fvs_evidence"])
         fvs_adapter.validate_evidence(self.state["fvs_evidence"], binding=self.binding.public, exchanges=self.state["model_exchanges"])
@@ -1607,16 +1634,17 @@ class FvsOfflineTests(unittest.TestCase):
         self.assertIn("canonical specification theorem signature itself", prompts[0])
         self.assertIn("explicit ∃", prompts[0])
         self.assertIn("ok", prompts[0])
-        self.assertIn("one shared cap of three specification rounds", prompts[0])
+        self.assertIn("same original wall/cost allowance", prompts[0])
 
-    def test_statement_binding_feedback_exhausts_existing_rounds(self):
+    def test_statement_binding_feedback_stops_at_the_cost_budget(self):
+        self.state["config"]["max_cost_usd"] = Decimal("0.0012")
         bad = CANON.replace("increment n", "Arithmetic.increment n")
         graph, lane, _, calls = self.stage_fixture(statement_overrides={f"spec-author:{i}": bad for i in range(3)})
         stages = fvs_adapter.Stages(self.state, graph, lane, generic_role_runtime._run_role_lane, lambda *a: None)
-        with self.assertRaisesRegex(contracts.ContractInconclusive, "binding correction cap exhausted"):
+        with self.assertRaises(contracts.BudgetExhausted):
             stages.specification("e" * 64, {})
         self.assertEqual(calls, ["implementation-research", "spec-author:0", "spec-author:1", "spec-author:2"])
-        self.assertEqual(sum(":spec-binding-error:" in k for k in self.state["fvs_evidence"]), 3)
+        self.assertEqual(sum(":spec-binding-error:" in k for k in self.state["fvs_evidence"]), 2)
         self.assertNotIn("helper:frozen-statement", self.state["fvs_evidence"])
         fvs_adapter.validate_evidence(self.state["fvs_evidence"], binding=self.binding.public, exchanges=self.state["model_exchanges"])
 
@@ -1627,7 +1655,7 @@ class FvsOfflineTests(unittest.TestCase):
         stages = fvs_adapter.Stages(self.state, graph, lane, generic_role_runtime._run_role_lane, lambda *a: None)
         stages.specification("e" * 64, {})
         self.assertEqual(calls, ["implementation-research", "spec-author:0", "spec-review:0", "spec-author:1",
-            "spec-author:2", "spec-review:2", "spec-pass-triage:2"])
+            "spec-author:2", "spec-review:2"])
         self.assertNotIn("helper:spec-review:1", self.state["fvs_evidence"])
         self.assertNotIn("helper:spec-author:3", self.state["fvs_evidence"])
         fvs_adapter.validate_evidence(self.state["fvs_evidence"], binding=self.binding.public, exchanges=self.state["model_exchanges"])
@@ -1673,16 +1701,17 @@ class FvsOfflineTests(unittest.TestCase):
         with self.assertRaisesRegex(contracts.ContractError, "frozen statement"):
             stages.proof(candidate, "e" * 64, {})
         self.assertNotIn("proof-author:1", calls)
-        self.assertNotIn("helper:proof-approved", self.state["fvs_evidence"])
+        self.assertNotIn("helper:proof-checked", self.state["fvs_evidence"])
 
-    def test_review_revision_cap_blocks_without_forged_approval(self):
+    def test_review_revision_budget_blocks_without_forged_approval(self):
+        self.state["config"]["max_cost_usd"] = Decimal("0.0024")
         graph, lane, actual, calls = self.stage_fixture(REVISE)
         stages = fvs_adapter.Stages(self.state, graph, lane, generic_role_runtime._run_role_lane, lambda *a: None)
-        with self.assertRaisesRegex(contracts.ContractInconclusive, "cap exhausted"):
+        with self.assertRaises(contracts.BudgetExhausted):
             stages.specification("e" * 64, {})
         self.assertEqual(sum(s.startswith("spec-review:") for s in calls), 3)
         self.assertNotIn("helper:frozen-statement", self.state["fvs_evidence"])
-        self.assertNotIn("helper:proof-approved", self.state["fvs_evidence"])
+        self.assertNotIn("helper:proof-checked", self.state["fvs_evidence"])
 
     def test_progressive_helper_acceptance_requires_distinct_verifier_keeps_root_unverified(self):
         graph, lane, actual, calls = self.stage_fixture()
@@ -1729,7 +1758,7 @@ class FvsOfflineTests(unittest.TestCase):
         def guarded_role(state, graph, lane, role_name, **kwargs):
             context = kwargs["role_context"]
             self.assertIn("stage", context, "Root-wide advisory planning was dispatched before the helper")
-            expected_limit = 1500 if context["stage"] in {"implementation-research", "spec-author:0"} else 2400
+            expected_limit = 2400 if context["stage"].startswith("proof-") else 1500
             self.assertEqual(worker_runtime._WORK_DEADLINE.get()[2], expected_limit)
             briefs.append(copy.deepcopy(context["task_brief"]))
             source_packet = context["source_packet"]
@@ -1760,11 +1789,10 @@ class FvsOfflineTests(unittest.TestCase):
              mock.patch.object(worker, "persist_lane_result", return_value={}), \
              mock.patch("autofv.terminal_run.clean_verify_partial", side_effect=verify) as verifier:
             result = generic_role_runtime.run_generic_role_path(self.state)
-        self.assertEqual(calls, ["implementation-research", "spec-author:0", "spec-review:0", "spec-pass-triage:0",
-                                "proof-author:0", "proof-review:0", "proof-pass-triage:0"])
+        self.assertEqual(calls, ["implementation-research", "spec-author:0", "spec-review:0", "proof-author:0"])
         self.assertTrue(observed_plans)
         self.assertIsNone(worker_runtime._WORK_DEADLINE.get())
-        self.assertEqual(len(briefs), 7)  # Includes both reviewers and both PASS triages.
+        self.assertEqual(len(briefs), 4)  # Fresh semantic review; no proof-review/PASS handshakes.
         self.assertTrue(all(brief == briefs[0] for brief in briefs))
         self.assertEqual(briefs[0]["selected_helper"], node)
         self.assertEqual(briefs[0]["final_goal"], {"declaration": "probe:Arithmetic.root_spec",
@@ -1797,11 +1825,12 @@ class FvsOfflineTests(unittest.TestCase):
         self.assertNotIn("probe:Arithmetic.increment:distinct-helper-verifier", self.state["fvs_evidence"])
 
     def test_direct_helper_smoke_rejects_unapproved_specification(self):
-        with self.assertRaisesRegex(contracts.ContractInconclusive, "cap exhausted"):
+        self.state["config"]["max_cost_usd"] = Decimal("0.0024")
+        with self.assertRaises(contracts.BudgetExhausted):
             self.test_prepared_fvs_helper_smoke_starts_at_bundle_and_keeps_acceptance_gates(review_verdict=REVISE)
         self.assertFalse(self.state["accepted_nodes"])
         self.assertNotIn("probe:Arithmetic.increment:frozen-statement", self.state["fvs_evidence"])
-        self.assertNotIn("probe:Arithmetic.increment:proof-approved", self.state["fvs_evidence"])
+        self.assertNotIn("probe:Arithmetic.increment:proof-checked", self.state["fvs_evidence"])
 
     def test_root_advisory_roles_remain_for_full_fvs_and_legacy_prepared_smoke(self):
         for schema, mode in (("autofv-run/v2", "full"), ("autofv-run/v1", "proof_only")):
@@ -1898,15 +1927,15 @@ class FvsOfflineTests(unittest.TestCase):
         with self.assertRaises(contracts.ContractError):
             fvs_adapter.validate_evidence(forged, binding=self.binding.public, exchanges=self.state["model_exchanges"])
 
-    def test_proof_diagnostic_cap_never_turns_a_red_build_into_approval(self):
+    def test_runner_cannot_skip_green_local_gates(self):
         graph, lane, actual, calls = self.stage_fixture()
         stages = fvs_adapter.Stages(self.state, graph, lane, generic_role_runtime._run_role_lane, lambda *a: None)
         candidate = stages.specification("e" * 64, {})
         with mock.patch("autofv.worker.check_lane", return_value="sealed_runtime:exit=1:synthetic red build") as check:
-            with self.assertRaisesRegex(contracts.ContractInconclusive, "proof/review cap exhausted"):
+            with self.assertRaisesRegex(contracts.ContractInconclusive, "without green local gates"):
                 stages.proof(candidate, "e" * 64, {})
-        self.assertEqual(check.call_count, 3)
-        self.assertNotIn("helper:proof-approved", self.state["fvs_evidence"])
+        self.assertEqual(check.call_count, 1)
+        self.assertNotIn("helper:proof-checked", self.state["fvs_evidence"])
 
     def test_private_reasoning_is_not_retained_even_in_rejected_provider_evidence(self):
         request = model._model_envelope(self.state, request_id="synthetic-reasoning-rejection", role="specifier", input_hashes=[])

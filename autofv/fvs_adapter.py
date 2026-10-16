@@ -239,7 +239,7 @@ def style_structure(text: str, packet: dict[str, Any], *, specification: bool, b
         raise ContractError("FVS specification structure gate failed")
 
 
-def proof_scope(frozen: str, current: str, previous: str, *, canon: str) -> None:
+def proof_scope(frozen: str, current: str, *, canon: str) -> None:
     name = canon.split()[1].rsplit(".", 1)[-1]
     matches = [m for m in re.finditer(r"^\s*theorem\s+([A-Za-z_0-9.]+)\b", frozen, re.M)
                if m[1].rsplit(".", 1)[-1] == name]
@@ -255,9 +255,6 @@ def proof_scope(frozen: str, current: str, previous: str, *, canon: str) -> None
     replacement = current[len(prefix):len(current) - len(suffix) if suffix else len(current)]
     if re.search(r"\bsorry\b|\badmit\b", replacement):
         raise ContractInconclusive("FVS proof still contains the targeted placeholder")
-    changed = [line for line in difflib.ndiff(previous.splitlines(), current.splitlines()) if line.startswith("+ ")]
-    if len(changed) > 3:
-        raise ContractError("FVS proof attempt exceeds three added tactic lines")
 
 
 def validate_evidence(entries: Any, *, binding: dict[str, Any], exchanges: dict[str, Any]) -> None:
@@ -272,7 +269,7 @@ def validate_evidence(entries: Any, *, binding: dict[str, Any], exchanges: dict[
             raise ContractError("FVS stage record invalid")
         body = {k: v for k, v in entry.items() if k != "record_sha256"}
         if (entry.get("record_sha256") != fvs_profile.digest(body)
-            or entry.get("adapter") != "autofv-bounded-fc/v1"
+            or entry.get("adapter") != fvs_profile.ADAPTER_ID
             or entry.get("contracts_sha256") != contract_hash
             or entry.get("role_profile_sha256") != binding["role_profile_sha256"]
             or entry.get("original_packet_sha256") != binding["source_packet_sha256"]):
@@ -340,7 +337,7 @@ class Stages:
 
     def record(self, key: str, value: dict[str, Any]) -> dict[str, Any]:
         identity = self.node + ":" + key
-        body = {"adapter": "autofv-bounded-fc/v1", "contracts_sha256": fvs_profile.digest(self.contracts),
+        body = {"adapter": fvs_profile.ADAPTER_ID, "contracts_sha256": fvs_profile.digest(self.contracts),
                 "role_profile_sha256": fvs_profile.digest(fvs_profile.profile()),
                 "original_packet_sha256": self.original["packet_sha256"],
                 **({"generation_sha256": self.lane["generation_sha256"]} if "generation_sha256" in self.lane else {}),
@@ -394,7 +391,7 @@ class Stages:
                 continue
             match = re.fullmatch(r"sealed_runtime:exit=(-?\d+):diagnostic_sha256=([0-9a-f]{64}):(.*)", diagnostic, re.S)
             record_ok = (entry.get("record_sha256") == fvs_profile.digest({k: v for k, v in entry.items() if k != "record_sha256"})
-                         and entry.get("adapter") == "autofv-bounded-fc/v1"
+                         and entry.get("adapter") == fvs_profile.ADAPTER_ID
                          and entry.get("contracts_sha256") == fvs_profile.digest(self.contracts)
                          and entry.get("role_profile_sha256") == fvs_profile.digest(fvs_profile.profile()))
             source_ok = (entry.get("original_packet_sha256") == self.original["packet_sha256"]
@@ -415,7 +412,10 @@ class Stages:
         return data
 
     def invoke(self, role: str, key: str, *, candidate: dict[str, Any] | None = None,
-               context: dict[str, Any] | None = None, fingerprint: str) -> dict[str, Any]:
+               context: dict[str, Any] | None = None, fingerprint: str,
+               submission_check: Callable | None = None) -> dict[str, Any]:
+        from .run_state import _check_budget
+        _check_budget(self.state)
         packet = (fvs_packet.review_snapshot(self.baseline, path=self.path, patch=candidate["patch"])
                   if candidate is not None else self.baseline)
         role_context = {"stage": key, "target_theorem": self.theorem, "source_packet": packet, "contracts_sha256": fvs_profile.digest(self.contracts),
@@ -439,7 +439,8 @@ class Stages:
                 statement_sha256=fingerprint,
                 contract_fingerprint=fingerprint,
                 input_hashes=[self.original["packet_sha256"], fvs_profile.digest(packet), fvs_profile.digest(role_context)],
-                role_context=role_context)
+                role_context=role_context,
+                **({"submission_check": submission_check} if submission_check is not None else {}))
         except (ContractError, worker.WorkerError) as exc:
             self.record(key + ":failed", {"role": role, "packet": packet, "error": str(exc),
                 "completed_exchanges": [copy.deepcopy(e) for e in self.state.get("model_exchanges", {}).values()
@@ -505,7 +506,8 @@ class Stages:
             raise StatementShapeError("FVS target statement lacks existential functional relation")
         if prior is not None:
             return target, prior["diagnostic"]
-        style_structure(target, self.original, specification=specification, baseline=self.source)
+        if specification:
+            style_structure(target, self.original, specification=True, baseline=self.source)
         from . import role_journal
         from .run_state import _external_call
         def run_gates():
@@ -546,16 +548,22 @@ class Stages:
 
     def specification(self, fingerprint: str, author_context: dict[str, Any]) -> dict[str, Any]:
         from .run_state import helper_reserve, helper_work_budget
+        # Semantic review must finish before consuming the prover/verifier reserve.
+        with helper_work_budget(self.state, helper_reserve(self.state, "first_specification")):
+            return self._specification(fingerprint, author_context)
+
+    def _specification(self, fingerprint: str, author_context: dict[str, Any]) -> dict[str, Any]:
+        from itertools import count
+        from .run_state import _check_budget
         self.task_brief = copy.deepcopy(author_context.get("task_brief", {}))
         author_context = {k: v for k, v in author_context.items() if k != "task_brief"}
-        # The first submission must leave room for reviews, proof and verification.
-        with helper_work_budget(self.state, helper_reserve(self.state, "first_specification")):
-            research = self.invoke("scout", "implementation-research", fingerprint=fingerprint,
-                                   context={"consumer_intent": author_context})
-            candidate = self.invoke("specifier", "spec-author:0", fingerprint=fingerprint,
-                                    context={"untrusted_research": research["evidence"], "consumer_intent": author_context})
+        research = self.invoke("scout", "implementation-research", fingerprint=fingerprint,
+                               context={"consumer_intent": author_context})
+        candidate = self.invoke("specifier", "spec-author:0", fingerprint=fingerprint,
+                                context={"untrusted_research": research["evidence"], "consumer_intent": author_context})
         history = []
-        for round_index in range(3):
+        for round_index in count():
+            _check_budget(self.state)
             try:
                 text, diagnostic = self.gate_author(candidate, f"spec-gates:{round_index}", specification=True)
                 canon = statement(candidate)
@@ -566,8 +574,6 @@ class Stages:
                     "candidate_sha256": fvs_profile.digest(candidate), "error": str(exc),
                     "disposition": "rejected before review", "round": round_index,
                 })
-                if round_index == 2:
-                    raise ContractInconclusive(f"FVS statement {kind} correction cap exhausted") from exc
                 correction = (
                     "Correct the existential returned-value relation in the theorem itself: use explicit ∃ "
                     "and an equality relating the function result to ok in the proof-free signature. "
@@ -588,22 +594,12 @@ class Stages:
             if review["verdict"] == "PASS":
                 if not diagnostic.startswith("sealed_runtime:exit=0:"):
                     raise ContractInconclusive("FVS statement local gates are not green")
-                author = self.invoke("specifier", f"spec-pass-triage:{round_index}", candidate=candidate,
-                    fingerprint=fingerprint, context={"review": review, "captured_diagnostic": diagnostic,
-                        "task": "author-owned triage only; preserve statement and patch exactly"})
-                if author["patch"] != candidate["patch"] or statement(author) != canon:
-                    raise ContractError("FVS PASS triage changed reviewed sources/statement")
                 from . import worker
-                if worker.read_lane_file(self.state["run"], self.lane, self.path, [self.path]) != self.state["fvs_lane_sources"][self.node]:
-                    raise ContractError("FVS PASS triage mutated the reviewed source")
-                disposition = triage(author, review)
-                self.record(f"spec-triage:{round_index}", {"triage": disposition,
-                    "old_sha256": _raw_sha256(text), "new_sha256": _raw_sha256(text),
-                    "review_sha256": review["raw_sha256"]})
-                self.record("frozen-statement", {"candidate": author, "statement": canon, "source": text})
-                return author
-            if round_index == 2 and review["verdict"] != "APPROVE-WITH-EDITS":
-                raise ContractInconclusive("FVS specification reviewer/revision cap exhausted")
+                if worker.read_lane_file(self.state["run"], self.lane, self.path, [self.path]) != text:
+                    raise ContractError("FVS source drift after specification review")
+                self.record("frozen-statement", {"candidate": candidate, "statement": canon, "source": text,
+                    "review_sha256": review["raw_sha256"], "disposition": "fresh semantic PASS"})
+                return candidate
             revision = self.invoke("specifier", f"spec-author:{round_index+1}", candidate=candidate,
                 fingerprint=fingerprint, context={"review": review, "untrusted_history": history,
                                                  "captured_diagnostic": diagnostic,
@@ -616,65 +612,42 @@ class Stages:
             if review["verdict"] == "APPROVE-WITH-EDITS":
                 if new_text == text and any(f["disposition"] in {"FIX", "DESCOPE"} for f in disposition["findings"]):
                     raise ContractInconclusive("FVS required bounded edits were not applied")
-                if any(f["disposition"] == "REJECT-FINDING" for f in disposition["findings"]):
-                    # This adapter has no independent source-counterexample
-                    # checker for author rejection; re-review rather than assert approval.
-                    history.append({"review": review["raw"], "triage": disposition["raw"]})
-                    candidate = revision
-                    continue
-                edits = [line for line in difflib.ndiff(text.splitlines(), new_text.splitlines()) if line[:2] in {"+ ", "- "}]
-                if len(edits) > 80 or sum(len(line) for line in edits) > 4000:
-                    raise ContractInconclusive("FVS approve-with-edits exceeds bounded edit contract")
-                _, gates = self.gate_author(revision, f"spec-edits-gates:{round_index}", specification=True)
-                if not gates.startswith("sealed_runtime:exit=0:"):
-                    raise ContractInconclusive("FVS approve-with-edits local gates failed")
-                self.record("frozen-statement", {"candidate": revision, "statement": statement(revision),
-                                                 "source": new_text, "disposition": "approved after edits"})
-                return revision
+            # Any revised specification, including APPROVE-WITH-EDITS, receives
+            # a fresh semantic review. Edit size cannot substitute for that review.
             history.append({"review": review["raw"], "triage": disposition["raw"]})
             candidate = revision
-        raise ContractInconclusive("FVS specification cap exhausted")
 
     def proof(self, contract_candidate: dict[str, Any], fingerprint: str,
               context: dict[str, Any]) -> dict[str, Any]:
         frozen = fvs_packet.review_snapshot(self.baseline, path=self.path, patch=contract_candidate["patch"])["overlay"]["content"]
         canon = statement(contract_candidate)
-        previous, candidate = frozen, contract_candidate
-        history = []
-        for attempt in range(3):
-            proposed = self.invoke("prover" if attempt == 0 else "repair", f"proof-author:{attempt}",
-                                  candidate=candidate, fingerprint=fingerprint,
-                                  context={**context, "frozen_statement": canon, "untrusted_history": history,
-                                           "review": history[-1]["parsed_review"] if history else None})
-            if history:
-                disposition = triage(proposed, history[-1]["parsed_review"])
-                self.record(f"proof-triage:{attempt-1}", {"triage": disposition,
-                    "old_candidate_sha256": fvs_profile.digest(candidate), "new_candidate_sha256": fvs_profile.digest(proposed)})
+        from .run_state import _check_budget
+        checks = []
+
+        def check_submission(proposed):
+            _check_budget(self.state)
             if statement(proposed) != canon:
                 raise ContractError("FVS proof role changed frozen statement identity")
             target = fvs_packet.review_snapshot(self.baseline, path=self.path, patch=proposed["patch"])["overlay"]["content"]
-            proof_scope(frozen, target, previous, canon=canon)
-            text, diagnostic = self.gate_author(proposed, f"proof-gates:{attempt}", specification=False)
-            review = self.review(proposed, "proof_reviewer", f"proof-review:{attempt}", fingerprint,
-                                 history=history, diagnostic=diagnostic)
-            if review["verdict"] == "PASS" and diagnostic.startswith("sealed_runtime:exit=0:"):
-                # The authoritative acceptance/verifier still checks proof holes
-                # and axioms; unrelated baseline placeholders are not this proof.
-                author = self.invoke("repair", f"proof-pass-triage:{attempt}", candidate=proposed,
-                    fingerprint=fingerprint, context={"review": review, "captured_diagnostic": diagnostic, "frozen_statement": canon,
-                        "task": "author-owned proof triage only; preserve reviewed statement and patch exactly"})
-                if author["patch"] != proposed["patch"] or statement(author) != canon:
-                    raise ContractError("FVS proof PASS triage changed reviewed candidate")
-                from . import worker
-                if worker.read_lane_file(self.state["run"], self.lane, self.path, [self.path]) != text:
-                    raise ContractError("FVS proof PASS triage mutated the reviewed source")
-                self.record(f"proof-triage:{attempt}", {"triage": triage(author, review),
-                    "old_candidate_sha256": fvs_profile.digest(proposed), "new_candidate_sha256": fvs_profile.digest(author)})
-                self.record("proof-approved", {"candidate": author, "review_sha256": review["raw_sha256"],
-                                               "frozen_statement": canon})
-                return author
-            if attempt == 2:
-                raise ContractInconclusive("FVS proof/review cap exhausted")
-            history.append({"review": review["raw"], "parsed_review": review, "diagnostic": diagnostic})
-            previous, candidate = text, proposed
-        raise ContractInconclusive("FVS proof cap exhausted")
+            proof_scope(frozen, target, canon=canon)
+            text, diagnostic = self.gate_author(proposed, f"proof-gates:{len(checks)}", specification=False)
+            feedback = None if diagnostic.startswith("sealed_runtime:exit=0:") else diagnostic
+            checks.append((fvs_profile.digest(proposed), text, diagnostic, feedback))
+            return feedback
+
+        proposed = self.invoke("prover", "proof-author:0", candidate=contract_candidate,
+            fingerprint=fingerprint, context={**context, "frozen_statement": canon},
+            submission_check=check_submission)
+        # A runner must not bypass the local gates by omitting the callback.
+        if not checks or checks[-1][0] != fvs_profile.digest(proposed):
+            check_submission(proposed)
+        _, text, diagnostic, feedback = checks[-1]
+        if feedback is not None:
+            raise ContractInconclusive("FVS prover returned without green local gates")
+        from . import worker
+        if worker.read_lane_file(self.state["run"], self.lane, self.path, [self.path]) != text:
+            raise ContractError("FVS source drift after local proof checks")
+        self.record("proof-checked", {"candidate": proposed, "frozen_statement": canon,
+            "diagnostic": diagnostic, "model_proof_review": "not_requested",
+            "acceptance": "withheld until independent mechanical verification"})
+        return proposed

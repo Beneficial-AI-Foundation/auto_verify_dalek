@@ -25,17 +25,36 @@ benchmark launch procedure; it is not the normal user interface we intend to shi
 These limits must be addressed in implementation, not hidden behind more setup
 instructions for the end user.
 
+## Autonomous prepared FVS workflow
+
+The `autofv-fvs-sol-sonnet/v3` profile identifies the changed workflow:
+
+**Specification author → fresh semantic PASS → freeze → autonomous prover → independent verifier.**
+
+FVS roles use the original wall/cost allowance, tool deadlines and downstream
+reserves instead of tactic-line, turn or review-round quotas. A failed local
+proof check returns to the same receipted conversation; replay reconstructs the
+same feedback without reissuing completed requests. Fresh review is required for
+changed specifications. Model proof-review and pure PASS-acknowledgement calls
+are no longer part of the prepared FVS path.
+
+Local compilation is not acceptance. Frozen statement/source scope, holes and
+axioms, pinned clean verification, accounting and isolation still gate accepted
+state. Helper acceptance does not establish root verification or L4 recovery.
+The verifier backend is unchanged. Cached Lean checks remain the feedback tool;
+Lean LSP integration, with call timeouts and restart handling, is still pending.
+The legacy non-FVS workflow is unchanged.
+
 ## Status
 
-As of 2026-10-15, live provider-backed small-helper runs have exercised the
-public CLI, fresh specification reviews and proof attempts. The latest run on
-`7a9bdff` reached specification PASS and statement freeze, then stopped with
-`FVS role blocked: prover` after three failing Lean checks. It retained 39
-completed calls and USD2.4554997 in receipt observations, with no new unresolved
-requests and verified worker disposal. It accepted no helper spec/proof pair;
-root verification and the successful smoke audit remain unmet. These development
-artifacts are retained by the operator, not checked into this repository;
-receipt observations are not invoices.
+Live provider-backed helper attempts through `f639f45` reached specification
+PASS and locally compiling proof candidates, but were rejected by controller
+submission requirements before independent helper verification. No provider-backed
+helper spec/proof pair, root verification or successful smoke audit has been
+established. The autonomous v3 workflow is offline-tested, not live-qualified;
+older approvals and profile bindings do not authorize it. Development records
+are retained by the operator, not checked into this repository; receipt
+observations are not invoices.
 
 The historical fixture launcher completed one full sealed diamond under `runsc` and passed
 on the separate verifier VM. The two leaf requests overlapped, all three source

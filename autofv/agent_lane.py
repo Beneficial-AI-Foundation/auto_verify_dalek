@@ -702,12 +702,12 @@ def _conversation_action(response: Any) -> tuple[str, dict[str, Any]]:
 
 
 async def run_role_conversation(
-    state: dict[str, Any], job: Any, tools: Any
+    state: dict[str, Any], job: Any, tools: Any, *, submission_check: Callable | None = None
 ) -> dict[str, Any]:
     """Run one bounded role through the sole pinned runtime implementation."""
     from .deepagents_lane import run_role_conversation as run_deepagents_lane
 
-    return await run_deepagents_lane(state, job, tools)
+    return await run_deepagents_lane(state, job, tools, submission_check=submission_check)
 
 
 def role_lane_runtime() -> dict[str, Any]:

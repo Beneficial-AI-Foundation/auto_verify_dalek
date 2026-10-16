@@ -62,6 +62,89 @@ class FvsAuthorEditTests(unittest.TestCase):
             tools, "edit_assigned", {"patch": self.patch(self.spec) if patch is None else patch}
         )
 
+    def test_incremental_proof_edits_can_submit_more_than_three_total_lines(self):
+        from autofv import fvs_adapter
+        from tests.test_fvs_offline import CANON, PASS
+        actual = [self.spec]
+        first = self.spec.replace("sorry", "have a := 1\n  have b := 2\n  exact rfl")
+        final = first.replace("exact rfl", "have c := 3\n  have d := 4\n  exact rfl")
+        view = fvs_packet.review_snapshot(self.packet, path=self.path, patch=self.patch(self.spec))
+        job = {**self.job, "role": "prover", "role_context": {
+            "source_packet": view, "frozen_statement": CANON}}
+        def edit(patch):
+            actual[0] = fvs_packet.apply_patch(actual[0], self.path, patch)
+            return "applied:synthetic"
+        tools = self.tools(lambda _: actual[0], edit, job)
+        for target in (first, final):
+            data = json.loads(self.edit(tools, self.patch(target, actual[0])))
+        candidate = {"patch": data["canonical_candidate_patch"], "evidence": [
+            "statement:" + CANON, 'triage:{"findings":[],"summary":"Synthetic author triage preserves the reviewed candidate."}']}
+        state = {"run": {}, "manifest": {}, "config": {"source_packet": self.packet},
+                 "fvs_lane_sources": {"helper": self.spec}}
+        stages = fvs_adapter.Stages(state, {}, {"node": "helper", "assigned_path": self.path},
+                                    mock.Mock(), mock.Mock())
+        with (mock.patch.object(stages, "invoke", return_value=candidate),
+              mock.patch.object(stages, "review", return_value=fvs_adapter.parse_review(PASS)),
+              mock.patch("autofv.worker.read_lane_file", side_effect=lambda *a: actual[0]),
+              mock.patch("autofv.worker.edit_lane_file") as unexpected_edit,
+              mock.patch("autofv.worker.check_lane", return_value="sealed_runtime:exit=0:synthetic") as check,
+              mock.patch("autofv.worker.save_lane_snapshot", return_value={}),
+              mock.patch("autofv.run_state._external_call", side_effect=lambda s,k,f: f()),
+              mock.patch("autofv.role_journal.tool_outcome", side_effect=lambda s,i,k,a,f,**kw: f())):
+            result = stages.proof({"patch": self.patch(self.spec), "evidence": ["statement:" + CANON]},
+                                  "e" * 64, {})
+        self.assertEqual(result["patch"], self.patch(final))
+        check.assert_called_once()
+        unexpected_edit.assert_not_called()
+        self.assertNotIn("accepted_nodes", state)
+
+    def test_large_proof_edits_preserve_the_complete_candidate(self):
+        from tests.test_fvs_offline import CANON
+        view = fvs_packet.review_snapshot(self.packet, path=self.path, patch=self.patch(self.spec))
+        for role in ("prover", "repair"):
+            with self.subTest(role=role):
+                job = {**self.job, "role": role, "role_context": {
+                    "source_packet": view, "frozen_statement": CANON}}
+                target = self.spec.replace("sorry", "first\n  second\n  third\n  fourth")
+                read, edit = mock.Mock(return_value=target), mock.Mock(return_value="applied:synthetic")
+                result = self.edit(self.tools(read, edit, job), self.patch(target, self.spec))
+                data = json.loads(result)
+                self.assertEqual(data["canonical_candidate_patch"], self.patch(target))
+                read.assert_called_once_with(self.path)
+                edit.assert_called_once_with(self.patch(target, self.spec))
+
+    def test_proof_length_does_not_relax_source_or_hole_checks(self):
+        from autofv import fvs_adapter
+        from tests.test_fvs_offline import CANON
+        target = self.spec.replace("sorry", "\n  ".join(["skip"] * 12 + ["exact rfl"]))
+        fvs_adapter.proof_scope(self.spec, target, canon=CANON)
+        for bad in (target.replace("n + 1", "n + 2"),
+                    target.replace("exact rfl", "sorry"), target.replace("exact rfl", "admit")):
+            with self.subTest(bad=bad), self.assertRaises(ContractError):
+                fvs_adapter.proof_scope(self.spec, bad, canon=CANON)
+
+    def test_large_direct_submission_still_runs_local_gates(self):
+        from autofv import fvs_adapter
+        from tests.test_fvs_offline import CANON
+        state = {"run": {}, "manifest": {}, "config": {"source_packet": self.packet},
+                 "fvs_lane_sources": {"helper": self.spec}}
+        stages = fvs_adapter.Stages(state, {}, {"node": "helper", "assigned_path": self.path},
+                                    mock.Mock(), mock.Mock())
+        target = self.spec.replace("sorry", "first\n  second\n  third\n  fourth")
+        candidate = {"patch": self.patch(target), "evidence": ["statement:" + CANON]}
+        with (mock.patch("autofv.worker.read_lane_file", return_value=self.spec),
+              mock.patch("autofv.worker.edit_lane_file") as edit,
+              mock.patch("autofv.worker.check_lane", return_value="sealed_runtime:exit=0:synthetic") as check,
+              mock.patch("autofv.worker.save_lane_snapshot", return_value={}),
+              mock.patch("autofv.run_state._external_call", side_effect=lambda s,k,f: f()),
+              mock.patch("autofv.role_journal.tool_outcome", side_effect=lambda s,i,k,a,f,**kw: f())):
+            text, diagnostic = stages.gate_author(candidate, "proof-gates:0", specification=False)
+        edit.assert_called_once()
+        check.assert_called_once()
+        self.assertEqual(text, target)
+        self.assertTrue(diagnostic.startswith("sealed_runtime:exit=0:"))
+        self.assertEqual(state["fvs_lane_sources"]["helper"], target)
+
     def test_multiple_real_edits_expose_exact_cumulative_patch_and_require_submission(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
@@ -156,7 +239,7 @@ class FvsAuthorEditTests(unittest.TestCase):
                     stages = fvs_adapter.Stages(state, {}, lane, mock.Mock(), lambda *args: None)
                     initial = {"patch": self.patch(spec, base), "evidence": ["statement:" + CANON]}
                     targets = ([spec.replace("@[step]", "-- revised specification\n@[step]")]
-                               if phase == "revision" else [spec.replace("sorry", "rfl"), spec.replace("sorry", "exact rfl")])
+                               if phase == "revision" else [spec.replace("sorry", "exact rfl")])
                     pending = iter(targets)
                     read = lambda path: worker.read_lane_file(state["run"], lane, path, [self.path])
                     invoked_roles = []
@@ -194,14 +277,14 @@ class FvsAuthorEditTests(unittest.TestCase):
                         self.assertEqual(text.encode(), source.read_bytes())
                         return text, "sealed_runtime:exit=0:synthetic"
 
-                    reviews = ([REVISE.replace("VERDICT: REVISE", "VERDICT: APPROVE-WITH-EDITS")]
-                               if phase == "revision" else [REVISE, PASS])
+                    reviews = ([REVISE.replace("VERDICT: REVISE", "VERDICT: APPROVE-WITH-EDITS"), PASS]
+                               if phase == "revision" else [])
                     with mock.patch.object(stages, "invoke", side_effect=invoke), \
                          mock.patch.object(stages, "gate_author", side_effect=gates), \
                          mock.patch.object(stages, "review", side_effect=[fvs_adapter.parse_review(r) for r in reviews]):
                         result = (stages.specification("e" * 64, {}) if phase == "revision"
                                   else stages.proof(initial, "e" * 64, {}))
-                    self.assertEqual(invoked_roles, ["specifier"] if phase == "revision" else ["prover", "repair"])
+                    self.assertEqual(invoked_roles, ["specifier"] if phase == "revision" else ["prover"])
                     self.assertEqual(result["patch"], self.patch(targets[-1], base))
                     self.assertEqual(source.read_bytes(), targets[-1].encode())
 

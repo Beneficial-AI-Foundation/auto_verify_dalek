@@ -7,6 +7,7 @@ import copy
 import hashlib
 import importlib.metadata
 import json
+import sys
 import time
 from types import SimpleNamespace
 from typing import Any
@@ -31,7 +32,7 @@ from . import agent_lane as lane
 from . import model, worker
 from .contracts import canonical_json_bytes
 from .role_journal import tool_outcome
-from .run_state import _state_lock
+from .run_state import _check_budget, _check_wall_budget, _state_lock
 
 
 _EXPECTED_VERSIONS = {
@@ -239,9 +240,11 @@ class _RoutedRoleModel(BaseChatModel):
         expected = {entry["name"]: entry for entry in self._schemas}
         retries = 0
         while True:
+            if fvs:
+                _check_wall_budget(self._state)
             if not retries:
                 self._turn += 1
-                if self._turn > lane._MAX_ROLE_TURNS:
+                if not fvs and self._turn > lane._MAX_ROLE_TURNS:
                     raise worker.WorkerError(
                         "invalid_agent_output: role turn limit exhausted"
                     )
@@ -388,6 +391,8 @@ def _langchain_tools(
         name = schema["name"]
 
         def invoke(_name: str = name, **arguments: Any) -> Any:
+            if trusted_job.get("methodology") == lane._FVS_METHODOLOGY:
+                _check_wall_budget(state)
             value = tool_outcome(
                 state,
                 identity,
@@ -404,6 +409,10 @@ def _langchain_tools(
                 progress["last_tool"] = _name
             if _name == "submit_candidate":
                 captured["candidate"] = lane.validate_candidate(value, trusted_job)
+                if trusted_job.get("methodology") == lane._FVS_METHODOLOGY:
+                    # Disk journals reorder dictionary keys. Canonical tool content
+                    # keeps a continued submission transcript identical on replay.
+                    return canonical_json_bytes(value).decode("utf-8")
             return value
 
         async def ainvoke(
@@ -439,11 +448,18 @@ def _caused_by_cancellation(exc: BaseException) -> bool:
 
 
 async def run_role_conversation(
-    state: dict[str, Any], job: Any, tools: Any
+    state: dict[str, Any], job: Any, tools: Any, *, submission_check: Any = None
 ) -> dict[str, Any]:
     """Run one role through the exact receipted Deep Agents lane."""
     runtime_compatibility()
     trusted_job = lane.validate_role_job(job)
+    fvs = trusted_job.get("methodology") == lane._FVS_METHODOLOGY
+    if fvs:
+        if not {"max_wall_seconds", "max_cost_usd"} <= state.get("config", {}).keys():
+            raise worker.WorkerError("FVS autonomous role requires wall and cost budgets")
+        _check_budget(state)
+    if submission_check is not None and not fvs:
+        raise worker.WorkerError("submission continuation requires the FVS budgeted workflow")
     schemas = lane.capture_tool_schemas(tools)
     spec = lane.role_conversation_spec(trusted_job)
     identity = spec["conversation_id"]
@@ -522,22 +538,42 @@ async def run_role_conversation(
         system_prompt=spec["system_prompt"],
         **fvs_options,
     )
-    user_message = lane.initial_role_messages(spec)[1]
-    try:
-        await graph.ainvoke(
-            {"messages": [user_message]},
-            config={"recursion_limit": lane._MAX_ROLE_TURNS * 4},
-        )
-    except NodeCancelledError as exc:
-        if _caused_by_cancellation(exc):
-            raise asyncio.CancelledError from exc
-        raise
-    candidate = captured.get("candidate")
-    if not routed.bound_once:
-        raise worker.WorkerError("Deep Agents did not bind the role-lane tools")
-    if candidate is None:
-        raise worker.WorkerError("invalid_agent_output: no candidate submitted")
-    candidate = lane.validate_candidate(candidate, trusted_job)
+    messages = [lane.initial_role_messages(spec)[1]]
+    while True:
+        if fvs:
+            _check_wall_budget(state)
+        captured.clear()
+        try:
+            result = await graph.ainvoke(
+                {"messages": messages},
+                # FVS is admitted by the original deadline/spend on every call;
+                # keep the legacy graph limit for the non-FVS runtime.
+                config={"recursion_limit": sys.maxsize if fvs else lane._MAX_ROLE_TURNS * 4},
+            )
+        except NodeCancelledError as exc:
+            if _caused_by_cancellation(exc):
+                raise asyncio.CancelledError from exc
+            raise
+        candidate = captured.get("candidate")
+        if not routed.bound_once:
+            raise worker.WorkerError("Deep Agents did not bind the role-lane tools")
+        if candidate is None:
+            raise worker.WorkerError("invalid_agent_output: no candidate submitted")
+        candidate = lane.validate_candidate(candidate, trusted_job)
+        if submission_check is None or candidate["claimed_status"] != "candidate":
+            break
+        _check_budget(state)
+        feedback = submission_check(candidate)
+        if feedback is None:
+            break
+        if not isinstance(feedback, str) or not feedback:
+            raise worker.WorkerError("invalid controller submission feedback")
+        # Continue the same receipted conversation, including failed submissions
+        # and diagnostics. Replay reconstructs it; clocks/cost never restart.
+        messages = [*result["messages"], {"role": "user", "content": canonical_json_bytes({
+            "controller_submission_feedback_DATA": feedback,
+            "candidate_sha256": _sha256(candidate),
+        }).decode("utf-8")}]
     with _state_lock(state):
         progress.update(
             {"status": "completed", "candidate_sha256": _sha256(candidate)}

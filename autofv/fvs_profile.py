@@ -11,7 +11,8 @@ from typing import Any
 
 from .contracts import ContractError, canonical_json_bytes
 
-PROFILE_ID = "autofv-fvs-sol-sonnet/v2"
+PROFILE_ID = "autofv-fvs-sol-sonnet/v3"
+ADAPTER_ID = "autofv-autonomous-fc/v2"
 AUTHOR = "openai/gpt-6.1-sol"
 REVIEWER = "anthropic/claude-sonnet-5.5"
 REVIEW_ROLES = frozenset({"spec_reviewer", "proof_reviewer"})
@@ -29,7 +30,7 @@ def digest(value: Any) -> str:
 def profile() -> dict[str, Any]:
     return {
         "schema": PROFILE_ID,
-        "adapter": "autofv-bounded-fc/v1",
+        "adapter": ADAPTER_ID,
         "role_models": dict(ROLE_MODELS),
         "parameters": {
             "reasoning": {"effort": "xhigh", "exclude": True},
@@ -60,8 +61,9 @@ def profile() -> dict[str, Any]:
         },
         "routing": {"allow_fallbacks": False, "require_parameters": True},
         "context_bytes": 262144,
-        "max_review_rounds": 3,
-        "max_proof_attempts": 3,
+        "iteration_policy": "original wall/cost budgets and downstream reserves",
+        "specification_review": "fresh semantic PASS before freeze",
+        "proof_review": "independent mechanical verifier; no model proof-review handshake",
     }
 
 

@@ -85,6 +85,7 @@ def _run_role_lane(
     contract_fingerprint: str,
     input_hashes: list[str],
     role_context: dict[str, Any],
+    submission_check: Any = None,
 ) -> dict[str, Any]:
     """Run one receipted role with exactly the candidate-only lane tools."""
     job = _role_job(
@@ -121,7 +122,8 @@ def _run_role_lane(
             lambda: worker.check_lane(state["run"], lane, state["manifest"])
         ),
     )
-    return asyncio.run(agent_lane.run_role_conversation(state, job, tools))
+    options = {"submission_check": submission_check} if submission_check is not None else {}
+    return asyncio.run(agent_lane.run_role_conversation(state, job, tools, **options))
 
 
 def _lane_candidate_response(
@@ -439,7 +441,7 @@ def _run_prepared_progressive(
             from .fvs_packet import review_snapshot
             expected = review_snapshot(stages.baseline, path=lane["assigned_path"], patch=selected["patch"])["overlay"]["content"]
             if worker.read_lane_file(run, lane, lane["assigned_path"], [lane["assigned_path"]]) != expected:
-                raise ContractError("FVS source drift after immutable proof review")
+                raise ContractError("FVS source drift after local proof checks")
             fingerprints = sorted({record["model_fingerprint"], *(contracts["node_fingerprints"][item] for item in dependencies)})
             return {"node": node, "lane": lane, "fingerprints": fingerprints, "reviewed": selected}
         if node != root:

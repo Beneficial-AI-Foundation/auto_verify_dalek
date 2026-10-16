@@ -89,12 +89,15 @@ installed. The report's parent directory must exist and be outside the target.
 
 The fixture [run.json](../tests/fixtures/diamond/run.json) is a synthetic
 `autofv-run/v1` example. Do not use it to launch the current Dalek FVS workflow.
-FVS means the bounded specification/proof roles with fresh specification and
-proof reviewers. Its current profile is `autofv-fvs-sol-sonnet/v2`:
-`openai/gpt-6.1-sol` for author/prover roles and
-`anthropic/claude-sonnet-5.5` for reviewers, through pinned OpenRouter routes.
-This profile is fixed in [fvs_profile.py](fvs_profile.py), not an arbitrary
-`--model` option or a ChatGPT subscription backend.
+The prepared FVS path uses fresh semantic specification review, a budget-driven
+prover, and independent mechanical proof verification. Its current profile is
+`autofv-fvs-sol-sonnet/v3`: `openai/gpt-6.1-sol` for authors/prover and
+`anthropic/claude-sonnet-5.5` for semantic reviewers, through pinned OpenRouter routes.
+There is no mandatory model proof-review or PASS-acknowledgement call. This is a
+new offline-tested workflow, not a live-qualified replacement covered by old
+v2 approvals. Regenerate and approve its exact profile/config/source bindings
+before a run. The profile is fixed in [fvs_profile.py](fvs_profile.py), not an
+arbitrary `--model` option or a ChatGPT subscription backend.
 
 A v2 config has exactly `schema`, `model`, `role_profile`, `max_wall_seconds`,
 `max_cost_usd` and `source_packet`, plus optional `helper_reserves`. The packet

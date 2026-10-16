@@ -100,7 +100,7 @@ class PreflightCliTests(unittest.TestCase):
         self.assertEqual(args.env_file, "/tmp/provider.env")
 
     def test_helper_handoff_cli_is_explicit_and_bounded_to_prepared_proof_only(self) -> None:
-        argv = ["autofv", "run", "/target", "--config", "/config", "--env-file", "/fake-env",
+        argv = ["autofv", "run", "/target", "--config", str(CONFIG), "--env-file", "/fake-env",
             "--fresh-pair-preflight", "--execution-mode", "proof-only",
             "--preparation-manifest", "/manifest", "--preparation-evidence", "/probes",
             "--preparation-cache", "/cache", "--public-rust-root", "/rust", "--verifier-reference", "/fake-reference"]

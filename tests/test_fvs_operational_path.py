@@ -145,12 +145,25 @@ class OperationalPath(unittest.TestCase):
             statement_sha256='e' * 64, contract_fingerprint='f' * 64,
             input_hashes=[fixture.packet()['packet_sha256'], fvs_profile.digest(context)], role_context=context)
         self.assertEqual(agent_lane.role_conversation_spec(job)['max_output_tokens'], 16384)
+        owned = {'content': fvs_packet.validate_view(context['source_packet'])[fixture.PATH]['content']}
+        owned_reads = []
+        def edit_owned(patch):
+            owned['content'] = fvs_packet.apply_patch(owned['content'], fixture.PATH, patch)
+            self.effects.append('edit')
+            return 'synthetic edit complete'
+        def read_owned(path):
+            self.assertEqual(path, fixture.PATH)
+            self.assertEqual(self.effects[-1:], ['edit'])
+            owned_reads.append(path)
+            return owned['content']
         tools = agent_lane.build_lane_tools(job,
-            read_file=lambda path: self.fail('FVS read must use immutable packet'),
+            read_file=read_owned,
             search_files=lambda query: self.fail('FVS search must use immutable packet'),
-            edit_assigned=lambda patch: self.effects.append('edit') or 'synthetic edit complete',
+            edit_assigned=edit_owned,
             check_lean=lambda: self.effects.append('check') or 'synthetic check only; NOT Lean verification')
-        return asyncio.run(agent_lane.run_role_conversation(self.state, job, tools))
+        candidate = asyncio.run(agent_lane.run_role_conversation(self.state, job, tools))
+        self.assertEqual(len(owned_reads), self.effects.count('edit'))
+        return candidate
 
     def submit(self):
         return ('submit_candidate', {'patch': fixture.patch(fixture.SPEC),

@@ -7,6 +7,7 @@ model exchange, the bounded diamond scheduler, and result/evidence records.
 from __future__ import annotations
 
 import argparse
+import asyncio
 import hashlib
 import os
 import secrets
@@ -17,6 +18,7 @@ from decimal import Decimal
 from pathlib import Path
 from typing import Any
 
+from langgraph.errors import NodeCancelledError
 from langgraph.graph import END, START, StateGraph
 
 from . import (
@@ -124,10 +126,50 @@ def _final_terminal_audit(state: _RunState) -> None:
     terminal_run.final_terminal_audit(state, verify=_clean_verify)
 
 
+class _InterruptedAgent(BaseException):
+    """Internal transport, not a retryable graph failure or successful update."""
+
+    def __init__(self, error: BaseException, state: _RunState):
+        self.error = error
+        # Reuse the durable channel boundary, but never import terminal output
+        # from an unfinished agent. No checkpoint file is read or trusted here.
+        self.channels = {
+            key: state[key] for key in CHECKPOINT_STATE_FIELDS
+            if key in state and key not in {"result", "l0_receipt", "verifier_report"}
+        }
+        self.channels.update(_node_update(state))
+
+
+def _agent_with_progress(state: _RunState) -> dict[str, Any]:
+    try:
+        return _agent_loop(state)
+    except BaseException as exc:
+        raise _InterruptedAgent(exc, state) from exc
+
+
+def _run_graph(state: _RunState) -> None:
+    try:
+        for update in _EXPERIMENT_GRAPH.stream(state, stream_mode="updates"):
+            for values in update.values():
+                state.update(values)
+    except _InterruptedAgent as interrupted:
+        # This graph is serial. Replace its resumable channels, including
+        # deletions, before classifying the original failure in the controller.
+        for key in CHECKPOINT_STATE_FIELDS:
+            if key not in {"result", "l0_receipt", "verifier_report"}:
+                state.pop(key, None)
+        state.update(interrupted.channels)
+        if isinstance(interrupted.error, asyncio.CancelledError):
+            # Match synchronous LangGraph's node-body cancellation normalization,
+            # which the progress envelope intercepted before its retry layer.
+            raise NodeCancelledError("agent") from interrupted.error
+        raise interrupted.error.with_traceback(interrupted.error.__traceback__) from None
+
+
 def _build_graph():
     graph = StateGraph(_RunState)
     graph.add_node("freeze", _freeze)
-    graph.add_node("agent", _agent_loop)
+    graph.add_node("agent", _agent_with_progress)
     graph.add_node("verify", _clean_verify)
     graph.add_edge(START, "freeze")
     graph.add_edge("freeze", "agent")
@@ -1077,9 +1119,7 @@ def run_experiment(
             worker.verify_egress(run)
         if resume_from is None:
             _checkpoint_if_enabled(state, "run:prepared")
-        for update in _EXPERIMENT_GRAPH.stream(state, stream_mode="updates"):
-            for values in update.values():
-                state.update(values)
+        _run_graph(state)
         terminal = state.get("verifier_report", {}).get("terminal_status")
         if terminal == "unverified":
             outcome, reason = "unverified", "proof_search_incomplete"

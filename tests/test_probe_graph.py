@@ -978,7 +978,7 @@ class ProbeGraphTests(unittest.TestCase):
                 mock.patch.object(worker.tempfile, "mkdtemp", return_value=tmp),
                 mock.patch.object(
                     subprocess,
-                    "run",
+                    "Popen",
                     side_effect=FileNotFoundError("limactl is unavailable"),
                 ),
                 self.assertRaises(worker.WorkerError) as raised,

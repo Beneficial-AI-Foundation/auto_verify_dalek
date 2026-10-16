@@ -90,7 +90,10 @@ _TOOL_SCHEMAS = (
     },
     {
         "name": "search_allowed",
-        "description": "Search bounded allowlisted project context.",
+        "description": ("Search bounded allowlisted project context. In FVS, query is a case-sensitive "
+                        "literal substring (not regex: | and .* are literal); search names separately. "
+                        "Only source_packet sources are searched, not dependency libraries or the filesystem. "
+                        "(no output) means no literal match in that frozen packet, not that an API does not exist."),
         "input_schema": {
             "type": "object",
             "properties": {"query": {"type": "string"}},

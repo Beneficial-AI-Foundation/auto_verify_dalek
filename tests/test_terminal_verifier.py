@@ -23,7 +23,7 @@ from tests.test_clean_verifier import (
 from tests.test_counterexample_terminal import CounterexampleFixture
 
 
-def _prepared_report(*, incomplete=False):
+def _prepared_report(*, incomplete=False, reference_mismatch=False):
     state = _terminal_state(incomplete=incomplete)
     bundle = verifier.build_bundle(_members(state))
     invocation = _invocation(bundle, state)
@@ -31,13 +31,22 @@ def _prepared_report(*, incomplete=False):
     invocation["snapshot_sha256"] = manifest["tree_sha256"]
     observed = _observed(state)
     observed["snapshot_sha256"] = invocation["snapshot_sha256"]
+    reference = REFERENCE.read_bytes()
+    if reference_mismatch:
+        changed = json.loads(reference)
+        changed["leaves"] = []
+        reference = _canonical(changed)
+        invocation["reference_sha256"] = _sha256(reference)
+    run_checks = mock.Mock(return_value=observed)
     report = verifier.terminal_verifier.verify_terminal_bundle(
         bundle,
         invocation,
         preparation_manifest=manifest,
-        reference_bytes=REFERENCE.read_bytes(),
-        run_checks=lambda *_: observed,
+        reference_bytes=reference,
+        run_checks=run_checks,
     )
+    if reference_mismatch:
+        run_checks.assert_not_called()
     run = {
         "run_id": invocation["run_id"],
         "agent_worker_id": invocation["agent_worker_id"],
@@ -68,6 +77,63 @@ def _prepared_report(*, incomplete=False):
 
 
 class TerminalReportAuthorityTests(unittest.TestCase):
+    def test_precheck_rejection_is_retained_as_unverified_not_an_audit_failure(self):
+        report, run, expected = _prepared_report(incomplete=True, reference_mismatch=True)
+        self.assertEqual(report["core_report"]["checks"],
+                         {"bundle": True, "reference_integrity": True})
+        self.assertEqual(report["core_report"]["failures"], ["reference_contract_mismatch"])
+        self.assertEqual(report["axiom_inventory"], [])
+        self.assertEqual(report["terminal_status"], "unverified")
+        self.assertEqual(verifier.validate_report(report, run, expected), report)
+        with self.assertRaises(verifier.VerifierError):
+            verifier._validate_legacy_report(report["core_report"], run,
+                {k: v for k, v in expected.items() if k != "axiom_inventory_sha256"})
+
+    def test_only_unobserved_failure_prefixes_skip_completed_audit_requirements(self):
+        report, run, expected = _prepared_report(incomplete=True, reference_mismatch=True)
+        core_expected = {k: v for k, v in expected.items() if k != "axiom_inventory_sha256"}
+        for checks, failure in (
+            ({"bundle": False}, "bundle_manifest_mismatch"),
+            ({"bundle": True, "reference_integrity": False}, "reference_hash_mismatch"),
+            ({"bundle": True, "reference_integrity": True}, "reference_contract_mismatch"),
+        ):
+            with self.subTest(checks=checks):
+                core = {**copy.deepcopy(report["core_report"]), "checks": checks,
+                        "failures": [failure]}
+                core["report_sha256"] = _sha256(_canonical(
+                    {k: v for k, v in core.items() if k != "report_sha256"}))
+                self.assertEqual(verifier._validate_legacy_report(core, run, core_expected,
+                    require_pass=False, require_axiom_inventory=True), core)
+                with self.assertRaises(verifier.VerifierError):
+                    verifier._validate_legacy_report(core, run, core_expected,
+                        require_pass=True, require_axiom_inventory=True)
+
+    def test_precheck_rejection_cannot_claim_observations_or_counterexample_authority(self):
+        report, run, expected = _prepared_report(incomplete=True, reference_mismatch=True)
+        core = report["core_report"]
+        core_expected = {k: v for k, v in expected.items() if k != "axiom_inventory_sha256"}
+        for change in (
+            {"meaning": {"equivalent": True}},
+            {"sorry_count_after": 0},
+            {"checks": {"bundle": False, "reference_integrity": True}},
+            {"checks": {"bundle": True, "reference_integrity": True, "clean_build": False}},
+            {"axiom_inventory": [{"declaration": "fake"}]},
+            {"verdict": "PASS", "evidence_level": "L4", "failures": []},
+            {"native_decide_uses": [{"declaration": "fake"}]},
+            {"report_sha256": "0" * 64},
+        ):
+            with self.subTest(change=change):
+                forged = {**copy.deepcopy(core), **change}
+                if "report_sha256" not in change:
+                    forged["report_sha256"] = _sha256(_canonical(
+                        {k: v for k, v in forged.items() if k != "report_sha256"}))
+                with self.assertRaises(verifier.VerifierError):
+                    verifier._validate_legacy_report(forged, run, core_expected,
+                        require_pass=False, require_axiom_inventory=True)
+        with self.assertRaises(verifier.VerifierError):
+            verifier._validate_legacy_report(core, run, core_expected,
+                require_pass=False, require_axiom_inventory=True, allow_untrusted_axioms=True)
+
     def test_real_preparation_shape_keeps_retained_support(self):
         state = _terminal_state()
         graph = copy.deepcopy(state["graph"])

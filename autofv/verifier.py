@@ -1138,6 +1138,13 @@ def _validate_legacy_report(
         checks = report.get("checks")
         verdict = report.get("verdict")
         evidence_level = report.get("evidence_level")
+        # Bundle/reference rejection can precede all clean-worker observations.
+        # Retaining that FAIL is not evidence of a completed kernel audit.
+        precheck_failure = verdict == "FAIL" and checks in (
+            {"bundle": False},
+            {"bundle": True, "reference_integrity": False},
+            {"bundle": True, "reference_integrity": True},
+        )
         if (
             not isinstance(failures, list)
             or any(not isinstance(failure, str) or not failure for failure in failures)
@@ -1148,6 +1155,7 @@ def _validate_legacy_report(
             or (verdict == "PASS") != (failures == [])
             or (
                 require_axiom_inventory
+                and not precheck_failure
                 and set(checks) != verifier_bundle.REPORT_CHECKS
             )
         ):
@@ -1162,6 +1170,15 @@ def _validate_legacy_report(
         if pass_invalid or (require_pass and verdict != "PASS"):
             raise VerifierError("clean verifier did not pass")
 
+        if precheck_failure and (
+            allow_untrusted_axioms
+            or report["axiom_inventory"] != []
+            or report["meaning"] != {}
+            or report["sorry_count_before"] is not None
+            or report["sorry_count_after"] is not None
+        ):
+            raise VerifierError("clean verifier precheck failure claims audit evidence")
+
         def validate_axiom_inventory(*, allow_untrusted: bool) -> None:
             lock = contracts.load_toolchain_lock()
             inventory = report["axiom_inventory"]
@@ -1169,8 +1186,11 @@ def _validate_legacy_report(
                 inventory,
                 lock=lock,
                 compiler_assumptions=report["compiler_assumptions"],
-                require_complete=require_axiom_inventory,
-                expected_scope_sha256=report["axiom_scope_sha256"],
+                require_complete=require_axiom_inventory and not precheck_failure,
+                # Invocation scope remains bound above; no declarations were
+                # observed on this early FAIL, so its inventory must be empty.
+                expected_scope_sha256=(axiom_audit.inventory_scope_sha256([])
+                                       if precheck_failure else report["axiom_scope_sha256"]),
                 expected_identity_sha256=report["axiom_inventory_sha256"],
                 accepted_native_decide_uses=report[
                     "accepted_native_decide_uses"

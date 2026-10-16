@@ -102,6 +102,24 @@ class FvsBindingDomainTests(unittest.TestCase):
         self.assertNotIn("binding_domains", messages[0]["content"])
         return json.loads(messages[1]["content"])["context"]["binding_domains"]
 
+    def test_frozen_proof_authors_are_told_the_exact_submission_evidence_contract(self):
+        for role in ("prover", "repair"):
+            with self.subTest(role=role):
+                job = self.job(role)
+                job["role_context"]["frozen_statement"] = CANON
+                spec = agent_lane.role_conversation_spec(job)
+                self.assertIn("exactly one evidence item", spec["system_prompt"])
+                self.assertIn("statement:theorem ", spec["system_prompt"])
+                self.assertIn("'statement:' + frozen_statement", spec["system_prompt"])
+                self.assertIn("proof PASS triage", spec["system_prompt"])
+                self.assertEqual(spec["context"]["role_context"]["frozen_statement"], CANON)
+                self.assertEqual(fvs_adapter.statement({"evidence": ["statement:" + CANON]}), CANON)
+                for evidence in (["Proof compiled successfully"],
+                                 ["statement:" + CANON] * 2,
+                                 ["statement:" + CANON + " := by sorry"]):
+                    with self.assertRaises(fvs_adapter.StatementBindingError):
+                        fvs_adapter.statement({"evidence": evidence})
+
     def test_binding_domains_separate_raw_statements_packets_and_role_contexts(self):
         author = self.job()
         candidate = self.candidate(author)

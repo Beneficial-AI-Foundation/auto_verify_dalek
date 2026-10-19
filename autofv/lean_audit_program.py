@@ -21,6 +21,7 @@ REFERENCE_OLEAN = ".lake/build/lib/lean/AutoFVReferenceCheck.olean"
 BASELINE_SOURCE = "AutoFVBaselineAudit.lean"
 AUDIT_SOURCE = "AutoFVAxiomAudit.lean"
 EXPECTED_SOURCE = "AutoFVExpected.lean"
+EXPECTED_LIBRARY = "AutoFVExpectedTypeLib"
 EXPECTED_OLEAN = ".lake/build/lib/lean/AutoFVExpected.olean"
 AUDIT_LIBRARY = "AutoFVAxiomAuditLib"
 BASELINE_LIBRARY = "AutoFVBaselineAuditLib"
@@ -37,7 +38,11 @@ def _trusted_baseline_prelude(
     permitted_sorry: list[str] | None = None,
     preserved_baseline: bool = False,
     expected_module: bool = False,
+    required_roots: list[str] | None = None,
 ) -> str:
+    required_roots_expr = "none" if required_roots is None else (
+        "some [" + ", ".join(f"`{_lean_name(name)}" for name in required_roots) + "]"
+    )
     quoted_modules = ", ".join(f"`{name}" for name in project_modules)
     quoted_replay_modules = ", ".join(
         f"`{name}" for name in (replay_modules or [])
@@ -79,6 +84,7 @@ def _trusted_baseline_prelude(
         f"NameSet.ofList [{quoted_replay_modules}]\n"
         f"def autofvAuditForcedReplay : NameSet := "
         f"NameSet.ofList [{quoted_forced_replay}]\n"
+        f"def autofvAuditRequiredRoots : Option (List Name) := {required_roots_expr}\n"
         f"def autofvAuditPermittedSorry : NameSet := "
         f"NameSet.ofList [{quoted_permitted_sorry}]\n"
         f"def autofvAuditBaselineImports : Array Import := "
@@ -198,9 +204,41 @@ def _trusted_baseline_prelude(
         "          | none => {}\n"
         "        autofvAuditCheckedClosure env "
         "(dependencies.foldl (fun pending name => name :: pending) rest) seen\n"
+        "partial def autofvAuditRequiredClosure (pristine : Environment) "
+        "(source : Std.HashMap Name ConstantInfo) (pending : List Name) "
+        "(seen : NameSet := {}) : IO NameSet := do\n"
+        "  match pending with\n"
+        "  | [] => return seen\n"
+        "  | name :: rest =>\n"
+        "      if seen.contains name then\n"
+        "        return ← autofvAuditRequiredClosure pristine source rest seen\n"
+        "      let seen := seen.insert name\n"
+        "      match source[name]? with\n"
+        "      | some info =>\n"
+        "          let pending := info.getUsedConstantsAsSet.foldl "
+        "(fun pending dependency => dependency :: pending) rest\n"
+        "          autofvAuditRequiredClosure pristine source pending seen\n"
+        "      | none =>\n"
+        "          if autofvAuditIsProject pristine name || !pristine.contains name then\n"
+        "            throw <| IO.userError s!\"missing transferred dependency {name}\"\n"
+        "          autofvAuditRequiredClosure pristine source rest seen\n"
         "def autofvAuditReplayConstantsIn (pristine : Environment) "
         "(source : Std.HashMap Name ConstantInfo) (roots : List Name) : "
-        "IO (Environment × NameSet) := do\n"
+        "IO (Environment × NameSet × List Name) := do\n"
+        "  -- Check library shadowing even outside the required proof closures.\n"
+        "  for name in roots do\n"
+        "    if let some actual := pristine.find? name then\n"
+        "      if !autofvAuditIsProject pristine name then\n"
+        "        if let some expected := source[name]? then\n"
+        "          unless autofvAuditSameConstant expected actual do\n"
+        "            throw <| IO.userError s!\"pristine dependency mismatch {name}\"\n"
+        "  unless autofvAuditForcedReplay.toList.all roots.contains do\n"
+        "    throw <| IO.userError \"forced kernel replay declaration is absent\"\n"
+        "  let roots ← match autofvAuditRequiredRoots with\n"
+        "    | none => pure roots\n"
+        "    | some required => do\n"
+        "        let closure ← autofvAuditRequiredClosure pristine source required\n"
+        "        pure <| roots.filter closure.contains\n"
         "  let mut renamed := autofvAuditForcedReplay\n"
         "  for name in roots do\n"
         "    let some expected := source[name]?\n"
@@ -210,8 +248,6 @@ def _trusted_baseline_prelude(
         "        unless autofvAuditSameConstant expected actual do\n"
         "          renamed := renamed.insert name\n"
         "    | none => renamed := renamed.insert name\n"
-        "  unless autofvAuditForcedReplay.toList.all roots.contains do\n"
-        "    throw <| IO.userError \"forced kernel replay declaration is absent\"\n"
         "  let mut changed := true\n"
         "  while changed do\n"
         "    changed := false\n"
@@ -240,14 +276,14 @@ def _trusted_baseline_prelude(
         "!autofvAuditPermittedSorry.contains name) || "
         "closure.any renamed.contains then\n"
         "      throw <| IO.userError s!\"checked closure retained untrusted dependency {name}\"\n"
-        "  return (checked.env, renamed)\n"
+        "  return (checked.env, renamed, roots)\n"
         "unsafe def autofvAuditEnableInitializersImpl : IO Unit := "
         "enableInitializersExecution\n"
         "@[implemented_by autofvAuditEnableInitializersImpl] "
         "opaque autofvAuditEnableInitializers : IO Unit\n"
         "def autofvAuditReplayConstants "
         "(source : Std.HashMap Name ConstantInfo) (roots : List Name) : "
-        "IO (Environment × NameSet) := do\n"
+        "IO (Environment × NameSet × List Name) := do\n"
         "  let artifacts \u2190 autofvAuditBaselineArtifacts\n"
         "  -- Lean v4.31 refuses extension loading otherwise; only pristine\n"
         "  -- baseline and dependency modules are imported here.\n"
@@ -268,14 +304,14 @@ def _trusted_baseline_prelude(
         "        constants := constants.insert name info\n"
         "        if autofvAuditIsTransferred source name then\n"
         "          roots := name :: roots\n"
-        "      let (_checked, renamed) \u2190 liftIO <| "
+        "      let (_checked, renamed, selected) \u2190 liftIO <| "
         "autofvAuditReplayConstants constants roots\n"
-        "      let replayed := roots.foldl "
+        "      let replayed := selected.foldl "
         "(fun names name => names ++ [name.toString]) []\n"
-        "      let checkedNames := roots.foldl (fun names name =>\n"
+        "      let checkedNames := selected.foldl (fun names name =>\n"
         "        if renamed.contains name then names ++ [name.toString]\n"
         "        else names) []\n"
-        "      let baselineNames := roots.foldl (fun names name =>\n"
+        "      let baselineNames := selected.foldl (fun names name =>\n"
         "        if renamed.contains name then names\n"
         "        else names ++ [name.toString]) []\n"
         "      logInfo m!\"AUTOFV_REPLAYED:"
@@ -374,16 +410,85 @@ def _trusted_baseline_prelude(
     )
 
 
-def expected_program(project_modules: list[str], bindings: list[str]) -> bytes:
-    """Compile controller-owned expected types against pristine project modules."""
-    imports = [f"import {_lean_name(module)}" for module in project_modules]
-    declarations = [
-        line for line in bindings if line.startswith(("axiom ", "def "))
-    ]
-    _binding_pairs(bindings)
-    if not declarations:
+def expected_library(permitted_axioms: list[str] | None = None) -> bytes:
+    """Compile the type-only adapter against Lean, before project syntax loads."""
+    from .axiom_inventory import STANDARD_AXIOMS
+    allowed = ", ".join(f"`{_lean_name(a)}" for a in sorted(permitted_axioms or STANDARD_AXIOMS))
+    source = _trusted_baseline_prelude([], []).replace(
+        "open Lean Elab Command Meta\n", "namespace AutoFVExpectationSupport\nopen Lean Elab Command Meta\n", 1)
+    source += (
+        f"def autofvExpectedPermittedAxioms : NameSet := NameSet.ofList [{allowed}]\n"
+        "partial def autofvExpectedDependencies (source : Std.HashMap Name ConstantInfo) "
+        "(pending : List Name) (seen : NameSet := {}) : NameSet :=\n"
+        "  match pending with\n"
+        "  | [] => seen\n"
+        "  | name :: rest =>\n"
+        "    if seen.contains name then autofvExpectedDependencies source rest seen\n"
+        "    else match source[name]? with\n"
+        "    | none => autofvExpectedDependencies source rest seen\n"
+        "    | some info => autofvExpectedDependencies source "
+        "(info.getUsedConstantsAsSet.toList ++ rest) (seen.insert name)\n"
+        "syntax (name := autofvExpectedType) \"#autofv_expected_type \" ident \" from \" str \" for \" ident : command\n"
+        "@[command_elab autofvExpectedType] def elabAutofvExpectedType : CommandElab\n"
+        "  | `(#autofv_expected_type $alias from $path for $target) => do\n"
+        "    let (data, _region) ← readModuleData path.getString\n"
+        "    if data.isModule || data.constNames.size != data.constants.size then\n"
+        "      throwError \"reviewed expectation module data invalid\"\n"
+        "    let mut source : Std.HashMap Name ConstantInfo := {}\n"
+        "    for name in data.constNames, info in data.constants do\n"
+        "      if info.name != name || source.contains name then\n"
+        "        throwError \"reviewed expectation constant mismatch\"\n"
+        "      source := source.insert name info\n"
+        "    let some (.thmInfo info) := source[target.getId]?\n"
+        "      | throwError \"reviewed expectation target missing or not a theorem {target.getId}\"\n"
+        "    let dependencies := autofvExpectedDependencies source info.type.getUsedConstants.toList\n"
+        "    let (checked, renamed, _) ← autofvAuditReplayConstantsIn (← getEnv) source dependencies.toList\n"
+        "    unless renamed.isEmpty do\n"
+        "      throwError \"reviewed type depends on changed or new meaning definitions\"\n"
+        "    setEnv checked\n"
+        "    let typeName := alias.getId ++ `type\n"
+        "    let declaration := Declaration.defnDecl { name := typeName, levelParams := info.levelParams, "
+        "type := mkSort .zero, value := info.type, hints := .abbrev, safety := .safe }\n"
+        "    discard <| ofExceptKernelException <| (← getEnv).addDeclCore 0 declaration none\n"
+        "    liftCoreM <| addDecl declaration\n"
+        "    let axioms ← liftCoreM <| collectAxioms typeName\n"
+        "    unless axioms.toList.all autofvExpectedPermittedAxioms.contains do\n"
+        "      throwError \"reviewed type has unapproved transitive axioms\"\n"
+        "    let expected := Declaration.axiomDecl { name := alias.getId, levelParams := info.levelParams, "
+        "type := info.type, isUnsafe := false }\n"
+        "    discard <| ofExceptKernelException <| (← getEnv).addDeclCore 0 expected none\n"
+        "    liftCoreM <| addDecl expected\n"
+        "  | _ => throwUnsupportedSyntax\n"
+    )
+    return (source + "end AutoFVExpectationSupport\n").encode()
+
+
+def expected_program(project_modules: list[str], bindings: list[str], *,
+                     reviewed_artifacts: dict[str, str] | None = None) -> bytes:
+    """Read reviewed types as inert data, independently of the candidate proof.
+
+    Project context is elaborated in a separate reviewed witness. Its unfinished
+    proof is excluded; type dependencies must match pristine definitions.
+    """
+    exact_types, _, _ = _binding_pairs(bindings)
+    reviewed_artifacts = reviewed_artifacts or {}
+    if not set(reviewed_artifacts) <= {target for _, target in exact_types}:
+        raise contracts.ContractError("reviewed expectation target mismatch")
+    aliases = {alias for alias, target in exact_types if target in reviewed_artifacts}
+    declarations = [line for line in bindings if line.startswith(("axiom ", "def "))
+                    and line.split()[1] not in aliases]
+    if not declarations and not aliases:
         raise contracts.ContractError("kernel audit binding is invalid")
-    return ("\n".join([*imports, *declarations, ""])).encode()
+    modules = [*project_modules, *([EXPECTED_LIBRARY] if aliases else [])]
+    source = "\n".join(f"import {_lean_name(m)}" for m in modules) + "\n"
+    for alias, target in exact_types:
+        if target not in reviewed_artifacts:
+            continue
+        path = PurePosixPath(reviewed_artifacts[target])
+        if path.is_absolute() or '..' in path.parts or path.suffix != '.olean' or re.fullmatch(r'[A-Za-z0-9_./-]+', str(path)) is None:
+            raise contracts.ContractError("reviewed expectation artifact path unsafe")
+        source += f'#autofv_expected_type {_lean_name(alias)} from "{path}" for {_lean_name(target)}\n'
+    return (source + "\n".join([*declarations, ""])).encode()
 
 
 def _audit_prelude(
@@ -396,6 +501,8 @@ def _audit_prelude(
     bindings: list[str] | None = None,
     candidate_root: str = "",
     subjects: list[tuple[str, str]] | None = None,
+    expected_module: bool = False,
+    required_roots: list[str] | None = None,
 ) -> str:
     """Build a trusted-only executable that reads candidate module data inertly.
 
@@ -420,7 +527,8 @@ def _audit_prelude(
         forced_replay=forced_replay,
         permitted_sorry=permitted_sorry,
         preserved_baseline=preserved_baseline,
-        expected_module=bool(bindings),
+        expected_module=bool(bindings) or expected_module,
+        required_roots=required_roots,
     )
     candidate_files = ", ".join(
         f"(`{module}, \"{candidate_root}.lake/build/lib/lean/"
@@ -595,10 +703,10 @@ def _audit_prelude(
         "    IO.println s!\"'{publicRoot}' depends on axioms: "
         "[{String.intercalate \", \" names}]\"\n"
         "def autofvAuditRunWith (replay : Std.HashMap Name ConstantInfo → List Name → "
-        "IO (Environment × NameSet)) (observations declarations : List Name) : "
+        "IO (Environment × NameSet × List Name)) (observations declarations : List Name) : "
         "IO Unit := do\n"
         "  let (constants, roots, project) ← autofvAuditReadCandidates\n"
-        "  let (checked, renamed) ← replay constants roots\n"
+        "  let (checked, renamed, roots) ← replay constants roots\n"
         "  autofvAuditValidateBindings checked renamed\n"
         "  autofvAuditValidateSubjects checked renamed\n"
         "  let replayed := roots.map Name.toString\n"
@@ -645,6 +753,7 @@ def audit_program(
             bindings=bindings,
             candidate_root=candidate_root,
             subjects=subjects,
+            required_roots=observations,
         )
         + f"def main : IO Unit := autofvAuditRunIO "
         f"[{', '.join(f'`{name}' for name in observations)}] "
@@ -690,7 +799,12 @@ def baseline_program(
             for source in state["graph"]["source_paths"].values()
         }
     )
-    program = _audit_prelude(modules, modules)
+    # Public types can mention project definitions absent from the implementation
+    # call graph. Observe their pristine type-only closure too, not proof bodies.
+    definitions = sorted(set(definitions) | {
+        f"AutoFVExpectedAccepted{index}" for index, _ in enumerate(sorted(state.get("frozen_contracts", {})))
+    })
+    program = _audit_prelude(modules, modules, expected_module=bool(state.get("frozen_contracts")))
     program += (
         f"def main : IO Unit := autofvAuditRunIO "
         f"[{', '.join(f'`{name}' for name in definitions)}] []\n"

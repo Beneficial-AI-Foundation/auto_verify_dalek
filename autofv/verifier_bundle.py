@@ -486,6 +486,16 @@ def verify_bundle(
                 contract_invalid = True
                 continue
             contract_fingerprints[name] = record["model_fingerprint"]
+            if "reviewed_snapshot" in record:
+                from . import reviewed_snapshot
+                try:
+                    snapshot = reviewed_snapshot.validate(record["reviewed_snapshot"], declaration=name,
+                        canon=record["canon"], base_commit=state["base_commit"])
+                    node = axiom_audit._contract_nodes(state, reference)[name]
+                    if snapshot["path"] != state["graph"]["source_paths"][node]:
+                        raise contract_rules.ContractError("reviewed expectation graph source mismatch")
+                except (contract_rules.ContractError, KeyError, TypeError):
+                    _append(failures, "reviewed_snapshot_invalid", True)
             _append(
                 failures,
                 "native_decide_policy_mismatch",

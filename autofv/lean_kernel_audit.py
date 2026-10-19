@@ -9,9 +9,11 @@ from . import contracts
 
 
 def _lean_name(name: Any) -> str:
-    if not isinstance(name, str) or re.fullmatch(
-        # Numeric components occur in private names (`_private.M.0.M.aux`).
-        r"[A-Za-z_][A-Za-z0-9_']*(?:\.(?:[A-Za-z_][A-Za-z0-9_']*|[0-9]+))*", name
+    if not isinstance(name, str) or not name.isprintable() or re.fullmatch(
+        # Scoped notation generates quoted Unicode name components. Accept
+        # their printed Lean spelling, without string/code escape characters.
+        r"(?:[A-Za-z_][A-Za-z0-9_']*|«[^«»\x00-\x1f\x7f\"`\\]+»)"
+        r"(?:\.(?:[A-Za-z_][A-Za-z0-9_']*|[0-9]+|«[^«»\x00-\x1f\x7f\"`\\]+»))*", name
     ) is None:
         raise contracts.ContractError("kernel audit declaration name is invalid")
     return name

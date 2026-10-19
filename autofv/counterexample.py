@@ -482,7 +482,13 @@ def confirm(
         image,
         audit_volume,
         f"repo/{axiom_audit.EXPECTED_SOURCE}",
-        axiom_audit.expected_program(baseline_modules, bindings),
+        # The obligation prefix is controller-owned hidden-reference input.
+        # Preserve its complete lexical context rather than reparse its type in
+        # a module containing only imports. No candidate prefix is used here.
+        (obligation["lean_prefix"].removesuffix(" := by\n")
+            .replace("\nnamespace AutoFV\ntheorem counterexample : ",
+                     "\nnamespace AutoFV\naxiom _root_.AutoFVExpectedCounterexample : ", 1)
+            + "\nend AutoFV\n").encode(),
         runtime=runtime,
     )
     expected_argv = runtime_argv(

@@ -5,7 +5,7 @@ modules. Existing callers may continue importing :mod:`autofv.axiom_audit`.
 """
 
 from . import contracts
-from .audit_volume import audit_artifacts, checkout_volume, olean_paths, prepare_auditor
+from .audit_volume import audit_artifacts, checkout_volume, olean_paths, prepare_auditor, prepare_reviewed_artifact
 from .axiom_inventory import (
     COMPILER_AXIOMS,
     STANDARD_AXIOMS,
@@ -35,6 +35,7 @@ from .lean_audit_program import (
     CANDIDATE_ROOT,
     EXPECTED_OLEAN,
     EXPECTED_SOURCE,
+    EXPECTED_LIBRARY,
     REFERENCE_OLEAN,
     REFERENCE_SOURCE,
     _audit_prelude,
@@ -43,6 +44,7 @@ from .lean_audit_program import (
     baseline_program,
     counterexample_audit_program,
     expected_program,
+    expected_library,
     project_modules,
     reference_program,
     single_environment,
@@ -64,17 +66,17 @@ from .lean_kernel_audit import (
 __all__ = [
     "AUDIT_LIBRARY", "AUDIT_SOURCE", "BASELINE_LIBRARY", "BASELINE_SOURCE",
     "CANDIDATE_ROOT", "COMPILER_AXIOMS", "STANDARD_AXIOMS",
-    "EXPECTED_OLEAN", "EXPECTED_SOURCE", "REFERENCE_OLEAN",
+    "EXPECTED_OLEAN", "EXPECTED_SOURCE", "EXPECTED_LIBRARY", "REFERENCE_OLEAN",
     "REFERENCE_SOURCE", "accepted_declaration_for_target",
     "audit_artifacts", "audit_program", "baseline_program",
     "canonical_native_uses", "checkout_volume",
     "compare_kernel_identities", "counterexample_audit_program",
-    "expected_inventory", "expected_program",
+    "expected_inventory", "expected_program", "expected_library",
     "inventory_identity_sha256", "inventory_scope_sha256",
     "native_use_provenance", "olean_paths", "parse_inventory",
     "parse_kernel_identities", "parse_kernel_replay",
     "parse_kernel_replay_provenance", "parse_project_kernel_identities",
-    "prepare_auditor", "project_modules", "single_environment",
+    "prepare_auditor", "prepare_reviewed_artifact", "project_modules", "single_environment",
     "proof_generated_project_dependencies", "reference_program",
     "type_bindings", "validate_inventory", "validate_report_inventory",
 ]

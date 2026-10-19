@@ -321,10 +321,9 @@ class KernelAxiomAuditTests(unittest.TestCase):
             except Exception as exc:
                 self.fail(f"{exc}\n{(audited.stdout + audited.stderr).decode()}")
             self.assertIn("Demo.value", project_identities)
-            self.assertIn("Demo.Flag", replayed)
-            self.assertIn("Demo.flip", replayed)
-            self.assertIn("Demo.Flag", baseline_bound)
-            self.assertIn("Demo.flip", baseline_bound)
+            self.assertIn("Demo.value", baseline_bound)
+            for unused in ("Demo.Flag", "Demo.flip"):
+                self.assertNotIn(unused, replayed | checked | baseline_bound)
             self.assertIn("Demo.unfinished", checked)
             self.assertNotIn("Demo.unfinished", baseline_bound)
             inventory = axiom_audit.parse_inventory(

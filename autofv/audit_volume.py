@@ -6,7 +6,9 @@ from pathlib import PurePosixPath
 from typing import Any, Callable
 
 from . import contracts
-from .axiom_inventory import _contract_nodes, expected_inventory, parse_inventory
+from .axiom_inventory import (
+    COMPILER_AXIOMS, STANDARD_AXIOMS, _contract_nodes, expected_inventory, parse_inventory,
+)
 from .lean_audit_program import (
     AUDIT_LIBRARY,
     AUDIT_SOURCE,
@@ -15,10 +17,12 @@ from .lean_audit_program import (
     CANDIDATE_ROOT,
     EXPECTED_OLEAN,
     EXPECTED_SOURCE,
+    EXPECTED_LIBRARY,
     REFERENCE_OLEAN,
     audit_program,
     baseline_program,
     expected_program,
+    expected_library,
     project_modules,
     single_environment,
 )
@@ -77,11 +81,13 @@ def checkout_volume(
             "test \"$(git -C repo rev-parse HEAD)\" = \"$1\"; "
             "test ! -e repo/AutoFVReferenceCheck.lean; "
             "test ! -e repo/AutoFVExpected.lean; "
+            f"test ! -e repo/{EXPECTED_LIBRARY}.lean; "
             "test ! -e repo/AutoFVBaselineAudit.lean; "
             "test ! -e repo/AutoFVAxiomAudit.lean; "
             f"test ! -e repo/{AUDIT_LIBRARY}.lean; "
             f"test ! -e repo/{BASELINE_LIBRARY}.lean; "
-            f"test ! -e repo/{CANDIDATE_ROOT}",
+            f"test ! -e repo/{CANDIDATE_ROOT}; "
+            "test ! -e repo/.autofv-reviewed",
             "autofv-checkout",
             commit,
             runtime=runtime,
@@ -125,6 +131,43 @@ def _install_auditor(
     seed_file(image, volume, f"repo/{entry_path}", entry_source, runtime=runtime)
 
 
+def prepare_reviewed_artifact(
+    *, image: str, volume: str, audit_volume: str, repository_bundle: bytes,
+    base_commit: str, verify_command: list[str], declaration: str,
+    contract: dict[str, Any], runtime: str, docker: Callable[..., Any],
+    runtime_argv: Callable[..., tuple[str, ...]], seed_file: Callable[..., None],
+) -> str:
+    """Compile the bound review snapshot in a separate, untrusted witness.
+
+    Only its olean is copied as inert data. It never joins trusted imports.
+    """
+    from . import reviewed_snapshot
+    snapshot = reviewed_snapshot.validate(contract["reviewed_snapshot"],
+        declaration=declaration, canon=contract["canon"], base_commit=base_commit)
+    checkout_volume(image=image, volume=volume, repository_bundle=repository_bundle,
+        commit=base_commit, runtime=runtime, docker=docker, runtime_argv=runtime_argv, seed_file=seed_file)
+    baseline = docker(*runtime_argv(image, volume, "git", "show", f"HEAD:{snapshot['path']}",
+        workdir="/project/repo", runtime=runtime))
+    if baseline.returncode:
+        raise contracts.ContractError("reviewed expectation pristine source missing")
+    reviewed_snapshot.validate(snapshot, declaration=declaration, canon=contract["canon"],
+        base_commit=base_commit, baseline_source=baseline.stdout.decode("utf-8", "strict"))
+    seed_file(image, volume, "repo/" + snapshot["path"], snapshot["source"].encode(),
+        runtime=runtime, allowed_paths={"repo/" + snapshot["path"]})
+    built = docker(*runtime_argv(image, volume, *verify_command, workdir="/project/repo", runtime=runtime))
+    if built.returncode:
+        raise contracts.ContractError("reviewed expectation build failed")
+    artifact = ".lake/build/lib/lean/" + str(PurePosixPath(snapshot["path"]).with_suffix(".olean"))
+    observed = docker(*runtime_argv(image, volume, "cat", "/project/repo/" + artifact,
+        workdir="/project/repo", runtime=runtime, read_only_volume=True))
+    if observed.returncode or not observed.stdout or len(observed.stdout) > 32 * 1024 * 1024:
+        raise contracts.ContractError("reviewed expectation artifact missing or oversized")
+    destination = f".autofv-reviewed/{snapshot['snapshot_sha256']}.olean"
+    seed_file(image, audit_volume, "repo/" + destination, observed.stdout, runtime=runtime,
+        allowed_paths={"repo/" + destination})
+    return destination
+
+
 def prepare_auditor(
     *,
     image: str,
@@ -140,6 +183,7 @@ def prepare_auditor(
     runtime_argv: Callable[..., tuple[str, ...]],
     seed_file: Callable[..., None],
     permitted_incomplete_accepted: list[str] | None = None,
+    prepare_reviewed: Callable[[], dict[str, str]] | None = None,
 ) -> dict[str, dict[str, Any]]:
     """Build pristine baseline dependencies and install the auditor first."""
     checkout_volume(
@@ -178,13 +222,21 @@ def prepare_auditor(
     if built.returncode:
         raise contracts.ContractError("kernel baseline build failed")
     bindings = type_bindings(state, reference)
-    seed_file(
-        image,
-        volume,
-        f"repo/{EXPECTED_SOURCE}",
-        expected_program(project_modules(state), bindings),
-        runtime=runtime,
-    )
+    reviewed_artifacts = prepare_reviewed() if prepare_reviewed is not None else {}
+    required_reviews = {name for name, contract in state.get("frozen_contracts", {}).items()
+                        if "reviewed_snapshot" in contract}
+    if set(reviewed_artifacts) != required_reviews:
+        raise contracts.ContractError("reviewed expectation artifacts are incomplete")
+    expected_source = expected_program(project_modules(state), bindings, reviewed_artifacts=reviewed_artifacts)
+    if reviewed_artifacts:
+        _install_auditor(image=image, volume=volume, runtime=runtime, docker=docker,
+            runtime_argv=runtime_argv, seed_file=seed_file, library=EXPECTED_LIBRARY,
+            library_source=expected_library(sorted(STANDARD_AXIOMS |
+                {a["assumption"] for a in state.get("compiler_assumptions", [])
+                 if a.get("assumption") in COMPILER_AXIOMS})),
+            entry_path=EXPECTED_SOURCE, entry_source=expected_source)
+    else:
+        seed_file(image, volume, f"repo/{EXPECTED_SOURCE}", expected_source, runtime=runtime)
     expected_built = docker(
         *runtime_argv(
             image,
@@ -225,7 +277,7 @@ def prepare_auditor(
     }
     baseline_source, definitions = baseline_program(state, reference)
     library_source, entry_source = single_environment(
-        baseline_source, BASELINE_LIBRARY, modules
+        baseline_source, BASELINE_LIBRARY, [*modules, "AutoFVExpected"]
     )
     _install_auditor(
         **auditor, library=BASELINE_LIBRARY, library_source=library_source,
@@ -361,7 +413,7 @@ def audit_artifacts(
         observations,
         expected,
         state,
-        checked,
+        replayed,
     )
     compare_kernel_identities(
         baseline_identities,

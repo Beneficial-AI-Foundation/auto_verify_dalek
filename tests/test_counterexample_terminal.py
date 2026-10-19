@@ -116,7 +116,12 @@ class CounterexampleCertificateTests(CounterexampleFixture, unittest.TestCase):
         module = getattr(verifier, "counterexample", None)
         self.assertIsNotNone(module)
         state, reference, certificate = self._reference_and_certificate()
-        obligation = module.resolve_obligation(reference, certificate, state["target_states"])
+        trusted = json.loads(reference)
+        trusted["counterexample_obligations"][0]["lean_prefix"] = (
+            trusted["counterexample_obligations"][0]["lean_prefix"]
+            .replace("\nnamespace AutoFV", '\nlocal notation "⟦" n "⟧" => (n : Nat)\nnamespace AutoFV')
+            .replace("(0 : Nat) ≠ 1", "⟦ 0 ⟧ ≠ 1"))
+        obligation = module.resolve_obligation(_canonical(trusted), certificate, state["target_states"])
         calls = []
         seeded = {}
 
@@ -152,6 +157,10 @@ class CounterexampleCertificateTests(CounterexampleFixture, unittest.TestCase):
             ],
         )
         self.assertEqual(confirmed, certificate["certificate_sha256"])
+        expected_source = seeded[("fixture-audit-volume", "repo/AutoFVExpected.lean")].decode()
+        self.assertIn('local notation "⟦" n "⟧" => (n : Nat)', expected_source)
+        self.assertIn('axiom _root_.AutoFVExpectedCounterexample : ⟦ 0 ⟧ ≠ 1', expected_source)
+        self.assertNotIn(certificate["lean_witness"], expected_source)
         commands = [call[0] for call in calls]
         self.assertIn("lake", commands[0])
         self.assertIn("build", commands[0])

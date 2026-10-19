@@ -696,6 +696,7 @@
       "autofv/provider_receipts.py",
       "autofv/result_summary.py",
       "autofv/results.py",
+      "autofv/reviewed_snapshot.py",
       "autofv/run_state.py",
       "autofv/worker_runtime.py",
       "docker/autofv/toolchain-lock.json",

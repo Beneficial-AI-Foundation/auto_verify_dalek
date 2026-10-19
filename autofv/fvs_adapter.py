@@ -597,8 +597,14 @@ class Stages:
                 from . import worker
                 if worker.read_lane_file(self.state["run"], self.lane, self.path, [self.path]) != text:
                     raise ContractError("FVS source drift after specification review")
+                from . import reviewed_snapshot
+                snapshot = reviewed_snapshot.make(
+                    declaration=self.theorem, canon=canon, path=self.path, source=text,
+                    baseline_source=fvs_packet.validate_view(self.original)[self.path]["content"],
+                    base_commit=self.state["run"]["base_commit"], review_sha256=review["raw_sha256"])
                 self.record("frozen-statement", {"candidate": candidate, "statement": canon, "source": text,
-                    "review_sha256": review["raw_sha256"], "disposition": "fresh semantic PASS"})
+                    "review_sha256": review["raw_sha256"], "disposition": "fresh semantic PASS",
+                    "reviewed_snapshot": snapshot})
                 return candidate
             revision = self.invoke("specifier", f"spec-author:{round_index+1}", candidate=candidate,
                 fingerprint=fingerprint, context={"review": review, "untrusted_history": history,

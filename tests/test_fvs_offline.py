@@ -1310,7 +1310,8 @@ class FvsOfflineTests(unittest.TestCase):
                                       exchanges=self.state["model_exchanges"])
 
     def stage_fixture(self, verdict=PASS, *, statement_overrides=None, review_overrides=None, patch_overrides=None):
-        graph = {"source_paths": {"helper": PATH}, "graph_sha256": "d" * 64}
+        graph = {"source_paths": {"helper": PATH}, "graph_sha256": "d" * 64,
+                 "supplied_specs": {"helper": "probe:Arithmetic.increment_spec"}}
         lane = {"node": "helper", "assigned_path": PATH, "base_commit": "c" * 40,
                 "lane_id": "fixture-helper", "request_id": "fixture-helper", "worktree_path": "/synthetic/work",
                 "cache_path": "/synthetic/cache", "result_path": "/synthetic/result"}

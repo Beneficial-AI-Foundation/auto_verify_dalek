@@ -612,6 +612,45 @@ class BundleIntakeTests(unittest.TestCase):
         self.assertEqual(report["failures"], [])
         self.assertEqual(report["evidence_level"], "L4")
 
+    def test_reviewed_snapshot_binding_reaches_the_verifier_only_for_its_graph_target(self):
+        from autofv import reviewed_snapshot
+        state = _state()
+        declaration = "Diamond.left_spec"
+        record = state["frozen_contracts"][declaration]
+        path = state["graph"]["source_paths"]["probe:Diamond.left"]
+        source = record["canon"] + " := by sorry\n"
+        record["reviewed_snapshot"] = reviewed_snapshot.make(declaration=declaration,
+            canon=record["canon"], path=path, source=source, baseline_source=source,
+            base_commit=state["base_commit"], review_sha256="a" * 64)
+        for altered_path in (False, True):
+            current = copy.deepcopy(state)
+            snapshot = current["frozen_contracts"][declaration]["reviewed_snapshot"]
+            if altered_path:
+                snapshot["path"] = "Other.lean"
+                snapshot["snapshot_sha256"] = _sha256(_canonical(
+                    {k: v for k, v in snapshot.items() if k != "snapshot_sha256"}))
+            bundle = verifier.build_bundle(_members(current))
+            check = mock.Mock(return_value=_observed(current))
+            report = verifier.verify_bundle(bundle, _invocation(bundle, current),
+                reference_bytes=REFERENCE.read_bytes(), run_checks=check)
+            if altered_path:
+                check.assert_not_called()
+                self.assertIn("reviewed_snapshot_invalid", report["failures"])
+                self.assertEqual(report["verdict"], "FAIL")
+            else:
+                check.assert_called_once()
+                self.assertEqual(check.call_args.args[1]["frozen_contracts"][declaration]["reviewed_snapshot"], snapshot)
+                self.assertEqual(report["verdict"], "PASS")  # Synthetic observation, not a Lean acceptance claim.
+
+    def test_expected_type_library_seed_is_explicitly_allowlisted(self):
+        with mock.patch.object(verifier, "_docker") as docker:
+            verifier._seed_file("image", "audit", f"repo/{axiom_audit.EXPECTED_LIBRARY}.lean",
+                                b"import Lean\n", runtime="runsc-hardened")
+            self.assertEqual(docker.call_args.kwargs["input_bytes"], b"import Lean\n")
+            with self.assertRaisesRegex(verifier.VerifierError, "not allowlisted"):
+                verifier._seed_file("image", "audit", "repo/unapproved.lean", b"", runtime="runsc-hardened")
+            self.assertEqual(docker.call_count, 1)
+
     def test_clean_worker_infrastructure_failure_is_not_reduced_to_a_failed_proof(self):
         with self.assertRaisesRegex(
             verifier.VerifierInfrastructureError, "verifier unavailable"

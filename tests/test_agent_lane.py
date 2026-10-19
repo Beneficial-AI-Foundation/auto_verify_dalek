@@ -229,14 +229,15 @@ class FvsAuthorEditTests(unittest.TestCase):
                     subprocess.run(("git", "init", "-q"), cwd=tmp, check=True)
                     lane = {"lane_id": "author", "node": "helper", "assigned_path": self.path,
                             "worktree_path": tmp}
-                    state = {"run": {"execution_tier": "simulation"}, "config": {"source_packet": self.packet}}
+                    state = {"run": {"execution_tier": "simulation", "base_commit": "c" * 40}, "config": {"source_packet": self.packet}}
                     if dependencies:
                         binding = baseline["dependency_generation"]
                         lane["generation_sha256"] = binding["generation_sha256"]
                         state["fvs_lane_generations"] = {"helper": {
                             "phase": "ready", "binding": binding, "packet": baseline,
                         }}
-                    stages = fvs_adapter.Stages(state, {}, lane, mock.Mock(), lambda *args: None)
+                    stages = fvs_adapter.Stages(state, {"supplied_specs": {"helper": "probe:Arithmetic.increment_spec"}},
+                                                lane, mock.Mock(), lambda *args: None)
                     initial = {"patch": self.patch(spec, base), "evidence": ["statement:" + CANON]}
                     targets = ([spec.replace("@[step]", "-- revised specification\n@[step]")]
                                if phase == "revision" else [spec.replace("sorry", "exact rfl")])

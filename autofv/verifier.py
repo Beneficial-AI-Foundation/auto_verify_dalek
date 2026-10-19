@@ -529,6 +529,7 @@ def _seed_file(
         f"repo/{axiom_audit.AUDIT_SOURCE}",
         f"repo/{axiom_audit.AUDIT_LIBRARY}.lean",
         f"repo/{axiom_audit.BASELINE_LIBRARY}.lean",
+        f"repo/{axiom_audit.EXPECTED_LIBRARY}.lean",
         "repo/AutoFVCounterexample.lean",
         "repo/AutoFVCounterexampleAudit.lean",
         f"repo/{counterexample.OLEAN_PATH}",
@@ -743,6 +744,22 @@ def _clean_worker_checks(
                 run, image, dependency_volume,
                 members["accepted/repository.bundle"], state["base_commit"],
             )
+        def prepare_reviewed():
+            artifacts = {}
+            for index, (declaration, contract) in enumerate(sorted(state["frozen_contracts"].items())):
+                if "reviewed_snapshot" not in contract:
+                    continue
+                reviewed_volume = f"autofv-verify-reviewed-{nonce}-{index}"
+                _docker("volume", "create", reviewed_volume)
+                created.append(reviewed_volume)
+                artifacts[declaration] = axiom_audit.prepare_reviewed_artifact(
+                    image=image, volume=reviewed_volume, audit_volume=audit_volume,
+                    repository_bundle=members["accepted/repository.bundle"], base_commit=state["base_commit"],
+                    verify_command=list(worker_runtime.trusted_verify_command(run, run["manifest"])),
+                    declaration=declaration, contract=contract, runtime=runtime,
+                    docker=_docker, runtime_argv=runtime_argv, seed_file=_seed_file)
+            return artifacts
+
         baseline_identities = axiom_audit.prepare_auditor(
             image=image,
             volume=audit_volume,
@@ -757,6 +774,7 @@ def _clean_worker_checks(
             runtime_argv=runtime_argv,
             seed_file=_seed_file,
             permitted_incomplete_accepted=permitted_incomplete_accepted,
+            prepare_reviewed=prepare_reviewed,
         )
         axiom_audit.checkout_volume(
             image=image,

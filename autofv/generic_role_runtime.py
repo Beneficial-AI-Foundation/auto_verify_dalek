@@ -418,7 +418,8 @@ def _run_prepared_progressive(
             candidate = stages.specification(top, {
                 "node": node, "dependency_plan": dependency, "task_brief": task_brief,
                 "immediate_consumer_requirements": requirements,
-                "accepted_dependency_contracts": [contracts["frozen"][f"{item.removeprefix('probe:')}_spec"] for item in dependencies],
+                "accepted_dependency_contracts": [{k: v for k, v in contracts["frozen"][f"{item.removeprefix('probe:')}_spec"].items()
+                                                    if k != "reviewed_snapshot"} for item in dependencies],
             })
             if node == root and statement(candidate) != supplied["canon"]:
                 raise ContractError("FVS author changed immutable supplied root statement")
@@ -426,6 +427,7 @@ def _run_prepared_progressive(
             normalized = {**candidate, "evidence": ["statement:" + statement(candidate)]}
             record = _contract_record(normalized, declaration, policy, [],
                                       supplied_statement=supplied["canon"] if node == root else None)
+            record["reviewed_snapshot"] = deepcopy(stages.entries[node + ":frozen-statement"]["reviewed_snapshot"])
             prior = contracts["frozen"].get(declaration)
             if prior is not None and prior != {**record, "status": "frozen"}:
                 raise ContractError("FVS frozen statement replay drift")
@@ -436,7 +438,8 @@ def _run_prepared_progressive(
             contracts["frozen_fingerprints"] = sorted(set(contracts["node_fingerprints"].values()))
             state["target_states"][node].update(phase="proof", contract_fingerprint=record["model_fingerprint"])
             selected = stages.proof(candidate, record["model_fingerprint"], {
-                "dependency_contracts": [contracts["frozen"][f"{item.removeprefix('probe:')}_spec"] for item in dependencies],
+                "dependency_contracts": [{k: v for k, v in contracts["frozen"][f"{item.removeprefix('probe:')}_spec"].items()
+                                          if k != "reviewed_snapshot"} for item in dependencies],
             })
             from .fvs_packet import review_snapshot
             expected = review_snapshot(stages.baseline, path=lane["assigned_path"], patch=selected["patch"])["overlay"]["content"]

@@ -14,7 +14,8 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from autofv import axiom_audit, contracts, verifier
+from autofv import axiom_audit, contracts, reviewed_snapshot, verifier
+from autofv.lean_kernel_audit import parse_kernel_replay_provenance
 
 LEAN = Path.home() / ".elan/toolchains/leanprover--lean4---v4.31.0/bin/lean"
 BASELINE = (
@@ -26,7 +27,9 @@ BASELINE = (
 HELPER = "theorem value_spec (n : Nat) : value n = n := rfl\n"
 BUILD = [
     "sh", "-eu", "-c",
-    f'mkdir -p .lake/build/lib/lean; "{LEAN}" -o .lake/build/lib/lean/Demo.olean Demo.lean',
+    f'mkdir -p .lake/build/lib/lean; '
+    f'if test -f Library.lean; then "{LEAN}" -o .lake/build/lib/lean/Library.olean Library.lean; fi; '
+    f'"{LEAN}" -o .lake/build/lib/lean/Demo.olean Demo.lean',
 ]
 STATE = {
     "graph": {
@@ -85,12 +88,17 @@ class PinnedLeanPartialAuditTests(unittest.TestCase):
         argv = [part.replace("/project", local) for part in command]
         repo = self._local(volume) / "repo"
         completed = subprocess.run(
-            argv, cwd=workdir.replace("/project", local), capture_output=True,
-            env={**os.environ, "LEAN_PATH": str(repo / ".lake/build/lib/lean")},
+            argv, cwd=workdir.replace("/project", local), capture_output=True, timeout=30,
+            env={**os.environ, "LEAN_NUM_THREADS": "1", "LEAN_PATH": ":".join(
+                map(str, [repo / ".lake/build/lib/lean", *getattr(self, "extra_libs", [])]))},
         )
         if completed.returncode:
             raise contracts.ContractError(
                 "local docker failed: " + (completed.stdout + completed.stderr).decode()[-3000:]
+            )
+        if b"AUTOFV_REPLAYED:" in completed.stdout:
+            self.replay_provenance = parse_kernel_replay_provenance(
+                completed.stdout, completed.stderr
             )
         return completed
 
@@ -102,15 +110,19 @@ class PinnedLeanPartialAuditTests(unittest.TestCase):
         target.write_bytes(raw)
         target.chmod(0o444)
 
-    def _audit(self, candidate: str, *, forge: bool = False, canon: str | None = None) -> list[dict]:
+    def _audit(self, candidate: str, *, forge: bool = False, canon: str | None = None,
+               baseline: str = BASELINE, reviewed: str | None = None,
+               baseline_files: dict[str, str] | None = None, forge_program: str = FORGE) -> list[dict]:
         state = copy.deepcopy(STATE)
         if canon is not None:
             state["frozen_contracts"]["Demo.value_spec"]["canon"] = canon
         source = self.root / "source"
         source.mkdir()
         _git(source, "init", "-q")
-        (source / "Demo.lean").write_text(BASELINE)
-        _git(source, "add", "Demo.lean")
+        (source / "Demo.lean").write_text(baseline)
+        for path, content in (baseline_files or {}).items():
+            (source / path).write_text(content)
+        _git(source, "add", "Demo.lean", *(baseline_files or {}))
         _git(source, "commit", "-qm", "baseline")
         base = _git(source, "rev-parse", "HEAD")
         (source / "Demo.lean").write_text(candidate)
@@ -120,16 +132,28 @@ class PinnedLeanPartialAuditTests(unittest.TestCase):
         _git(source, "tag", "accepted", accepted)
         _git(source, "bundle", "create", "-q", str(self.root / "repo.bundle"), "--all")
         bundle = (self.root / "repo.bundle").read_bytes()
-        for volume in ("audit", "witness"):
+        for volume in ("audit", "witness", "reviewed"):
             self._local(volume).mkdir(parents=True)
         seams = {"docker": self.docker, "runtime_argv": self.runtime_argv,
                  "seed_file": self.seed_file}
+        def prepare_reviewed():
+            if reviewed is None:
+                return {}
+            return {"Demo.value_spec": axiom_audit.prepare_reviewed_artifact(
+                image="local", volume="reviewed", audit_volume="audit", repository_bundle=bundle,
+                base_commit=base, verify_command=BUILD, declaration="Demo.value_spec",
+                contract=state["frozen_contracts"]["Demo.value_spec"], runtime="runsc-hardened", **seams)}
+        if reviewed is not None:
+            record = state["frozen_contracts"]["Demo.value_spec"]
+            record["reviewed_snapshot"] = reviewed_snapshot.make(
+                declaration="Demo.value_spec", canon=record["canon"], path="Demo.lean", source=reviewed,
+                baseline_source=baseline, base_commit=base, review_sha256="e" * 64)
         reference = {"leaves": []}
         expected = axiom_audit.expected_inventory(state, reference)
         identities = axiom_audit.prepare_auditor(
             image="local", volume="audit", repository_bundle=bundle, base_commit=base,
             verify_command=BUILD, expected=expected, state=state, reference=reference,
-            runtime="runsc-hardened", **seams,
+            runtime="runsc-hardened", prepare_reviewed=prepare_reviewed, **seams,
         )
         axiom_audit.checkout_volume(
             image="local", volume="witness", repository_bundle=bundle, commit=accepted,
@@ -137,7 +161,7 @@ class PinnedLeanPartialAuditTests(unittest.TestCase):
         )
         self.docker(*self.runtime_argv("local", "witness", *BUILD, workdir="/project/repo"))
         if forge:
-            (self._local("witness") / "repo/Forge.lean").write_text(FORGE)
+            (self._local("witness") / "repo/Forge.lean").write_text(forge_program)
             self.docker("witness", "/project/repo", "lake", "env", "lean", "--run", "Forge.lean")
         self.seed_file(
             "local", "witness", f"repo/{axiom_audit.REFERENCE_SOURCE}",
@@ -153,6 +177,166 @@ class PinnedLeanPartialAuditTests(unittest.TestCase):
             state=state, reference=reference, baseline_identities=identities,
             runtime="runsc-hardened", max_artifact_bytes=32 * 1024 * 1024, **seams,
         )
+
+    def test_expected_type_preserves_namespace_open_and_type_alias_context(self):
+        baseline = ("namespace Types\nabbrev Word := Nat\nend Types\n" +
+                    BASELINE.replace("namespace Demo\n", "namespace Demo\nopen Types\n"))
+        helper = HELPER.replace("(n : Nat)", "(n : Word)")
+        inventory = self._audit(baseline.replace("end Demo", helper + "end Demo"), baseline=baseline,
+            canon="theorem Demo.value_spec (n : Word) : value n = n",
+            reviewed=baseline.replace("end Demo", helper.replace(":= rfl", ":= by sorry") + "end Demo"))
+        self.assertEqual([(r["declaration"], r["axioms"]) for r in inventory], [("Demo.value_spec", [])])
+
+    def test_expected_type_preserves_scoped_notation_context(self):
+        baseline = BASELINE.replace("theorem root_spec", 'scoped notation "⟪" n "⟫" => value n\nopen scoped Demo\ntheorem root_spec')
+        helper = HELPER.replace("value n = n", "⟪ n ⟫ = n")
+        inventory = self._audit(baseline.replace("end Demo", helper + "end Demo"), baseline=baseline,
+            canon="theorem Demo.value_spec (n : Nat) : ⟪ n ⟫ = n",
+            reviewed=baseline.replace("end Demo", helper.replace(":= rfl", ":= by sorry") + "end Demo"))
+        self.assertEqual([(r["declaration"], r["axioms"]) for r in inventory], [("Demo.value_spec", [])])
+
+    def test_project_syntax_cannot_reparse_the_trusted_audit_library(self):
+        packages = Path.cwd() / "ledger/phase-02/preparation/lake-cache/packages"
+        aeneas = packages / "aeneas/backends/lean/.lake/build/lib/lean"
+        if not (aeneas / "Aeneas.olean").exists():
+            self.skipTest("existing Aeneas cache is unavailable; never download it")
+        self.extra_libs = [aeneas, *[packages / p / ".lake/build/lib/lean" for p in
+            ("mathlib", "batteries", "Qq", "aesop", "proofwidgets", "importGraph", "LeanSearchClient", "plausible", "Cli", "PrimeCert")]]
+        baseline = "import Aeneas\n" + BASELINE
+        reviewed = baseline.replace("end Demo", HELPER.replace(":= rfl", ":= by sorry") + "end Demo")
+        inventory = self._audit(baseline.replace("end Demo", HELPER + "end Demo"), baseline=baseline,
+            reviewed=reviewed, canon="theorem Demo.value_spec (n : Nat) : value n = n")
+        self.assertFalse(inventory[0]["axioms"])
+
+    def test_expected_type_preserves_section_variables_and_local_instances(self):
+        cases = [
+            ("namespace Demo\nvariable {α : Type} [Inhabited α]\n"
+             "def value (x : α) := x\ntheorem root_spec : value (2 : Nat) = 2 := by sorry\nend Demo\n",
+             "theorem value_spec : value (default : α) = default := rfl\n",
+             "theorem Demo.value_spec : value (default : α) = default"),
+            (BASELINE.replace("theorem root_spec", "local instance custom : Inhabited Nat := ⟨0⟩\ntheorem root_spec"),
+             "theorem value_spec : value (default : Nat) = 0 := rfl\n",
+             "theorem Demo.value_spec : value (default : Nat) = 0"),
+        ]
+        for baseline, helper, canon in cases:
+            with self.subTest(canon=canon):
+                self.setUp()
+                inventory = self._audit(baseline.replace("end Demo", helper + "end Demo"), baseline=baseline,
+                    canon=canon, reviewed=baseline.replace("end Demo", helper.replace(":= rfl", ":= by sorry") + "end Demo"))
+                self.assertEqual([r["declaration"] for r in inventory], ["Demo.value_spec"])
+                self.assertFalse(inventory[0]["axioms"])
+
+    def test_reviewed_context_keeps_helper_and_target_integrity_checks(self):
+        reviewed = BASELINE.replace("end Demo", HELPER.replace(":= rfl", ":= by sorry") + "end Demo")
+        canon = "theorem Demo.value_spec (n : Nat) : value n = n"
+        good = "theorem aux (n : Nat) : value n = n := rfl\n" + HELPER.replace("rfl", "aux n")
+        inventory = self._audit(BASELINE.replace("end Demo", good + "end Demo"), canon=canon, reviewed=reviewed)
+        self.assertFalse(inventory[0]["axioms"])
+        for helper, failure in (
+            (HELPER.replace("value n = n", "value n = value n"), "audited declaration type mismatch"),
+            ("theorem aux (n : Nat) : value n = n := by sorry\n" + HELPER.replace("rfl", "aux n"), "untrusted dependency"),
+            ("axiom aux (n : Nat) : value n = n\n" + HELPER.replace("rfl", "aux n"), "unapproved transferred axiom"),
+            ("-- required target deliberately missing\n", "forced kernel replay declaration is absent"),
+        ):
+            with self.subTest(failure=failure):
+                self.setUp()
+                with self.assertRaisesRegex(contracts.ContractError, failure):
+                    self._audit(BASELINE.replace("end Demo", helper + "end Demo"), canon=canon, reviewed=reviewed)
+
+    def test_unchanged_public_text_does_not_authorize_changed_meaning_definition(self):
+        baseline = BASELINE.replace("theorem root_spec", "def expected (n : Nat) := n + 0\ntheorem root_spec")
+        helper = "theorem value_spec (n : Nat) : value n = expected n := rfl\n"
+        reviewed = baseline.replace("end Demo", helper.replace(":= rfl", ":= by sorry") + "end Demo")
+        candidate = baseline.replace("def expected (n : Nat) := n + 0", "def expected (n : Nat) := 0 + n")
+        candidate = candidate.replace("end Demo", helper.replace(":= rfl", ":= by simp [value, expected]") + "end Demo")
+        with self.assertRaisesRegex(contracts.ContractError, "kernel declaration identity mismatch"):
+            self._audit(candidate, baseline=baseline, reviewed=reviewed,
+                canon="theorem Demo.value_spec (n : Nat) : value n = expected n")
+
+    def test_forged_project_artifact_cannot_shadow_a_pristine_library_definition(self):
+        baseline = "import Library\n" + BASELINE.replace("n + 0", "0")
+        helper = "theorem value_spec (n : Nat) : value n = Library.rhs n := by sorry\n"
+        forge = r'''
+import Lean
+open Lean
+def main : IO Unit := do
+  let path : System.FilePath := ".lake/build/lib/lean/Demo.olean"
+  let (data, _) ← readModuleData path
+  let (library, _) ← readModuleData ".lake/build/lib/lean/Library.olean"
+  let some (.defnInfo rhs) := library.constants.find? (fun i => i.name == `Library.rhs)
+    | throw <| IO.userError "fixture definition missing"
+  let fake := ConstantInfo.defnInfo { rhs with value := mkLambda `n .default (mkConst ``Nat) (mkNatLit 0) }
+  let constants := data.constants.map fun
+    | .thmInfo info => if info.name == `Demo.value_spec then
+        .thmInfo { info with value := mkLambda `n .default (mkConst ``Nat) (mkApp2 (mkConst ``Eq.refl [.succ .zero]) (mkConst ``Nat) (mkNatLit 0)) } else .thmInfo info
+    | info => info
+  IO.FS.removeFile path
+  saveModuleData path `Demo { data with constNames := #[`Library.rhs] ++ data.constNames, constants := #[fake] ++ constants }
+'''
+        with self.assertRaisesRegex(contracts.ContractError, "pristine dependency mismatch Library.rhs"):
+            self._audit(baseline.replace("end Demo", helper + "end Demo"), baseline=baseline,
+                reviewed=baseline.replace("end Demo", helper + "end Demo"),
+                canon="theorem Demo.value_spec (n : Nat) : value n = Library.rhs n",
+                baseline_files={"Library.lean": "def Library.rhs (n : Nat) := n + 1\n"},
+                forge=True, forge_program=forge)
+
+    def test_required_closure_ignores_unused_development_hole(self):
+        candidate = BASELINE.replace(
+            "end Demo", HELPER + "theorem unfinished : False := by sorry\nend Demo"
+        )
+        inventory = self._audit(candidate)
+        self.assertEqual(inventory[0]["axioms"], [])
+        self.assertNotIn("Demo.unfinished", inventory[0]["dependencies"])
+        replayed, checked, baseline_bound = self.replay_provenance
+        self.assertIn("Demo.value_spec", checked)
+        self.assertIn("Demo.value", baseline_bound)
+        self.assertNotIn("Demo.unfinished", replayed | checked | baseline_bound)
+
+    def test_unused_changed_helper_is_not_reported_as_baseline_bound(self):
+        baseline = BASELINE.replace("end Demo", "def unused : Nat := 1\nend Demo")
+        candidate = baseline.replace("unused : Nat := 1", "unused : Nat := 2")
+        inventory = self._audit(candidate.replace("end Demo", HELPER + "end Demo"),
+                                baseline=baseline)
+        self.assertEqual(inventory[0]["axioms"], [])
+        replayed, checked, baseline_bound = self.replay_provenance
+        self.assertNotIn("Demo.unused", replayed | checked | baseline_bound)
+
+    def test_existing_nonmeaning_helper_can_be_used_or_revised(self):
+        baseline = BASELINE.replace(
+            "end Demo", "theorem helper (n : Nat) : value n = n := rfl\nend Demo"
+        )
+        for proof in ("rfl", "by exact Eq.symm (Eq.refl n)"):
+            with self.subTest(proof=proof):
+                self.setUp()
+                candidate = baseline.replace(":= rfl", ":= " + proof).replace(
+                    "end Demo", HELPER.replace("rfl", "by exact helper n") + "end Demo"
+                )
+                if proof != "rfl":
+                    candidate = candidate.replace(
+                        "theorem helper (n : Nat) : value n = n",
+                        "theorem helper (n : Nat) : value n + 0 = n",
+                    )
+                inventory = self._audit(candidate, baseline=baseline)
+                self.assertEqual(inventory[0]["axioms"], [])
+                self.assertIn("Demo.helper", inventory[0]["dependencies"])
+
+    def test_missing_transferred_helper_cannot_fall_back_to_pristine(self):
+        baseline = BASELINE.replace(
+            "end Demo", "theorem helper (n : Nat) : value n = n := rfl\nend Demo"
+        )
+        candidate = baseline.replace(
+            "end Demo", HELPER.replace("rfl", "by exact helper n") + "end Demo"
+        )
+        start = FORGE.index("  let constants :=")
+        end = FORGE.index("  IO.FS.removeFile")
+        forge = FORGE[:start] + (
+            "  let constants := data.constants.filter (fun info => info.name != `Demo.helper)\n"
+        ) + FORGE[end:].replace(
+            "{ data with constants }",
+            "{ data with constants, constNames := data.constNames.filter (· != `Demo.helper) }",
+        )
+        with self.assertRaisesRegex(contracts.ContractError, "missing transferred dependency Demo.helper"):
+            self._audit(candidate, baseline=baseline, forge=True, forge_program=forge)
 
     def test_new_helper_is_kernel_checked_against_pristine_baseline(self):
         candidate = BASELINE.replace("end Demo", HELPER + "end Demo")
@@ -196,8 +380,8 @@ class PinnedLeanPartialAuditTests(unittest.TestCase):
                       "retained untrusted dependency Demo.value_spec"),
             "weakened_statement": (HELPER.replace("value n = n", "value n = value n"), False,
                                    "audited declaration type mismatch Demo.value_spec"),
-            # The changed body also taints the unrelated baseline hole's closure.
-            "changed_definition": (HELPER, False, "retained untrusted dependency Demo.root_spec"),
+            # Ignore the unrelated hole, but still freeze the implementation.
+            "changed_definition": (HELPER, False, "kernel declaration identity mismatch"),
             "forged_olean": (HELPER, True, r"\(kernel\) declaration type mismatch"),
             "aux_sorry": ("theorem aux (n : Nat) : value n = n := by sorry\n"
                           + HELPER.replace("rfl", "aux n"), False,

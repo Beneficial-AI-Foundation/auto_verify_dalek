@@ -806,6 +806,11 @@ class ControlBundleBoundaryTests(unittest.TestCase):
         }
         self.assertTrue(moved_experiment_code <= members)
 
+    def test_reviewed_snapshot_is_delivered_with_the_fvs_adapter(self):
+        members = set(load_lock()["controller_delivery"]["allowed_members"])
+        self.assertIn("autofv/fvs_adapter.py", members)
+        self.assertIn("autofv/reviewed_snapshot.py", members)
+
     def test_rejects_noncanonical_duplicate_and_out_of_allowlist_members(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)

@@ -1,6 +1,8 @@
 """Offline regression for the real serial graph's interrupted-agent boundary."""
 import asyncio
 import copy
+import json
+import tempfile
 import unittest
 from decimal import Decimal
 from contextlib import ExitStack
@@ -10,6 +12,7 @@ from langgraph.errors import NodeCancelledError
 from unittest import mock
 
 from autofv import experiment, terminal_run, generic_role_runtime, terminal_verifier, results, worker, verifier
+from autofv import result_summary
 from autofv.contracts import BudgetExhausted, ContractInconclusive
 
 
@@ -155,6 +158,35 @@ class InterruptedProgressTests(unittest.TestCase):
 
     def test_normal_completion_still_runs_verifier(self):
         self.drive({}, None)
+
+    def test_successful_node_preserves_partial_reports_for_verifier_and_export(self):
+        # Synthetic transport evidence, not a substitute for report validation.
+        report = {field: 'synthetic-' + field for field in result_summary.HELPER_FIELDS}
+        report.update(verdict='SCOPED_PASS', evidence_level='P1', root_status='unverified')
+        reports = {'helper@commit': report}
+
+        def agent(local):
+            local['partial_verifier_reports'] = copy.deepcopy(reports)
+            return experiment._node_update(local, accepted_nodes=['helper'])
+
+        def verify(local):
+            self.assertEqual(local.get('partial_verifier_reports'), reports)
+            return {'verifier_report': {'terminal_status': 'unverified'}}
+
+        for initial in ({}, {'partial_verifier_reports': {'stale': {}}}):
+            with self.subTest(initial=initial), \
+                 mock.patch.object(experiment, '_freeze', return_value={'graph': {}}), \
+                 mock.patch.object(experiment, '_agent_loop', side_effect=agent), \
+                 mock.patch.object(experiment, '_clean_verify', side_effect=verify):
+                state = copy.deepcopy(initial)
+                with mock.patch.object(experiment, '_EXPERIMENT_GRAPH', experiment._build_graph()):
+                    experiment._run_graph(state)
+                self.assertEqual(result_summary.helper_verification(state), [report])
+                self.assertEqual(state['verifier_report']['terminal_status'], 'unverified')
+                with tempfile.TemporaryDirectory() as root:
+                    path = results.persist_partial_reports({'run_root': root}, state)
+                    self.assertIsNotNone(path)
+                    self.assertEqual(json.loads(path.read_text()), [report])
 
     def test_secondary_audit_error_keeps_primary_detail(self):
         state = self.drive({}, ContractInconclusive('FVS role blocked: prover'))

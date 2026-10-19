@@ -258,6 +258,7 @@ def _node_update(state: _RunState, **values: Any) -> dict[str, Any]:
         "model_exchanges",
         "role_progress",
         "role_tool_outcomes",
+        "partial_verifier_reports",
         "fvs_evidence",
         "fvs_lane_sources",
         "fvs_lane_generations",
